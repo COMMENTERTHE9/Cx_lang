@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{Expr, Op, Program, SemanticError, Stmt, Type, Value};
+use crate::{CallArg, Expr, Op, ParamKind, Program, SemanticError, Stmt, Type, Value};
 
 #[derive(Debug, Clone)]
 struct VarInfo {
@@ -33,6 +33,7 @@ fn ty_from_value(v: &Value) -> Ty {
         Value::Bool(_) => Ty::Bool,
         Value::Str(_) => Ty::Str,
         Value::Char(_) => Ty::Char,
+        Value::Container(_) => Ty::Str,
     }
 }
 
@@ -63,7 +64,7 @@ pub struct Analyzer {
     scopes: Vec<Scope>,
     current_ret_ty: Option<Ty>,
     in_function: bool,
-    funcs: HashMap<String, (Vec<Ty>, Option<Ty>)>,
+    funcs: HashMap<String, (Vec<Option<Ty>>, Option<Ty>)>,
 }
 
 impl Analyzer {
@@ -135,40 +136,61 @@ impl Analyzer {
             ),
 
             // Assignment: type-check RHS and update declared/inferred type state.
-            Stmt::Assign { name, expr, pos_eq } => {
+            Stmt::Assign { target, expr, pos_eq } => {
                 let expr_ty = self.type_expr(expr)?;
-                let info = self.lookup_var_mut(name).ok_or_else(|| SemanticError {
-                    msg: format!("use of undeclared variable '{}'", name),
-                    pos: *pos_eq,
-                })?;
+                match target {
+                    Expr::Ident(name, _) => {
+                        let info = self.lookup_var_mut(name).ok_or_else(|| SemanticError {
+                            msg: format!("use of undeclared variable '{}'", name),
+                            pos: *pos_eq,
+                        })?;
 
-                if let Some(declared) = info.declared {
-                    let expected = ty_from_decl(declared);
-                    if expected != expr_ty {
-                        return Err(SemanticError {
-                            msg: format!(
-                                "type mismatch: expected {:?}, got {:?}",
-                                expected, expr_ty
-                            ),
-                            pos: *pos_eq,
-                        });
+                        if let Some(declared) = info.declared {
+                            let expected = ty_from_decl(declared);
+                            if expected != expr_ty {
+                                return Err(SemanticError {
+                                    msg: format!(
+                                        "type mismatch: expected {:?}, got {:?}",
+                                        expected, expr_ty
+                                    ),
+                                    pos: *pos_eq,
+                                });
+                            }
+                        } else if let Some(expected) = info.inferred {
+                            if expected != expr_ty {
+                                return Err(SemanticError {
+                                    msg: format!(
+                                        "type mismatch: expected {:?}, got {:?}",
+                                        expected, expr_ty
+                                    ),
+                                    pos: *pos_eq,
+                                });
+                            }
+                        } else {
+                            info.inferred = Some(expr_ty);
+                        }
+
+                        info.initialized = true;
+                        Ok(())
                     }
-                } else if let Some(expected) = info.inferred {
-                    if expected != expr_ty {
-                        return Err(SemanticError {
-                            msg: format!(
-                                "type mismatch: expected {:?}, got {:?}",
-                                expected, expr_ty
-                            ),
+                    Expr::DotAccess(container, _) => {
+                        let info = self.lookup_var(container).ok_or_else(|| SemanticError {
+                            msg: format!("use of undeclared variable '{}'", container),
                             pos: *pos_eq,
-                        });
+                        })?;
+                        if !info.initialized {
+                            return Err(SemanticError {
+                                msg: format!("use of uninitialized variable '{}'", container),
+                                pos: *pos_eq,
+                            });
+                        }
+                        Ok(())
                     }
-                } else {
-                    info.inferred = Some(expr_ty);
+                    _ => Err(SemanticError {
+                        msg: "bad assignment target".to_string(),
+                        pos: *pos_eq,
+                    }),
                 }
-
-                info.initialized = true;
-                Ok(())
             }
 
             // TypedAssign: type-check RHS and introduce a typed, initialized variable.
@@ -224,7 +246,13 @@ impl Analyzer {
                     *pos,
                 )?;
 
-                let param_tys: Vec<Ty> = params.iter().map(|(_, ty)| ty_from_decl(*ty)).collect();
+                let param_tys: Vec<Option<Ty>> = params
+                    .iter()
+                    .map(|param| match param {
+                        ParamKind::Typed(_, ty) => Some(ty_from_decl(*ty)),
+                        ParamKind::Copy(_) | ParamKind::CopyFree(_) => None,
+                    })
+                    .collect();
                 let ret = ret_ty.map(ty_from_decl);
                 self.funcs.insert(name.clone(), (param_tys, ret));
 
@@ -235,16 +263,31 @@ impl Analyzer {
                 self.in_function = true;
                 self.current_ret_ty = ret_ty.map(ty_from_decl);
 
-                for (pname, pty) in params {
-                    self.declare(
-                        pname,
-                        VarInfo {
-                            declared: Some(*pty),
-                            inferred: None,
-                            initialized: true,
-                        },
-                        *pos,
-                    )?;
+                for param in params {
+                    match param {
+                        ParamKind::Typed(pname, pty) => {
+                            self.declare(
+                                pname,
+                                VarInfo {
+                                    declared: Some(*pty),
+                                    inferred: None,
+                                    initialized: true,
+                                },
+                                *pos,
+                            )?;
+                        }
+                        ParamKind::Copy(pname) | ParamKind::CopyFree(pname) => {
+                            self.declare(
+                                pname,
+                                VarInfo {
+                                    declared: None,
+                                    inferred: None,
+                                    initialized: true,
+                                },
+                                *pos,
+                            )?;
+                        }
+                    }
                 }
                 for s in body {
                     self.analyze_stmt(s)?;
@@ -279,6 +322,7 @@ impl Analyzer {
 
             // Print: analyze expr
             Stmt::Print { expr, .. } => self.type_expr(expr).map(|_| ()),
+            Stmt::PrintInline { expr, .. } => self.type_expr(expr).map(|_| ()),
             Stmt::ExprStmt { expr, .. } => self.type_expr(expr).map(|_| ()),
             Stmt::Return { expr, pos } => {
                 if !self.in_function {
@@ -377,23 +421,55 @@ impl Analyzer {
                     });
                 }
 
-                for (i, (arg, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
-                    let got = self.type_expr(arg)?;
-                    if got != *expected {
-                        return Err(SemanticError {
-                            msg: format!(
-                                "argument {} to '{}': expected {:?}, got {:?}",
-                                i + 1,
-                                name,
-                                expected,
-                                got
-                            ),
-                            pos: *pos,
-                        });
+                for (i, arg) in args.iter().enumerate() {
+                    match arg {
+                        CallArg::Expr(expr) => {
+                            if let Some(Some(expected)) = param_tys.get(i) {
+                                let got = self.type_expr(expr)?;
+                                if got != *expected {
+                                    return Err(SemanticError {
+                                        msg: format!(
+                                            "argument {} to '{}': expected {:?}, got {:?}",
+                                            i + 1,
+                                            name,
+                                            expected,
+                                            got
+                                        ),
+                                        pos: *pos,
+                                    });
+                                }
+                            }
+                        }
+                        CallArg::Copy(outer_name) | CallArg::CopyFree(outer_name) => {
+                            let info = self.lookup_var(outer_name).ok_or_else(|| SemanticError {
+                                msg: format!("'.copy' argument '{}' has not been declared", outer_name),
+                                pos: *pos,
+                            })?;
+                            if !info.initialized {
+                                return Err(SemanticError {
+                                    msg: format!("'.copy' argument '{}' is not initialized", outer_name),
+                                    pos: *pos,
+                                });
+                            }
+                        }
+                        CallArg::CopyInto(_) => {}
                     }
                 }
 
                 Ok(ret_ty.unwrap_or(Ty::Num))
+            }
+            Expr::DotAccess(container, _field) => {
+                let info = self.lookup_var(container).ok_or_else(|| SemanticError {
+                    msg: format!("use of undeclared variable '{}'", container),
+                    pos: 0,
+                })?;
+                if !info.initialized {
+                    return Err(SemanticError {
+                        msg: format!("use of uninitialized variable '{}'", container),
+                        pos: 0,
+                    });
+                }
+                Ok(Ty::Num)
             }
 
             Expr::Bin(lhs, op, op_pos, rhs) => {
@@ -401,7 +477,7 @@ impl Analyzer {
                 let rt = self.type_expr(rhs)?;
 
                 match op {
-                    Op::Plus | Op::Minus | Op::Mul | Op::Div => {
+                    Op::Plus | Op::Minus | Op::Mul | Op::Div | Op::Mod => {
                         if lt == Ty::Num && rt == Ty::Num {
                             Ok(Ty::Num)
                         } else {
@@ -452,7 +528,13 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
     }
 }
 
-pub fn analyze_program(program: &Program) -> Result<(), SemanticError> {
+pub fn analyze_program(program: &Program) -> Vec<SemanticError> {
     let mut a = Analyzer::new();
-    a.analyze_program(program)
+    let mut errors = Vec::new();
+    for stmt in &program.stmts {
+        if let Err(e) = a.analyze_stmt(stmt) {
+            errors.push(e);
+        }
+    }
+    errors
 }

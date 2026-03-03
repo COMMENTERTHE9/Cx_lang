@@ -3,7 +3,7 @@ use chumsky::{
     prelude::*,
 };
 
-use crate::{Expr, Op, Program, Stmt, Token, Type, Value};
+use crate::{CallArg, Expr, Op, ParamKind, Program, Stmt, Token, Type, Value};
 
 type Span = SimpleSpan;
 type ParserError<'a> = extra::Err<Rich<'a, Token, Span>>;
@@ -13,6 +13,7 @@ fn expr_pos(expr: &Expr) -> usize {
     match expr {
         Expr::Val(_) => 0,
         Expr::Ident(_, pos) => *pos,
+        Expr::DotAccess(_, _) => 0,
         Expr::Call(_, _, pos) => *pos,
         Expr::Bin(_, _, pos, _) => *pos,
     }
@@ -48,13 +49,38 @@ where
             Token::KeywordFalse     => Expr::Val(Value::Bool(false)),
         };
 
-        let ident_with_pos = select! { Token::Identifier(s) => s }
-            .map_with(|s, e: &mut ParseExtra<'a, '_, I>| (s, e.span().start));
-        let args = expr
+        let ident = select! { Token::Identifier(s) => s };
+        let ident_with_pos = ident
             .clone()
-            .separated_by(just(Token::PunctComma))
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose));
+            .map_with(|s, e: &mut ParseExtra<'a, '_, I>| (s, e.span().start));
+
+        let args = {
+            let call_arg = ident
+                .clone()
+                .then(
+                    just(Token::PunctDot)
+                        .ignore_then(select! { Token::Identifier(s) => s })
+                        .then(
+                            just(Token::PunctDot)
+                                .ignore_then(select! { Token::Identifier(s) => s })
+                                .or_not(),
+                        )
+                        .or_not(),
+                )
+                .map(|(name, modifier)| match modifier {
+                    Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
+                        CallArg::CopyFree(name)
+                    }
+                    Some((m1, None)) if m1 == "copy" => CallArg::Copy(name),
+                    _ => CallArg::Expr(Expr::Ident(name, 0)),
+                })
+                .or(expr.clone().map(CallArg::Expr));
+
+            call_arg
+                .separated_by(just(Token::PunctComma))
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose))
+        };
 
         let ident_or_call = ident_with_pos
             .then(args.or_not())
@@ -72,6 +98,7 @@ where
         let mul_div_op = select! {
             Token::OpMul => Op::Mul,
             Token::OpDiv => Op::Div,
+            Token::OpMod => Op::Mod,
         }
         .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start));
 
@@ -124,12 +151,28 @@ where
 
         let assign = ident
             .clone()
+            .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
+            .then(
+                just(Token::PunctDot)
+                    .ignore_then(select! { Token::Identifier(s) => s })
+                    .or_not(),
+            )
             .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| {
                 e.span().start
             }))
             .then(expr.clone())
             .then_ignore(semi.clone().or_not())
-            .map(|((name, pos_eq), expr)| Stmt::Assign { name, expr, pos_eq });
+            .map(|((((name, name_pos), field), pos_eq), expr)| {
+                let target = match field {
+                    Some(f) => Expr::DotAccess(name, f),
+                    None => Expr::Ident(name, name_pos),
+                };
+                Stmt::Assign {
+                    target,
+                    expr,
+                    pos_eq,
+                }
+            });
 
         let typed_assign = ident
             .clone()
@@ -154,6 +197,14 @@ where
             .then_ignore(just(Token::PunctParenClose))
             .then_ignore(semi.clone().or_not())
             .map(|(pos, expr)| Stmt::Print { expr, pos });
+
+        let print_inline = just(Token::KeywordPrintInline)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .then_ignore(semi.clone().or_not())
+            .map(|(pos, expr)| Stmt::PrintInline { expr, pos });
 
         let ret = just(Token::KeywordReturn)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -183,55 +234,82 @@ where
                 expr,
             });
 
-        let func_body_stmt = choice((
-            decl.clone(),
-            print.clone(),
-            ret.clone(),
-            typed_assign.clone(),
-            assign.clone(),
-            block.clone(),
-            expr_stmt_with_semi.clone(),
-        ));
-
-        // Keep implicit return support: trailing expression with no semicolon.
-        let func_body = just(Token::PunctBraceOpen)
-            .ignore_then(
-                func_body_stmt
-                    .repeated()
-                    .collect::<Vec<_>>()
-                    .then(expr.clone().or_not()),
-            )
-            .then_ignore(just(Token::PunctBraceClose));
-
         let param = ident
             .clone()
-            .then_ignore(just(Token::PunctColon))
-            .then(ty.clone())
-            .map(|(name, ty)| (name, ty));
-
-        let func_def = just(Token::KeywordFnc)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
-            .then(ident.clone())
             .then(
-                param
-                    .separated_by(just(Token::PunctComma))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose)),
+                just(Token::PunctDot)
+                    .ignore_then(select! { Token::Identifier(s) => s })
+                    .then(
+                        just(Token::PunctDot)
+                            .ignore_then(select! { Token::Identifier(s) => s })
+                            .or_not(),
+                    )
+                    .or_not(),
             )
-            .then(just(Token::PunctArrow).ignore_then(ty.clone()).or_not())
-            .then(func_body)
-            .map(
-                |((((pos, name), params), ret_ty), (body, ret_expr))| Stmt::FuncDef {
-                    name,
-                    params,
-                    ret_ty,
-                    body,
-                    ret_expr,
-                    pos,
-                },
-            );
+            .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
+            .map(|((name, modifier), ty_opt)| match modifier {
+                Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => ParamKind::CopyFree(name),
+                Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
+                _ => ParamKind::Typed(name, ty_opt.unwrap()),
+            });
 
-        choice((decl, func_def, print, ret, typed_assign, assign, block, expr_stmt))
+        let func_def = recursive(|func_def| {
+            let func_body_stmt = choice((
+                decl.clone(),
+                func_def.clone(),
+                print.clone(),
+                print_inline.clone(),
+                ret.clone(),
+                typed_assign.clone(),
+                assign.clone(),
+                block.clone(),
+                expr_stmt_with_semi.clone(),
+            ));
+
+            // Keep implicit return support: trailing expression with no semicolon.
+            let func_body = just(Token::PunctBraceOpen)
+                .ignore_then(
+                    func_body_stmt
+                        .repeated()
+                        .collect::<Vec<_>>()
+                        .then(expr.clone().or_not()),
+                )
+                .then_ignore(just(Token::PunctBraceClose));
+
+            just(Token::KeywordFnc)
+                .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+                .then(ident.clone())
+                .then(
+                    param
+                        .separated_by(just(Token::PunctComma))
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose)),
+                )
+                .then(just(Token::PunctArrow).ignore_then(ty.clone()).or_not())
+                .then(func_body)
+                .map(
+                    |((((pos, name), params), ret_ty), (body, ret_expr))| Stmt::FuncDef {
+                        name,
+                        params,
+                        ret_ty,
+                        body,
+                        ret_expr,
+                        pos,
+                    },
+                )
+        });
+
+        choice((
+            decl,
+            func_def,
+            print,
+            print_inline,
+            ret,
+            typed_assign,
+            assign,
+            block,
+            expr_stmt,
+        ))
     })
 }
 
