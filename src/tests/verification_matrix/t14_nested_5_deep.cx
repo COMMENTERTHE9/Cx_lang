@@ -1,0 +1,16 @@
+fnc level1() -> t64 {
+    fnc level2() -> t64 {
+        fnc level3() -> t64 {
+            fnc level4() -> t64 {
+                fnc level5() -> t64 {
+                    5
+                }
+                level5() + 1
+            }
+            level4() + 1
+        }
+        level3() + 1
+    }
+    level2() + 1
+}
+print(level1());

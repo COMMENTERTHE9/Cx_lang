@@ -1,0 +1,14 @@
+fnc outer() -> t64 {
+    x: t64 = 10;
+    y: t64 = 20;
+    z: t64 = 30;
+
+    fnc inner(t: copy_into(x, y, z)) -> t64 {
+        t.x + t.y + t.z
+    }
+
+    result: t64 = inner(copy_into(x, y, z));
+    result
+}
+
+print(outer());

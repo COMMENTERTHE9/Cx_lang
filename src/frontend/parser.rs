@@ -3,7 +3,7 @@ use chumsky::{
     prelude::*,
 };
 
-use crate::{CallArg, Expr, Op, ParamKind, Program, Stmt, Token, Type, Value};
+use crate::frontend::{ast::*, lexer::Token, types::*};
 
 type Span = SimpleSpan;
 type ParserError<'a> = extra::Err<Rich<'a, Token, Span>>;
@@ -55,26 +55,38 @@ where
             .map_with(|s, e: &mut ParseExtra<'a, '_, I>| (s, e.span().start));
 
         let args = {
-            let call_arg = ident
-                .clone()
-                .then(
-                    just(Token::PunctDot)
-                        .ignore_then(select! { Token::Identifier(s) => s })
+            let call_arg = select! { Token::Identifier(s) if s == "copy_into" => () }
+                .ignore_then(
+                    ident
+                        .clone()
+                        .separated_by(just(Token::PunctComma))
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose)),
+                )
+                .map(|vars| CallArg::CopyInto(vars))
+                .or(
+                    ident
+                        .clone()
                         .then(
                             just(Token::PunctDot)
                                 .ignore_then(select! { Token::Identifier(s) => s })
+                                .then(
+                                    just(Token::PunctDot)
+                                        .ignore_then(select! { Token::Identifier(s) => s })
+                                        .or_not(),
+                                )
                                 .or_not(),
                         )
-                        .or_not(),
-                )
-                .map(|(name, modifier)| match modifier {
-                    Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
-                        CallArg::CopyFree(name)
-                    }
-                    Some((m1, None)) if m1 == "copy" => CallArg::Copy(name),
-                    _ => CallArg::Expr(Expr::Ident(name, 0)),
-                })
-                .or(expr.clone().map(CallArg::Expr));
+                        .map(|(name, modifier)| match modifier {
+                            Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
+                                CallArg::CopyFree(name)
+                            }
+                            Some((m1, None)) if m1 == "copy" => CallArg::Copy(name),
+                            Some((field, None)) => CallArg::Expr(Expr::DotAccess(name, field)),
+                            _ => CallArg::Expr(Expr::Ident(name, 0)),
+                        })
+                        .or(expr.clone().map(CallArg::Expr)),
+                );
 
             call_arg
                 .separated_by(just(Token::PunctComma))
@@ -84,9 +96,15 @@ where
 
         let ident_or_call = ident_with_pos
             .then(args.or_not())
-            .map(|((name, pos), args)| match args {
-                Some(args) => Expr::Call(name, args, pos),
-                None => Expr::Ident(name, pos),
+            .then(
+                just(Token::PunctDot)
+                    .ignore_then(select! { Token::Identifier(s) => s })
+                    .or_not(),
+            )
+            .map(|(((name, pos), args), field)| match (args, field) {
+                (Some(args), _) => Expr::Call(name, args, pos),
+                (None, Some(field)) => Expr::DotAccess(name, field),
+                (None, None) => Expr::Ident(name, pos),
             });
 
         let paren = expr
@@ -234,24 +252,42 @@ where
                 expr,
             });
 
-        let param = ident
+        let copy_into_param = ident
             .clone()
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(select! { Token::Identifier(s) if s == "copy_into" => () })
+            .then_ignore(just(Token::PunctParenOpen))
             .then(
-                just(Token::PunctDot)
-                    .ignore_then(select! { Token::Identifier(s) => s })
-                    .then(
-                        just(Token::PunctDot)
-                            .ignore_then(select! { Token::Identifier(s) => s })
-                            .or_not(),
-                    )
-                    .or_not(),
+                ident
+                    .clone()
+                    .separated_by(just(Token::PunctComma))
+                    .collect::<Vec<_>>(),
             )
-            .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
-            .map(|((name, modifier), ty_opt)| match modifier {
-                Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => ParamKind::CopyFree(name),
-                Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
-                _ => ParamKind::Typed(name, ty_opt.unwrap()),
-            });
+            .then_ignore(just(Token::PunctParenClose))
+            .map(|(name, vars)| ParamKind::CopyInto(name, vars));
+
+        let param = copy_into_param.or(
+            ident
+                .clone()
+                .then(
+                    just(Token::PunctDot)
+                        .ignore_then(select! { Token::Identifier(s) => s })
+                        .then(
+                            just(Token::PunctDot)
+                                .ignore_then(select! { Token::Identifier(s) => s })
+                                .or_not(),
+                        )
+                        .or_not(),
+                )
+                .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
+                .map(|((name, modifier), ty_opt)| match modifier {
+                    Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
+                        ParamKind::CopyFree(name)
+                    }
+                    Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
+                    _ => ParamKind::Typed(name, ty_opt.unwrap()),
+                }),
+        );
 
         let func_def = recursive(|func_def| {
             let func_body_stmt = choice((

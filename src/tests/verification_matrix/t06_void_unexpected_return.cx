@@ -1,0 +1,4 @@
+fnc bad() {
+    return "hello";
+}
+bad();

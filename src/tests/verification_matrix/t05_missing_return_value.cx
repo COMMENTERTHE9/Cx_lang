@@ -1,0 +1,4 @@
+fnc bad() -> t64 {
+    return;
+}
+bad();

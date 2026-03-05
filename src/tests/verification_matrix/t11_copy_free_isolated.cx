@@ -1,0 +1,10 @@
+fnc outer() -> t64 {
+    x: t64 = 10;
+    fnc inner(x.copy.free) -> t64 {
+        x = x + 5;
+        x
+    }
+    inner(x.copy.free);
+    x
+}
+print(outer());

@@ -1,4 +1,11 @@
-use crate::{CallArg, Expr, ParamKind, ParseError, Program, RuntimeError, ScopeEvent, Stmt, Token};
+use crate::{
+    frontend::{
+        ast::*,
+        lexer::{ParseError, Token},
+        types::RuntimeError,
+    },
+    runtime::runtime::ScopeEvent,
+};
 use colored::Colorize;
 
 pub(crate) const ERR_BAD_DECLARATION: &str = "bad declaration";
@@ -290,6 +297,14 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                     ParamKind::CopyFree(pname) => {
                         eprintln!("{}  Param({}.copy.free)", pad, pname);
                     }
+                    ParamKind::CopyInto(name, vars) => {
+                        eprintln!(
+                            "{}  Param({}: copy_into({}))",
+                            pad,
+                            name,
+                            vars.join(", ")
+                        );
+                    }
                 }
             }
             eprintln!("{}  Body", pad);
@@ -327,7 +342,9 @@ fn print_expr(expr: &Expr, depth: usize) {
                     CallArg::Expr(expr) => print_expr(expr, depth + 1),
                     CallArg::Copy(name) => eprintln!("{}  ArgCopy({})", pad, name),
                     CallArg::CopyFree(name) => eprintln!("{}  ArgCopyFree({})", pad, name),
-                    CallArg::CopyInto(names) => eprintln!("{}  ArgCopyInto({:?})", pad, names),
+                    CallArg::CopyInto(vars) => {
+                        eprintln!("{}  CopyInto({})", pad, vars.join(", "));
+                    }
                 }
             }
         }
@@ -358,6 +375,14 @@ pub fn print_scope_event(event: &ScopeEvent) {
         }
         ScopeEvent::BleedBack(name, val) => {
             eprintln!("  {}", format!("~ {}  = {:?}  (bled back)", name, val).cyan());
+        }
+        ScopeEvent::ArenaReset { bytes, chunks } => {
+            eprintln!(
+                "  {}",
+                format!("↺ arena reset  {} bytes freed  {} chunk(s)", bytes, chunks)
+                    .magenta()
+                    .dimmed()
+            );
         }
     }
 }

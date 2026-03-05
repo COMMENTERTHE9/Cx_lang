@@ -1,4 +1,22 @@
-fnc outer() -> t64 {
+// post_split_verify.cx
+// confirms all major systems work after module split
+
+// basic arithmetic + modulo
+print(10 + 5);
+print(10 % 3);
+
+// inline print
+print!("hello ");
+print!("world\n");
+
+// typed function with implicit return
+fnc add(a: t64, b: t64) -> t64 {
+    a + b
+}
+print(add(3, 7));
+
+// bleed-back via .copy
+fnc test_copy() -> t64 {
     x: t64 = 10;
     fnc inner(x.copy) -> t64 {
         x = x + 5;
@@ -7,5 +25,28 @@ fnc outer() -> t64 {
     inner(x.copy);
     x
 }
+print(test_copy());
 
-print(outer());
+// isolation via .copy.free
+fnc test_copy_free() -> t64 {
+    x: t64 = 10;
+    fnc inner(x.copy.free) -> t64 {
+        x = x + 5;
+        x
+    }
+    inner(x.copy.free);
+    x
+}
+print(test_copy_free());
+
+// copy_into container
+fnc test_copy_into() -> t64 {
+    x: t64 = 1;
+    y: t64 = 2;
+    z: t64 = 3;
+    fnc inner(t: copy_into(x, y, z)) -> t64 {
+        t.x + t.y + t.z
+    }
+    inner(copy_into(x, y, z))
+}
+print(test_copy_into());

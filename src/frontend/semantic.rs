@@ -1,6 +1,12 @@
 use std::collections::HashMap;
 
-use crate::{CallArg, Expr, Op, ParamKind, Program, SemanticError, Stmt, Type, Value};
+use crate::frontend::{ast::*, types::*};
+
+#[derive(Debug, Clone)]
+pub struct SemanticError {
+    pub msg: String,
+    pub pos: usize,
+}
 
 #[derive(Debug, Clone)]
 struct VarInfo {
@@ -250,7 +256,7 @@ impl Analyzer {
                     .iter()
                     .map(|param| match param {
                         ParamKind::Typed(_, ty) => Some(ty_from_decl(*ty)),
-                        ParamKind::Copy(_) | ParamKind::CopyFree(_) => None,
+                        ParamKind::Copy(_) | ParamKind::CopyFree(_) | ParamKind::CopyInto(_, _) => None,
                     })
                     .collect();
                 let ret = ret_ty.map(ty_from_decl);
@@ -277,6 +283,17 @@ impl Analyzer {
                             )?;
                         }
                         ParamKind::Copy(pname) | ParamKind::CopyFree(pname) => {
+                            self.declare(
+                                pname,
+                                VarInfo {
+                                    declared: None,
+                                    inferred: None,
+                                    initialized: true,
+                                },
+                                *pos,
+                            )?;
+                        }
+                        ParamKind::CopyInto(pname, _) => {
                             self.declare(
                                 pname,
                                 VarInfo {
@@ -452,7 +469,20 @@ impl Analyzer {
                                 });
                             }
                         }
-                        CallArg::CopyInto(_) => {}
+                        CallArg::CopyInto(outer_names) => {
+                            for oname in outer_names {
+                                let info = self.lookup_var(oname).ok_or_else(|| SemanticError {
+                                    msg: format!("copy_into variable '{}' has not been declared", oname),
+                                    pos: *pos,
+                                })?;
+                                if !info.initialized {
+                                    return Err(SemanticError {
+                                        msg: format!("copy_into variable '{}' is not initialized", oname),
+                                        pos: *pos,
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
 

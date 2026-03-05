@@ -1,0 +1,13 @@
+fnc id(s: str) -> str {
+    s
+}
+
+fnc sum_box(t: copy_into(a, b)) -> t64 {
+    t.a + t.b
+}
+
+a: t64 = 10;
+b: t64 = 20;
+
+print(id("arena"));
+print(sum_box(copy_into(a, b)));
