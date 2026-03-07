@@ -8,23 +8,17 @@ use crate::{
 };
 use colored::Colorize;
 
-pub(crate) const ERR_BAD_DECLARATION: &str = "bad declaration";
-pub(crate) const ERR_BAD_PRINT_STATEMENT: &str = "bad print statement";
 pub(crate) const ERR_FAILED_STATEMENT: &str = "failed to parse statement";
-pub(crate) const ERR_EXPECTED_TYPE_AFTER_COLON: &str = "expected type after ':'";
-pub(crate) const ERR_EXPECTED_EQ_AFTER_TYPE: &str = "expected '=' after type";
-pub(crate) const ERR_MISSING_SEMICOLON: &str = "missing semicolon";
-pub(crate) const ERR_LET_CANNOT_INIT: &str =
-    "let declarations cannot initialize; use 'x = ...;' or 'x: TYPE = ...;'";
-pub(crate) const ERR_EXPECTED_RPAREN: &str = "expected closing ')'";
-pub(crate) const ERR_EXPECTED_RCURLY: &str = "expected closing '}'";
-pub(crate) const ERR_EXPECTED_EXPRESSION: &str = "expected an expression";
 
 pub(crate) fn lexer_error_message(slice: &str) -> String {
     format!("unrecognized token {:?} — this character is not valid in Cx", slice)
 }
 
-pub(crate) fn unresolved_var_error(pos: usize, name: String, was_seen: bool) -> RuntimeError {
+pub(crate) fn unresolved_var_error(
+    pos: usize,
+    name: String,
+    was_seen: bool,
+) -> RuntimeError {
     if was_seen {
         RuntimeError::OutOfScope { pos, name }
     } else {
@@ -167,6 +161,10 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             ),
             *pos,
         ),
+        RuntimeError::StaleHandle { pos } => (
+            "stale handle access â€” handle was already dropped".to_string(),
+            *pos,
+        ),
         RuntimeError::EarlyReturn(_) => (
             "return statement used outside of a function body".to_string(),
             0,
@@ -246,6 +244,9 @@ fn indent(depth: usize) -> String {
 fn print_stmt(stmt: &Stmt, depth: usize) {
     let pad = indent(depth);
     match stmt {
+        Stmt::EnumDef { name, variants, .. } => {
+            eprintln!("{}EnumDef({}: {})", pad, name, variants.join(", "));
+        }
         Stmt::Decl { name, ty, .. } => {
             eprintln!("{}Decl({}: {:?})", pad, name, ty);
         }
@@ -275,17 +276,17 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
             }
         }
         Stmt::FuncDef {
-            name,
+            name: _,
             params,
             ret_ty,
             body,
             ret_expr,
             ..
         } => {
-            let ret = ret_ty
+            let _ret = ret_ty
+                .clone()
                 .map(|t| format!("{:?}", t))
                 .unwrap_or("void".to_string());
-            eprintln!("{}FuncDef({}) -> {}", pad, name, ret);
             for param in params {
                 match param {
                     ParamKind::Typed(pname, pty) => {
@@ -322,6 +323,23 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                 print_stmt(s, depth + 1);
             }
         }
+        Stmt::When { expr, arms, .. } => {
+            eprintln!("{}When", pad);
+            print_expr(expr, depth + 1);
+            for arm in arms {
+                match &arm.pattern {
+                    WhenPattern::Literal(v) => eprintln!("{}  Arm({:?})", pad, v),
+                    WhenPattern::EnumVariant(e, v) => eprintln!("{}  Arm({}::{})", pad, e, v),
+                    WhenPattern::Range(_, _, inclusive) => {
+                        eprintln!("{}  Arm(Range, inclusive={})", pad, inclusive)
+                    }
+                    WhenPattern::Catchall => eprintln!("{}  Arm(_)", pad),
+                }
+                for s in &arm.body {
+                    print_stmt(s, depth + 2);
+                }
+            }
+        }
         Stmt::ExprStmt { expr, .. } => {
             eprintln!("{}ExprStmt", pad);
             print_expr(expr, depth + 1);
@@ -335,6 +353,10 @@ fn print_expr(expr: &Expr, depth: usize) {
         Expr::Val(v) => eprintln!("{}Val({:?})", pad, v),
         Expr::Ident(name, _) => eprintln!("{}Ident({})", pad, name),
         Expr::DotAccess(con, field) => eprintln!("{}DotAccess({}.{})", pad, con, field),
+        Expr::HandleNew(_, _) => eprintln!("{}Handle.new(...)", pad),
+        Expr::HandleVal(name, _) => eprintln!("{}{}.val", pad, name),
+        Expr::HandleDrop(name, _) => eprintln!("{}{}.drop()", pad, name),
+        Expr::Range(_, _, _) => eprintln!("{}Range", pad),
         Expr::Call(name, args, _) => {
             eprintln!("{}Call({})", pad, name);
             for a in args {
@@ -376,23 +398,32 @@ pub fn print_scope_event(event: &ScopeEvent) {
         ScopeEvent::BleedBack(name, val) => {
             eprintln!("  {}", format!("~ {}  = {:?}  (bled back)", name, val).cyan());
         }
+        ScopeEvent::HandleAlloc { slot, gen } => {
+            eprintln!("  ⬡ handle alloc  slot={} gen={}", slot, gen);
+        }
+        ScopeEvent::HandleDrop { slot, gen } => {
+            eprintln!("  ⬡ handle drop   slot={} gen={}", slot, gen);
+        }
+        ScopeEvent::HandleAccess { slot, gen, stale } => {
+            if *stale {
+                eprintln!("  ⬡ handle access slot={} gen={} STALE", slot, gen);
+            } else {
+                eprintln!("  ⬡ handle access slot={} gen={} ok", slot, gen);
+            }
+        }
         ScopeEvent::ArenaReset { bytes, chunks } => {
-            eprintln!(
-                "  {}",
-                format!("↺ arena reset  {} bytes freed  {} chunk(s)", bytes, chunks)
-                    .magenta()
-                    .dimmed()
-            );
+            if *bytes == 0 {
+                eprintln!("  ? arena reset  N/A  {} chunk(s)", chunks);
+            } else {
+                eprintln!("  ? arena reset  {} bytes freed  {} chunk(s)", bytes, chunks);
+            }
         }
     }
 }
 
-pub fn emit_scope_event(event: ScopeEvent) {
-    print_scope_event(&event);
-}
-
 pub fn print_stmt_summary(stmt: &Stmt) {
     let label = match stmt {
+        Stmt::EnumDef { .. } => "EnumDef".to_string(),
         Stmt::Decl { name, .. } => format!("Decl {}", name),
         Stmt::Assign { .. } => "Assign".to_string(),
         Stmt::TypedAssign { name, .. } => format!("TypedAssign {}", name),
@@ -402,6 +433,9 @@ pub fn print_stmt_summary(stmt: &Stmt) {
         Stmt::Return { .. } => "Return".to_string(),
         Stmt::FuncDef { name, .. } => format!("FuncDef {}", name),
         Stmt::Block { .. } => "Block".to_string(),
+        Stmt::When { .. } => "When".to_string(),
     };
     eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }
+
+

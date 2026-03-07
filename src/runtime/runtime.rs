@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use crate::frontend::{ast::*, diagnostics, types::*};
 use crate::runtime::arena::Arena;
+use crate::runtime::handle::HandleRegistry;
 
 #[derive(Debug)]
 pub enum ScopeEvent {
@@ -10,6 +11,9 @@ pub enum ScopeEvent {
     Mutate(String, Value),
     Free(String),
     BleedBack(String, Value),
+    HandleAlloc { slot: u32, gen: u32 },
+    HandleDrop { slot: u32, gen: u32 },
+    HandleAccess { slot: u32, gen: u32, stale: bool },
     ArenaReset { bytes: usize, chunks: usize },
 }
 
@@ -17,7 +21,6 @@ pub enum ScopeEvent {
 #[derive(Debug, Clone)]
 pub struct FuncDef {
     params: Vec<ParamKind>,
-    ret_ty: Option<Type>,
     body: Vec<Stmt>,
     ret_expr: Option<Expr>,
 }
@@ -31,6 +34,9 @@ pub struct ScopeFrame {
 }
 
 pub struct RunTime {
+    pub string_arena: Vec<u8>,
+    pub handles: HandleRegistry<Value>,
+    pub enums: HashMap<String, Vec<String>>,
     scopes: Vec<ScopeFrame>,
     order: Vec<String>,
     seen: HashSet<String>,
@@ -39,16 +45,35 @@ pub struct RunTime {
 }
 
 impl RunTime {
-    fn resolve_assigned_value(&self, value: Value, pos: usize) -> Result<Value, RuntimeError> {
+    pub fn alloc_str(&mut self, s: &str) -> (u32, u32) {
+        let offset = self.string_arena.len() as u32;
+        self.string_arena.extend_from_slice(s.as_bytes());
+        (offset, s.len() as u32)
+    }
+
+    pub fn resolve_str(&self, offset: u32, len: u32) -> &str {
+        let bytes = &self.string_arena[offset as usize..(offset + len) as usize];
+        std::str::from_utf8(bytes).expect("arena string was not valid utf8")
+    }
+
+    fn resolve_assigned_value(
+        &mut self,
+        value: Value,
+        pos: usize,
+    ) -> Result<Value, RuntimeError> {
         match value {
-            Value::Str(s) => Ok(Value::Str(expand_template(self, &s, pos)?)),
+            Value::Str(off, len) => {
+                let expanded = expand_template(self, self.resolve_str(off, len), pos)?;
+                let (off, len) = self.alloc_str(&expanded);
+                Ok(Value::Str(off, len))
+            }
             other => Ok(other),
         }
     }
 
     fn track_in_arena(&mut self, value: &Value) {
         let size = match value {
-            Value::Str(s) => s.len() + 1,
+            Value::Str(_, len) => *len as usize + 1,
             Value::Container(map) => map.iter().map(|(k, _)| k.len() + 16).sum::<usize>() + 32,
             _ => return, // numbers, bools, chars not arena tracked
         };
@@ -63,6 +88,9 @@ impl RunTime {
 
     pub fn new() -> Self {
         Self {
+            string_arena: Vec::new(),
+            handles: HandleRegistry::new(),
+            enums: HashMap::new(),
             scopes: vec![ScopeFrame {
                 vars: HashMap::new(),
                 freed: HashSet::new(),
@@ -162,11 +190,6 @@ impl RunTime {
             }
 
             let close_label = format!("scope#{}", self.scopes.len() - 1);
-            if self.debug_scope {
-                if let Some(arena) = frame.arena.as_ref() {
-                    arena.debug_dump();
-                }
-            }
             // check if frame had an arena — log it if debug
             let had_arena = frame
                 .arena
@@ -201,19 +224,12 @@ impl RunTime {
         }
     }
 
-    pub fn free_variable(&mut self, name: &str) {
-        if let Some(frame) = self.scopes.last_mut() {
-            if !frame.freed.contains(name) {
-                frame.vars.remove(name);
-                frame.freed.insert(name.to_string());
-                if self.debug_scope {
-                    diagnostics::print_scope_event(&ScopeEvent::Free(name.to_string()));
-                }
-            }
-        }
-    }
-
-    pub fn declare(&mut self, name: String, ty: Option<Type>, pos: usize) -> Result<(), RuntimeError> {
+    pub fn declare(
+        &mut self,
+        name: String,
+        ty: Option<Type>,
+        pos: usize,
+    ) -> Result<(), RuntimeError> {
         let frame = self.scopes.last_mut().unwrap();
 
         if frame.vars.contains_key(&name) {
@@ -228,7 +244,12 @@ impl RunTime {
         Ok(())
     }
 
-    pub fn set_var(&mut self, name: String, value: Value, pos: usize) -> Result<(), RuntimeError> {
+    pub fn set_var(
+        &mut self,
+        name: String,
+        value: Value,
+        pos: usize,
+    ) -> Result<(), RuntimeError> {
         let value = self.resolve_assigned_value(value, pos)?;
         let mut target_idx = None;
         for i in (0..self.scopes.len()).rev() {
@@ -239,7 +260,7 @@ impl RunTime {
         }
 
         if let Some(i) = target_idx {
-            let mut tracked_value: Option<Value> = None;
+            let tracked_value;
             {
                 let frame = &mut self.scopes[i];
                 let entry = frame.vars.get_mut(&name).unwrap();
@@ -249,14 +270,14 @@ impl RunTime {
                     entry.ty = Some(type_of_value(&value));
                 }
 
-                let expected = entry.ty.unwrap();
+                let expected = entry.ty.clone().unwrap();
                 let got = type_of_value(&value);
-                if !value_matches_type(&value, expected) {
+                if !value_matches_type(&value, &expected) {
                     return Err(RuntimeError::TypeMismatch { pos, expected, got });
                 }
 
                 entry.val = Some(value);
-                tracked_value = entry.val.as_ref().cloned();
+                tracked_value = entry.val.clone();
 
                 if self.debug_scope {
                     let logged = entry.val.clone().unwrap();
@@ -287,7 +308,7 @@ impl RunTime {
         let value = self.resolve_assigned_value(value, pos)?;
         let logged = value.clone();
         let got = type_of_value(&value);
-        if !value_matches_type(&value, ty) {
+        if !value_matches_type(&value, &ty) {
             return Err(RuntimeError::TypeMismatch {
                 pos,
                 expected: ty,
@@ -373,7 +394,18 @@ impl RunTime {
 
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match expr {
-            Expr::Val(v) => Ok(v.clone()),
+            Expr::Val(ast_val) => Ok(match ast_val {
+                AstValue::Num(n) => Value::Num(*n),
+                AstValue::Float(f) => Value::Float(*f),
+                AstValue::Bool(b) => Value::Bool(*b),
+                AstValue::Char(c) => Value::Char(*c),
+                AstValue::EnumVariant(e, v) => Value::EnumVariant(e.clone(), v.clone()),
+                AstValue::Unknown => Value::Unknown(Type::Unknown),
+                AstValue::Str(s) => {
+                    let (off, len) = self.alloc_str(s);
+                    Value::Str(off, len)
+                }
+            }),
             Expr::Ident(name, pos) => self.get_var(name, *pos),
             Expr::DotAccess(container, field) => {
                 for frame in self.scopes.iter().rev() {
@@ -395,6 +427,68 @@ impl RunTime {
                     pos: 0,
                     name: container.to_string(),
                 })
+            }
+            Expr::HandleNew(inner_expr, _pos) => {
+                let val = self.eval_expr(inner_expr)?;
+                let h = self.handles.insert(val);
+                if self.debug_scope {
+                    diagnostics::print_scope_event(&ScopeEvent::HandleAlloc {
+                        slot: h.slot,
+                        gen: h.gen,
+                    });
+                }
+                Ok(Value::Handle(h))
+            }
+            Expr::HandleVal(name, pos) => {
+                let val = self.get_var(name, *pos)?;
+                if let Value::Handle(h) = val {
+                    match self.handles.get(h) {
+                        Some(v) => {
+                            if self.debug_scope {
+                                diagnostics::print_scope_event(&ScopeEvent::HandleAccess {
+                                    slot: h.slot,
+                                    gen: h.gen,
+                                    stale: false,
+                                });
+                            }
+                            Ok(v.clone())
+                        }
+                        None => {
+                            if self.debug_scope {
+                                diagnostics::print_scope_event(&ScopeEvent::HandleAccess {
+                                    slot: h.slot,
+                                    gen: h.gen,
+                                    stale: true,
+                                });
+                            }
+                            Err(RuntimeError::StaleHandle { pos: *pos })
+                        }
+                    }
+                } else {
+                    Err(RuntimeError::StaleHandle { pos: *pos })
+                }
+            }
+            Expr::HandleDrop(name, pos) => {
+                let val = self.get_var(name, *pos)?;
+                if let Value::Handle(h) = val {
+                    let removed = self.handles.remove(h);
+                    if self.debug_scope {
+                        match removed {
+                            Some(_) => diagnostics::print_scope_event(&ScopeEvent::HandleDrop {
+                                slot: h.slot,
+                                gen: h.gen,
+                            }),
+                            None => diagnostics::print_scope_event(&ScopeEvent::HandleAccess {
+                                slot: h.slot,
+                                gen: h.gen,
+                                stale: true,
+                            }),
+                        }
+                    }
+                    Ok(Value::Num(0))
+                } else {
+                    Err(RuntimeError::StaleHandle { pos: *pos })
+                }
             }
             Expr::Call(name, args, pos) => {
                 let func = self
@@ -473,6 +567,12 @@ impl RunTime {
                 let right = self.eval_expr(rhs)?;
                 self.apply_op(left, *op, *pos, right)
             }
+            Expr::Range(_, _, _) => Err(RuntimeError::BadOperands {
+                pos: 0,
+                op: Op::Plus,
+                left: Value::Num(0),
+                right: Value::Num(0),
+            }),
         }
     }
 
@@ -483,6 +583,18 @@ impl RunTime {
         pos: usize,
         right: Value,
     ) -> Result<Value, RuntimeError> {
+        match (&left, &op, &right) {
+            (Value::Bool(false), Op::And, Value::Unknown(_)) => return Ok(Value::Bool(false)),
+            (Value::Unknown(_), Op::And, Value::Bool(false)) => return Ok(Value::Bool(false)),
+            (Value::Bool(true), Op::Or, Value::Unknown(_)) => return Ok(Value::Bool(true)),
+            (Value::Unknown(_), Op::Or, Value::Bool(true)) => return Ok(Value::Bool(true)),
+            (Value::Unknown(_), Op::Mul, Value::Num(0)) => return Ok(Value::Num(0)),
+            (Value::Num(0), Op::Mul, Value::Unknown(_)) => return Ok(Value::Num(0)),
+            (Value::Unknown(ty), _, _) => return Ok(Value::Unknown(ty.clone())),
+            (_, _, Value::Unknown(ty)) => return Ok(Value::Unknown(ty.clone())),
+            _ => {}
+        }
+
         match op {
             Op::Plus => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a.saturating_add(*b))),
@@ -576,9 +688,31 @@ impl RunTime {
                 (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a == b)),
                 (Value::Num(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) == *b)),
                 (Value::Float(a), Value::Num(b)) => Ok(Value::Bool(*a == (*b as f64))),
-                (Value::Str(a), Value::Str(b)) => Ok(Value::Bool(a == b)),
+                (Value::Str(a_off, a_len), Value::Str(b_off, b_len)) => {
+                    Ok(Value::Bool(
+                        self.resolve_str(*a_off, *a_len) == self.resolve_str(*b_off, *b_len)
+                    ))
+                }
                 (Value::Char(a), Value::Char(b)) => Ok(Value::Bool(a == b)),
                 (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
+                (l, r) => Err(RuntimeError::BadOperands {
+                    pos,
+                    op,
+                    left: l.clone(),
+                    right: r.clone(),
+                }),
+            },
+            Op::And => match (&left, &right) {
+                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+                (l, r) => Err(RuntimeError::BadOperands {
+                    pos,
+                    op,
+                    left: l.clone(),
+                    right: r.clone(),
+                }),
+            },
+            Op::Or => match (&left, &right) {
+                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
                 (l, r) => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -593,6 +727,10 @@ impl RunTime {
 
 pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
     match stmt {
+        Stmt::EnumDef { name, variants, .. } => {
+            rt.enums.insert(name, variants);
+            Ok(())
+        }
         Stmt::Decl { name, ty, pos } => rt.declare(name, ty, pos),
         Stmt::Assign {
             target,
@@ -617,26 +755,34 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
             let value = rt.eval_expr(&expr)?;
             rt.set_var_typed(name, ty, value, pos_type)
         }
-        Stmt::Print { expr, pos } => {
+        Stmt::Print { expr, pos: _pos } => {
             let value = rt.eval_expr(&expr)?;
             match value {
                 Value::Num(n) => println!("{}", n),
                 Value::Float(x) => println!("{}", x),
-                Value::Str(s) => println!("{}", s),
+                Value::Str(off, len) => println!("{}", rt.resolve_str(off, len)),
                 Value::Bool(b) => println!("{}", b),
+                Value::TBool(b) => println!("{}", match b { 0 => "false", 1 => "true", _ => "?" }),
                 Value::Char(c) => println!("{}", c),
+                Value::EnumVariant(e, v) => println!("{}::{}", e, v),
+                Value::Unknown(_) => println!("?"),
+                Value::Handle(h) => println!("handle({},{})", h.slot, h.gen),
                 Value::Container(map) => println!("{:?}", map),
             }
             Ok(())
         }
-        Stmt::PrintInline { expr, pos: _ } => {
+        Stmt::PrintInline { expr, _pos: _ } => {
             let value = rt.eval_expr(&expr)?;
             match value {
                 Value::Num(n) => print!("{}", n),
                 Value::Float(x) => print!("{}", x),
-                Value::Str(s) => print!("{}", s),
+                Value::Str(off, len) => print!("{}", rt.resolve_str(off, len)),
                 Value::Bool(b) => print!("{}", b),
+                Value::TBool(b) => print!("{}", match b { 0 => "false", 1 => "true", _ => "?" }),
                 Value::Char(c) => print!("{}", c),
+                Value::EnumVariant(e, v) => print!("{}::{}", e, v),
+                Value::Unknown(_) => print!("?"),
+                Value::Handle(h) => print!("handle({},{})", h.slot, h.gen),
                 Value::Container(map) => print!("{:?}", map),
             }
             use std::io::Write;
@@ -657,7 +803,7 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
         Stmt::FuncDef {
             name,
             params,
-            ret_ty,
+            ret_ty: _,
             body,
             ret_expr,
             ..
@@ -666,7 +812,6 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
                 name,
                 FuncDef {
                     params,
-                    ret_ty,
                     body,
                     ret_expr,
                 },
@@ -684,16 +829,59 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
             rt.pop_scope();
             Ok(())
         }
+        Stmt::When { expr, arms, pos: _pos } => {
+            let val = rt.eval_expr(&expr)?;
+            for arm in arms {
+                let matched = match &arm.pattern {
+                    WhenPattern::Catchall => true,
+                    WhenPattern::Literal(AstValue::Unknown) => matches!(val, Value::Unknown(_)),
+                    WhenPattern::Literal(AstValue::Bool(b)) => matches!(&val, Value::Bool(v) if v == b),
+                    WhenPattern::Literal(AstValue::Num(n)) => matches!(&val, Value::Num(v) if v == n),
+                    WhenPattern::EnumVariant(en, vn) => {
+                        matches!(&val, Value::EnumVariant(e, v) if e == en && v == vn)
+                    }
+                    WhenPattern::Range(AstValue::Num(start), AstValue::Num(end), inclusive) => {
+                        if let Value::Num(n) = &val {
+                            if *inclusive {
+                                n >= start && n <= end
+                            } else {
+                                n >= start && n < end
+                            }
+                        } else {
+                            false
+                        }
+                    }
+                    WhenPattern::Range(_, _, _) => false,
+                    WhenPattern::Literal(_) => false,
+                };
+                if matched {
+                    rt.push_scope();
+                    for s in arm.body {
+                        if let Err(e) = run_stmt(rt, s) {
+                            rt.pop_scope();
+                            return Err(e);
+                        }
+                    }
+                    rt.pop_scope();
+                    return Ok(());
+                }
+            }
+            Ok(())
+        }
     }
 }
 
-fn value_to_string(v: Value) -> String {
+fn value_to_string(rt: &RunTime, v: Value) -> String {
     match v {
         Value::Num(n) => n.to_string(),
         Value::Float(x) => x.to_string(),
-        Value::Str(s) => s,
+        Value::Str(off, len) => rt.resolve_str(off, len).to_owned(),
         Value::Bool(b) => b.to_string(),
+        Value::TBool(b) => match b { 0 => "false".to_string(), 1 => "true".to_string(), _ => "?".to_string() },
         Value::Char(c) => c.to_string(),
+        Value::EnumVariant(e, v) => format!("{}::{}", e, v),
+        Value::Unknown(_) => "?".to_string(),
+        Value::Handle(h) => format!("handle({},{})", h.slot, h.gen),
         Value::Container(map) => format!("{:?}", map),
     }
 }
@@ -702,14 +890,18 @@ fn type_of_value(v: &Value) -> Type {
     match v {
         Value::Num(_) => Type::T128,
         Value::Float(_) => Type::T64,
-        Value::Str(_) => Type::Str,
+        Value::Str(_, _) => Type::Str,
         Value::Bool(_) => Type::Bool,
+        Value::TBool(_) => Type::Bool,
         Value::Char(_) => Type::Char,
+        Value::EnumVariant(e, _) => Type::Enum(e.clone()),
+        Value::Unknown(_) => Type::Unknown,
+        Value::Handle(_) => Type::Handle(Box::new(Type::T128)),
         Value::Container(_) => Type::Str,
     }
 }
 
-fn value_matches_type(v: &Value, t: Type) -> bool {
+fn value_matches_type(v: &Value, t: &Type) -> bool {
     match (v, t) {
         (Value::Num(_), Type::T8) => true,
         (Value::Num(_), Type::T16) => true,
@@ -721,10 +913,14 @@ fn value_matches_type(v: &Value, t: Type) -> bool {
         (Value::Float(_), Type::T32) => true,
         (Value::Float(_), Type::T64) => true,
         (Value::Float(_), Type::T128) => true,
-        (Value::Str(_), Type::Str) => true,
+        (Value::Str(_, _), Type::Str) => true,
         (Value::Container(_), Type::Str) => true,
         (Value::Bool(_), Type::Bool) => true,
         (Value::Char(_), Type::Char) => true,
+        (Value::EnumVariant(e, _), Type::Enum(t)) if e == t => true,
+        (Value::Handle(_), Type::Handle(_)) => true,
+        (Value::TBool(_), Type::Bool) => true,
+        (Value::Unknown(_), _) => true,
         _ => false,
     }
 }
@@ -748,7 +944,11 @@ fn as_f64(v: &Value) -> Option<f64> {
     }
 }
 
-fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeError> {
+fn expand_template(
+    rt: &RunTime,
+    s: &str,
+    pos: usize,
+) -> Result<String, RuntimeError> {
     let mut out = String::new();
     let mut chars = s.chars().peekable();
 
@@ -787,7 +987,7 @@ fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeE
             if spec == "?" {
                 out.push_str(&format!("{:?}", v));
             } else {
-                out.push_str(&value_to_string(v));
+                out.push_str(&value_to_string(rt, v));
             }
         } else {
             out.push(c);
@@ -795,4 +995,6 @@ fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeE
     }
     Ok(out)
 }
+
+
 

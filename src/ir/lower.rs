@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::frontend::ast;
 
 pub struct IrModule {

@@ -1,0 +1,10 @@
+let x;
+x = ?
+let y;
+y = 5 + x
+print(y)
+let z;
+z = false
+let w;
+w = z && x
+print(w)

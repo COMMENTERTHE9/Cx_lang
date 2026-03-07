@@ -55,6 +55,18 @@ pub enum Token {
     #[token("false")]
     KeywordFalse,
 
+    #[token("unknown")]
+    KeywordUnknown,
+
+    #[token("when")]
+    KeywordWhen,
+
+    #[token("enum")]
+    KeywordEnum,
+
+    #[token("Handle")]
+    KeywordHandle,
+
     // ── Type Keywords ────────────────────────────
     #[token("t8")]
     TypeT8,
@@ -133,6 +145,12 @@ pub enum Token {
     #[token("%")]
     OpMod,
 
+    #[token("&&")]
+    OpAnd,
+
+    #[token("||")]
+    OpOr,
+
     // ── Comparison Operators ──────────────────────
     #[token("==")]
     OpEqualEqual,
@@ -161,6 +179,21 @@ pub enum Token {
     #[token(",")]
     PunctComma,
 
+    #[token("?")]
+    QuestionMark,
+
+    #[token("..=")]
+    RangeInclusive,
+
+    #[token("..")]
+    RangeExclusive,
+
+    #[token("=>")]
+    PunctFatArrow,
+
+    #[token("::")]
+    PunctDoubleColon,
+
     #[token(".")]
     PunctDot,
 
@@ -175,55 +208,6 @@ pub enum Token {
 
     #[token("}")]
     PunctBraceClose,
-
-    #[end]
-    EndOfFile,
-}
-
-// Helper that mirrors the lexer rules and is handy for tests or manual inspection.
-pub fn tok_match(string: &str) -> Token {
-    match string {
-        "let" => Token::KeywordLet,
-        "print" => Token::KeywordPrint,
-        "print!" => Token::KeywordPrintInline,
-        "fnc" => Token::KeywordFnc,
-        "return" => Token::KeywordReturn,
-        "true" => Token::KeywordTrue,
-        "false" => Token::KeywordFalse,
-        "t8" => Token::TypeT8,
-        "t16" => Token::TypeT16,
-        "t32" => Token::TypeT32,
-        "t64" => Token::TypeT64,
-        "t128" => Token::TypeT128,
-        "bool" => Token::TypeBool,
-        "str" => Token::TypeStr,
-        "char" => Token::TypeChar,
-        "=" => Token::OpAssign,
-        "==" => Token::OpEqualEqual,
-        ">" => Token::OpGreaterThan,
-        "<" => Token::OpLessThan,
-        "->" => Token::PunctArrow,
-        ":" => Token::PunctColon,
-        ";" => Token::PunctSemicolon,
-        "," => Token::PunctComma,
-        "." => Token::PunctDot,
-        "(" => Token::PunctParenOpen,
-        ")" => Token::PunctParenClose,
-        "+" => Token::OpAdd,
-        "-" => Token::OpSub,
-        "*" => Token::OpMul,
-        "/" => Token::OpDiv,
-        "%" => Token::OpMod,
-        _ => {
-            if let Ok(x) = string.parse::<f64>() {
-                Token::LiteralFloat(x)
-            } else if let Ok(n) = string.parse::<u128>() {
-                Token::LiteralInt(n)
-            } else {
-                Token::Identifier(string.to_string())
-            }
-        }
-    }
 }
 
 pub struct ParseError {

@@ -5,9 +5,13 @@ use crate::frontend::ast::{Op, Type};
 pub enum Value {
     Num(u128),
     Float(f64),
-    Str(String),
+    Str(u32, u32),
     Bool(bool),
+    TBool(u8),
     Char(char),
+    EnumVariant(String, String),
+    Unknown(crate::frontend::ast::Type),
+    Handle(crate::runtime::handle::Handle),
     Container(HashMap<String, Value>),
 }
 
@@ -58,6 +62,9 @@ pub enum RuntimeError {
     NotAContainer {
         pos: usize,
         name: String,
+    },
+    StaleHandle {
+        pos: usize,
     },
     EarlyReturn(Value),
 }

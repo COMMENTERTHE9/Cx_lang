@@ -1,0 +1,7 @@
+let x;
+x = 3
+when (x) {
+    1 => print(10)
+    2 => print(20)
+    _ => print(99)
+}

@@ -13,3 +13,4 @@ cranelift-frontend = "0.115"
 cranelift-module = "0.115"
 cranelift-jit = "0.115"
 cranelift-native = "0.115"
+bumpalo = { version = "3", features = ["collections"] }

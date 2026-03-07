@@ -1,5 +1,3 @@
-use crate::frontend::types::*;
-
 #[derive(Debug, Clone, Copy)]
 pub enum Op {
     Plus,
@@ -8,6 +6,8 @@ pub enum Op {
     Div,
     Mod,
     EqEq,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub enum ParamKind {
     CopyInto(String, Vec<String>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     T8,
     T16,
@@ -36,20 +36,60 @@ pub enum Type {
     Bool,
     Str,
     Char,
+    Enum(String),
+    Unknown,
+    Handle(Box<Type>),
+}
+
+// AST-level value - owned, no arena lifetime
+// Used by parser and AST nodes only
+#[derive(Debug, Clone)]
+pub enum AstValue {
+    Num(u128),
+    Float(f64),
+    Str(String),
+    Bool(bool),
+    Char(char),
+    EnumVariant(String, String),
+    Unknown,
 }
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Val(Value),
+    Val(AstValue),
     Ident(String, usize),
     DotAccess(String, String),
+    HandleNew(Box<Expr>, usize),
+    HandleVal(String, usize),
+    HandleDrop(String, usize),
     Call(String, Vec<CallArg>, usize),
+    Range(Box<Expr>, Box<Expr>, bool),
     Bin(Box<Expr>, Op, usize, Box<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub enum WhenPattern {
+    Literal(AstValue),
+    Range(AstValue, AstValue, bool),
+    EnumVariant(String, String),
+    Catchall,
+}
+
+#[derive(Debug, Clone)]
+pub struct WhenArm {
+    pub pattern: WhenPattern,
+    pub body: Vec<Stmt>,
+    pub pos: usize,
 }
 
 // AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    EnumDef {
+        name: String,
+        variants: Vec<String>,
+        pos: usize,
+    },
     Decl {
         name: String,
         ty: Option<Type>,
@@ -72,11 +112,11 @@ pub enum Stmt {
     },
     PrintInline {
         expr: Expr,
-        pos: usize,
+        _pos: usize,
     },
     ExprStmt {
         expr: Expr,
-        pos: usize,
+        _pos: usize,
     },
     Return {
         expr: Option<Expr>,
@@ -92,6 +132,11 @@ pub enum Stmt {
     },
     Block {
         stmts: Vec<Stmt>,
+        _pos: usize,
+    },
+    When {
+        expr: Expr,
+        arms: Vec<WhenArm>,
         pos: usize,
     },
 }

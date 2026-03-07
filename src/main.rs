@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 mod frontend;
 mod runtime;
 mod backend;
@@ -12,7 +10,6 @@ use frontend::diagnostics;
 use frontend::lexer::*;
 use frontend::parser;
 use frontend::semantic;
-use frontend::types::*;
 use runtime::runtime::*;
 use backend::Backend;
 
@@ -45,9 +42,6 @@ impl DebugFlags {
         }
     }
 
-    fn any(&self) -> bool {
-        self.tokens || self.ast || self.scope || self.step || self.phase
-    }
 }
 
 struct PhaseTimer {
@@ -234,3 +228,4 @@ fn parse_program_chumsky(tok_list: &[Tok], src: &str) -> Result<Program, Vec<Par
         }
     }
 }
+

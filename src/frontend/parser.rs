@@ -3,7 +3,7 @@ use chumsky::{
     prelude::*,
 };
 
-use crate::frontend::{ast::*, lexer::Token, types::*};
+use crate::frontend::{ast::*, lexer::Token};
 
 type Span = SimpleSpan;
 type ParserError<'a> = extra::Err<Rich<'a, Token, Span>>;
@@ -14,7 +14,11 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::Val(_) => 0,
         Expr::Ident(_, pos) => *pos,
         Expr::DotAccess(_, _) => 0,
+        Expr::HandleNew(_, pos) => *pos,
+        Expr::HandleVal(_, pos) => *pos,
+        Expr::HandleDrop(_, pos) => *pos,
         Expr::Call(_, _, pos) => *pos,
+        Expr::Range(a, _, _) => expr_pos(a),
         Expr::Bin(_, _, pos, _) => *pos,
     }
 }
@@ -41,18 +45,23 @@ where
 {
     recursive(|expr| {
         let literal = select! {
-            Token::LiteralInt(n)    => Expr::Val(Value::Num(n)),
-            Token::LiteralFloat(x)  => Expr::Val(Value::Float(x)),
-            Token::LiteralString(s) => Expr::Val(Value::Str(s)),
-            Token::LiteralChar(c)   => Expr::Val(Value::Char(c)),
-            Token::KeywordTrue      => Expr::Val(Value::Bool(true)),
-            Token::KeywordFalse     => Expr::Val(Value::Bool(false)),
-        };
+            Token::LiteralInt(n)    => Expr::Val(AstValue::Num(n)),
+            Token::LiteralFloat(x)  => Expr::Val(AstValue::Float(x)),
+            Token::LiteralString(s) => Expr::Val(AstValue::Str(s)),
+            Token::LiteralChar(c)   => Expr::Val(AstValue::Char(c)),
+            Token::KeywordTrue      => Expr::Val(AstValue::Bool(true)),
+            Token::KeywordFalse     => Expr::Val(AstValue::Bool(false)),
+        }
+        .or(just(Token::QuestionMark)
+            .map_with(|_, _e: &mut ParseExtra<'a, '_, I>| {
+                Expr::Val(AstValue::Unknown)
+            }));
 
         let ident = select! { Token::Identifier(s) => s };
         let ident_with_pos = ident
             .clone()
             .map_with(|s, e: &mut ParseExtra<'a, '_, I>| (s, e.span().start));
+        let pos = empty().map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
 
         let args = {
             let call_arg = select! { Token::Identifier(s) if s == "copy_into" => () }
@@ -94,6 +103,39 @@ where
                 .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose))
         };
 
+        let handle_new = just(Token::KeywordHandle)
+            .then_ignore(just(Token::PunctDot))
+            .then_ignore(select! { Token::Identifier(s) if s == "new" => s })
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .then(pos.clone())
+            .map(|((_, e), p)| Expr::HandleNew(Box::new(e), p));
+
+        let handle_drop = ident
+            .clone()
+            .then_ignore(just(Token::PunctDot))
+            .then_ignore(select! { Token::Identifier(s) if s == "drop" => s })
+            .then_ignore(just(Token::PunctParenOpen))
+            .then_ignore(just(Token::PunctParenClose))
+            .then(pos.clone())
+            .map(|(name, p)| Expr::HandleDrop(name, p));
+
+        let handle_val = ident
+            .clone()
+            .then_ignore(just(Token::PunctDot))
+            .then_ignore(select! { Token::Identifier(s) if s == "val" => s })
+            .then(pos.clone())
+            .map(|(name, p)| Expr::HandleVal(name, p));
+
+        let enum_variant = ident
+            .clone()
+            .then_ignore(just(Token::PunctDoubleColon))
+            .then(ident.clone())
+            .map_with(|(enum_name, variant), _| {
+                Expr::Val(AstValue::EnumVariant(enum_name, variant))
+            });
+
         let ident_or_call = ident_with_pos
             .then(args.or_not())
             .then(
@@ -111,7 +153,13 @@ where
             .clone()
             .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose));
 
-        let primary = literal.or(ident_or_call).or(paren);
+        let primary = literal
+            .or(enum_variant)
+            .or(handle_new)
+            .or(handle_drop)
+            .or(handle_val)
+            .or(ident_or_call)
+            .or(paren);
 
         let mul_div_op = select! {
             Token::OpMul => Op::Mul,
@@ -125,6 +173,12 @@ where
             Token::OpSub => Op::Minus,
         }
         .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start));
+
+        let and_op = just(Token::OpAnd)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
+
+        let or_op = just(Token::OpOr)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
 
         let term = primary.clone().foldl(
             mul_div_op
@@ -140,12 +194,26 @@ where
             |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
 
-        additive.clone().foldl(
+        let equality = additive.clone().foldl(
             just(Token::OpEqualEqual)
                 .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
                 .then(additive)
                 .repeated(),
             |lhs, (op_pos, rhs)| Expr::Bin(Box::new(lhs), Op::EqEq, op_pos, Box::new(rhs)),
+        );
+
+        let logical_and = equality.clone().foldl(
+            and_op
+                .then(equality)
+                .repeated(),
+            |lhs, (op_pos, rhs)| Expr::Bin(Box::new(lhs), Op::And, op_pos, Box::new(rhs)),
+        );
+
+        logical_and.clone().foldl(
+            or_op
+                .then(logical_and)
+                .repeated(),
+            |lhs, (op_pos, rhs)| Expr::Bin(Box::new(lhs), Op::Or, op_pos, Box::new(rhs)),
         )
     })
 }
@@ -222,7 +290,7 @@ where
             .then(expr.clone())
             .then_ignore(just(Token::PunctParenClose))
             .then_ignore(semi.clone().or_not())
-            .map(|(pos, expr)| Stmt::PrintInline { expr, pos });
+            .map(|(pos, expr)| Stmt::PrintInline { expr, _pos: pos });
 
         let ret = just(Token::KeywordReturn)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -234,13 +302,13 @@ where
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|(pos, stmts)| Stmt::Block { stmts, pos });
+            .map(|(pos, stmts)| Stmt::Block { stmts, _pos: pos });
 
         let expr_stmt = expr
             .clone()
             .then_ignore(semi.clone().or_not())
             .map(|expr| Stmt::ExprStmt {
-                pos: expr_pos(&expr),
+                _pos: expr_pos(&expr),
                 expr,
             });
 
@@ -248,7 +316,7 @@ where
             .clone()
             .then_ignore(semi.clone())
             .map(|expr| Stmt::ExprStmt {
-                pos: expr_pos(&expr),
+                _pos: expr_pos(&expr),
                 expr,
             });
 
@@ -335,7 +403,70 @@ where
                 )
         });
 
+        let enum_def = just(Token::KeywordEnum)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(
+                ident.clone()
+                    .separated_by(just(Token::PunctComma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+            )
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, name), variants)| Stmt::EnumDef { name, variants, pos });
+
+        let when_arm = {
+            let pattern = choice((
+                select! { Token::Identifier(s) if s == "_" => WhenPattern::Catchall },
+                just(Token::KeywordUnknown).map(|_| WhenPattern::Literal(AstValue::Unknown)),
+                select! { Token::LiteralInt(n) => n }
+                    .then(choice((
+                        just(Token::RangeInclusive).to(true),
+                        just(Token::RangeExclusive).to(false),
+                    )))
+                    .then(select! { Token::LiteralInt(n) => n })
+                    .map(|((start, inclusive), end)| {
+                        WhenPattern::Range(
+                            AstValue::Num(start as u128),
+                            AstValue::Num(end as u128),
+                            inclusive,
+                        )
+                    }),
+                ident.clone()
+                    .then_ignore(just(Token::PunctDoubleColon))
+                    .then(ident.clone())
+                    .map(|(enum_name, variant)| WhenPattern::EnumVariant(enum_name, variant)),
+                expr.clone().map(|e| match e {
+                    Expr::Val(v) => WhenPattern::Literal(v),
+                    _ => WhenPattern::Catchall,
+                }),
+            ));
+
+            pattern
+                .map_with(|pattern, e: &mut ParseExtra<'a, '_, I>| (pattern, e.span().start))
+                .then_ignore(just(Token::PunctFatArrow))
+                .then(choice((
+                    just(Token::PunctBraceOpen)
+                        .ignore_then(stmt.clone().repeated().collect::<Vec<_>>())
+                        .then_ignore(just(Token::PunctBraceClose)),
+                    stmt.clone().map(|s| vec![s]),
+                )))
+                .map(|((pattern, pos), body)| WhenArm { pattern, body, pos })
+        };
+
+        let when_stmt = just(Token::KeywordWhen)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(when_arm.repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos });
+
         choice((
+            enum_def,
             decl,
             func_def,
             print,
@@ -344,6 +475,7 @@ where
             typed_assign,
             assign,
             block,
+            when_stmt,
             expr_stmt,
         ))
     })

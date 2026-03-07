@@ -1,0 +1,132 @@
+enum Direction { North, South, East, West }
+
+// arithmetic + equality
+print(10 + 5)
+print(10 % 3)
+print(5 == 5.0)
+print("hi" == "hi")
+print(true == false)
+print('a' == 'b')
+
+// unknown + logical propagation
+let u;
+u = ?
+print(u)
+let y;
+y = 5 + u
+print(y)
+print(false && ?)
+print(false == false || ?)
+print(1 + ? * 0)
+
+// string template expansion
+name: str = "Zara"
+msg: str = "hello {name}"
+print(msg)
+
+// when: catchall, unknown, range, enum
+let n;
+n = 10
+when (n) {
+    1..10   => print(111)
+    10..=10 => print(222)
+    _       => print(333)
+}
+
+when (u) {
+    true    => print(1)
+    false   => print(0)
+    unknown => print(2)
+}
+
+let d;
+d = Direction::East
+print(d)
+when (d) {
+    Direction::North => print(1)
+    Direction::South => print(2)
+    Direction::East  => print(3)
+    _                => print(4)
+}
+
+// functions: implicit + explicit return
+fnc add(a: t64, b: t64) -> t64 {
+    a + b
+}
+print(add(7, 8))
+
+fnc first(a: t64, b: t64) -> t64 {
+    return a;
+    b
+}
+print(first(9, 1))
+
+// handles: local + returned from function
+let h;
+h = Handle.new(99)
+print(h.val)
+h.drop()
+
+fnc make_handle() {
+    let inner;
+    inner = Handle.new(123)
+    inner
+}
+let outer_h;
+outer_h = make_handle()
+print(outer_h.val)
+outer_h.drop()
+
+// copy and bleed-back
+x: t64 = 10
+fnc bump(n.copy) -> t64 {
+    n = n + 5
+    n
+}
+print(bump(x.copy))
+print(x)
+
+fnc bleed(n.copy) -> t64 {
+    n = n + 5
+    n
+}
+result_bleed: t64 = bleed(x.copy)
+print(result_bleed)
+print(x)
+
+// copy.free isolation
+z: t64 = 10
+fnc isolate(n.copy.free) -> t64 {
+    n = n + 7
+    n
+}
+print(isolate(z.copy.free))
+print(z)
+
+// copy_into read + local mutation isolation
+a: t64 = 10
+b: t64 = 20
+c: t64 = 30
+fnc sum_box(t: copy_into(a, b, c)) -> t64 {
+    t.a + t.b + t.c
+}
+print(sum_box(copy_into(a, b, c)))
+
+fnc poke(t: copy_into(a)) {
+    t.a = t.a + 99
+}
+poke(copy_into(a))
+print(a)
+
+// block scope shadow
+outer: t64 = 10
+{
+    outer: t64 = 99
+    print(outer)
+}
+print(outer)
+
+// print inline
+print!("done")
+print!(" ")
+print!(123)

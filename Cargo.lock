@@ -6,6 +6,7 @@ version = 4
 name = "Cx_0V"
 version = "0.1.0"
 dependencies = [
+ "bumpalo",
  "chumsky",
  "colored",
  "cranelift-codegen",

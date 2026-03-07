@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::frontend::{ast::*, types::*};
+use crate::frontend::ast::*;
 
 #[derive(Debug, Clone)]
 pub struct SemanticError {
@@ -15,31 +15,37 @@ struct VarInfo {
     initialized: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Ty {
     Num,
     Bool,
+    TBool,
     Str,
     Char,
+    Enum(String),
+    Unknown,
+    Handle,
 }
-
 fn ty_from_decl(t: Type) -> Ty {
     match t {
         Type::T8 | Type::T16 | Type::T32 | Type::T64 | Type::T128 => Ty::Num,
         Type::Bool => Ty::Bool,
         Type::Str => Ty::Str,
         Type::Char => Ty::Char,
+        Type::Enum(name) => Ty::Enum(name.clone()),
+        Type::Unknown => Ty::Unknown,
+        Type::Handle(_) => Ty::Handle,
     }
 }
-
-fn ty_from_value(v: &Value) -> Ty {
+fn ty_from_value(v: &AstValue) -> Ty {
     match v {
-        Value::Num(_) => Ty::Num,
-        Value::Float(_) => Ty::Num,
-        Value::Bool(_) => Ty::Bool,
-        Value::Str(_) => Ty::Str,
-        Value::Char(_) => Ty::Char,
-        Value::Container(_) => Ty::Str,
+        AstValue::Num(_) => Ty::Num,
+        AstValue::Float(_) => Ty::Num,
+        AstValue::Bool(_) => Ty::Bool,
+        AstValue::Str(_) => Ty::Str,
+        AstValue::Char(_) => Ty::Char,
+        AstValue::EnumVariant(enum_name, _) => Ty::Enum(enum_name.clone()),
+        AstValue::Unknown => Ty::Unknown,
     }
 }
 
@@ -121,20 +127,14 @@ impl Analyzer {
         None
     }
 
-    pub fn analyze_program(&mut self, program: &Program) -> Result<(), SemanticError> {
-        for stmt in &program.stmts {
-            self.analyze_stmt(stmt)?;
-        }
-        Ok(())
-    }
-
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<(), SemanticError> {
         match stmt {
+            Stmt::EnumDef { .. } => Ok(()),
             // Declare introduces a symbol in the current scope
             Stmt::Decl { name, ty, pos } => self.declare(
                 name,
                 VarInfo {
-                    declared: *ty,
+                    declared: ty.clone(),
                     inferred: None,
                     initialized: false,
                 },
@@ -151,8 +151,8 @@ impl Analyzer {
                             pos: *pos_eq,
                         })?;
 
-                        if let Some(declared) = info.declared {
-                            let expected = ty_from_decl(declared);
+                        if let Some(declared) = &info.declared {
+                            let expected = ty_from_decl(declared.clone());
                             if expected != expr_ty {
                                 return Err(SemanticError {
                                     msg: format!(
@@ -162,8 +162,8 @@ impl Analyzer {
                                     pos: *pos_eq,
                                 });
                             }
-                        } else if let Some(expected) = info.inferred {
-                            if expected != expr_ty {
+                        } else if let Some(expected) = &info.inferred {
+                            if *expected != expr_ty {
                                 return Err(SemanticError {
                                     msg: format!(
                                         "type mismatch: expected {:?}, got {:?}",
@@ -208,11 +208,11 @@ impl Analyzer {
             } => {
                 let expr_ty = self.type_expr(expr)?;
 
-                if let Expr::Val(Value::Num(n)) = expr {
-                    check_num_range(*ty, *n, *pos_type)?;
+                if let Expr::Val(AstValue::Num(n)) = expr {
+                    check_num_range(ty.clone(), *n, *pos_type)?;
                 }
 
-                let declared_ty = ty_from_decl(*ty);
+                let declared_ty = ty_from_decl(ty.clone());
                 if expr_ty != declared_ty {
                     return Err(SemanticError {
                         msg: format!(
@@ -226,7 +226,7 @@ impl Analyzer {
                 self.declare(
                     name,
                     VarInfo {
-                        declared: Some(*ty),
+                        declared: Some(ty.clone()),
                         inferred: None,
                         initialized: true,
                     },
@@ -245,7 +245,7 @@ impl Analyzer {
                 self.declare(
                     name,
                     VarInfo {
-                        declared: *ret_ty,
+                        declared: ret_ty.clone(),
                         inferred: None,
                         initialized: true,
                     },
@@ -255,19 +255,19 @@ impl Analyzer {
                 let param_tys: Vec<Option<Ty>> = params
                     .iter()
                     .map(|param| match param {
-                        ParamKind::Typed(_, ty) => Some(ty_from_decl(*ty)),
+                        ParamKind::Typed(_, ty) => Some(ty_from_decl(ty.clone())),
                         ParamKind::Copy(_) | ParamKind::CopyFree(_) | ParamKind::CopyInto(_, _) => None,
                     })
                     .collect();
-                let ret = ret_ty.map(ty_from_decl);
+                let ret = ret_ty.clone().map(ty_from_decl);
                 self.funcs.insert(name.clone(), (param_tys, ret));
 
                 self.push_scope();
 
-                let prev_ret_ty = self.current_ret_ty;
+                let prev_ret_ty = self.current_ret_ty.clone();
                 let prev_in_function = self.in_function;
                 self.in_function = true;
-                self.current_ret_ty = ret_ty.map(ty_from_decl);
+                self.current_ret_ty = ret_ty.clone().map(ty_from_decl);
 
                 for param in params {
                     match param {
@@ -275,7 +275,7 @@ impl Analyzer {
                             self.declare(
                                 pname,
                                 VarInfo {
-                                    declared: Some(*pty),
+                                    declared: Some(pty.clone()),
                                     inferred: None,
                                     initialized: true,
                                 },
@@ -312,8 +312,8 @@ impl Analyzer {
 
                 if let Some(expr) = ret_expr {
                     let got = self.type_expr(expr)?;
-                    if let Some(expected) = self.current_ret_ty {
-                        if got != expected {
+                    if let Some(expected) = &self.current_ret_ty {
+                        if got != *expected {
                             return Err(SemanticError {
                                 msg: format!(
                                     "return type mismatch: expected {:?}, got {:?}",
@@ -324,7 +324,7 @@ impl Analyzer {
                         }
                     }
                 } else if ret_ty.is_some() && !contains_return_stmt(body) {
-                    let expected = ty_from_decl(ret_ty.unwrap());
+                    let expected = ty_from_decl(ret_ty.clone().unwrap());
                     return Err(SemanticError {
                         msg: format!("missing return value, expected {:?}", expected),
                         pos: *pos,
@@ -349,7 +349,7 @@ impl Analyzer {
                     });
                 }
 
-                match (expr, self.current_ret_ty) {
+                match (expr, self.current_ret_ty.clone()) {
                     (Some(e), Some(expected)) => {
                         let got = self.type_expr(e)?;
                         if got != expected {
@@ -389,6 +389,16 @@ impl Analyzer {
                 self.pop_scope();
                 Ok(())
             }
+            Stmt::When { expr, arms, pos: _ } => {
+                let _ = self.type_expr(expr)?;
+                let _has_catchall = arms.iter().any(|a| matches!(a.pattern, WhenPattern::Catchall));
+                for arm in arms {
+                    for s in &arm.body {
+                        self.analyze_stmt(s)?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
 
@@ -408,10 +418,10 @@ impl Analyzer {
                     });
                 }
 
-                if let Some(t) = info.declared {
-                    Ok(ty_from_decl(t))
-                } else if let Some(t) = info.inferred {
-                    Ok(t)
+                if let Some(t) = &info.declared {
+                    Ok(ty_from_decl(t.clone()))
+                } else if let Some(t) = &info.inferred {
+                    Ok(t.clone())
                 } else {
                     Ok(Ty::Num)
                 }
@@ -501,14 +511,19 @@ impl Analyzer {
                 }
                 Ok(Ty::Num)
             }
+            Expr::Range(_, _, _) => Ok(Ty::Num),
+            Expr::HandleNew(_, _) => Ok(Ty::Handle),
+            Expr::HandleVal(_, _) => Ok(Ty::Num),
+            Expr::HandleDrop(_, _) => Ok(Ty::Handle),
 
             Expr::Bin(lhs, op, op_pos, rhs) => {
                 let lt = self.type_expr(lhs)?;
                 let rt = self.type_expr(rhs)?;
-
                 match op {
                     Op::Plus | Op::Minus | Op::Mul | Op::Div | Op::Mod => {
-                        if lt == Ty::Num && rt == Ty::Num {
+                        if lt == Ty::Unknown || rt == Ty::Unknown {
+                            Ok(Ty::Unknown)
+                        } else if lt == Ty::Num && rt == Ty::Num {
                             Ok(Ty::Num)
                         } else {
                             Err(SemanticError {
@@ -521,19 +536,36 @@ impl Analyzer {
                         }
                     }
                     Op::EqEq => {
-                        let ok = matches!(
-                            (lt, rt),
+                        if lt == Ty::Unknown || rt == Ty::Unknown {
+                            Ok(Ty::Unknown)
+                        } else if matches!(
+                            (lt.clone(), rt.clone()),
                             (Ty::Num, Ty::Num)
                                 | (Ty::Bool, Ty::Bool)
                                 | (Ty::Char, Ty::Char)
                                 | (Ty::Str, Ty::Str)
-                        );
-
-                        if ok {
+                        ) {
                             Ok(Ty::Bool)
                         } else {
                             Err(SemanticError {
                                 msg: format!("cannot compare {:?} == {:?}", lt, rt),
+                                pos: *op_pos,
+                            })
+                        }
+                    }
+                    Op::And | Op::Or => {
+                        if matches!(lt, Ty::Bool | Ty::Unknown) && matches!(rt, Ty::Bool | Ty::Unknown) {
+                            if lt == Ty::Unknown || rt == Ty::Unknown {
+                                Ok(Ty::Unknown)
+                            } else {
+                                Ok(Ty::Bool)
+                            }
+                        } else {
+                            Err(SemanticError {
+                                msg: format!(
+                                    "logical operation requires bool operands, got {:?} and {:?}",
+                                    lt, rt
+                                ),
                                 pos: *op_pos,
                             })
                         }
@@ -568,3 +600,4 @@ pub fn analyze_program(program: &Program) -> Vec<SemanticError> {
     }
     errors
 }
+

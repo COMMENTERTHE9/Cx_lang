@@ -15,10 +15,6 @@ impl Chunk {
         }
     }
 
-    pub fn remaining(&self) -> usize {
-        self.data.len() - self.offset
-    }
-
     pub fn alloc(&mut self, size: usize, align: usize) -> Option<*mut u8> {
         // calculate aligned offset
         let aligned = (self.offset + align - 1) & !(align - 1);
@@ -91,21 +87,6 @@ impl Arena {
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
-
-    pub fn debug_dump(&self) {
-        eprintln!("[ARENA DEBUG]");
-        eprintln!("  chunks: {}", self.chunks.len());
-        eprintln!("  current chunk: {}", self.current);
-        for (i, chunk) in self.chunks.iter().enumerate() {
-            eprintln!(
-                "  chunk[{}]: {}/{} bytes used ({:.1}%)",
-                i,
-                chunk.offset,
-                chunk.data.len(),
-                (chunk.offset as f64 / chunk.data.len() as f64) * 100.0
-            );
-        }
-    }
 }
 
 impl Default for Arena {
@@ -113,3 +94,4 @@ impl Default for Arena {
         Self::new()
     }
 }
+
