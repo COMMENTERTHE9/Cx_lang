@@ -1,17 +1,458 @@
 ---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import ExperimentalBanner from "../components/ExperimentalBanner.astro";
+import SectionHeader from "../components/SectionHeader.astro";
+import CopyButton from "../components/CopyButton.astro";
+import { SITE } from "../lib/site";
 
+const featuresNow = [
+  { name: "Functions", desc: "Direct, predictable function model." },
+  { name: "Structs & grouped enums", desc: "Data types designed for engines." },
+  { name: "Unified numeric types (t8-t128)", desc: "One numeric family. Fewer keyword fights." },
+  { name: "Ternary values", desc: "Resolved / Unknown / Absent - data is honest." },
+  { name: "Pattern matching (when blocks)", desc: "Branching that reads like intent." },
+  { name: "Error messages", desc: "Clear errors. No guesswork." },
+];
+
+const featuresLater = [
+  { name: "Type inference", desc: "In progress - will stay readable and explicit-first." },
+  { name: "Modules / imports", desc: "Later - no premature architecture locks." },
+  { name: "Generics", desc: "Later - only when the design is worth the complexity." },
+  { name: "VM / bytecode", desc: "Later - not the current goal." },
+  { name: "C interop", desc: "Later - planned, but not promised early." },
+  { name: "Standard library", desc: "Later - minimal core first." },
+];
+
+const hello = `fnc main() {
+    print("hello world")
+}`;
 ---
 
-<html lang="en">
-	<head>
-		<meta charset="utf-8" />
-		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-		<link rel="icon" href="/favicon.ico" />
-		<meta name="viewport" content="width=device-width" />
-		<meta name="generator" content={Astro.generator} />
-		<title>Astro</title>
-	</head>
-	<body>
-		<h1>Astro</h1>
-	</body>
-</html>
+<SiteLayout title="Cx" description="A systems language built for the real cost of building things.">
+  <div class="home-shell">
+    <!-- HERO -->
+    <section class="hero">
+      <ExperimentalBanner />
+
+      <div class="hero-grid">
+        <div>
+          <div class="hero-kicker cx-mono">SYSTEMS LANGUAGE • ENGINE-FIRST</div>
+
+          <h1 class="hero-title">
+            A systems language for the real cost of building things.
+          </h1>
+
+          <p class="hero-sub">
+            No GC. No pauses. Memory you control. Built for engines, not abstractions.
+          </p>
+
+          <div class="hero-ctas">
+            <a class="btn btn-primary" href={SITE.docs}>Read Docs</a>
+            <a class="btn btn-ghost" href={SITE.github} target="_blank" rel="noreferrer">GitHub</a>
+          </div>
+
+          <div class="hero-meta">
+            <div class="meta-chip">
+              <span class="cx-mono text-[11px]" style="color: var(--cx-text-2);">STATUS</span>
+              <span class="cx-mono text-[11px]" style="color: var(--cx-text);">Experimental</span>
+            </div>
+            <div class="meta-chip">
+              <span class="cx-mono text-[11px]" style="color: var(--cx-text-2);">VERSION</span>
+              <span class="cx-mono text-[11px]" style="color: var(--cx-text);">{SITE.version}</span>
+            </div>
+            <div class="meta-chip">
+              <span class="cx-mono text-[11px]" style="color: var(--cx-text-2);">FOCUS</span>
+              <span class="cx-mono text-[11px]" style="color: var(--cx-text);">Engines</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-card">
+          <div class="code-head">
+            <div class="dots">
+              <span class="dot red"></span>
+              <span class="dot yellow"></span>
+              <span class="dot green"></span>
+            </div>
+            <div class="cx-mono text-[11px]" style="color: var(--cx-text-2);">hello.cx</div>
+          </div>
+          <pre class="code"><code>{hello}</code></pre>
+          <div class="hero-card-footer">
+            <div class="cx-mono text-[11px]" style="color: var(--cx-text-2);">
+              Build from source only.
+            </div>
+            <a class="cx-mono text-[11px]" style="color: var(--cx-accent);" href={SITE.docs}>
+              docs://getting-started →
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- WHY -->
+    <section class="home-sec">
+      <SectionHeader
+        n="01"
+        title="Why Cx"
+        subtitle="Sharp, deliberate, honest. Built for engine work where performance, memory, and tooling cost matter."
+      />
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title cx-mono">THE PROBLEM</div>
+          <p class="card-body">
+            Systems languages often make power feel like punishment. You get control, but pay with hostility:
+            brittle ergonomics, unreadable complexity, or abstractions that hide cost.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-title cx-mono">THE BET</div>
+          <p class="card-body">
+            Cx aims for a tighter contract: explicit memory and performance without the
+            "prove you deserve to be here" mindset. It's early, but built with production intent.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FEATURES -->
+    <section class="home-sec">
+      <SectionHeader
+        n="02"
+        title="Features"
+        subtitle="What exists now. What’s next."
+      />
+
+      <div class="feature-grid">
+        <div class="card">
+          <div class="card-title cx-mono">NOW</div>
+          <div class="feat-list">
+            {featuresNow.map((f) => (
+              <div class="feat">
+                <div class="feat-name">{f.name}</div>
+                <div class="feat-desc">{f.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title cx-mono">LATER / IN PROGRESS</div>
+          <div class="feat-list">
+            {featuresLater.map((f) => (
+              <div class="feat">
+                <div class="feat-name">{f.name}</div>
+                <div class="feat-desc">{f.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INSTALL -->
+    <section class="home-sec">
+      <SectionHeader
+        n="03"
+        title="Build From Source"
+        subtitle="Cx is early. Expect breaks."
+      />
+
+      <div class="card">
+        <div class="install-head">
+          <div class="cx-mono text-[11px]" style="color: var(--cx-text-2);">
+            {SITE.clone}
+          </div>
+          <CopyButton value={SITE.clone} label="COPY" />
+        </div>
+
+        <pre class="code"><code>{`# clone
+${SITE.clone}
+cd Cx_lang
+
+# build (Rust/Cargo project)
+cargo build --release
+
+# run
+cargo run --release
+
+# optional direct binary run
+# Linux/macOS: ./target/release/Cx_0V
+# Windows: .\\target\\release\\Cx_0V.exe`}</code></pre>
+
+        <div class="mt-3 text-sm" style="color: var(--cx-text-2);">
+          Matches current repo structure (Cargo.toml: Cx_0V).
+        </div>
+      </div>
+    </section>
+
+    <!-- ROADMAP + GITHUB -->
+    <section class="home-sec">
+      <SectionHeader
+        n="04"
+        title="Roadmap & GitHub"
+        subtitle="The repo is the roadmap."
+      />
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title cx-mono">ROADMAP</div>
+          <ul class="road">
+            <li><span class="road-dot"></span> Type inference (in progress)</li>
+            <li><span class="road-dot"></span> Module/import system</li>
+            <li><span class="road-dot"></span> Generics (only if worth it)</li>
+            <li><span class="road-dot"></span> C interop + tooling hardening</li>
+            <li><span class="road-dot"></span> Minimal standard library</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title cx-mono">GITHUB</div>
+          <p class="card-body">
+            Repo is the source of truth: commits, issues, and what's implemented.
+          </p>
+
+          <div class="mt-4 flex flex-wrap gap-3">
+            <a class="btn btn-primary" href={SITE.github} target="_blank" rel="noreferrer">Open Repo</a>
+            <CopyButton value={SITE.clone} label="COPY CLONE" />
+          </div>
+
+          <div class="mt-4 cx-mono text-[11px]" style="color: var(--cx-text-2);">
+            {SITE.github}
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="home-foot">
+      <div class="cx-mono text-[11px]" style="color: var(--cx-text-2);">
+        Cx: sharp, deliberate, honest.
+      </div>
+      <div class="foot-links">
+        <a href={SITE.docs}>Docs</a>
+        <a href={SITE.blog}>Blog</a>
+        <a href={SITE.github} target="_blank" rel="noreferrer">GitHub</a>
+      </div>
+    </footer>
+  </div>
+
+  <style>
+    .home-shell{
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .hero{ margin-top: 18px; }
+
+    .hero-grid{
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .hero-kicker{
+      letter-spacing: .12em;
+      font-size: 11px;
+      color: var(--cx-text-2);
+      margin-top: 10px;
+    }
+
+    .hero-title{
+      font-family: var(--cx-display);
+      font-size: 64px;
+      line-height: .92;
+      margin: 12px 0 0;
+      color: var(--cx-text);
+      max-width: 20ch;
+    }
+
+    .hero-sub{
+      margin-top: 14px;
+      font-size: 15px;
+      color: var(--cx-text-2);
+      max-width: 80ch;
+      line-height: 1.6;
+    }
+
+    .hero-ctas{ display:flex; gap: 12px; margin-top: 18px; flex-wrap:wrap; }
+
+    .btn{
+      display:inline-flex; align-items:center; justify-content:center;
+      padding: 10px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--cx-border);
+      text-decoration:none;
+      font-family: var(--cx-mono);
+      font-size: 12px;
+      letter-spacing: .08em;
+      transition: 140ms ease;
+    }
+    .btn-primary{
+      border-color: color-mix(in srgb, var(--cx-accent) 60%, var(--cx-border));
+      background: color-mix(in srgb, var(--cx-accent) 14%, var(--cx-surface));
+      color: var(--cx-text);
+      box-shadow: 0 0 30px color-mix(in srgb, var(--cx-accent) 14%, transparent);
+    }
+    .btn-primary:hover{
+      border-color: color-mix(in srgb, var(--cx-accent) 80%, var(--cx-border));
+      box-shadow: 0 0 42px color-mix(in srgb, var(--cx-accent) 18%, transparent);
+    }
+    .btn-ghost{
+      background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+      color: var(--cx-text);
+    }
+    .btn-ghost:hover{
+      border-color: color-mix(in srgb, var(--cx-text) 22%, var(--cx-border));
+    }
+
+    .hero-meta{
+      margin-top: 16px;
+      display:flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .meta-chip{
+      display:flex; gap: 8px; align-items:center;
+      padding: 8px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--cx-border);
+      background: color-mix(in srgb, var(--cx-surface) 75%, transparent);
+    }
+
+    .hero-card{
+      border-radius: 18px;
+      border: 1px solid var(--cx-border);
+      background: color-mix(in srgb, var(--cx-surface-2) 82%, transparent);
+      overflow: hidden;
+      box-shadow: 0 20px 70px rgba(0,0,0,.40);
+    }
+
+    .code-head{
+      display:flex; align-items:center; justify-content:space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--cx-border);
+      background: color-mix(in srgb, var(--cx-surface) 80%, transparent);
+    }
+    .dots{ display:flex; gap: 6px; }
+    .dot{ width: 10px; height: 10px; border-radius: 50%; opacity: .9; }
+    .dot.red{ background: #ff5f57; }
+    .dot.yellow{ background: #febc2e; }
+    .dot.green{ background: #28c840; }
+
+    .code{
+      margin: 0;
+      padding: 14px;
+      font-family: var(--cx-mono);
+      font-size: 12px;
+      color: var(--cx-text);
+      background: rgba(0,0,0,.18);
+      overflow:auto;
+    }
+    .hero-card-footer{
+      display:flex; justify-content:space-between; gap: 10px; flex-wrap:wrap;
+      padding: 10px 12px;
+      border-top: 1px solid var(--cx-border);
+      background: color-mix(in srgb, var(--cx-surface) 80%, transparent);
+    }
+
+    .home-sec{ margin-top: 54px; }
+
+    .two-col{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .feature-grid{
+      display:grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .card{
+      border: 1px solid var(--cx-border);
+      background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+      border-radius: 18px;
+      padding: 16px;
+    }
+    .card-title{
+      letter-spacing: .14em;
+      font-size: 11px;
+      color: var(--cx-text-2);
+      margin-bottom: 10px;
+    }
+    .card-body{
+      margin: 0;
+      font-size: 14px;
+      color: var(--cx-text-2);
+      line-height: 1.7;
+      max-width: 85ch;
+    }
+
+    .feat-list{ display:grid; gap: 12px; }
+    .feat-name{
+      font-family: var(--cx-display);
+      font-size: 22px;
+      line-height: 1.05;
+      color: var(--cx-text);
+    }
+    .feat-desc{
+      margin-top: 4px;
+      font-size: 13px;
+      color: var(--cx-text-2);
+      line-height: 1.55;
+      max-width: 80ch;
+    }
+
+    .install-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid var(--cx-border);
+      background: color-mix(in srgb, var(--cx-surface-2) 55%, transparent);
+      margin-bottom: 12px;
+    }
+
+    .road{ margin: 0; padding-left: 0; list-style: none; display:grid; gap: 10px; }
+    .road li{ color: var(--cx-text-2); font-size: 14px; display:flex; gap: 10px; align-items:center; }
+    .road-dot{
+      width: 10px; height: 10px; border-radius: 50%;
+      background: color-mix(in srgb, var(--cx-accent) 55%, var(--cx-border));
+      box-shadow: 0 0 18px color-mix(in srgb, var(--cx-accent) 18%, transparent);
+    }
+
+    .home-foot{
+      margin: 60px 0 40px;
+      padding-top: 18px;
+      border-top: 1px solid var(--cx-border);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .foot-links{ display:flex; gap: 14px; }
+    .foot-links a{
+      color: var(--cx-text-2);
+      text-decoration:none;
+      font-family: var(--cx-mono);
+      font-size: 12px;
+    }
+    .foot-links a:hover{ color: var(--cx-text); }
+
+    @media (max-width: 980px){
+      .hero-grid{ grid-template-columns: 1fr; }
+      .hero-title{ font-size: 54px; }
+      .two-col{ grid-template-columns: 1fr; }
+      .feature-grid{ grid-template-columns: 1fr; }
+    }
+  </style>
+</SiteLayout>

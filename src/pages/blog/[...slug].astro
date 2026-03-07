@@ -1,0 +1,57 @@
+---
+import SiteLayout from "../../layouts/SiteLayout.astro";
+import { getCollection, getEntryBySlug } from "astro:content";
+
+export async function getStaticPaths() {
+  const posts = (await getCollection("blog")).filter((p) => !p.data.draft);
+  return posts.map((p) => ({ params: { slug: p.slug } }));
+}
+
+const { slug } = Astro.params;
+const entry = await getEntryBySlug("blog", slug!);
+
+if (!entry) return Astro.redirect("/blog");
+
+const { Content } = await entry.render();
+
+const TYPE_LABELS: Record<string, string> = { release: "Release", note: "Note", guide: "Guide" };
+const t = (entry.data.type ?? entry.data.kind ?? entry.data.category ?? "note") as string;
+const typeKey = TYPE_LABELS[String(t).toLowerCase()] ? String(t).toLowerCase() : "note";
+const typeLabel = TYPE_LABELS[typeKey] ?? "Note";
+
+const dateLong = entry.data.date.toLocaleString("en-US", { year: "numeric", month: "short", day: "2-digit" });
+---
+
+<SiteLayout title={`${entry.data.title} | Cx Blog`} description={entry.data.description ?? ""} wide={true}>
+  <div class="mb-8">
+    <div class="cx-mono text-xs" style="color: var(--cx-text-2);">
+      ship://language/blog/<span style="color: var(--cx-text);">{entry.slug}</span>
+    </div>
+
+    <div class="mt-3 flex flex-wrap items-center gap-3">
+      <div class="cx-mono text-xs" style="color: var(--cx-text-2);">{dateLong}</div>
+      <div class="cx-mono text-[11px] px-2 py-1 rounded-full border"
+        style="border-color: var(--cx-border); background: color-mix(in srgb, var(--cx-surface) 70%, transparent); color: var(--cx-text);">
+        {typeLabel}
+      </div>
+      {entry.data.version && (
+        <div class="cx-mono text-[11px] px-2 py-1 rounded-full border"
+          style="color: var(--cx-text-2); border-color: var(--cx-border); background: transparent;">
+          {entry.data.version}
+        </div>
+      )}
+    </div>
+
+    <h1 class="mt-3 cx-display text-6xl leading-none">{entry.data.title}</h1>
+
+    {entry.data.description && (
+      <p class="mt-3 text-sm" style="color: var(--cx-text-2);">
+        {entry.data.description}
+      </p>
+    )}
+  </div>
+
+  <article class="prose prose-invert max-w-none">
+    <Content />
+  </article>
+</SiteLayout>

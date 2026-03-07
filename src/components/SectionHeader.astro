@@ -1,0 +1,42 @@
+---
+const { n = "01", title = "TITLE", subtitle = "" } = Astro.props;
+---
+
+<div class="sec-head">
+  <div class="sec-n">{n}</div>
+  <div class="sec-meta">
+    <h2 class="sec-title">{title}</h2>
+    {subtitle && <div class="sec-sub">{subtitle}</div>}
+  </div>
+</div>
+
+<style>
+  .sec-head{
+    display:grid;
+    grid-template-columns: 80px minmax(0,1fr);
+    gap: 14px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--cx-border);
+    margin-bottom: 16px;
+  }
+  .sec-n{
+    font-family: var(--cx-mono);
+    font-size: 42px;
+    line-height: 1;
+    color: var(--cx-text-ghost);
+    letter-spacing: .04em;
+  }
+  .sec-title{
+    font-family: var(--cx-display);
+    font-size: 44px;
+    line-height: 1;
+    color: var(--cx-text);
+    margin: 0;
+  }
+  .sec-sub{
+    margin-top: 6px;
+    font-size: 14px;
+    color: var(--cx-text-2);
+    max-width: 70ch;
+  }
+</style>

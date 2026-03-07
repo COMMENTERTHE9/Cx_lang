@@ -1,0 +1,69 @@
+---
+title: Introduction
+description: What Cx is, what it's for, and what's real today.
+order: 1
+section: Core
+---
+
+# Introduction
+
+Cx is a systems programming language designed from the ground up for **game engines** and **real-time simulation**. It is **early and experimental** - not production-ready.
+
+Cx prioritizes:
+
+- **Deterministic memory management**
+- **Predictable performance**
+- **A lower learning curve** than Rust *without* giving up the control engine work demands
+
+## Design goals
+
+### No GC. No pauses.
+Cx has no garbage collector. There is no runtime scanning your heap. Memory is managed through **arenas**, **handles**, and **explicit lifecycle control**.
+
+### No borrow-checker fights
+Cx's memory model is built around **scoped arenas** and **generation-counted handles**. You put things in the right bucket. The structure of those buckets makes the dangerous cases impossible.
+
+### Honest about tradeoffs
+Cx does not pretend to be everything. It is designed for a specific problem space and makes deliberate choices that match that space.
+
+### Approachable
+The goal is **"Python for adults"** - expressive and learnable, not hostile.
+
+## What Cx is not
+
+- Not a general-purpose language yet
+- Not production-ready (the compiler is a **tree-walk interpreter** right now)
+- Not garbage collected
+- Not Rust (no lifetime annotations required)
+
+## Current status (truth, not marketing)
+
+### Implemented and working
+- `fnc` functions
+- Typed parameters
+- Implicit and explicit returns
+- Arithmetic + modulo
+- Comparison operators
+- Boolean logic
+- String literals with escape sequences
+- `print` and `print!`
+- Variables with type annotations
+- Scoped arenas with bump allocator
+- Free checker with double-free prevention
+- Three copy modes: `.copy`, `.copy.free`, `copy_into`
+- `Handle<T>` registry with generation counters and stale detection
+
+### Not implemented yet
+- `when` blocks
+- Loops
+- Structs
+- Arrays
+- `NullPoint<T>`
+- `Unknown` / `?` runtime support
+- GPU system
+- Compiler backend (Cranelift / LLVM)
+- Standard library
+
+## Start here
+- **Basic Syntax** -> `docs://basic-syntax`
+- **Ternary Values (spec)** -> `docs://ternary-values`

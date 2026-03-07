@@ -1,0 +1,41 @@
+---
+import DocsLayout from "../../layouts/DocsLayout.astro";
+import { getCollection } from "astro:content";
+
+export async function getStaticPaths() {
+  const docs = await getCollection("docs");
+  docs.sort((a, b) => (a.data.order ?? 9999) - (b.data.order ?? 9999));
+
+  return docs.map((entry) => ({
+    params: { slug: entry.slug },
+    props: { entry, docs },
+  }));
+}
+
+const { entry, docs } = Astro.props as { entry: any; docs: any[] };
+const { Content, headings } = await entry.render();
+---
+
+<DocsLayout
+  title={`${entry.data.title} | Cx Docs`}
+  description={entry.data.description ?? ""}
+  currentSlug={entry.slug}
+  items={docs}
+  headings={headings}
+>
+  <div class="mb-8">
+    <div class="cx-mono text-xs" style="color: var(--cx-text-2);">
+      ship://language/docs/<span style="color: var(--cx-text);">{entry.slug}</span>
+    </div>
+    <h1 class="mt-2 cx-display text-6xl leading-none">{entry.data.title}</h1>
+    {entry.data.description && (
+      <p class="mt-3 text-sm" style="color: var(--cx-text-2);">
+        {entry.data.description}
+      </p>
+    )}
+  </div>
+
+  <article class="prose prose-invert max-w-none">
+    <Content />
+  </article>
+</DocsLayout>

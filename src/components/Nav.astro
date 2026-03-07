@@ -1,0 +1,58 @@
+---
+const links = [
+    { href: "/docs", label: "Docs" },
+    { href: "/blog", label: "Blog" },
+];
+const { pathname } = Astro.url;
+---
+
+<nav class="sticky top-0 z-50 border-b" style="border-color: var(--cx-border);">
+    <div
+            class="bg-black/35 backdrop-blur-md"
+            style="box-shadow: 0 0 0 1px color-mix(in srgb, var(--cx-border) 70%, transparent) inset;"
+    >
+        <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+            <a href="/" class="flex items-center gap-3">
+                <span class="cx-display text-2xl leading-none" style="color: var(--cx-accent);">CX</span>
+
+                <span class="cx-mono text-xs tracking-wide" style="color: var(--cx-text-2);">
+          ship://language/<span style="color: var(--cx-text);">home</span>
+        </span>
+
+                <span
+                        class="cx-mono hidden rounded-full px-2 py-1 text-[10px] md:inline"
+                        style="border: 1px solid var(--cx-border); color: var(--cx-text-2);"
+                >
+          v0.0.x
+        </span>
+            </a>
+
+            <div class="flex items-center gap-5">
+                {links.map((l) => (
+                        <a
+                                href={l.href}
+                                class:list={[
+                                    "cx-mono text-xs tracking-wide transition",
+                                    pathname?.startsWith(l.href) ? "opacity-100" : "opacity-70 hover:opacity-100",
+                                ]}
+                                style={pathname?.startsWith(l.href) ? "color: var(--cx-text);" : "color: var(--cx-text-2);"}
+                        >
+                            {l.label}
+                        </a>
+                ))}
+
+                <a
+                        href="/docs"
+                        class="cx-mono rounded-full px-3 py-1 text-xs"
+                        style="
+            border: 1px solid var(--cx-border-2);
+            color: var(--cx-text);
+            background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+          "
+                >
+                    OPEN DOCS
+                </a>
+            </div>
+        </div>
+    </div>
+</nav>

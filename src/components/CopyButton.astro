@@ -1,0 +1,40 @@
+---
+const { value = "", label = "Copy" } = Astro.props;
+const id = `copy_${Math.random().toString(16).slice(2)}`;
+---
+
+<button class="copy-btn" type="button" data-copy-id={id} data-copy-value={value}>
+  <span class="cx-mono text-[11px]" style="color: var(--cx-text-2);">{label}</span>
+</button>
+
+<script>
+  const btns = document.querySelectorAll("[data-copy-id]");
+  btns.forEach((b) => {
+    b.addEventListener("click", async () => {
+      const val = b.getAttribute("data-copy-value") || "";
+      try {
+        await navigator.clipboard.writeText(val);
+        b.classList.add("copied");
+        setTimeout(() => b.classList.remove("copied"), 900);
+      } catch {}
+    });
+  });
+</script>
+
+<style>
+  .copy-btn{
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+    border-radius: 12px;
+    padding: 8px 10px;
+    transition: 140ms ease;
+  }
+  .copy-btn:hover{
+    border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cx-accent) 18%, transparent);
+  }
+  .copy-btn.copied{
+    border-color: color-mix(in srgb, var(--cx-accent) 65%, var(--cx-border));
+    box-shadow: 0 0 22px color-mix(in srgb, var(--cx-accent) 18%, transparent);
+  }
+</style>

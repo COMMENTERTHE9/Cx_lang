@@ -1,0 +1,71 @@
+---
+type Item = { depth: number; text: string; slug: string };
+
+const { headings = [] } = Astro.props as { headings: Item[] };
+
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+
+<aside class="toc">
+  <div class="toc-title">ON PAGE</div>
+
+  {toc.length ? (
+    <nav class="toc-links">
+      {toc.map((h) => (
+        <a class={`toc-link depth-${h.depth}`} href={`#${h.slug}`}>
+          {h.text}
+        </a>
+      ))}
+    </nav>
+  ) : (
+    <div class="toc-empty">No headings yet.</div>
+  )}
+</aside>
+
+<style>
+  .toc{
+    position: sticky;
+    top: 88px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+    border-radius: 16px;
+    padding: 14px;
+    backdrop-filter: blur(10px);
+  }
+  .toc-title{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    color: var(--cx-text-2);
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--cx-border);
+    margin-bottom: 10px;
+  }
+  .toc-links{ display: grid; gap: 8px; }
+  .toc-link{
+    text-decoration: none;
+    color: var(--cx-text-2);
+    font-size: 13px;
+    line-height: 1.25;
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    transition: 140ms ease;
+  }
+  .toc-link:hover{
+    color: var(--cx-text);
+    border-color: color-mix(in srgb, var(--cx-accent) 35%, var(--cx-border));
+    background: color-mix(in srgb, var(--cx-accent) 6%, transparent);
+  }
+  .toc-link.depth-3{
+    margin-left: 10px;
+    font-size: 12px;
+  }
+  .toc-empty{
+    font-size: 12px;
+    color: var(--cx-text-2);
+  }
+  @media (max-width: 1100px){
+    .toc{ display:none; }
+  }
+</style>

@@ -1,0 +1,122 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Fonts (self-hosted via npm) */
+@import "@fontsource/bebas-neue/400.css";
+@import "@fontsource/outfit/300.css";
+@import "@fontsource/outfit/400.css";
+@import "@fontsource/outfit/500.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+/* ---------- Theme Tokens ---------- */
+:root {
+    --cx-accent: #00f0ff;     /* electric cyan */
+    --cx-accent-2: #4da6ff;   /* cool blue */
+    --cx-accent-3: #0090cc;   /* deep muted */
+
+    --cx-bg: #03060f;
+    --cx-surface: #0d182e;
+    --cx-surface-2: #0c1628;
+
+    --cx-border: #0f2040;
+    --cx-border-2: #101c30;
+
+    --cx-text: #b3cae3;
+    --cx-text-2: #5a7a9a;
+    --cx-ghost: #1a3050;
+    --cx-text-ghost: var(--cx-ghost);
+}
+
+/* ---------- Base ---------- */
+html, body {
+    height: 100%;
+}
+
+body {
+    background: var(--cx-bg);
+    color: var(--cx-text);
+    font-family: "Outfit", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-weight: 300;
+    letter-spacing: 0.2px;
+}
+
+/* Utility-ish font classes */
+.cx-display { font-family: "Bebas Neue", system-ui, sans-serif; letter-spacing: 0.04em; }
+.cx-mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+
+/* ---------- Atmosphere Layers ---------- */
+/* Top cyan glow */
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background:
+            radial-gradient(1200px 700px at 50% -10%,
+            color-mix(in srgb, var(--cx-accent) 6%, transparent),
+            transparent 60%);
+}
+
+/* Starfield (tiny radial dots) */
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.35;
+    background:
+            radial-gradient(1px 1px at 10% 20%, rgba(208,232,255,0.35) 50%, transparent 55%),
+            radial-gradient(1px 1px at 30% 80%, rgba(208,232,255,0.25) 50%, transparent 55%),
+            radial-gradient(1px 1px at 55% 35%, rgba(77,166,255,0.28) 50%, transparent 55%),
+            radial-gradient(1px 1px at 70% 60%, rgba(208,232,255,0.22) 50%, transparent 55%),
+            radial-gradient(1px 1px at 85% 15%, rgba(0,240,255,0.20) 50%, transparent 55%),
+            radial-gradient(1px 1px at 92% 75%, rgba(208,232,255,0.18) 50%, transparent 55%);
+}
+
+/* Noise overlay */
+.cx-noise {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.06;
+    background-image:
+            url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+}
+
+/* Optional scanlines (very subtle) */
+.cx-scanlines {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    opacity: 0.05;
+    background:
+            repeating-linear-gradient(
+                    to bottom,
+                    rgba(208,232,255,0.06),
+                    rgba(208,232,255,0.06) 1px,
+                    transparent 1px,
+                    transparent 4px
+            );
+}
+
+/* ---------- Prose (MDX) tuning ---------- */
+.prose {
+    --tw-prose-body: var(--cx-text);
+    --tw-prose-headings: var(--cx-text);
+    --tw-prose-links: var(--cx-accent);
+    --tw-prose-code: var(--cx-text);
+    --tw-prose-quotes: var(--cx-text);
+    --tw-prose-hr: var(--cx-border);
+    --tw-prose-bullets: var(--cx-border-2);
+    --tw-prose-counters: var(--cx-text-2);
+}
+.prose code {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-weight: 500;
+}
+.prose a:hover { text-decoration: underline; }

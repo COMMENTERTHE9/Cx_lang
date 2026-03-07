@@ -1,0 +1,120 @@
+---
+type DocEntry = {
+  slug: string;
+  data: {
+    title: string;
+    description?: string;
+    order?: number;
+    section?: string;
+  };
+};
+
+const {
+  items,
+  currentSlug,
+} = Astro.props as {
+  items: DocEntry[];
+  currentSlug?: string;
+};
+
+const sorted = [...items].sort(
+  (a, b) => (a.data.order ?? 9999) - (b.data.order ?? 9999)
+);
+
+// Group by section
+const groups = new Map<string, DocEntry[]>();
+for (const d of sorted) {
+  const key = d.data.section ?? "Core";
+  if (!groups.has(key)) groups.set(key, []);
+  groups.get(key)!.push(d);
+}
+---
+
+<aside class="docs-sidebar">
+  <div class="docs-sidebar__title">DOCS</div>
+
+  {Array.from(groups.entries()).map(([section, items]) => (
+    <div class="docs-group">
+      <div class="docs-group__label">{section.toUpperCase()}</div>
+
+      <nav class="docs-nav">
+        {items.map((d) => {
+          const active = d.slug === currentSlug;
+          return (
+            <a class={`docs-link ${active ? "is-active" : ""}`} href={`/docs/${d.slug}`}>
+              <span class="docs-link__title">{d.data.title}</span>
+              {d.data.description && (
+                <span class="docs-link__desc">{d.data.description}</span>
+              )}
+            </a>
+          );
+        })}
+      </nav>
+    </div>
+  ))}
+</aside>
+
+<style>
+  .docs-sidebar {
+    position: sticky;
+    top: 72px;
+    align-self: start;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 85%, transparent);
+    border-radius: 16px;
+    padding: 14px;
+    backdrop-filter: blur(10px);
+  }
+  .docs-sidebar__title {
+    font-family: var(--cx-mono);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--cx-text-2);
+    padding: 4px 6px 10px;
+    border-bottom: 1px solid var(--cx-border);
+    margin-bottom: 10px;
+  }
+  .docs-group { margin-top: 14px; }
+  .docs-group__label {
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    color: var(--cx-text-ghost);
+    margin: 8px 6px;
+  }
+  .docs-nav { display: flex; flex-direction: column; gap: 8px; }
+
+  .docs-link {
+    display: block;
+    padding: 10px 10px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    text-decoration: none;
+    transition: 140ms ease;
+    background: transparent;
+  }
+  .docs-link:hover {
+    border-color: color-mix(in srgb, var(--cx-accent) 25%, var(--cx-border));
+    background: color-mix(in srgb, var(--cx-accent) 6%, transparent);
+  }
+  .docs-link.is-active {
+    border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
+    background: color-mix(in srgb, var(--cx-accent) 10%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cx-accent) 30%, transparent);
+  }
+  .docs-link__title {
+    display: block;
+    font-family: var(--cx-body);
+    font-weight: 400;
+    color: var(--cx-text);
+    line-height: 1.1;
+  }
+  .docs-link__desc {
+    display: block;
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    color: var(--cx-text-2);
+    margin-top: 6px;
+    line-height: 1.2;
+  }
+</style>

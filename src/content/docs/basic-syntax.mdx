@@ -1,0 +1,191 @@
+---
+title: Basic Syntax
+description: What the parser accepts today - and what it doesn't.
+order: 2
+section: Core
+---
+
+# Basic Syntax
+
+This page documents **current behavior** - what Cx accepts today.
+
+If something is not implemented yet, it is labeled as such.
+
+## File structure
+
+No module header is required. A Cx file is a flat list of function definitions and top-level statements.
+
+- Entry point is `main`
+- Top-level `print` calls also execute directly
+
+```cx
+fnc main() {
+    print(42)
+}
+```
+
+## Comments
+
+Line comments only for now. Block comments are not implemented.
+
+```cx
+// this is a comment
+x: t64 = 10  // inline comment
+```
+
+## Variables
+
+Variables are declared with a type annotation and `=`. The type comes after the name separated by `:`.
+
+```cx
+x: t64 = 42
+name: str = "Zara"
+flag: bool = true
+```
+
+Uninitialized declaration exists via `let` - type is inferred on first assignment:
+
+```cx
+let x;
+x = 42
+```
+
+## Numeric types
+
+### Signed integers
+
+`t8`, `t16`, `t32`, `t64`, `t128`
+
+### Floating point
+
+`f64`
+
+Unsigned integers are not implemented yet.
+
+```cx
+a: t64 = 100
+b: t128 = 999999999999
+c: f64 = 3.14
+```
+
+Literal defaults:
+
+- Integer literals default to `t64` when inferred
+- Float literals default to `f64`
+
+## Strings
+
+Strings are double-quoted. Escape sequences supported: `\n`, `\t`, `\\`, `\"`.
+
+Multiline strings are not implemented yet.
+
+Template interpolation uses `{varname}` inside the string literal:
+
+```cx
+name: str = "Zara"
+print("hello {name}")
+```
+
+## Booleans
+
+Two states currently implemented: `true` and `false`.
+
+A third state (`Unknown` / `?`) is designed and specced but not implemented in the runtime.
+
+```cx
+flag: bool = true
+other: bool = false
+```
+
+## Conditionals
+
+`if/else` is intentionally withheld pending final `when` design. It is not available yet.
+
+## `when` blocks
+
+Designed but not implemented. Intended syntax:
+
+```cx
+when (cond) {
+    true    => { ... }
+    false   => { ... }
+    unknown => { ... }
+}
+```
+
+Do not use yet - the parser does not recognize it.
+
+## Functions
+
+Functions use `fnc`. Parameters are typed. Return type is declared with `->`.
+
+- Implicit return = last expression in body
+- Explicit return uses `return`
+
+```cx
+fnc add(a: t64, b: t64) -> t64 {
+    a + b
+}
+
+fnc greet(name: str) {
+    print("hello {name}")
+}
+```
+
+## Parameter passing modes
+
+Cx supports three distinct parameter kinds:
+
+```cx
+fnc inner(x.copy) { ... }        // copy - bleeds final value back to outer
+fnc inner(x.copy.free) { ... }   // copy.free - isolated, nothing bleeds back
+fnc inner(t: copy_into(x, y)) { ... }  // copy_into - bundles multiple vars into container t
+```
+
+These are not overloads. They are separate semantics.
+
+## Printing
+
+`print` and `print!` are built-ins:
+
+```cx
+print(42)             // prints with newline
+print("hello")        // string
+print!("no newline")  // inline, no newline appended
+print("{x} + {y}")    // template interpolation
+```
+
+`print` is not a normal function call - you cannot assign its return value or pass it as an argument.
+
+## Handles
+
+Handles are registry-based references with generation counters and stale detection.
+
+```cx
+h: Handle<t64> = Handle.new(99)  // allocate into registry
+print(h.val)                     // dereference
+h.drop()                         // explicit free - h is now stale
+```
+
+Using a handle after `.drop()` triggers a runtime error, not undefined behavior.
+
+## Operators
+
+Arithmetic:
+
+`+  -  *  /  %`
+
+Comparison:
+
+`==  !=  >  <  >=  <=`
+
+Logical:
+
+`&&  ||  !`
+
+## Notes that surprise new readers
+
+- No `if/else` yet (intentional)
+- Semicolons are optional in some positions (parser accepts both; don't rely on a hard rule yet)
+- `fnc` is exact spelling - not `fn`, not `func`
+- `Unknown` (`?`) is specced but not implemented (don't expect it to run)

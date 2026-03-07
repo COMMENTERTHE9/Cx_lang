@@ -1,0 +1,118 @@
+---
+import SiteLayout from "./SiteLayout.astro";
+import DocsSidebar from "../components/DocsSidebar.astro";
+import TocRail from "../components/TocRail.astro";
+
+const { title, description, currentSlug, items, headings = [] } = Astro.props;
+
+// items should be the sorted docs collection (by order)
+const i = items.findIndex((x) => x.slug === currentSlug);
+
+const prev = i > 0 ? items[i - 1] : null;
+const next = i >= 0 && i < items.length - 1 ? items[i + 1] : null;
+---
+
+<SiteLayout title={title} description={description} wide={true}>
+  <div class="docs-shell">
+    <div class="docs-grid">
+      <aside class="docs-left">
+        <DocsSidebar currentSlug={currentSlug} items={items} />
+      </aside>
+
+      <main class="docs-main">
+        <slot />
+
+        <nav class="docs-pager" aria-label="Docs pagination">
+          {prev ? (
+            <a class="pager-card" href={`/docs/${prev.slug}`}>
+              <div class="pager-kicker">Prev</div>
+              <div class="pager-title">{prev.data.title}</div>
+            </a>
+          ) : <div />}
+
+          {next ? (
+            <a class="pager-card pager-next" href={`/docs/${next.slug}`}>
+              <div class="pager-kicker">Next</div>
+              <div class="pager-title">{next.data.title}</div>
+            </a>
+          ) : <div />}
+        </nav>
+      </main>
+
+      <TocRail headings={headings} />
+    </div>
+  </div>
+</SiteLayout>
+
+<style>
+  .docs-shell { max-width: 1400px; margin: 0 auto; padding: 0; }
+
+  /* 3 columns on wide screens: sidebar / content / toc */
+  .docs-grid {
+    display: grid;
+    grid-template-columns: 320px minmax(720px, 980px) 260px;
+    gap: 34px;
+    align-items: start;
+  }
+
+  .docs-left {
+    position: sticky;
+    top: 88px;
+    height: calc(100vh - 110px);
+  }
+
+  .docs-main{
+    max-width: none;
+    padding-bottom: 40px;
+  }
+
+  .docs-main :global(.prose){
+    line-height: 1.75;
+    font-size: 16px;
+  }
+
+  .docs-main :global(.prose p){
+    margin-top: 0.9em;
+    margin-bottom: 0.9em;
+  }
+
+  @media (max-width: 1100px) {
+    .docs-grid { grid-template-columns: 320px minmax(0, 1fr); }
+    .docs-main { max-width: none; }
+  }
+
+  .docs-pager {
+    margin-top: 28px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    padding-top: 18px;
+    border-top: 1px solid var(--cx-border);
+  }
+
+  .pager-card {
+    display: block;
+    border: 1px solid var(--cx-border);
+    border-radius: 14px;
+    padding: 14px;
+    text-decoration: none;
+    background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+    transition: transform 120ms ease, border-color 120ms ease;
+  }
+  .pager-card:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--cx-border) 60%, var(--cx-text) 40%);
+  }
+
+  .pager-kicker { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--cx-text-2); }
+  .pager-title { margin-top: 6px; font-size: 16px; color: var(--cx-text); }
+
+  .pager-next { text-align: right; }
+
+  @media (max-width: 820px) {
+    .docs-grid { grid-template-columns: 1fr; }
+    .docs-left { position: static; height: auto; }
+    .docs-pager { grid-template-columns: 1fr; }
+    .pager-next { text-align: left; }
+  }
+</style>

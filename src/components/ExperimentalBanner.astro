@@ -1,0 +1,48 @@
+---
+import { SITE } from "../lib/site";
+---
+
+<div class="exp-banner">
+  <div class="exp-left">
+    <span class="exp-pill">EXPERIMENTAL</span>
+    <span class="exp-text">
+      Early stage. Build from source only. Not production-ready.
+    </span>
+  </div>
+
+  <div class="exp-right">
+    <span class="exp-ver">{SITE.version}</span>
+  </div>
+</div>
+
+<style>
+  .exp-banner{
+    display:flex; align-items:center; justify-content:space-between; gap:14px;
+    border:1px solid color-mix(in srgb, var(--cx-accent) 35%, var(--cx-border));
+    background: color-mix(in srgb, var(--cx-accent) 8%, var(--cx-surface));
+    border-radius: 16px;
+    padding: 10px 12px;
+    box-shadow: 0 0 24px color-mix(in srgb, var(--cx-accent) 14%, transparent);
+  }
+  .exp-left{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .exp-pill{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--cx-accent) 55%, var(--cx-border));
+    color: var(--cx-accent);
+    background: color-mix(in srgb, var(--cx-accent) 10%, transparent);
+  }
+  .exp-text{ font-size: 13px; color: var(--cx-text-2); }
+  .exp-ver{
+    font-family: var(--cx-mono);
+    font-size: 12px;
+    color: var(--cx-text-2);
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+  }
+</style>

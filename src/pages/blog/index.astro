@@ -1,0 +1,201 @@
+---
+import SiteLayout from "../../layouts/SiteLayout.astro";
+import SectionHeader from "../../components/SectionHeader.astro";
+import { getCollection } from "astro:content";
+
+const posts = (await getCollection("blog"))
+  .filter((p) => !p.data.draft)
+  .sort((a, b) => b.data.date.getTime() - a.data.date.getTime());
+
+const TYPE_LABELS: Record<string, string> = {
+  release: "Release",
+  note: "Note",
+  guide: "Guide",
+};
+
+function getType(entry: any) {
+  const t = (entry.data.type ?? entry.data.kind ?? entry.data.category ?? "note") as string;
+  const key = String(t).toLowerCase();
+  return TYPE_LABELS[key] ? key : "note";
+}
+
+function monthKey(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthLabel(d: Date) {
+  return d.toLocaleString("en-US", { month: "short", year: "numeric" });
+}
+
+function dateLong(d: Date) {
+  return d.toLocaleString("en-US", { year: "numeric", month: "short", day: "2-digit" });
+}
+
+const groups = new Map<string, { label: string; items: typeof posts }>();
+
+for (const p of posts) {
+  const key = monthKey(p.data.date);
+  if (!groups.has(key)) groups.set(key, { label: monthLabel(p.data.date), items: [] });
+  groups.get(key)!.items.push(p);
+}
+
+const grouped = Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a[0]));
+---
+
+<SiteLayout title="Blog | Cx" description="Cx updates, release logs, notes." wide={true}>
+  <div class="blog-shell">
+    <SectionHeader n="02" title="Blog" subtitle="Release notes, build notes, guides." />
+
+    <div class="months">
+      {grouped.map(([key, g]) => (
+        <section class="month" aria-label={g.label}>
+          <div class="month-head">
+            <div class="month-title">{g.label}</div>
+            <div class="month-rule" aria-hidden="true"></div>
+          </div>
+
+          <div class="rows">
+            {g.items.map((p) => {
+              const typeKey = getType(p);
+              const typeLabel = TYPE_LABELS[typeKey] ?? "Note";
+
+              return (
+                <a class="row row-link" href={`/blog/${p.slug}`}>
+                  <div class="row-meta">
+                    <div class="row-date">{dateLong(p.data.date)}</div>
+                    <div class={`row-pill row-pill-${typeKey}`}>{typeLabel}</div>
+                    {p.data.version && <div class="row-ver">{p.data.version}</div>}
+                  </div>
+
+                  <div class="row-title">{p.data.title}</div>
+
+                  {p.data.description ? (
+                    <p class="row-desc">{p.data.description}</p>
+                  ) : (
+                    <p class="row-desc row-desc-empty">No description.</p>
+                  )}
+                </a>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  </div>
+</SiteLayout>
+
+<style>
+  .blog-shell{ max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  .months{ margin-top: 18px; display: grid; gap: 22px; }
+
+  .month-head{
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 12px;
+    align-items: center;
+    margin: 6px 0 12px;
+  }
+
+  .month-title{
+    font-family: var(--cx-mono);
+    font-size: 12px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--cx-text-2);
+    padding: 8px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+  }
+
+  .month-rule{
+    height: 1px;
+    background: color-mix(in srgb, var(--cx-border) 65%, transparent);
+  }
+
+  .rows{ display: grid; gap: 14px; }
+
+  .row{
+    border: 1px solid var(--cx-border);
+    border-radius: 18px;
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--cx-surface) 72%, transparent);
+    transition: transform 120ms ease, border-color 120ms ease;
+  }
+  .row:hover{
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--cx-border) 60%, var(--cx-text) 40%);
+  }
+
+  .row-meta{
+    display:flex;
+    align-items:center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+
+  .row-date{
+    font-family: var(--cx-mono);
+    font-size: 12px;
+    color: var(--cx-text-2);
+  }
+
+  .row-pill{
+    font-size: 11px;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--cx-border);
+    color: var(--cx-text);
+    background: color-mix(in srgb, var(--cx-surface) 55%, transparent);
+  }
+
+  .row-pill-release{ border-color: color-mix(in srgb, var(--cx-border) 60%, #7dd3fc 40%); }
+  .row-pill-note{ border-color: color-mix(in srgb, var(--cx-border) 60%, #a78bfa 40%); }
+  .row-pill-guide{ border-color: color-mix(in srgb, var(--cx-border) 60%, #34d399 40%); }
+
+  .row-ver{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    color: var(--cx-text-2);
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--cx-border);
+    background: transparent;
+  }
+
+  .row-title{
+    display:inline-block;
+    font-family: var(--cx-display);
+    font-size: 26px;
+    line-height: 1.2;
+    color: var(--cx-text);
+    text-decoration: none;
+    margin: 0 0 8px 0;
+  }
+  .row-title:hover{ text-decoration: underline; }
+
+  .row-link{
+    display: block;
+    text-decoration: none;
+    color: inherit;
+  }
+  .row-link:hover .row-title{
+    text-decoration: underline;
+  }
+
+  .row-desc{
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--cx-text-2);
+  }
+  .row-desc-empty{ opacity: .7; }
+
+  @media (max-width: 720px){
+    .blog-shell{ padding: 0 16px; }
+    .row-title{ font-size: 22px; }
+  }
+</style>
