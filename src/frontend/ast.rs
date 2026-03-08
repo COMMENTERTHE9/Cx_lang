@@ -6,6 +6,10 @@ pub enum Op {
     Div,
     Mod,
     EqEq,
+    Lt,
+    Gt,
+    LtEq,
+    GtEq,
     And,
     Or,
 }
@@ -64,6 +68,7 @@ pub enum Expr {
     HandleDrop(String, usize),
     Call(String, Vec<CallArg>, usize),
     Range(Box<Expr>, Box<Expr>, bool),
+    Unary(Op, Box<Expr>, usize),
     Bin(Box<Expr>, Op, usize, Box<Expr>),
 }
 
@@ -106,6 +111,12 @@ pub enum Stmt {
         expr: Expr,
         pos_type: usize,
     },
+    CompoundAssign {
+        name: String,
+        op: Op,
+        operand: Expr,
+        pos: usize,
+    },
     Print {
         expr: Expr,
         pos: usize,
@@ -133,6 +144,29 @@ pub enum Stmt {
     Block {
         stmts: Vec<Stmt>,
         _pos: usize,
+    },
+    While {
+        cond: Expr,
+        body: Vec<Stmt>,
+        pos: usize,
+    },
+    For {
+        var: String,
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+        body: Vec<Stmt>,
+        pos: usize,
+    },
+    Loop {
+        body: Vec<Stmt>,
+        pos: usize,
+    },
+    Break {
+        pos: usize,
+    },
+    Continue {
+        pos: usize,
     },
     When {
         expr: Expr,

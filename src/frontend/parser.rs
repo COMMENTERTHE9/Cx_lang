@@ -18,6 +18,7 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::HandleVal(_, pos) => *pos,
         Expr::HandleDrop(_, pos) => *pos,
         Expr::Call(_, _, pos) => *pos,
+        Expr::Unary(_, _, pos) => *pos,
         Expr::Range(a, _, _) => expr_pos(a),
         Expr::Bin(_, _, pos, _) => *pos,
     }
@@ -161,6 +162,15 @@ where
             .or(ident_or_call)
             .or(paren);
 
+        let unary = choice((
+            just(Token::OpMul).to(Op::Mul),
+            just(Token::OpSub).to(Op::Minus),
+        ))
+        .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start))
+        .then(primary.clone())
+        .map(|((op, pos), expr)| Expr::Unary(op, Box::new(expr), pos))
+        .or(primary.clone());
+
         let mul_div_op = select! {
             Token::OpMul => Op::Mul,
             Token::OpDiv => Op::Div,
@@ -180,9 +190,9 @@ where
         let or_op = just(Token::OpOr)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
 
-        let term = primary.clone().foldl(
+        let term = unary.clone().foldl(
             mul_div_op
-                .then(primary)
+                .then(unary)
                 .repeated(),
             |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
@@ -194,12 +204,20 @@ where
             |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
 
+        let equality_op = choice((
+            just(Token::OpEqualEqual).to(Op::EqEq),
+            just(Token::OpLessThan).to(Op::Lt),
+            just(Token::OpGreaterThan).to(Op::Gt),
+            just(Token::OpLessEq).to(Op::LtEq),
+            just(Token::OpGreaterEq).to(Op::GtEq),
+        ))
+        .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start));
+
         let equality = additive.clone().foldl(
-            just(Token::OpEqualEqual)
-                .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            equality_op
                 .then(additive)
                 .repeated(),
-            |lhs, (op_pos, rhs)| Expr::Bin(Box::new(lhs), Op::EqEq, op_pos, Box::new(rhs)),
+            |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
 
         let logical_and = equality.clone().foldl(
@@ -465,6 +483,69 @@ where
             .then_ignore(just(Token::PunctBraceClose))
             .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos });
 
+        let while_stmt = just(Token::KeywordWhile)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, cond), body)| Stmt::While { cond, body, pos });
+
+        let for_stmt = just(Token::KeywordFor)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident.clone())
+            .then_ignore(just(Token::KeywordIn))
+            .then(expr.clone())
+            .then(choice((
+                just(Token::RangeInclusive).to(true),
+                just(Token::RangeExclusive).to(false),
+            )))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|(((((pos, var), start), inclusive), end), body)| Stmt::For {
+                var, start, end, inclusive, body, pos,
+            });
+
+        let loop_stmt = just(Token::KeywordLoop)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|(pos, body)| Stmt::Loop { body, pos });
+
+        let break_stmt = just(Token::KeywordBreak)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(semi.clone().or_not())
+            .map(|pos| Stmt::Break { pos });
+
+        let continue_stmt = just(Token::KeywordContinue)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(semi.clone().or_not())
+            .map(|pos| Stmt::Continue { pos });
+
+        let compound_assign = ident.clone()
+            .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
+            .then(choice((
+                just(Token::OpAdd).to(Op::Plus),
+                just(Token::OpSub).to(Op::Minus),
+                just(Token::OpMul).to(Op::Mul),
+                just(Token::OpDiv).to(Op::Div),
+                just(Token::OpMod).to(Op::Mod),
+            )))
+            .then(select! { Token::LiteralInt(n) => n })
+            .then_ignore(just(Token::OpAssign))
+            .then_ignore(semi.clone().or_not())
+            .map(|(((name, pos), op), n)| Stmt::CompoundAssign {
+                name,
+                op,
+                operand: Expr::Val(AstValue::Num(n as u128)),
+                pos,
+            });
+
         choice((
             enum_def,
             decl,
@@ -473,9 +554,15 @@ where
             print_inline,
             ret,
             typed_assign,
+            compound_assign,
             assign,
             block,
             when_stmt,
+            while_stmt,
+            for_stmt,
+            loop_stmt,
+            break_stmt,
+            continue_stmt,
             expr_stmt,
         ))
     })

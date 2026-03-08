@@ -165,6 +165,12 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             "stale handle access â€” handle was already dropped".to_string(),
             *pos,
         ),
+        RuntimeError::BreakSignal => ("break signal".to_string(), 0),
+        RuntimeError::ContinueSignal => ("continue signal".to_string(), 0),
+        RuntimeError::ReadOnlyLoopVar { pos, name } => (
+            format!("loop variable '{}' is read-only", name),
+            *pos,
+        ),
         RuntimeError::EarlyReturn(_) => (
             "return statement used outside of a function body".to_string(),
             0,
@@ -340,6 +346,12 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                 }
             }
         }
+        Stmt::While { .. } => eprintln!("{}While", pad),
+        Stmt::For { .. } => eprintln!("{}For", pad),
+        Stmt::Loop { .. } => eprintln!("{}Loop", pad),
+        Stmt::Break { .. } => eprintln!("{}Break", pad),
+        Stmt::Continue { .. } => eprintln!("{}Continue", pad),
+        Stmt::CompoundAssign { .. } => eprintln!("{}CompoundAssign", pad),
         Stmt::ExprStmt { expr, .. } => {
             eprintln!("{}ExprStmt", pad);
             print_expr(expr, depth + 1);
@@ -356,6 +368,7 @@ fn print_expr(expr: &Expr, depth: usize) {
         Expr::HandleNew(_, _) => eprintln!("{}Handle.new(...)", pad),
         Expr::HandleVal(name, _) => eprintln!("{}{}.val", pad, name),
         Expr::HandleDrop(name, _) => eprintln!("{}{}.drop()", pad, name),
+        Expr::Unary(_, _, _) => eprintln!("{}Unary", pad),
         Expr::Range(_, _, _) => eprintln!("{}Range", pad),
         Expr::Call(name, args, _) => {
             eprintln!("{}Call({})", pad, name);
@@ -434,8 +447,15 @@ pub fn print_stmt_summary(stmt: &Stmt) {
         Stmt::FuncDef { name, .. } => format!("FuncDef {}", name),
         Stmt::Block { .. } => "Block".to_string(),
         Stmt::When { .. } => "When".to_string(),
+        Stmt::While { .. } => "While".to_string(),
+        Stmt::For { .. } => "For".to_string(),
+        Stmt::Loop { .. } => "Loop".to_string(),
+        Stmt::Break { .. } => "Break".to_string(),
+        Stmt::Continue { .. } => "Continue".to_string(),
+        Stmt::CompoundAssign { .. } => "CompoundAssign".to_string(),
     };
     eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }
+
 
 

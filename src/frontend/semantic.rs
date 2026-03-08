@@ -399,6 +399,62 @@ impl Analyzer {
                 }
                 Ok(())
             }
+            Stmt::While { cond, body, pos } => {
+                let cond_ty = self.type_expr(cond)?;
+                if matches!(cond_ty, Ty::Unknown) {
+                    return Err(SemanticError {
+                        msg: "Unknown value cannot be used as a loop condition — control-critical context".to_string(),
+                        pos: *pos,
+                    });
+                }
+                for s in body {
+                    self.analyze_stmt(s)?;
+                }
+                Ok(())
+            }
+            Stmt::For { var, body, pos, .. } => {
+                self.push_scope();
+                self.declare(
+                    var,
+                    VarInfo {
+                        declared: Some(Type::T64),
+                        inferred: Some(Ty::Num),
+                        initialized: true,
+                    },
+                    *pos,
+                )?;
+                for s in body {
+                    match s {
+                        Stmt::Assign { target: Expr::Ident(name, _), .. } if name == var => {
+                            self.pop_scope();
+                            return Err(SemanticError {
+                                msg: format!("loop variable '{}' is read-only", var),
+                                pos: *pos,
+                            });
+                        }
+                        Stmt::CompoundAssign { name, .. } if name == var => {
+                            self.pop_scope();
+                            return Err(SemanticError {
+                                msg: format!("loop variable '{}' is read-only", var),
+                                pos: *pos,
+                            });
+                        }
+                        _ => {}
+                    }
+                    self.analyze_stmt(s)?;
+                }
+                self.pop_scope();
+                Ok(())
+            }
+            Stmt::Loop { body, .. } => {
+                for s in body {
+                    self.analyze_stmt(s)?;
+                }
+                Ok(())
+            }
+            Stmt::Break { .. } => Ok(()),
+            Stmt::Continue { .. } => Ok(()),
+            Stmt::CompoundAssign { .. } => Ok(()),
         }
     }
 
@@ -515,6 +571,7 @@ impl Analyzer {
             Expr::HandleNew(_, _) => Ok(Ty::Handle),
             Expr::HandleVal(_, _) => Ok(Ty::Num),
             Expr::HandleDrop(_, _) => Ok(Ty::Handle),
+            Expr::Unary(_, inner, _) => self.type_expr(inner),
 
             Expr::Bin(lhs, op, op_pos, rhs) => {
                 let lt = self.type_expr(lhs)?;
@@ -551,6 +608,13 @@ impl Analyzer {
                                 msg: format!("cannot compare {:?} == {:?}", lt, rt),
                                 pos: *op_pos,
                             })
+                        }
+                    }
+                    Op::Lt | Op::Gt | Op::LtEq | Op::GtEq => {
+                        if lt == Ty::Unknown || rt == Ty::Unknown {
+                            Ok(Ty::Unknown)
+                        } else {
+                            Ok(Ty::Bool)
                         }
                     }
                     Op::And | Op::Or => {

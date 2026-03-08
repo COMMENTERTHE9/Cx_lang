@@ -61,6 +61,27 @@ pub enum Token {
     #[token("when")]
     KeywordWhen,
 
+    #[token("while")]
+    KeywordWhile,
+
+    #[token("for")]
+    KeywordFor,
+
+    #[token("in")]
+    KeywordIn,
+
+    #[token("loop")]
+    KeywordLoop,
+
+    #[token("break")]
+    KeywordBreak,
+
+    #[token("continue")]
+    KeywordContinue,
+
+    #[token("then")]
+    KeywordThen,
+
     #[token("enum")]
     KeywordEnum,
 
@@ -154,6 +175,12 @@ pub enum Token {
     // ── Comparison Operators ──────────────────────
     #[token("==")]
     OpEqualEqual,
+
+    #[token("<=")]
+    OpLessEq,
+
+    #[token(">=")]
+    OpGreaterEq,
 
     #[token(">")]
     OpGreaterThan,

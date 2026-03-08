@@ -66,6 +66,12 @@ pub enum RuntimeError {
     StaleHandle {
         pos: usize,
     },
+    BreakSignal,
+    ContinueSignal,
+    ReadOnlyLoopVar {
+        pos: usize,
+        name: String,
+    },
     EarlyReturn(Value),
 }
 

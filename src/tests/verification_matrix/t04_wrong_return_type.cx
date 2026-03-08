@@ -1,4 +1,0 @@
-fnc bad() -> t64 {
-    return "hello";
-}
-bad();

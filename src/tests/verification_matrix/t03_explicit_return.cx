@@ -1,5 +1,0 @@
-fnc find(a: t64, b: t64) -> t64 {
-    return a;
-    b
-}
-print(find(10, 20));

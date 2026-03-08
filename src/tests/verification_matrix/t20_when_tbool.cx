@@ -1,7 +1,0 @@
-let x;
-x = false
-when (x) {
-    true    => print(1)
-    false   => print(190)
-    unknown => print(2)
-}

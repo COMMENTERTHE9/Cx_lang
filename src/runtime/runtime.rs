@@ -490,6 +490,15 @@ impl RunTime {
                     Err(RuntimeError::StaleHandle { pos: *pos })
                 }
             }
+            Expr::Unary(op, inner, pos) => {
+                let val = self.eval_expr(inner)?;
+                match (op, val) {
+                    (Op::Minus, Value::Num(n)) => Ok(Value::Num(n.wrapping_neg())),
+                    (Op::Minus, Value::Float(f)) => Ok(Value::Float(-f)),
+                    (Op::Mul, v) => Ok(v),
+                    _ => Err(RuntimeError::BadAssignTarget { pos: *pos }),
+                }
+            }
             Expr::Call(name, args, pos) => {
                 let func = self
                     .funcs
@@ -702,6 +711,22 @@ impl RunTime {
                     right: r.clone(),
                 }),
             },
+            Op::Lt => match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a < b)),
+                _ => Err(RuntimeError::BadOperands { pos, op, left, right }),
+            },
+            Op::Gt => match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a > b)),
+                _ => Err(RuntimeError::BadOperands { pos, op, left, right }),
+            },
+            Op::LtEq => match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a <= b)),
+                _ => Err(RuntimeError::BadOperands { pos, op, left, right }),
+            },
+            Op::GtEq => match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a >= b)),
+                _ => Err(RuntimeError::BadOperands { pos, op, left, right }),
+            },
             Op::And => match (&left, &right) {
                 (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
                 (l, r) => Err(RuntimeError::BadOperands {
@@ -867,6 +892,85 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
                 }
             }
             Ok(())
+        }
+        Stmt::While { cond, body, .. } => {
+            loop {
+                let val = rt.eval_expr(&cond)?;
+                match val {
+                    Value::Bool(true) => {}
+                    _ => break,
+                }
+                rt.push_scope();
+                let mut should_break = false;
+                for s in body.clone() {
+                    match run_stmt(rt, s) {
+                        Ok(_) => {}
+                        Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                        Err(RuntimeError::ContinueSignal) => { break; }
+                        Err(e) => { rt.pop_scope(); return Err(e); }
+                    }
+                }
+                rt.pop_scope();
+                if should_break { break; }
+            }
+            Ok(())
+        }
+        Stmt::For { var, start, end, inclusive, body, .. } => {
+            let start_val = match rt.eval_expr(&start)? {
+                Value::Num(n) => n,
+                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+            };
+            let end_val = match rt.eval_expr(&end)? {
+                Value::Num(n) => n,
+                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+            };
+            let range: Vec<u128> = if inclusive {
+                (start_val..=end_val).collect()
+            } else {
+                (start_val..end_val).collect()
+            };
+            for i in range {
+                rt.push_scope();
+                rt.declare(var.clone(), None, 0)?;
+                rt.set_var(var.clone(), Value::Num(i), 0)?;
+                let mut should_break = false;
+                for s in body.clone() {
+                    match run_stmt(rt, s) {
+                        Ok(_) => {}
+                        Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                        Err(RuntimeError::ContinueSignal) => { break; }
+                        Err(e) => { rt.pop_scope(); return Err(e); }
+                    }
+                }
+                rt.pop_scope();
+                if should_break { break; }
+            }
+            Ok(())
+        }
+        Stmt::Loop { body, .. } => {
+            loop {
+                rt.push_scope();
+                let mut should_break = false;
+                for s in body.clone() {
+                    match run_stmt(rt, s) {
+                        Ok(_) => {}
+                        Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                        Err(RuntimeError::ContinueSignal) => { break; }
+                        Err(e) => { rt.pop_scope(); return Err(e); }
+                    }
+                }
+                rt.pop_scope();
+                if should_break { break; }
+            }
+            Ok(())
+        }
+        Stmt::Break { .. } => Err(RuntimeError::BreakSignal),
+        Stmt::Continue { .. } => Err(RuntimeError::ContinueSignal),
+        Stmt::CompoundAssign { name, op, operand, pos } => {
+            let current = rt.get_var(&name, pos)?;
+            let rhs = rt.eval_expr(&operand)?;
+            let result = rt.apply_op(current, op, pos, rhs)?;
+            rt.set_var(name, result, pos)
         }
     }
 }
