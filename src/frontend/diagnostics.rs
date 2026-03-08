@@ -11,14 +11,13 @@ use colored::Colorize;
 pub(crate) const ERR_FAILED_STATEMENT: &str = "failed to parse statement";
 
 pub(crate) fn lexer_error_message(slice: &str) -> String {
-    format!("unrecognized token {:?} — this character is not valid in Cx", slice)
+    format!(
+        "unrecognized token {:?} — this character is not valid in Cx",
+        slice
+    )
 }
 
-pub(crate) fn unresolved_var_error(
-    pos: usize,
-    name: String,
-    was_seen: bool,
-) -> RuntimeError {
+pub(crate) fn unresolved_var_error(pos: usize, name: String, was_seen: bool) -> RuntimeError {
     if was_seen {
         RuntimeError::OutOfScope { pos, name }
     } else {
@@ -66,7 +65,10 @@ pub(crate) fn print_at(src: &str, title: &str, msg: &str, pos: usize) {
         msg.white()
     );
     eprintln!("{}", line.white().dimmed());
-    eprintln!("{}", format!("{:>width$}^", "", width = col + 1).cyan().bold());
+    eprintln!(
+        "{}",
+        format!("{:>width$}^", "", width = col + 1).cyan().bold()
+    );
 }
 
 // ── Parse errors ─────────────────────────────────────────────────
@@ -200,7 +202,9 @@ pub(crate) fn print_summary(error_count: usize) {
 pub fn print_token_table(tokens: &[(Token, std::ops::Range<usize>)], src: &str) {
     eprintln!(
         "{}",
-        "── TOKENS ──────────────────────────────────────────".cyan().bold()
+        "── TOKENS ──────────────────────────────────────────"
+            .cyan()
+            .bold()
     );
     eprintln!(
         "{}",
@@ -235,7 +239,9 @@ pub fn print_token_table(tokens: &[(Token, std::ops::Range<usize>)], src: &str) 
 pub fn print_ast(program: &Program) {
     eprintln!(
         "{}",
-        "── AST ─────────────────────────────────────────────".cyan().bold()
+        "── AST ─────────────────────────────────────────────"
+            .cyan()
+            .bold()
     );
     for stmt in &program.stmts {
         print_stmt(stmt, 0);
@@ -305,12 +311,7 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                         eprintln!("{}  Param({}.copy.free)", pad, pname);
                     }
                     ParamKind::CopyInto(name, vars) => {
-                        eprintln!(
-                            "{}  Param({}: copy_into({}))",
-                            pad,
-                            name,
-                            vars.join(", ")
-                        );
+                        eprintln!("{}  Param({}: copy_into({}))", pad, name, vars.join(", "));
                     }
                 }
             }
@@ -336,13 +337,28 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                 match &arm.pattern {
                     WhenPattern::Literal(v) => eprintln!("{}  Arm({:?})", pad, v),
                     WhenPattern::EnumVariant(e, v) => eprintln!("{}  Arm({}::{})", pad, e, v),
+                    WhenPattern::Group(e, g) => eprintln!("{}  Arm(Group {}::{})", pad, e, g),
                     WhenPattern::Range(_, _, inclusive) => {
                         eprintln!("{}  Arm(Range, inclusive={})", pad, inclusive)
                     }
                     WhenPattern::Catchall => eprintln!("{}  Arm(_)", pad),
+                    WhenPattern::Placeholder => eprintln!("{}  Arm({{_}})", pad),
                 }
-                for s in &arm.body {
-                    print_stmt(s, depth + 2);
+                match &arm.body {
+                    WhenBody::Stmts(stmts) => {
+                        for s in stmts {
+                            print_stmt(s, depth + 2);
+                        }
+                    }
+                    WhenBody::SuperGroup(handlers) => {
+                        for handler in handlers {
+                            if let SuperGroupHandler::Stmts(stmts) = handler {
+                                for s in stmts {
+                                    print_stmt(s, depth + 2);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -409,7 +425,10 @@ pub fn print_scope_event(event: &ScopeEvent) {
             eprintln!("  {}", format!("- {}  = freed", name).red());
         }
         ScopeEvent::BleedBack(name, val) => {
-            eprintln!("  {}", format!("~ {}  = {:?}  (bled back)", name, val).cyan());
+            eprintln!(
+                "  {}",
+                format!("~ {}  = {:?}  (bled back)", name, val).cyan()
+            );
         }
         ScopeEvent::HandleAlloc { slot, gen } => {
             eprintln!("  ⬡ handle alloc  slot={} gen={}", slot, gen);
@@ -428,7 +447,10 @@ pub fn print_scope_event(event: &ScopeEvent) {
             if *bytes == 0 {
                 eprintln!("  ? arena reset  N/A  {} chunk(s)", chunks);
             } else {
-                eprintln!("  ? arena reset  {} bytes freed  {} chunk(s)", bytes, chunks);
+                eprintln!(
+                    "  ? arena reset  {} bytes freed  {} chunk(s)",
+                    bytes, chunks
+                );
             }
         }
     }
@@ -456,6 +478,3 @@ pub fn print_stmt_summary(stmt: &Stmt) {
     };
     eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }
-
-
-

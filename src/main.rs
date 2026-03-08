@@ -1,17 +1,18 @@
-mod frontend;
-mod runtime;
 mod backend;
+mod frontend;
 mod ir;
+mod runtime;
 
 pub use runtime::arena::Arena;
 
+use backend::Backend;
 use frontend::ast::*;
 use frontend::diagnostics;
 use frontend::lexer::*;
 use frontend::parser;
 use frontend::semantic;
+use frontend::semantic_types::SemanticProgram;
 use runtime::runtime::*;
-use backend::Backend;
 
 use chumsky::input::{Input, Stream};
 use chumsky::prelude::SimpleSpan;
@@ -41,7 +42,6 @@ impl DebugFlags {
             phase: all || args.contains(&"--debug-phase".to_string()),
         }
     }
-
 }
 
 struct PhaseTimer {
@@ -142,27 +142,34 @@ fn main() {
 
     // SEMANTIC PHASE
     let sem_timer = flags.phase.then(|| PhaseTimer::start("SEMANTIC"));
-    let semantic_errors = semantic::analyze_program(&program);
-    if let Some(t) = sem_timer {
-        t.finish(&format!("{} errors", semantic_errors.len()));
-    }
-    if !semantic_errors.is_empty() {
-        for e in &semantic_errors {
-            diagnostics::print_custom(&input, &e.msg, e.pos);
+    let semantic_program = match semantic::analyze_program(&program) {
+        Ok(program) => program,
+        Err(errors) => {
+            if let Some(t) = sem_timer {
+                t.finish(&format!("{} errors", errors.len()));
+            }
+            for e in &errors {
+                diagnostics::print_custom(&input, &e.msg, e.pos);
+            }
+            diagnostics::print_summary(errors.len());
+            return;
         }
-        diagnostics::print_summary(semantic_errors.len());
-        return;
+    };
+    if let Some(t) = sem_timer {
+        t.finish("0 errors");
     }
 
     match backend_kind {
         backend::BackendKind::Interpret => run_with_interpreter(program, &input, &flags),
         backend::BackendKind::Cranelift => {
+            let _ = prepare_ir(&semantic_program);
             let b = backend::cranelift::CraneliftBackend;
             if let Err(msg) = b.execute(&program) {
                 eprintln!("{}", msg);
             }
         }
         backend::BackendKind::Llvm => {
+            let _ = prepare_ir(&semantic_program);
             let b = backend::llvm::LlvmBackend;
             if let Err(msg) = b.execute(&program) {
                 eprintln!("{}", msg);
@@ -196,7 +203,11 @@ fn run_with_interpreter(program: Program, input: &str, flags: &DebugFlags) {
     }
 }
 
-fn parse_program_with_fallback(tok_list: &[Tok], src: &str, _debug: bool) -> Result<Program, ParseError> {
+fn parse_program_with_fallback(
+    tok_list: &[Tok],
+    src: &str,
+    _debug: bool,
+) -> Result<Program, ParseError> {
     match parse_program_chumsky(tok_list, src) {
         Ok(program) => Ok(program),
         Err(chumsky_errs) => Err(chumsky_errs.into_iter().next().unwrap_or(ParseError {
@@ -229,3 +240,6 @@ fn parse_program_chumsky(tok_list: &[Tok], src: &str) -> Result<Program, Vec<Par
     }
 }
 
+fn prepare_ir(semantic_program: &SemanticProgram) -> crate::ir::IrModule {
+    backend::lower_to_ir(semantic_program)
+}

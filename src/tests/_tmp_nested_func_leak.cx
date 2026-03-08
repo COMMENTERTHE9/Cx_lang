@@ -1,0 +1,8 @@
+fnc outer() {
+    fnc inner() {
+        print(99)
+    }
+    inner()
+}
+outer()
+inner()

@@ -1,3 +1,4 @@
+// incremental rebuild test
 use chumsky::{
     input::{MapExtra, ValueInput},
     prelude::*,
@@ -54,9 +55,7 @@ where
             Token::KeywordFalse     => Expr::Val(AstValue::Bool(false)),
         }
         .or(just(Token::QuestionMark)
-            .map_with(|_, _e: &mut ParseExtra<'a, '_, I>| {
-                Expr::Val(AstValue::Unknown)
-            }));
+            .map_with(|_, _e: &mut ParseExtra<'a, '_, I>| Expr::Val(AstValue::Unknown)));
 
         let ident = select! { Token::Identifier(s) => s };
         let ident_with_pos = ident
@@ -74,29 +73,27 @@ where
                         .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose)),
                 )
                 .map(|vars| CallArg::CopyInto(vars))
-                .or(
-                    ident
-                        .clone()
-                        .then(
-                            just(Token::PunctDot)
-                                .ignore_then(select! { Token::Identifier(s) => s })
-                                .then(
-                                    just(Token::PunctDot)
-                                        .ignore_then(select! { Token::Identifier(s) => s })
-                                        .or_not(),
-                                )
-                                .or_not(),
-                        )
-                        .map(|(name, modifier)| match modifier {
-                            Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
-                                CallArg::CopyFree(name)
-                            }
-                            Some((m1, None)) if m1 == "copy" => CallArg::Copy(name),
-                            Some((field, None)) => CallArg::Expr(Expr::DotAccess(name, field)),
-                            _ => CallArg::Expr(Expr::Ident(name, 0)),
-                        })
-                        .or(expr.clone().map(CallArg::Expr)),
-                );
+                .or(ident
+                    .clone()
+                    .then(
+                        just(Token::PunctDot)
+                            .ignore_then(select! { Token::Identifier(s) => s })
+                            .then(
+                                just(Token::PunctDot)
+                                    .ignore_then(select! { Token::Identifier(s) => s })
+                                    .or_not(),
+                            )
+                            .or_not(),
+                    )
+                    .map(|(name, modifier)| match modifier {
+                        Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
+                            CallArg::CopyFree(name)
+                        }
+                        Some((m1, None)) if m1 == "copy" => CallArg::Copy(name),
+                        Some((field, None)) => CallArg::Expr(Expr::DotAccess(name, field)),
+                        _ => CallArg::Expr(Expr::Ident(name, 0)),
+                    })
+                    .or(expr.clone().map(CallArg::Expr)));
 
             call_arg
                 .separated_by(just(Token::PunctComma))
@@ -184,23 +181,17 @@ where
         }
         .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start));
 
-        let and_op = just(Token::OpAnd)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
+        let and_op = just(Token::OpAnd).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
 
-        let or_op = just(Token::OpOr)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
+        let or_op = just(Token::OpOr).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start);
 
         let term = unary.clone().foldl(
-            mul_div_op
-                .then(unary)
-                .repeated(),
+            mul_div_op.then(unary).repeated(),
             |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
 
         let additive = term.clone().foldl(
-            add_sub_op
-                .then(term)
-                .repeated(),
+            add_sub_op.then(term).repeated(),
             |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
 
@@ -214,25 +205,21 @@ where
         .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start));
 
         let equality = additive.clone().foldl(
-            equality_op
-                .then(additive)
-                .repeated(),
+            equality_op.then(additive).repeated(),
             |lhs, ((op, op_pos), rhs)| Expr::Bin(Box::new(lhs), op, op_pos, Box::new(rhs)),
         );
 
-        let logical_and = equality.clone().foldl(
-            and_op
-                .then(equality)
-                .repeated(),
-            |lhs, (op_pos, rhs)| Expr::Bin(Box::new(lhs), Op::And, op_pos, Box::new(rhs)),
-        );
+        let logical_and = equality
+            .clone()
+            .foldl(and_op.then(equality).repeated(), |lhs, (op_pos, rhs)| {
+                Expr::Bin(Box::new(lhs), Op::And, op_pos, Box::new(rhs))
+            });
 
-        logical_and.clone().foldl(
-            or_op
-                .then(logical_and)
-                .repeated(),
-            |lhs, (op_pos, rhs)| Expr::Bin(Box::new(lhs), Op::Or, op_pos, Box::new(rhs)),
-        )
+        logical_and
+            .clone()
+            .foldl(or_op.then(logical_and).repeated(), |lhs, (op_pos, rhs)| {
+                Expr::Bin(Box::new(lhs), Op::Or, op_pos, Box::new(rhs))
+            })
     })
 }
 
@@ -241,7 +228,7 @@ where
     I: ValueInput<'a, Token = Token, Span = Span>,
 {
     recursive(|stmt| {
-        let expr = expr_parser::<I>();
+        let expr = expr_parser::<I>().boxed();
         let ty = type_parser::<I>();
         let ident = select! { Token::Identifier(s) => s };
         let semi = just(Token::PunctSemicolon);
@@ -251,7 +238,7 @@ where
             .then(ident.clone())
             .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
             .then_ignore(semi.clone())
-            .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos });
+            .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos }).boxed();
 
         let assign = ident
             .clone()
@@ -261,9 +248,7 @@ where
                     .ignore_then(select! { Token::Identifier(s) => s })
                     .or_not(),
             )
-            .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| {
-                e.span().start
-            }))
+            .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start))
             .then(expr.clone())
             .then_ignore(semi.clone().or_not())
             .map(|((((name, name_pos), field), pos_eq), expr)| {
@@ -276,13 +261,13 @@ where
                     expr,
                     pos_eq,
                 }
-            });
+            }).boxed();
 
         let typed_assign = ident
             .clone()
-            .then(just(Token::PunctColon).map_with(
-                |_, e: &mut ParseExtra<'a, '_, I>| e.span().start,
-            ))
+            .then(
+                just(Token::PunctColon).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start),
+            )
             .then(ty.clone())
             .then_ignore(just(Token::OpAssign))
             .then(expr.clone())
@@ -292,7 +277,7 @@ where
                 ty,
                 expr,
                 pos_type,
-            });
+            }).boxed();
 
         let print = just(Token::KeywordPrint)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -300,7 +285,7 @@ where
             .then(expr.clone())
             .then_ignore(just(Token::PunctParenClose))
             .then_ignore(semi.clone().or_not())
-            .map(|(pos, expr)| Stmt::Print { expr, pos });
+            .map(|(pos, expr)| Stmt::Print { expr, pos }).boxed();
 
         let print_inline = just(Token::KeywordPrintInline)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -308,35 +293,35 @@ where
             .then(expr.clone())
             .then_ignore(just(Token::PunctParenClose))
             .then_ignore(semi.clone().or_not())
-            .map(|(pos, expr)| Stmt::PrintInline { expr, _pos: pos });
+            .map(|(pos, expr)| Stmt::PrintInline { expr, _pos: pos }).boxed();
 
         let ret = just(Token::KeywordReturn)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(expr.clone().or_not())
             .then_ignore(semi.clone())
-            .map(|(pos, expr)| Stmt::Return { expr, pos });
+            .map(|(pos, expr)| Stmt::Return { expr, pos }).boxed();
 
         let block = just(Token::PunctBraceOpen)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|(pos, stmts)| Stmt::Block { stmts, _pos: pos });
+            .map(|(pos, stmts)| Stmt::Block { stmts, _pos: pos }).boxed();
 
-        let expr_stmt = expr
-            .clone()
-            .then_ignore(semi.clone().or_not())
-            .map(|expr| Stmt::ExprStmt {
-                _pos: expr_pos(&expr),
-                expr,
-            });
+        let expr_stmt =
+            expr.clone()
+                .then_ignore(semi.clone().or_not())
+                .map(|expr| Stmt::ExprStmt {
+                    _pos: expr_pos(&expr),
+                    expr,
+                }).boxed();
 
-        let expr_stmt_with_semi = expr
-            .clone()
-            .then_ignore(semi.clone())
-            .map(|expr| Stmt::ExprStmt {
-                _pos: expr_pos(&expr),
-                expr,
-            });
+        let expr_stmt_with_semi =
+            expr.clone()
+                .then_ignore(semi.clone())
+                .map(|expr| Stmt::ExprStmt {
+                    _pos: expr_pos(&expr),
+                    expr,
+                }).boxed();
 
         let copy_into_param = ident
             .clone()
@@ -352,28 +337,24 @@ where
             .then_ignore(just(Token::PunctParenClose))
             .map(|(name, vars)| ParamKind::CopyInto(name, vars));
 
-        let param = copy_into_param.or(
-            ident
-                .clone()
-                .then(
-                    just(Token::PunctDot)
-                        .ignore_then(select! { Token::Identifier(s) => s })
-                        .then(
-                            just(Token::PunctDot)
-                                .ignore_then(select! { Token::Identifier(s) => s })
-                                .or_not(),
-                        )
-                        .or_not(),
-                )
-                .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
-                .map(|((name, modifier), ty_opt)| match modifier {
-                    Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
-                        ParamKind::CopyFree(name)
-                    }
-                    Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
-                    _ => ParamKind::Typed(name, ty_opt.unwrap()),
-                }),
-        );
+        let param = copy_into_param.or(ident
+            .clone()
+            .then(
+                just(Token::PunctDot)
+                    .ignore_then(select! { Token::Identifier(s) => s })
+                    .then(
+                        just(Token::PunctDot)
+                            .ignore_then(select! { Token::Identifier(s) => s })
+                            .or_not(),
+                    )
+                    .or_not(),
+            )
+            .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
+            .map(|((name, modifier), ty_opt)| match modifier {
+                Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => ParamKind::CopyFree(name),
+                Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
+                _ => ParamKind::Typed(name, ty_opt.unwrap()),
+            })).boxed();
 
         let func_def = recursive(|func_def| {
             let func_body_stmt = choice((
@@ -419,20 +400,80 @@ where
                         pos,
                     },
                 )
-        });
+        }).boxed();
+
+        let group = just(Token::KeywordGroup)
+            .ignore_then(just(Token::PunctDoubleColon))
+            .ignore_then(ident.clone())
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(
+                ident
+                    .clone()
+                    .separated_by(just(Token::PunctComma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::PunctBracketClose))
+            .then_ignore(just(Token::PunctComma).or_not())
+            .map(|(name, variants)| (name, variants));
+
+        let sub_group = ident
+            .clone()
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(
+                ident
+                    .clone()
+                    .separated_by(just(Token::PunctComma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::PunctBracketClose))
+            .then_ignore(just(Token::PunctComma).or_not())
+            .map(|(name, variants)| (name, variants));
+
+        let super_group = just(Token::KeywordGroup)
+            .ignore_then(just(Token::PunctDoubleColon))
+            .ignore_then(ident.clone())
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(sub_group.repeated().at_least(1).collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBracketClose))
+            .then_ignore(just(Token::PunctComma).or_not())
+            .map(|(name, sub_groups)| (name, sub_groups));
 
         let enum_def = just(Token::KeywordEnum)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
             .then_ignore(just(Token::PunctBraceOpen))
-            .then(
-                ident.clone()
+            .then(choice((
+                super_group
+                    .clone()
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>()
+                    .map(|sgs| (vec![], vec![], sgs)),
+                group
+                    .clone()
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>()
+                    .map(|groups| (vec![], groups, vec![])),
+                ident
+                    .clone()
                     .separated_by(just(Token::PunctComma))
                     .allow_trailing()
                     .collect::<Vec<_>>()
-            )
+                    .map(|variants| (variants, vec![], vec![])),
+            )))
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|((pos, name), variants)| Stmt::EnumDef { name, variants, pos });
+            .map(
+                |((pos, name), (variants, groups, super_groups))| Stmt::EnumDef {
+                    name,
+                    variants,
+                    groups,
+                    super_groups,
+                    pos,
+                },
+            ).boxed();
 
         let when_arm = {
             let pattern = choice((
@@ -451,37 +492,88 @@ where
                             inclusive,
                         )
                     }),
-                ident.clone()
+                ident
+                    .clone()
                     .then_ignore(just(Token::PunctDoubleColon))
                     .then(ident.clone())
                     .map(|(enum_name, variant)| WhenPattern::EnumVariant(enum_name, variant)),
+                ident
+                    .clone()
+                    .map(|name| WhenPattern::Group(String::new(), name)),
                 expr.clone().map(|e| match e {
                     Expr::Val(v) => WhenPattern::Literal(v),
                     _ => WhenPattern::Catchall,
                 }),
-            ));
+            ))
+            .boxed();
+
+            let placeholder_handler = just(Token::PunctBraceOpen)
+                .then(select! { Token::Identifier(s) if s == "_" => () })
+                .then(just(Token::PunctBraceClose))
+                .map(|_| SuperGroupHandler::Placeholder)
+                .boxed();
+
+            let stmt_handler = stmt
+                .clone()
+                .map(|s| SuperGroupHandler::Stmts(vec![s]))
+                .boxed();
+
+            let handler_item = placeholder_handler.or(stmt_handler).boxed();
+
+            let brace_body = just(Token::PunctBraceOpen)
+                .ignore_then(stmt.clone().repeated().collect::<Vec<_>>())
+                .then_ignore(just(Token::PunctBraceClose))
+                .map(|stmts| WhenBody::Stmts(stmts))
+                .boxed();
+
+            let handler_list_body = handler_item
+                .separated_by(just(Token::PunctComma))
+                .allow_trailing()
+                .at_least(1)
+                .collect::<Vec<SuperGroupHandler>>()
+                .map(|items| {
+                    let is_super = items.len() > 1
+                        || items
+                            .iter()
+                            .any(|i| matches!(i, SuperGroupHandler::Placeholder));
+                    if is_super {
+                        WhenBody::SuperGroup(items)
+                    } else {
+                        match items.into_iter().next().unwrap() {
+                            SuperGroupHandler::Stmts(stmts) => WhenBody::Stmts(stmts),
+                            SuperGroupHandler::Placeholder => {
+                                WhenBody::SuperGroup(vec![SuperGroupHandler::Placeholder])
+                            }
+                        }
+                    }
+                })
+                .boxed();
+
+            let when_body = brace_body
+                .or(stmt.clone().map(|s| WhenBody::Stmts(vec![s])))
+                .boxed();
 
             pattern
                 .map_with(|pattern, e: &mut ParseExtra<'a, '_, I>| (pattern, e.span().start))
                 .then_ignore(just(Token::PunctFatArrow))
-                .then(choice((
-                    just(Token::PunctBraceOpen)
-                        .ignore_then(stmt.clone().repeated().collect::<Vec<_>>())
-                        .then_ignore(just(Token::PunctBraceClose)),
-                    stmt.clone().map(|s| vec![s]),
-                )))
+                .then(when_body)
+                .then_ignore(just(Token::PunctComma).or_not())
                 .map(|((pattern, pos), body)| WhenArm { pattern, body, pos })
         };
 
         let when_stmt = just(Token::KeywordWhen)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
-            .then_ignore(just(Token::PunctParenOpen))
-            .then(expr.clone())
-            .then_ignore(just(Token::PunctParenClose))
+            .then(
+                just(Token::PunctParenOpen)
+                    .or_not()
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctParenClose).or_not()),
+            )
             .then_ignore(just(Token::PunctBraceOpen))
             .then(when_arm.repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos });
+            .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos })
+            .boxed();
 
         let while_stmt = just(Token::KeywordWhile)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -491,7 +583,7 @@ where
             .then_ignore(just(Token::PunctBraceOpen))
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|((pos, cond), body)| Stmt::While { cond, body, pos });
+            .map(|((pos, cond), body)| Stmt::While { cond, body, pos }).boxed();
 
         let for_stmt = just(Token::KeywordFor)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -506,28 +598,36 @@ where
             .then_ignore(just(Token::PunctBraceOpen))
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|(((((pos, var), start), inclusive), end), body)| Stmt::For {
-                var, start, end, inclusive, body, pos,
-            });
+            .map(
+                |(((((pos, var), start), inclusive), end), body)| Stmt::For {
+                    var,
+                    start,
+                    end,
+                    inclusive,
+                    body,
+                    pos,
+                },
+            ).boxed();
 
         let loop_stmt = just(Token::KeywordLoop)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then_ignore(just(Token::PunctBraceOpen))
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|(pos, body)| Stmt::Loop { body, pos });
+            .map(|(pos, body)| Stmt::Loop { body, pos }).boxed();
 
         let break_stmt = just(Token::KeywordBreak)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then_ignore(semi.clone().or_not())
-            .map(|pos| Stmt::Break { pos });
+            .map(|pos| Stmt::Break { pos }).boxed();
 
         let continue_stmt = just(Token::KeywordContinue)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then_ignore(semi.clone().or_not())
-            .map(|pos| Stmt::Continue { pos });
+            .map(|pos| Stmt::Continue { pos }).boxed();
 
-        let compound_assign = ident.clone()
+        let compound_assign = ident
+            .clone()
             .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
             .then(choice((
                 just(Token::OpAdd).to(Op::Plus),
@@ -544,7 +644,7 @@ where
                 op,
                 operand: Expr::Val(AstValue::Num(n as u128)),
                 pos,
-            });
+            }).boxed();
 
         choice((
             enum_def,
@@ -565,6 +665,7 @@ where
             continue_stmt,
             expr_stmt,
         ))
+        .boxed()
     })
 }
 

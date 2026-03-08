@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
     Plus,
     Minus,
@@ -77,13 +77,27 @@ pub enum WhenPattern {
     Literal(AstValue),
     Range(AstValue, AstValue, bool),
     EnumVariant(String, String),
+    Group(String, String),
     Catchall,
+    Placeholder,
+}
+
+#[derive(Debug, Clone)]
+pub enum SuperGroupHandler {
+    Stmts(Vec<Stmt>),
+    Placeholder,
+}
+
+#[derive(Debug, Clone)]
+pub enum WhenBody {
+    Stmts(Vec<Stmt>),
+    SuperGroup(Vec<SuperGroupHandler>),
 }
 
 #[derive(Debug, Clone)]
 pub struct WhenArm {
     pub pattern: WhenPattern,
-    pub body: Vec<Stmt>,
+    pub body: WhenBody,
     pub pos: usize,
 }
 
@@ -93,6 +107,8 @@ pub enum Stmt {
     EnumDef {
         name: String,
         variants: Vec<String>,
+        groups: Vec<(String, Vec<String>)>,
+        super_groups: Vec<(String, Vec<(String, Vec<String>)>)>,
         pos: usize,
     },
     Decl {

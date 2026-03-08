@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::frontend::ast::{Op, Type};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -14,7 +14,6 @@ pub enum Value {
     Handle(crate::runtime::handle::Handle),
     Container(HashMap<String, Value>),
 }
-
 
 #[derive(Debug)]
 pub enum RuntimeError {
@@ -80,4 +79,3 @@ pub struct VarEntry {
     pub ty: Option<Type>,
     pub val: Option<Value>,
 }
-

@@ -1,4 +1,4 @@
-﻿/// A handle is two integers - a slot index and a generation counter.
+/// A handle is two integers - a slot index and a generation counter.
 /// Cheap to copy, cheap to pass. Stale handles return None, never panic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Handle {
@@ -32,7 +32,10 @@ impl<T> HandleRegistry<T> {
             let slot = &mut self.slots[slot_idx as usize];
             slot.value = Some(value);
             // gen already bumped on remove - use it as-is
-            Handle { slot: slot_idx, gen: slot.gen }
+            Handle {
+                slot: slot_idx,
+                gen: slot.gen,
+            }
         } else {
             let slot_idx = self.slots.len() as u32;
             self.slots.push(Slot {
@@ -40,7 +43,10 @@ impl<T> HandleRegistry<T> {
                 gen: 0,
                 region_id: 0,
             });
-            Handle { slot: slot_idx, gen: 0 }
+            Handle {
+                slot: slot_idx,
+                gen: 0,
+            }
         }
     }
 
@@ -127,7 +133,7 @@ mod tests {
         let h1 = reg.insert(1);
         reg.remove(h1);
         let h2 = reg.insert(2); // reuses slot 0
-        // h1 and h2 point to same slot but different generations
+                                // h1 and h2 point to same slot but different generations
         assert_ne!(h1.gen, h2.gen);
         assert_eq!(reg.get(h1), None); // h1 is stale
         assert_eq!(reg.get(h2), Some(&2)); // h2 is valid

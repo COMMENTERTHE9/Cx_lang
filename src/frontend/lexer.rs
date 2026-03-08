@@ -1,5 +1,5 @@
-use logos::Logos;
 use crate::frontend::diagnostics;
+use logos::Logos;
 
 fn unescape_string(s: &str) -> String {
     let mut out = String::new();
@@ -84,6 +84,9 @@ pub enum Token {
 
     #[token("enum")]
     KeywordEnum,
+
+    #[token("group")]
+    KeywordGroup,
 
     #[token("Handle")]
     KeywordHandle,
@@ -235,13 +238,18 @@ pub enum Token {
 
     #[token("}")]
     PunctBraceClose,
+
+    #[token("[")]
+    PunctBracketOpen,
+
+    #[token("]")]
+    PunctBracketClose,
 }
 
 pub struct ParseError {
     pub msg: String,
     pub pos: usize,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Tok {
@@ -273,4 +281,3 @@ pub fn tok_collector(input: &str) -> Result<Vec<Tok>, ParseError> {
     }
     Ok(lex_out)
 }
-

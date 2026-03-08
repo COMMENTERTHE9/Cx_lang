@@ -1,0 +1,7 @@
+[build]
+incremental = true
+target-dir = "C:\\Users\\Gabri\\cx-build"
+
+[profile.dev]
+opt-level = 0
+debug = 1
