@@ -1,0 +1,289 @@
+---
+const id = `a11y_${Math.random().toString(16).slice(2)}`;
+---
+
+<div class="a11y" id={id}>
+  <button class="a11y-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Accessibility settings">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M19.4 13a7.7 7.7 0 0 0 .05-2l2-1.2-2-3.5-2.3.7a7.4 7.4 0 0 0-1.7-1l-.3-2.4H9.8L9.5 6a7.4 7.4 0 0 0-1.7 1l-2.3-.7-2 3.5 2 1.2a7.7 7.7 0 0 0 0 2l-2 1.2 2 3.5 2.3-.7a7.4 7.4 0 0 0 1.7 1l.3 2.4h4.4l.3-2.4a7.4 7.4 0 0 0 1.7-1l2.3.7 2-3.5-2-1.2Z"
+            stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+    </svg>
+  </button>
+
+  <div class="a11y-menu" role="menu" aria-label="Accessibility">
+    <div class="a11y-title">ACCESSIBILITY</div>
+
+    <div class="a11y-group">
+      <div class="a11y-label">Theme</div>
+      <div class="a11y-row">
+        <button class="a11y-chip" data-theme="dark" type="button">Dark</button>
+        <button class="a11y-chip" data-theme="light" type="button">Light</button>
+        <button class="a11y-chip" data-theme="system" type="button">System</button>
+      </div>
+    </div>
+
+    <div class="a11y-group">
+      <div class="a11y-row a11y-row-split">
+        <div>
+          <div class="a11y-label">High contrast</div>
+          <div class="a11y-hint">Boost text & borders</div>
+        </div>
+        <button class="a11y-toggle" type="button" data-contrast-toggle>
+          <span class="knob"></span>
+        </button>
+      </div>
+    </div>
+
+    <div class="a11y-group">
+      <div class="a11y-label">Color-blind mode</div>
+      <div class="a11y-row">
+        <select class="a11y-select" data-cbm>
+          <option value="">Off</option>
+          <option value="protanopia">Protanopia</option>
+          <option value="deuteranopia">Deuteranopia</option>
+          <option value="tritanopia">Tritanopia</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="a11y-foot">
+      <button class="a11y-reset" type="button" data-reset>Reset</button>
+    </div>
+  </div>
+</div>
+
+<script define:vars={{ id }}>
+  const root = document.documentElement;
+  const themeKey = "cx_theme";
+  const contrastKey = "cx_contrast";
+  const cbmKey = "cx_cbm";
+
+  function systemTheme() {
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "light"
+      : "dark";
+  }
+
+  function apply(state) {
+    const theme = state.theme === "system" ? systemTheme() : (state.theme || "dark");
+    root.dataset.theme = theme === "light" ? "light" : "dark";
+    root.dataset.contrast = state.contrast === "high" ? "high" : "normal";
+
+    if (state.cbm) root.dataset.cbm = state.cbm;
+    else delete root.dataset.cbm;
+
+    localStorage.setItem(themeKey, root.dataset.theme);
+    localStorage.setItem(contrastKey, root.dataset.contrast);
+    localStorage.setItem(cbmKey, state.cbm || "");
+    localStorage.setItem("cx_theme_pref", state.theme || "dark");
+  }
+
+  function load() {
+    try {
+      return {
+        theme: localStorage.getItem("cx_theme_pref") || localStorage.getItem(themeKey) || "dark",
+        contrast: localStorage.getItem(contrastKey) || "normal",
+        cbm: localStorage.getItem(cbmKey) || "",
+      };
+    } catch {
+      return { theme: "dark", contrast: "normal", cbm: "" };
+    }
+  }
+
+  const state = { theme: "dark", contrast: "normal", cbm: "", ...load() };
+  const mq = window.matchMedia?.("(prefers-color-scheme: light)");
+
+  mq?.addEventListener?.("change", () => {
+    const s = load();
+    if (s.theme === "system") apply(s);
+  });
+
+  apply(state);
+
+  const wrap = document.getElementById(id);
+  const btn = wrap?.querySelector(".a11y-btn");
+  const menu = wrap?.querySelector(".a11y-menu");
+
+  if (wrap && btn && menu) {
+    function setOpen(v) {
+      menu.dataset.open = v ? "true" : "false";
+      btn.setAttribute("aria-expanded", v ? "true" : "false");
+    }
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setOpen(menu.dataset.open !== "true");
+    });
+
+    document.addEventListener("click", () => setOpen(false));
+    menu.addEventListener("click", (e) => e.stopPropagation());
+
+    menu.querySelectorAll("[data-theme]").forEach((b) => {
+      b.addEventListener("click", () => {
+        const s = load();
+        s.theme = b.getAttribute("data-theme");
+        apply(s);
+      });
+    });
+
+    const toggle = menu.querySelector("[data-contrast-toggle]");
+    const sel = menu.querySelector("[data-cbm]");
+    const reset = menu.querySelector("[data-reset]");
+
+    function syncToggle() {
+      const s = load();
+      toggle.dataset.on = s.contrast === "high" ? "true" : "false";
+    }
+
+    toggle.addEventListener("click", () => {
+      const s = load();
+      s.contrast = s.contrast === "high" ? "normal" : "high";
+      apply(s);
+      syncToggle();
+    });
+
+    sel.addEventListener("change", () => {
+      const s = load();
+      s.cbm = sel.value;
+      apply(s);
+    });
+
+    reset.addEventListener("click", () => {
+      const s = { theme: "dark", contrast: "normal", cbm: "" };
+      apply(s);
+      sel.value = "";
+      syncToggle();
+    });
+
+    sel.value = load().cbm || "";
+    syncToggle();
+    setOpen(false);
+  }
+</script>
+
+<style>
+  .a11y { position: relative; }
+
+  .a11y-btn{
+    display:flex; align-items:center; justify-content:center;
+    width: 40px; height: 40px;
+    border-radius: 14px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+    color: var(--cx-text);
+    transition: 140ms ease;
+  }
+  .a11y-btn:hover{
+    border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
+    box-shadow: 0 0 18px color-mix(in srgb, var(--cx-accent) 14%, transparent);
+  }
+
+  .a11y-menu{
+    position: absolute;
+    right: 0;
+    top: 46px;
+    width: 280px;
+    border-radius: 18px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface) 82%, transparent);
+    backdrop-filter: blur(12px);
+    padding: 12px;
+    box-shadow: 0 18px 70px rgba(0,0,0,.45);
+    display: none;
+    z-index: 50;
+  }
+  .a11y-menu[data-open="true"]{ display:block; }
+
+  .a11y-title{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    color: var(--cx-text-2);
+    padding: 6px 8px 10px;
+    border-bottom: 1px solid var(--cx-border);
+    margin-bottom: 10px;
+  }
+
+  .a11y-group{ padding: 8px; border-radius: 14px; }
+  .a11y-group + .a11y-group{ margin-top: 6px; }
+
+  .a11y-label{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: .10em;
+    text-transform: uppercase;
+    color: var(--cx-text-2);
+  }
+  .a11y-hint{ font-size: 12px; color: var(--cx-text-2); opacity:.85; margin-top: 2px; }
+
+  .a11y-row{ display:flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .a11y-row-split{ justify-content: space-between; align-items: center; flex-wrap: nowrap; }
+
+  .a11y-chip{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: .08em;
+    padding: 8px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface-2) 55%, transparent);
+    color: var(--cx-text);
+  }
+  .a11y-chip:hover{
+    border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
+  }
+
+  .a11y-select{
+    width: 100%;
+    border-radius: 12px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface-2) 55%, transparent);
+    color: var(--cx-text);
+    padding: 10px 10px;
+    font-family: var(--cx-mono);
+    font-size: 12px;
+  }
+
+  .a11y-toggle{
+    width: 44px; height: 26px;
+    border-radius: 999px;
+    border: 1px solid var(--cx-border);
+    background: color-mix(in srgb, var(--cx-surface-2) 55%, transparent);
+    position: relative;
+  }
+  .a11y-toggle .knob{
+    width: 20px; height: 20px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--cx-text) 18%, var(--cx-surface));
+    position:absolute; top: 2px; left: 2px;
+    transition: 140ms ease;
+  }
+  .a11y-toggle[data-on="true"]{
+    border-color: color-mix(in srgb, var(--cx-accent) 55%, var(--cx-border));
+    box-shadow: 0 0 18px color-mix(in srgb, var(--cx-accent) 14%, transparent);
+  }
+  .a11y-toggle[data-on="true"] .knob{ left: 22px; background: color-mix(in srgb, var(--cx-accent) 35%, var(--cx-surface)); }
+
+  .a11y-foot{
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--cx-border);
+    display:flex;
+    justify-content: flex-end;
+  }
+  .a11y-reset{
+    font-family: var(--cx-mono);
+    font-size: 11px;
+    letter-spacing: .10em;
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid var(--cx-border);
+    background: transparent;
+    color: var(--cx-text-2);
+  }
+  .a11y-reset:hover{
+    border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
+    color: var(--cx-text);
+  }
+</style>

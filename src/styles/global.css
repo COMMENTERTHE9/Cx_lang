@@ -11,25 +11,71 @@
 
 /* ---------- Theme Tokens ---------- */
 :root {
+    color-scheme: dark;
+
     --cx-display: "Bebas Neue", Impact, "Arial Black", sans-serif;
     --cx-body: "Outfit", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     --cx-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
-    --cx-accent: #00f0ff;     /* electric cyan */
-    --cx-accent-2: #4da6ff;   /* cool blue */
-    --cx-accent-3: #0090cc;   /* deep muted */
+    --cx-bg: #070B12;
+    --cx-surface: #0B1220;
+    --cx-surface-2: #11192B;
+    --cx-text: #EAF0FF;
+    --cx-text-2: rgba(234,240,255,0.72);
+    --cx-border: rgba(234,240,255,0.14);
+    --cx-accent: #8AA4FF;
 
-    --cx-bg: #03060f;
-    --cx-surface: #0d182e;
-    --cx-surface-2: #0c1628;
+    --cx-accent-2: color-mix(in srgb, var(--cx-accent) 72%, #ffffff);
+    --cx-accent-3: color-mix(in srgb, var(--cx-accent) 58%, #000000);
+    --cx-ghost: color-mix(in srgb, var(--cx-text) 12%, transparent);
+    --cx-text-ghost: color-mix(in srgb, var(--cx-text) 22%, transparent);
+}
 
-    --cx-border: #0f2040;
-    --cx-border-2: #101c30;
+html[data-theme="light"] {
+    color-scheme: light;
 
-    --cx-text: #b3cae3;
-    --cx-text-2: #5a7a9a;
-    --cx-ghost: #1a3050;
-    --cx-text-ghost: var(--cx-ghost);
+    --cx-bg: #F7F8FC;
+    --cx-surface: #FFFFFF;
+    --cx-surface-2: #EEF2FF;
+    --cx-text: #0B1020;
+    --cx-text-2: rgba(11,16,32,0.70);
+    --cx-border: rgba(11,16,32,0.14);
+    --cx-accent: #3B5BFF;
+
+    --cx-accent-2: color-mix(in srgb, var(--cx-accent) 78%, #ffffff);
+    --cx-accent-3: color-mix(in srgb, var(--cx-accent) 62%, #0B1020);
+    --cx-ghost: color-mix(in srgb, var(--cx-text) 6%, transparent);
+    --cx-text-ghost: color-mix(in srgb, var(--cx-text) 16%, transparent);
+}
+
+html[data-contrast="high"] {
+    --cx-text-2: var(--cx-text);
+    --cx-border: rgba(255,255,255,0.35);
+    --cx-surface: color-mix(in srgb, var(--cx-surface) 92%, #000000);
+    --cx-surface-2: color-mix(in srgb, var(--cx-surface-2) 92%, #000000);
+}
+
+html[data-theme="light"][data-contrast="high"] {
+    --cx-text-2: var(--cx-text);
+    --cx-border: rgba(11,16,32,0.30);
+    --cx-surface: #FFFFFF;
+    --cx-surface-2: #F2F5FF;
+}
+
+html[data-cbm="protanopia"] {
+    filter: url("#cb-protanopia");
+}
+
+html[data-cbm="deuteranopia"] {
+    filter: url("#cb-deuteranopia");
+}
+
+html[data-cbm="tritanopia"] {
+    filter: url("#cb-tritanopia");
+}
+
+html[data-cbm] body {
+    transform: translateZ(0);
 }
 
 /* ---------- Base ---------- */
@@ -43,6 +89,20 @@ body {
     background: var(--cx-bg);
     color: var(--cx-text);
     letter-spacing: 0.2px;
+}
+
+::selection {
+    background: color-mix(in srgb, var(--cx-accent) 32%, transparent);
+    color: var(--cx-text);
+}
+
+a, button, input, select, textarea {
+    accent-color: var(--cx-accent);
+}
+
+:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--cx-accent) 70%, var(--cx-text));
+    outline-offset: 2px;
 }
 
 /* Utility-ish font classes */

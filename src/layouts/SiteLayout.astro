@@ -10,8 +10,22 @@ const {
 ---
 
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark" data-contrast="normal">
 <head>
+  <script is:inline>
+    (() => {
+      const root = document.documentElement;
+      try {
+        const theme = localStorage.getItem("cx_theme");
+        const contrast = localStorage.getItem("cx_contrast");
+        root.dataset.theme = theme === "light" ? "light" : "dark";
+        root.dataset.contrast = contrast === "high" ? "high" : "normal";
+      } catch {
+        root.dataset.theme = "dark";
+        root.dataset.contrast = "normal";
+      }
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -34,5 +48,30 @@ const {
     <slot />
   </main>
 </div>
+<svg width="0" height="0" style="position:absolute">
+  <filter id="cb-protanopia">
+    <feColorMatrix type="matrix"
+      values="0.567 0.433 0     0 0
+              0.558 0.442 0     0 0
+              0     0.242 0.758 0 0
+              0     0     0     1 0" />
+  </filter>
+
+  <filter id="cb-deuteranopia">
+    <feColorMatrix type="matrix"
+      values="0.625 0.375 0     0 0
+              0.70  0.30  0     0 0
+              0     0.30  0.70  0 0
+              0     0     0     1 0" />
+  </filter>
+
+  <filter id="cb-tritanopia">
+    <feColorMatrix type="matrix"
+      values="0.95  0.05  0     0 0
+              0     0.433 0.567 0 0
+              0     0.475 0.525 0 0
+              0     0     0     1 0" />
+  </filter>
+</svg>
 </body>
 </html>

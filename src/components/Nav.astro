@@ -1,4 +1,6 @@
 ---
+import AccessibilityMenu from "./AccessibilityMenu.astro";
+
 const links = [
     { href: "/docs", label: "Docs" },
     { href: "/blog", label: "Blog" },
@@ -8,8 +10,8 @@ const { pathname } = Astro.url;
 
 <nav class="sticky top-0 z-50 border-b" style="border-color: var(--cx-border);">
     <div
-            class="bg-black/35 backdrop-blur-md"
-            style="box-shadow: 0 0 0 1px color-mix(in srgb, var(--cx-border) 70%, transparent) inset;"
+            class="backdrop-blur-md"
+            style="background: color-mix(in srgb, var(--cx-surface) 78%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--cx-border) 70%, transparent) inset;"
     >
         <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
             <a href="/" class="flex items-center gap-3">
@@ -45,13 +47,15 @@ const { pathname } = Astro.url;
                         href="/docs"
                         class="cx-mono rounded-full px-3 py-1 text-xs"
                         style="
-            border: 1px solid var(--cx-border-2);
+            border: 1px solid var(--cx-border);
             color: var(--cx-text);
-            background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+            background: color-mix(in srgb, var(--cx-surface) 84%, transparent);
           "
                 >
                     OPEN DOCS
                 </a>
+
+                <AccessibilityMenu />
             </div>
         </div>
     </div>
