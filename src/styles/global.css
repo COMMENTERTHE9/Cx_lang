@@ -11,6 +11,10 @@
 
 /* ---------- Theme Tokens ---------- */
 :root {
+    --cx-display: "Bebas Neue", Impact, "Arial Black", sans-serif;
+    --cx-body: "Outfit", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    --cx-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+
     --cx-accent: #00f0ff;     /* electric cyan */
     --cx-accent-2: #4da6ff;   /* cool blue */
     --cx-accent-3: #0090cc;   /* deep muted */
@@ -31,19 +35,19 @@
 /* ---------- Base ---------- */
 html, body {
     height: 100%;
+    font-family: var(--cx-body);
+    font-weight: 300;
 }
 
 body {
     background: var(--cx-bg);
     color: var(--cx-text);
-    font-family: "Outfit", system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    font-weight: 300;
     letter-spacing: 0.2px;
 }
 
 /* Utility-ish font classes */
-.cx-display { font-family: "Bebas Neue", system-ui, sans-serif; letter-spacing: 0.04em; }
-.cx-mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+code, pre, kbd, samp, .cx-mono { font-family: var(--cx-mono); }
+.cx-display { font-family: var(--cx-display); letter-spacing: 0.04em; }
 
 /* ---------- Atmosphere Layers ---------- */
 /* Top cyan glow */
@@ -106,6 +110,7 @@ body::after {
 
 /* ---------- Prose (MDX) tuning ---------- */
 .prose {
+    font-family: var(--cx-body);
     --tw-prose-body: var(--cx-text);
     --tw-prose-headings: var(--cx-text);
     --tw-prose-links: var(--cx-accent);
@@ -115,8 +120,6 @@ body::after {
     --tw-prose-bullets: var(--cx-border-2);
     --tw-prose-counters: var(--cx-text-2);
 }
-.prose code {
-    font-family: "JetBrains Mono", ui-monospace, monospace;
-    font-weight: 500;
-}
+.prose code, .prose pre { font-family: var(--cx-mono); }
+.prose code { font-weight: 500; }
 .prose a:hover { text-decoration: underline; }
