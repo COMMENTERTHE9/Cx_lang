@@ -10,19 +10,41 @@ const {
 ---
 
 <!doctype html>
-<html lang="en" data-theme="dark" data-contrast="normal">
+<html lang="en">
 <head>
   <script is:inline>
     (() => {
       const root = document.documentElement;
+      const themeClasses = ["theme-light", "theme-high-contrast", "theme-colorblind"];
+
+      function clearThemeClasses() {
+        root.classList.remove(...themeClasses);
+      }
+
       try {
         const theme = localStorage.getItem("cx_theme");
         const contrast = localStorage.getItem("cx_contrast");
-        root.dataset.theme = theme === "light" ? "light" : "dark";
-        root.dataset.contrast = contrast === "high" ? "high" : "normal";
+        const cbm = localStorage.getItem("cx_cbm");
+
+        clearThemeClasses();
+
+        if (theme === "light") {
+          root.classList.add("theme-light");
+        }
+
+        if (contrast === "high") {
+          root.classList.add("theme-high-contrast");
+        }
+
+        if (cbm) {
+          root.classList.add("theme-colorblind");
+          root.dataset.cbm = cbm;
+        } else {
+          delete root.dataset.cbm;
+        }
       } catch {
-        root.dataset.theme = "dark";
-        root.dataset.contrast = "normal";
+        clearThemeClasses();
+        delete root.dataset.cbm;
       }
     })();
   </script>

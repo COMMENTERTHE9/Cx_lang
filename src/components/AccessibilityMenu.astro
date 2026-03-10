@@ -17,9 +17,8 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
     <div class="a11y-group">
       <div class="a11y-label">Theme</div>
       <div class="a11y-row">
-        <button class="a11y-chip" data-theme="dark" type="button">Dark</button>
+        <button class="a11y-chip" data-theme="default" type="button">Default</button>
         <button class="a11y-chip" data-theme="light" type="button">Light</button>
-        <button class="a11y-chip" data-theme="system" type="button">System</button>
       </div>
     </div>
 
@@ -58,46 +57,54 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
   const themeKey = "cx_theme";
   const contrastKey = "cx_contrast";
   const cbmKey = "cx_cbm";
+  const themeClasses = ["theme-light", "theme-high-contrast", "theme-colorblind"];
 
-  function systemTheme() {
-    return window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
-      ? "light"
-      : "dark";
+  function clearInlineThemeVars() {
+    root.style.removeProperty("--cx-accent");
+    root.style.removeProperty("--cx-ring");
+    root.style.removeProperty("--cx-border");
   }
 
   function apply(state) {
-    const theme = state.theme === "system" ? systemTheme() : (state.theme || "dark");
-    root.dataset.theme = theme === "light" ? "light" : "dark";
-    root.dataset.contrast = state.contrast === "high" ? "high" : "normal";
+    root.classList.remove(...themeClasses);
+
+    if (state.theme === "light") {
+      root.classList.add("theme-light");
+    }
+
+    if (state.contrast === "high") {
+      root.classList.add("theme-high-contrast");
+    }
 
     if (state.cbm) root.dataset.cbm = state.cbm;
     else delete root.dataset.cbm;
 
-    localStorage.setItem(themeKey, root.dataset.theme);
-    localStorage.setItem(contrastKey, root.dataset.contrast);
+    if (state.cbm) {
+      root.classList.add("theme-colorblind");
+    }
+
+    if (state.theme === "default" && state.contrast !== "high" && !state.cbm) {
+      clearInlineThemeVars();
+    }
+
+    localStorage.setItem(themeKey, state.theme || "default");
+    localStorage.setItem(contrastKey, state.contrast || "normal");
     localStorage.setItem(cbmKey, state.cbm || "");
-    localStorage.setItem("cx_theme_pref", state.theme || "dark");
   }
 
   function load() {
     try {
       return {
-        theme: localStorage.getItem("cx_theme_pref") || localStorage.getItem(themeKey) || "dark",
+        theme: localStorage.getItem(themeKey) || "default",
         contrast: localStorage.getItem(contrastKey) || "normal",
         cbm: localStorage.getItem(cbmKey) || "",
       };
     } catch {
-      return { theme: "dark", contrast: "normal", cbm: "" };
+      return { theme: "default", contrast: "normal", cbm: "" };
     }
   }
 
-  const state = { theme: "dark", contrast: "normal", cbm: "", ...load() };
-  const mq = window.matchMedia?.("(prefers-color-scheme: light)");
-
-  mq?.addEventListener?.("change", () => {
-    const s = load();
-    if (s.theme === "system") apply(s);
-  });
+  const state = { theme: "default", contrast: "normal", cbm: "", ...load() };
 
   apply(state);
 
@@ -150,7 +157,7 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
     });
 
     reset.addEventListener("click", () => {
-      const s = { theme: "dark", contrast: "normal", cbm: "" };
+      const s = { theme: "default", contrast: "normal", cbm: "" };
       apply(s);
       sel.value = "";
       syncToggle();

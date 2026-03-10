@@ -31,7 +31,7 @@
     --cx-text-ghost: color-mix(in srgb, var(--cx-text) 22%, transparent);
 }
 
-html[data-theme="light"] {
+html.theme-light {
     color-scheme: light;
 
     --cx-bg: #F7F8FC;
@@ -48,33 +48,33 @@ html[data-theme="light"] {
     --cx-text-ghost: color-mix(in srgb, var(--cx-text) 16%, transparent);
 }
 
-html[data-contrast="high"] {
+html.theme-high-contrast {
     --cx-text-2: var(--cx-text);
     --cx-border: rgba(255,255,255,0.35);
     --cx-surface: color-mix(in srgb, var(--cx-surface) 92%, #000000);
     --cx-surface-2: color-mix(in srgb, var(--cx-surface-2) 92%, #000000);
 }
 
-html[data-theme="light"][data-contrast="high"] {
+html.theme-light.theme-high-contrast {
     --cx-text-2: var(--cx-text);
     --cx-border: rgba(11,16,32,0.30);
     --cx-surface: #FFFFFF;
     --cx-surface-2: #F2F5FF;
 }
 
-html[data-cbm="protanopia"] {
+html.theme-colorblind[data-cbm="protanopia"] {
     filter: url("#cb-protanopia");
 }
 
-html[data-cbm="deuteranopia"] {
+html.theme-colorblind[data-cbm="deuteranopia"] {
     filter: url("#cb-deuteranopia");
 }
 
-html[data-cbm="tritanopia"] {
+html.theme-colorblind[data-cbm="tritanopia"] {
     filter: url("#cb-tritanopia");
 }
 
-html[data-cbm] body {
+html.theme-colorblind body {
     transform: translateZ(0);
 }
 
