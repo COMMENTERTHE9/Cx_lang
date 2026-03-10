@@ -503,6 +503,17 @@ impl RunTime {
                 }
             }
             Expr::Call(name, args, pos) => {
+                if name == "is_known" {
+                    let val = match args.first() {
+                        Some(CallArg::Expr(expr)) => self.eval_expr(expr)?,
+                        _ => return Err(RuntimeError::UndefinedVar { pos: *pos, name: name.clone() }),
+                    };
+                    return Ok(match val {
+                        Value::Unknown(_) | Value::TBool(2) => Value::Bool(false),
+                        _ => Value::Bool(true),
+                    });
+                }
+
                 let func = self
                     .scopes
                     .iter()
@@ -605,6 +616,10 @@ impl RunTime {
             (Value::Unknown(_), Op::And, Value::Bool(false)) => return Ok(Value::Bool(false)),
             (Value::Bool(true), Op::Or, Value::Unknown(_)) => return Ok(Value::Bool(true)),
             (Value::Unknown(_), Op::Or, Value::Bool(true)) => return Ok(Value::Bool(true)),
+            (Value::TBool(0), Op::And, _) => return Ok(Value::TBool(0)),
+            (_, Op::And, Value::TBool(0)) => return Ok(Value::TBool(0)),
+            (Value::TBool(1), Op::Or, _) => return Ok(Value::TBool(1)),
+            (_, Op::Or, Value::TBool(1)) => return Ok(Value::TBool(1)),
             (Value::Unknown(_), Op::Mul, Value::Num(0)) => return Ok(Value::Num(0)),
             (Value::Num(0), Op::Mul, Value::Unknown(_)) => return Ok(Value::Num(0)),
             (Value::Unknown(ty), _, _) => return Ok(Value::Unknown(ty.clone())),
@@ -710,6 +725,10 @@ impl RunTime {
                 )),
                 (Value::Char(a), Value::Char(b)) => Ok(Value::Bool(a == b)),
                 (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a == b)),
+                (Value::TBool(2), _) | (_, Value::TBool(2)) => Ok(Value::TBool(2)),
+                (Value::TBool(a), Value::TBool(b)) => Ok(Value::Bool(a == b)),
+                (Value::TBool(a), Value::Bool(b)) => Ok(Value::Bool((*a == 1) == *b)),
+                (Value::Bool(a), Value::TBool(b)) => Ok(Value::Bool(*a == (*b == 1))),
                 (l, r) => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -755,6 +774,15 @@ impl RunTime {
             },
             Op::And => match (&left, &right) {
                 (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
+                (Value::TBool(a), Value::TBool(b)) => Ok(Value::TBool(match (a, b) {
+                    (0, _) | (_, 0) => 0,
+                    (1, 1) => 1,
+                    _ => 2,
+                })),
+                (Value::Bool(true), Value::TBool(b)) => Ok(Value::TBool(*b)),
+                (Value::TBool(a), Value::Bool(true)) => Ok(Value::TBool(*a)),
+                (Value::Bool(false), Value::TBool(_)) => Ok(Value::TBool(0)),
+                (Value::TBool(_), Value::Bool(false)) => Ok(Value::TBool(0)),
                 (l, r) => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -764,6 +792,15 @@ impl RunTime {
             },
             Op::Or => match (&left, &right) {
                 (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a || *b)),
+                (Value::TBool(a), Value::TBool(b)) => Ok(Value::TBool(match (a, b) {
+                    (1, _) | (_, 1) => 1,
+                    (0, 0) => 0,
+                    _ => 2,
+                })),
+                (Value::Bool(false), Value::TBool(b)) => Ok(Value::TBool(*b)),
+                (Value::TBool(a), Value::Bool(false)) => Ok(Value::TBool(*a)),
+                (Value::Bool(true), Value::TBool(_)) => Ok(Value::TBool(1)),
+                (Value::TBool(_), Value::Bool(true)) => Ok(Value::TBool(1)),
                 (l, r) => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -803,6 +840,10 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
             pos_type,
         } => {
             let value = rt.eval_expr(&expr)?;
+            let value = match (&ty, value) {
+                (Type::Bool, Value::Unknown(_)) => Value::TBool(2),
+                (_, v) => v,
+            };
             rt.set_var_typed(name, ty, value, pos_type)
         }
         Stmt::Print { expr, pos: _pos } => {
