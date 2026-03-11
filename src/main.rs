@@ -162,14 +162,26 @@ fn main() {
     match backend_kind {
         backend::BackendKind::Interpret => run_with_interpreter(program, &input, &flags),
         backend::BackendKind::Cranelift => {
-            let _ = prepare_ir(&semantic_program);
+            let _ir = match prepare_ir(&semantic_program) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    return;
+                }
+            };
             let b = backend::cranelift::CraneliftBackend;
             if let Err(msg) = b.execute(&program) {
                 eprintln!("{}", msg);
             }
         }
         backend::BackendKind::Llvm => {
-            let _ = prepare_ir(&semantic_program);
+            let _ir = match prepare_ir(&semantic_program) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    return;
+                }
+            };
             let b = backend::llvm::LlvmBackend;
             if let Err(msg) = b.execute(&program) {
                 eprintln!("{}", msg);
@@ -254,6 +266,8 @@ fn parse_program_chumsky(tok_list: &[Tok], src: &str) -> Result<Program, Vec<Par
     }
 }
 
-fn prepare_ir(semantic_program: &SemanticProgram) -> crate::ir::IrModule {
+fn prepare_ir(
+    semantic_program: &SemanticProgram,
+) -> Result<crate::ir::IrModule, crate::ir::lower::LoweringError> {
     backend::lower_to_ir(semantic_program)
 }

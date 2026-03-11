@@ -544,6 +544,28 @@ impl RunTime {
                     _ => Err(RuntimeError::BadAssignTarget { pos: *pos }),
                 }
             }
+            Expr::ArrayLit(elems) => {
+                let mut vals = Vec::with_capacity(elems.len());
+                for e in elems {
+                    vals.push(self.eval_expr(e)?);
+                }
+                Ok(Value::Array(vals))
+            }
+            Expr::Index(base_expr, idx_expr, pos) => {
+                let base = self.eval_expr(base_expr)?;
+                let idx = self.eval_expr(idx_expr)?;
+                let i = match idx {
+                    Value::Num(n) => n as usize,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: *pos }),
+                };
+                match base {
+                    Value::Array(elems) => Ok(elems
+                        .into_iter()
+                        .nth(i)
+                        .unwrap_or(Value::Unknown(Type::Unknown))),
+                    _ => Err(RuntimeError::BadAssignTarget { pos: *pos }),
+                }
+            }
             Expr::Call(name, args, pos) => {
                 if name == "is_known" {
                     let val = match args.first() {
@@ -907,7 +929,14 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
             );
             Ok(())
         }
-        Stmt::Decl { name, ty, pos } => rt.declare(name, ty, pos),
+        Stmt::Decl { name, ty, pos } => {
+            if let Some(Type::Array(size, elem_ty)) = &ty {
+                let slots = vec![Value::Unknown(*elem_ty.clone()); *size];
+                rt.set_var_typed(name, ty.clone().unwrap(), Value::Array(slots), pos)
+            } else {
+                rt.declare(name, ty, pos)
+            }
+        }
         Stmt::Assign {
             target,
             expr,
@@ -953,6 +982,13 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
                 Value::Char(c) => println!("{}", c),
                 Value::EnumVariant(e, v) => println!("{}::{}", e, v),
                 Value::Unknown(_) => println!("?"),
+                Value::Array(elems) => {
+                    let parts: Vec<String> = elems
+                        .iter()
+                        .map(|v| value_to_string(rt, v.clone()))
+                        .collect();
+                    println!("[{}]", parts.join(", "));
+                }
                 Value::Handle(h) => println!("handle({},{})", h.slot, h.gen),
                 Value::Container(map) => println!("{:?}", map),
             }
@@ -978,6 +1014,13 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
                 Value::Unknown(_) => print!("?"),
                 Value::Handle(h) => print!("handle({},{})", h.slot, h.gen),
                 Value::Container(map) => print!("{:?}", map),
+                Value::Array(elems) => {
+                    let parts: Vec<String> = elems
+                        .iter()
+                        .map(|v| value_to_string(rt, v.clone()))
+                        .collect();
+                    print!("[{}]", parts.join(", "));
+                }
             }
             use std::io::Write;
             std::io::stdout().flush().ok();
@@ -1260,6 +1303,13 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
         Value::Char(c) => c.to_string(),
         Value::EnumVariant(e, v) => format!("{}::{}", e, v),
         Value::Unknown(_) => "?".to_string(),
+        Value::Array(elems) => {
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|v| value_to_string(rt, v.clone()))
+                .collect();
+            format!("[{}]", parts.join(", "))
+        }
         Value::Handle(h) => format!("handle({},{})", h.slot, h.gen),
         Value::Container(map) => format!("{:?}", map),
     }
@@ -1277,6 +1327,7 @@ fn type_of_value(v: &Value) -> Type {
         Value::Unknown(_) => Type::Unknown,
         Value::Handle(_) => Type::Handle(Box::new(Type::T128)),
         Value::Container(_) => Type::Container,
+        Value::Array(_) => Type::Array(0, Box::new(Type::Unknown)),
     }
 }
 
@@ -1300,6 +1351,7 @@ fn value_matches_type(v: &Value, t: &Type) -> bool {
         (Value::EnumVariant(e, _), Type::Enum(t)) if e == t => true,
         (Value::Handle(_), Type::Handle(_)) => true,
         (Value::TBool(_), Type::Bool) => true,
+        (Value::Array(_), Type::Array(_, _)) => true,
         (Value::Unknown(_), _) => true,
         _ => false,
     }

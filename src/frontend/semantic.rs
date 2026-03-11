@@ -972,6 +972,26 @@ impl Analyzer {
                 })
             }
             Expr::Bin(lhs, op, op_pos, rhs) => self.analyze_binary(lhs, *op, *op_pos, rhs),
+            Expr::ArrayLit(elems) => {
+                for e in elems {
+                    self.analyze_expr(e)?;
+                }
+                Ok(SemanticExpr {
+                    ty: SemanticType::Unknown,
+                    kind: SemanticExprKind::Value(SemanticValue::Unknown),
+                })
+            }
+            Expr::Index(base, idx, pos) => {
+                self.analyze_expr(base)?;
+                self.analyze_expr(idx)?;
+                Ok(SemanticExpr {
+                    ty: SemanticType::Unknown,
+                    kind: SemanticExprKind::VarRef {
+                        binding: BindingId(0),
+                        name: format!("index@{}", pos),
+                    },
+                })
+            }
         }
     }
 
@@ -1353,6 +1373,7 @@ fn semantic_type_from_decl(ty: Type) -> SemanticType {
         Type::Enum(name) => SemanticType::Enum(name),
         Type::Unknown => SemanticType::Unknown,
         Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner))),
+        Type::Array(_, _) => SemanticType::Unknown,
     }
 }
 

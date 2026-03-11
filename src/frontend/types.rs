@@ -13,6 +13,7 @@ pub enum Value {
     Unknown(crate::frontend::ast::Type),
     Handle(crate::runtime::handle::Handle),
     Container(HashMap<String, Value>),
+    Array(Vec<Value>),
 }
 
 #[derive(Debug)]
