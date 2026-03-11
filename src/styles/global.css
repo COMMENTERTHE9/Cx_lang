@@ -17,18 +17,18 @@
     --cx-body: "Outfit", system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     --cx-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 
-    --cx-bg: #070B12;
-    --cx-surface: #0B1220;
-    --cx-surface-2: #11192B;
-    --cx-text: #EAF0FF;
-    --cx-text-2: rgba(234,240,255,0.72);
-    --cx-border: rgba(234,240,255,0.14);
-    --cx-accent: #8AA4FF;
+    --cx-bg: #03060f;
+    --cx-surface: #0d182e;
+    --cx-surface-2: #0c1628;
+    --cx-text: #b3cae3;
+    --cx-text-2: #5a7a9a;
+    --cx-border: #0f2040;
+    --cx-accent: #00f0ff;
 
     --cx-accent-2: color-mix(in srgb, var(--cx-accent) 72%, #ffffff);
     --cx-accent-3: color-mix(in srgb, var(--cx-accent) 58%, #000000);
-    --cx-ghost: color-mix(in srgb, var(--cx-text) 12%, transparent);
-    --cx-text-ghost: color-mix(in srgb, var(--cx-text) 22%, transparent);
+    --cx-ghost: #1a3050;
+    --cx-text-ghost: var(--cx-ghost);
 }
 
 html.theme-light {
