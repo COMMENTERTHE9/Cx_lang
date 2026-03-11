@@ -183,6 +183,20 @@ fn run_with_interpreter(program: Program, input: &str, flags: &DebugFlags) {
     let rt_timer = flags.phase.then(|| PhaseTimer::start("RUNTIME"));
     let mut rt = RunTime::new();
     rt.debug_scope = flags.scope;
+
+    for stmt in &program.stmts {
+        if let Stmt::FuncDef {
+            name,
+            params,
+            body,
+            ret_expr,
+            ..
+        } = stmt
+        {
+            rt.register_func(name.clone(), params.clone(), body.clone(), ret_expr.clone());
+        }
+    }
+
     let mut step_count = 0;
 
     for stmt in program.stmts {

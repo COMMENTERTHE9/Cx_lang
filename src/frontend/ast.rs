@@ -39,6 +39,8 @@ pub enum Type {
     T128,
     Bool,
     Str,
+    StrRef,
+    Container,
     Char,
     Enum(String),
     Unknown,

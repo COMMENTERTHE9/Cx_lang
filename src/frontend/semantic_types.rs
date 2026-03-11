@@ -22,6 +22,8 @@ pub enum SemanticType {
     F64,
     Bool,
     Str,
+    StrRef,
+    Container,
     Char,
     Enum(String),
     Unknown,

@@ -113,6 +113,9 @@ pub enum Token {
     #[token("str")]
     TypeStr,
 
+    #[token("strref")]
+    TypeStrRef,
+
     #[token("char")]
     TypeChar,
 

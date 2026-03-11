@@ -4,6 +4,13 @@ use crate::runtime::arena::Arena;
 use crate::runtime::handle::HandleRegistry;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, Clone)]
+pub struct EnumRuntimeInfo {
+    pub variants: Vec<String>,
+    pub groups: HashMap<String, Vec<String>>,
+    pub super_group_order: HashMap<String, Vec<String>>,
+}
+
 #[derive(Debug)]
 pub enum ScopeEvent {
     Open(String),
@@ -37,7 +44,7 @@ pub struct ScopeFrame {
 pub struct RunTime {
     pub string_arena: Vec<u8>,
     pub handles: HandleRegistry<Value>,
-    pub enums: HashMap<String, Vec<String>>,
+    pub enums: HashMap<String, EnumRuntimeInfo>,
     scopes: Vec<ScopeFrame>,
     order: Vec<String>,
     seen: HashSet<String>,
@@ -46,6 +53,23 @@ pub struct RunTime {
 }
 
 impl RunTime {
+    pub fn register_func(
+        &mut self,
+        name: String,
+        params: Vec<ParamKind>,
+        body: Vec<Stmt>,
+        ret_expr: Option<Expr>,
+    ) {
+        self.funcs.insert(
+            name,
+            FuncDef {
+                params,
+                body,
+                ret_expr,
+            },
+        );
+    }
+
     pub fn alloc_str(&mut self, s: &str) -> (u32, u32) {
         let offset = self.string_arena.len() as u32;
         self.string_arena.extend_from_slice(s.as_bytes());
@@ -55,6 +79,24 @@ impl RunTime {
     pub fn resolve_str(&self, offset: u32, len: u32) -> &str {
         let bytes = &self.string_arena[offset as usize..(offset + len) as usize];
         std::str::from_utf8(bytes).expect("arena string was not valid utf8")
+    }
+
+    fn super_group_handler_index(
+        &self,
+        enum_name: &str,
+        super_name: &str,
+        variant_name: &str,
+    ) -> Option<usize> {
+        let info = self.enums.get(enum_name)?;
+        let sub_names = info.super_group_order.get(super_name)?;
+        sub_names.iter().enumerate().find_map(|(i, sub)| {
+            let members = info.groups.get(sub)?;
+            if members.iter().any(|m| m == variant_name) {
+                Some(i)
+            } else {
+                None
+            }
+        })
     }
 
     fn resolve_assigned_value(&mut self, value: Value, pos: usize) -> Result<Value, RuntimeError> {
@@ -506,7 +548,12 @@ impl RunTime {
                 if name == "is_known" {
                     let val = match args.first() {
                         Some(CallArg::Expr(expr)) => self.eval_expr(expr)?,
-                        _ => return Err(RuntimeError::UndefinedVar { pos: *pos, name: name.clone() }),
+                        _ => {
+                            return Err(RuntimeError::UndefinedVar {
+                                pos: *pos,
+                                name: name.clone(),
+                            })
+                        }
                     };
                     return Ok(match val {
                         Value::Unknown(_) | Value::TBool(2) => Value::Bool(false),
@@ -814,8 +861,50 @@ impl RunTime {
 
 pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
     match stmt {
-        Stmt::EnumDef { name, variants, .. } => {
-            rt.enums.insert(name, variants);
+        Stmt::EnumDef {
+            name,
+            variants,
+            groups,
+            super_groups,
+            ..
+        } => {
+            let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
+
+            for (group_name, group_variants) in &groups {
+                group_map.insert(group_name.clone(), group_variants.clone());
+            }
+
+            for (_super_name, sub_groups) in &super_groups {
+                for (sub_name, sub_variants) in sub_groups {
+                    group_map.insert(sub_name.clone(), sub_variants.clone());
+                }
+            }
+
+            for (super_name, sub_groups) in &super_groups {
+                let all_variants: Vec<String> = sub_groups
+                    .iter()
+                    .flat_map(|(_, sv)| sv.iter().cloned())
+                    .collect();
+                group_map.insert(super_name.clone(), all_variants);
+            }
+
+            let mut super_order: HashMap<String, Vec<String>> = HashMap::new();
+            for (super_name, sub_groups) in &super_groups {
+                let ordered: Vec<String> = sub_groups
+                    .iter()
+                    .map(|(sub_name, _)| sub_name.clone())
+                    .collect();
+                super_order.insert(super_name.clone(), ordered);
+            }
+
+            rt.enums.insert(
+                name,
+                EnumRuntimeInfo {
+                    variants,
+                    groups: group_map,
+                    super_group_order: super_order,
+                },
+            );
             Ok(())
         }
         Stmt::Decl { name, ty, pos } => rt.declare(name, ty, pos),
@@ -968,7 +1057,26 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
                     }
                     WhenPattern::Range(_, _, _) => false,
                     WhenPattern::Literal(_) => false,
-                    WhenPattern::Group(_, _) => false,
+                    WhenPattern::Group(_, group_name) => {
+                        if let Value::EnumVariant(enum_name, variant_name) = &val {
+                            if let Some(info) = rt.enums.get(enum_name) {
+                                if let Some(members) = info.groups.get(group_name) {
+                                    members.contains(&variant_name.to_string())
+                                } else {
+                                    rt.super_group_handler_index(
+                                        enum_name,
+                                        group_name,
+                                        variant_name,
+                                    )
+                                    .is_some()
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    }
                     WhenPattern::Placeholder => false,
                 };
                 if matched {
@@ -983,8 +1091,21 @@ pub fn run_stmt(rt: &mut RunTime, stmt: Stmt) -> Result<(), RuntimeError> {
                             }
                         }
                         WhenBody::SuperGroup(handlers) => {
-                            for handler in handlers {
-                                if let SuperGroupHandler::Stmts(stmts) = handler {
+                            let idx = match (&arm.pattern, &val) {
+                                (
+                                    WhenPattern::Group(_, super_name),
+                                    Value::EnumVariant(enum_name, variant_name),
+                                ) => rt.super_group_handler_index(
+                                    enum_name,
+                                    super_name,
+                                    variant_name,
+                                ),
+                                _ => None,
+                            };
+                            if let Some(idx) = idx {
+                                if let Some(SuperGroupHandler::Stmts(stmts)) =
+                                    handlers.into_iter().nth(idx)
+                                {
                                     for s in stmts {
                                         if let Err(e) = run_stmt(rt, s) {
                                             rt.pop_scope();
@@ -1155,7 +1276,7 @@ fn type_of_value(v: &Value) -> Type {
         Value::EnumVariant(e, _) => Type::Enum(e.clone()),
         Value::Unknown(_) => Type::Unknown,
         Value::Handle(_) => Type::Handle(Box::new(Type::T128)),
-        Value::Container(_) => Type::Str,
+        Value::Container(_) => Type::Container,
     }
 }
 
@@ -1172,7 +1293,8 @@ fn value_matches_type(v: &Value, t: &Type) -> bool {
         (Value::Float(_), Type::T64) => true,
         (Value::Float(_), Type::T128) => true,
         (Value::Str(_, _), Type::Str) => true,
-        (Value::Container(_), Type::Str) => true,
+        (Value::Str(_, _), Type::StrRef) => true,
+        (Value::Container(_), Type::Container) => true,
         (Value::Bool(_), Type::Bool) => true,
         (Value::Char(_), Type::Char) => true,
         (Value::EnumVariant(e, _), Type::Enum(t)) if e == t => true,

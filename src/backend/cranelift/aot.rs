@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-
 #![cfg(feature = "jit")]
 
 pub fn emit_object(_ir: &crate::ir::IrModule) -> Result<(), String> {

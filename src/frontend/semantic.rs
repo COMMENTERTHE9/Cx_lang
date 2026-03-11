@@ -260,6 +260,13 @@ impl Analyzer {
                 pos_eq,
             } => {
                 let mut semantic_expr = self.analyze_expr(expr)?;
+                if semantic_expr.ty == SemanticType::StrRef {
+                    return Err(SemanticError {
+                        msg: "cannot assign a StrRef to a variable — use an owned str instead"
+                            .to_string(),
+                        pos: *pos_eq,
+                    });
+                }
                 let target = match target {
                     Expr::Ident(name, _) => {
                         let info = self.lookup_var_mut(name).ok_or_else(|| SemanticError {
@@ -341,6 +348,13 @@ impl Analyzer {
             } => {
                 let declared_ty = semantic_type_from_decl(ty.clone());
                 let mut semantic_expr = self.analyze_expr(expr)?;
+                if semantic_expr.ty == SemanticType::StrRef {
+                    return Err(SemanticError {
+                        msg: "cannot assign a StrRef to a variable — use an owned str instead"
+                            .to_string(),
+                        pos: *pos_type,
+                    });
+                }
 
                 if let Expr::Val(AstValue::Num(n)) = expr {
                     check_num_range(ty.clone(), *n, *pos_type)?;
@@ -655,6 +669,13 @@ impl Analyzer {
 
         let semantic_ret_expr = if let Some(expr) = ret_expr {
             let mut expr = self.analyze_expr(expr)?;
+            if expr.ty == SemanticType::StrRef {
+                return Err(SemanticError {
+                    msg: "cannot return a StrRef — it does not outlive its origin scope"
+                        .to_string(),
+                    pos,
+                });
+            }
             if let Some(expected) = &self.current_ret_ty {
                 if !types_compatible(expected, &expr.ty) {
                     return Err(SemanticError {
@@ -712,6 +733,13 @@ impl Analyzer {
         let expr = match (expr, self.current_ret_ty.clone()) {
             (Some(expr), Some(expected)) => {
                 let expr = self.analyze_expr(expr)?;
+                if expr.ty == SemanticType::StrRef {
+                    return Err(SemanticError {
+                        msg: "cannot return a StrRef — it does not outlive its origin scope"
+                            .to_string(),
+                        pos,
+                    });
+                }
                 if !types_compatible(&expected, &expr.ty) {
                     return Err(SemanticError {
                         msg: format!(
@@ -866,13 +894,23 @@ impl Analyzer {
                     },
                 })
             }
-            Expr::HandleNew(inner, pos) => Ok(SemanticExpr {
-                ty: SemanticType::Handle(Box::new(SemanticType::I128)),
-                kind: SemanticExprKind::HandleNew {
-                    value: Box::new(self.analyze_expr(inner)?),
-                    pos: *pos,
-                },
-            }),
+            Expr::HandleNew(inner, pos) => {
+                let inner_analyzed = self.analyze_expr(inner)?;
+                if inner_analyzed.ty == SemanticType::StrRef {
+                    return Err(SemanticError {
+                        msg: "cannot store a StrRef in a Handle — use an owned str instead"
+                            .to_string(),
+                        pos: *pos,
+                    });
+                }
+                Ok(SemanticExpr {
+                    ty: SemanticType::Handle(Box::new(SemanticType::I128)),
+                    kind: SemanticExprKind::HandleNew {
+                        value: Box::new(inner_analyzed),
+                        pos: *pos,
+                    },
+                })
+            }
             Expr::HandleVal(name, pos) => {
                 let info = self.lookup_var(name).ok_or_else(|| SemanticError {
                     msg: format!("use of undeclared variable '{}'", name),
@@ -943,6 +981,26 @@ impl Analyzer {
         args: &[CallArg],
         pos: usize,
     ) -> Result<SemanticExpr, SemanticError> {
+        if name == "is_known" {
+            let expr = match args.first() {
+                Some(CallArg::Expr(expr)) => self.analyze_expr(expr)?,
+                _ => {
+                    return Err(SemanticError {
+                        msg: format!("call to undefined function '{}'", name),
+                        pos,
+                    });
+                }
+            };
+            return Ok(SemanticExpr {
+                ty: SemanticType::Bool,
+                kind: SemanticExprKind::Call {
+                    callee: name.to_string(),
+                    function: FunctionId(u32::MAX),
+                    args: vec![SemanticCallArg::Expr(expr)],
+                },
+            });
+        }
+
         let function = self.funcs.get(name).cloned().ok_or_else(|| SemanticError {
             msg: format!("call to undefined function '{}'", name),
             pos,
@@ -1140,6 +1198,7 @@ impl Analyzer {
                         SemanticType::Bool
                             | SemanticType::Char
                             | SemanticType::Str
+                            | SemanticType::StrRef
                             | SemanticType::Enum(_)
                     )
                 {
@@ -1288,6 +1347,8 @@ fn semantic_type_from_decl(ty: Type) -> SemanticType {
         Type::T128 => SemanticType::I128,
         Type::Bool => SemanticType::Bool,
         Type::Str => SemanticType::Str,
+        Type::StrRef => SemanticType::StrRef,
+        Type::Container => SemanticType::Container,
         Type::Char => SemanticType::Char,
         Type::Enum(name) => SemanticType::Enum(name),
         Type::Unknown => SemanticType::Unknown,
@@ -1420,6 +1481,29 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
     let mut errors = Vec::new();
     let mut semantic_stmts = Vec::with_capacity(program.stmts.len());
 
+    for stmt in &program.stmts {
+        if let Stmt::FuncDef {
+            name,
+            params,
+            ret_ty,
+            ..
+        } = stmt
+        {
+            let placeholders = params
+                .iter()
+                .map(semantic_param_placeholder)
+                .collect::<Vec<_>>();
+            let func_id = analyzer.fresh_function();
+            analyzer.funcs.insert(
+                name.clone(),
+                FunctionInfo {
+                    id: func_id,
+                    params: placeholders,
+                    ret_ty: ret_ty.clone().map(semantic_type_from_decl),
+                },
+            );
+        }
+    }
     for stmt in &program.stmts {
         match analyzer.analyze_stmt(stmt) {
             Ok(stmt) => semantic_stmts.push(stmt),
