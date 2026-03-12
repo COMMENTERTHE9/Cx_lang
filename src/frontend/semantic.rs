@@ -1337,20 +1337,20 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
     }
 }
 
-fn check_num_range(ty: Type, n: u128, pos: usize) -> Result<(), SemanticError> {
-    let max: Option<u128> = match ty {
-        Type::T8 => Some(u8::MAX as u128),
-        Type::T16 => Some(u16::MAX as u128),
-        Type::T32 => Some(u32::MAX as u128),
-        Type::T64 => Some(u64::MAX as u128),
+fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
+    let bounds: Option<(i128, i128)> = match ty {
+        Type::T8 => Some((i8::MIN as i128, i8::MAX as i128)),
+        Type::T16 => Some((i16::MIN as i128, i16::MAX as i128)),
+        Type::T32 => Some((i32::MIN as i128, i32::MAX as i128)),
+        Type::T64 => Some((i64::MIN as i128, i64::MAX as i128)),
         Type::T128 => None,
         _ => None,
     };
 
-    if let Some(max) = max {
-        if n > max {
+    if let Some((min, max)) = bounds {
+        if n < min || n > max {
             return Err(SemanticError {
-                msg: format!("value {} overflows type {:?} (max {})", n, ty, max),
+                msg: format!("value {} overflows type {:?} (range {}..{})", n, ty, min, max),
                 pos,
             });
         }
@@ -1550,7 +1550,7 @@ mod tests {
         Expr::Ident(name.to_string(), 0)
     }
 
-    fn num(n: u128) -> Expr {
+    fn num(n: i128) -> Expr {
         Expr::Val(AstValue::Num(n))
     }
 

@@ -52,7 +52,7 @@ pub enum Type {
 // Used by parser and AST nodes only
 #[derive(Debug, Clone)]
 pub enum AstValue {
-    Num(u128),
+    Num(i128),
     Float(f64),
     Str(String),
     Bool(bool),

@@ -25,6 +25,15 @@ fn unescape_string(s: &str) -> String {
     }
     out
 }
+fn skip_block_comment(lex: &mut logos::Lexer<Token>) -> logos::Skip {
+    let remainder = lex.remainder();
+    match remainder.find("#/") {
+        Some(end) => lex.bump(end + 2),
+        None => lex.bump(remainder.len()),
+    }
+    logos::Skip
+}
+
 // Token kinds recognized by the lexer; whitespace is skipped via a Logos attribute.
 #[derive(Logos, Debug, PartialEq, Clone)]
 #[logos(skip r"[ \t\r\n\f]+")] // skip whitespace
@@ -32,6 +41,9 @@ pub enum Token {
     // ── Comments ────────────────────────────────
     #[regex(r"//[^\r\n]*", logos::skip, allow_greedy = true)]
     LineComment,
+
+    #[token("/#", skip_block_comment)]
+    BlockComment,
 
     // ── Keywords ────────────────────────────────
     #[token("let")]
@@ -129,8 +141,8 @@ pub enum Token {
     #[regex(r"[0-9]+\.[0-9]+", |lex| lex.slice().parse::<f64>().ok())]
     LiteralFloat(f64),
 
-    #[regex(r"[0-9]+", |lex| lex.slice().parse::<u128>().ok())]
-    LiteralInt(u128),
+    #[regex(r"[0-9]+", |lex| lex.slice().parse::<i128>().ok())]
+    LiteralInt(i128),
 
     #[regex(r"'([^'\\]|\\.)'", |lex| {
         let s = lex.slice();
