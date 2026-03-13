@@ -217,7 +217,7 @@ fn run_with_interpreter(program: Program, input: &str, flags: &DebugFlags) {
             diagnostics::print_stmt_summary(&stmt);
             wait_for_step();
         }
-        if let Err(err) = run_stmt(&mut rt, stmt) {
+        if let Err(err) = rt.run_stmt(&stmt) {
             diagnostics::print_runtime(&input, &err);
             diagnostics::print_summary(1);
             break;

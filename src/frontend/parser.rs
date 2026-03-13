@@ -516,8 +516,8 @@ where
                     .then(select! { Token::LiteralInt(n) => n })
                     .map(|((start, inclusive), end)| {
                         WhenPattern::Range(
-                            AstValue::Num(start as u128),
-                            AstValue::Num(end as u128),
+                            AstValue::Num(start),
+                            AstValue::Num(end),
                             inclusive,
                         )
                     }),
@@ -742,7 +742,7 @@ where
             .map(|(((name, pos), op), n)| Stmt::CompoundAssign {
                 name,
                 op,
-                operand: Expr::Val(AstValue::Num(n as u128)),
+                operand: Expr::Val(AstValue::Num(n)),
                 pos,
             })
             .boxed();

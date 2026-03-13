@@ -33,7 +33,7 @@ pub enum SemanticType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticValue {
-    Num(u128),
+    Num(i128),
     Float(f64),
     Str(String),
     Bool(bool),

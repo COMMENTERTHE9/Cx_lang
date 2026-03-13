@@ -1,0 +1,9 @@
+/# this is a block comment #/
+let x;
+x = 5
+/#
+    multi
+    line
+    comment
+#/
+print(x)

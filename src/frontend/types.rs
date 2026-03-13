@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Value {
-    Num(u128),
+    Num(i128),
     Float(f64),
     Str(u32, u32),
     Bool(bool),
