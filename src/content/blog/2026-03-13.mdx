@@ -1,0 +1,15 @@
+---
+title: "Cx Dev Log — 2026-03-13"
+date: 2026-03-13
+description: "An ambitious compound-types push was landed then reverted, revealing staging issues across the full compiler pipeline."
+---
+
+Today was a land-and-revert day. Commit `029b9ad` brought in arrays, index writes, `while-in` loops, and the first pieces of struct scaffolding. It was a big surface area change — touching the AST definitions, parser, semantic analysis, IR lowering, and runtime all at once. Shortly after, `6279d39` rolled it all back.
+
+The revert wasn't because the ideas were wrong. Arrays and structs are core to what Cx needs next, and `while-in` is the iteration primitive we've been designing toward. The problem was that landing all of it in a single shot made it difficult to isolate regressions. When compound types cut across every layer of the pipeline — from frontend parse nodes through IR emission to runtime value representation — a failure in one layer cascades unpredictably into the others.
+
+The takeaway is straightforward: these features need to be staged more carefully. Arrays first, with index read and write semantics fully validated end-to-end before structs enter the picture. `while-in` can land alongside arrays since it depends on iterable values, but struct scaffolding should come as its own pass once the array foundation is solid. Each layer of the compiler needs to be green before the next feature stacks on top.
+
+This is the kind of day that doesn't look productive from the outside — two commits, net zero lines changed. But it clarified the integration order for compound types, which saves us from a messier debugging session later. The pipeline is clean, and the next push will be narrower and more testable.
+
+Up next: re-landing arrays and index operations as a standalone change, with targeted tests at each compiler stage before moving on.
