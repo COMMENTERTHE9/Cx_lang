@@ -404,17 +404,6 @@ fn print_expr(expr: &Expr, depth: usize) {
             print_expr(lhs, depth + 1);
             print_expr(rhs, depth + 1);
         }
-        Expr::ArrayLit(elems) => {
-            eprintln!("{}ArrayLit", pad);
-            for e in elems {
-                print_expr(e, depth + 1);
-            }
-        }
-        Expr::Index(base, idx, _) => {
-            eprintln!("{}Index", pad);
-            print_expr(base, depth + 1);
-            print_expr(idx, depth + 1);
-        }
     }
 }
 

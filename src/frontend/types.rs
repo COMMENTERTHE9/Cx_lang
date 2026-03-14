@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum Value {
-    Num(i128),
+    Num(u128),
     Float(f64),
     Str(u32, u32),
     Bool(bool),
@@ -13,7 +13,6 @@ pub enum Value {
     Unknown(crate::frontend::ast::Type),
     Handle(crate::runtime::handle::Handle),
     Container(HashMap<String, Value>),
-    Array(Vec<Value>),
 }
 
 #[derive(Debug)]
