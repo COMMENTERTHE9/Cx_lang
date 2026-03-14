@@ -45,13 +45,14 @@ pub enum Type {
     Enum(String),
     Unknown,
     Handle(Box<Type>),
+    Array(usize, Box<Type>),
 }
 
 // AST-level value - owned, no arena lifetime
 // Used by parser and AST nodes only
 #[derive(Debug, Clone)]
 pub enum AstValue {
-    Num(u128),
+    Num(i128),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -72,6 +73,8 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>, bool),
     Unary(Op, Box<Expr>, usize),
     Bin(Box<Expr>, Op, usize, Box<Expr>),
+    ArrayLit(Vec<Expr>),
+    Index(Box<Expr>, Box<Expr>, usize),
 }
 
 #[derive(Debug, Clone)]
