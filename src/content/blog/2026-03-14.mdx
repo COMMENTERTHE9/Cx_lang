@@ -1,0 +1,13 @@
+﻿---
+title: "Cx Dev Log — 2026-03-14"
+date: 2026-03-14
+description: "Today we attempted a broad language feature landing and reverted it to re-stage safely."
+---
+
+We attempted an ambitious landing that introduced arrays, index writes, `while-in` loops, and early struct scaffolding across the Cx compiler stack. The work briefly landed as `029b9ad` and was then immediately reverted in `6279d39`. The revert is the right call for now: these features touched too many surfaces at once and we need a cleaner rollout sequence.
+
+The key design signal is scope coupling. This change set hit parser and AST structure, semantic checks, IR lowering, and runtime behavior in one pass. That is usually where hidden invariants show up: a shape that parses cleanly can still break ownership or mutability assumptions in lowering, and then fail differently again once runtime rules are exercised.
+
+The immediate decision is to stage this work in smaller slices. Arrays and index-write semantics need a stabilized contract first, with precise mutation and bounds behavior defined before struct scaffolding layers on top. `while-in` loop behavior also needs tighter interaction rules with the same value/borrow model so we are not debugging control flow and storage semantics at the same time.
+
+Next up is a re-land plan with narrower commits, stronger cross-layer tests, and explicit feature gates while pieces harden. The goal is still the same feature set, but with integration points proven incrementally instead of betting on a single all-at-once merge.
