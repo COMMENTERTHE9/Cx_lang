@@ -362,6 +362,8 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                 }
             }
         }
+        Stmt::StructDef { name, .. } => eprintln!("{}StructDef({})", pad, name),
+        Stmt::WhileIn { arr, .. } => eprintln!("{}WhileIn({})", pad, arr),
         Stmt::While { .. } => eprintln!("{}While", pad),
         Stmt::For { .. } => eprintln!("{}For", pad),
         Stmt::Loop { .. } => eprintln!("{}Loop", pad),
@@ -480,6 +482,8 @@ pub fn print_stmt_summary(stmt: &Stmt) {
         Stmt::FuncDef { name, .. } => format!("FuncDef {}", name),
         Stmt::Block { .. } => "Block".to_string(),
         Stmt::When { .. } => "When".to_string(),
+        Stmt::StructDef { name, .. } => format!("StructDef {}", name),
+        Stmt::WhileIn { arr, .. } => format!("WhileIn {}", arr),
         Stmt::While { .. } => "While".to_string(),
         Stmt::For { .. } => "For".to_string(),
         Stmt::Loop { .. } => "Loop".to_string(),

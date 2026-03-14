@@ -622,6 +622,78 @@ where
             .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos })
             .boxed();
 
+        // while in arr:[slot], start..end { body } then in arr2:[slot], start..end { body }
+        let arr_slot = ident
+            .clone()
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBracketClose));
+
+        let while_in_range = expr
+            .clone()
+            .then(choice((
+                just(Token::RangeInclusive).to(true),
+                just(Token::RangeExclusive).to(false),
+            )))
+            .then(expr.clone());
+
+        let then_chain = just(Token::KeywordThen)
+            .ignore_then(just(Token::KeywordIn))
+            .ignore_then(arr_slot.clone())
+            .then_ignore(just(Token::PunctComma))
+            .then(while_in_range.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(
+                |(((arr, slot_expr), ((start, inclusive), end)), body)| {
+                    let start_slot = match &slot_expr {
+                        Expr::Val(AstValue::Num(n)) => *n as usize,
+                        _ => 0,
+                    };
+                    WhileInChain {
+                        arr,
+                        start_slot,
+                        range_start: start,
+                        range_end: end,
+                        inclusive,
+                        body,
+                    }
+                },
+            );
+
+        let while_in = just(Token::KeywordWhile)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::KeywordIn))
+            .then(arr_slot.clone())
+            .then_ignore(just(Token::PunctComma))
+            .then(while_in_range.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .then(then_chain.repeated().collect::<Vec<_>>())
+            .map(
+                |((((pos, (arr, slot_expr)), ((start, inclusive), end)), body), chains)| {
+                    let start_slot = match &slot_expr {
+                        Expr::Val(AstValue::Num(n)) => *n as usize,
+                        _ => 0,
+                    };
+                    Stmt::WhileIn {
+                        arr,
+                        start_slot,
+                        range_start: start,
+                        range_end: end,
+                        inclusive,
+                        body,
+                        then_chains: chains,
+                        result: None,
+                        pos,
+                    }
+                },
+            )
+            .boxed();
+
         let while_stmt = just(Token::KeywordWhile)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then_ignore(just(Token::PunctParenOpen))
@@ -760,6 +832,7 @@ where
             assign,
             block,
             when_stmt,
+            while_in,
             while_stmt,
             for_stmt,
             loop_stmt,

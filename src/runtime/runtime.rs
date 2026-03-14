@@ -508,6 +508,12 @@ impl RunTime {
                 }
             }
             Expr::Unary(op, inner, pos) => {
+                if let (Op::Mul, Expr::Ident(name, _)) = (op, inner.as_ref()) {
+                    let cursor_name = format!("__cursor_{}", name);
+                    if let Ok(cursor_val) = self.eval_expr(&Expr::Ident(cursor_name, *pos)) {
+                        return Ok(cursor_val);
+                    }
+                }
                 let val = self.eval_expr(inner)?;
                 match (op, val) {
                     (Op::Minus, Value::Num(n)) => Ok(Value::Num(-n)),
@@ -919,6 +925,23 @@ impl RunTime {
                 Expr::DotAccess(container, field) => {
                     self.set_container_field(&container, &field, value, *pos_eq)
                 }
+                Expr::Index(base_expr, idx_expr, pos) => {
+                    let arr_name = match base_expr.as_ref() {
+                        Expr::Ident(name, _) => name.clone(),
+                        _ => return Err(RuntimeError::BadAssignTarget { pos: *pos }),
+                    };
+                    let idx = match self.eval_expr(&idx_expr)? {
+                        Value::Num(n) => n as usize,
+                        _ => return Err(RuntimeError::BadAssignTarget { pos: *pos }),
+                    };
+                    let mut arr_val = self.get_var(&arr_name, *pos)?;
+                    if let Value::Array(ref mut elems) = arr_val {
+                        if idx < elems.len() {
+                            elems[idx] = value;
+                        }
+                    }
+                    self.set_var(arr_name, arr_val, *pos)
+                }
                 _ => Err(RuntimeError::BadAssignTarget { pos: *pos_eq }),
             }
         }
@@ -1133,6 +1156,90 @@ impl RunTime {
                     self.pop_scope();
                     return Ok(());
                 }
+            }
+            Ok(())
+        }
+        Stmt::StructDef { .. } => Ok(()),
+        Stmt::WhileIn {
+            arr,
+            start_slot,
+            range_start,
+            range_end,
+            inclusive,
+            body,
+            then_chains,
+            result,
+            pos: _,
+        } => {
+            let run_while_in_block =
+                |rt: &mut RunTime,
+                 arr: &str,
+                 start_slot: usize,
+                 range_start: &Expr,
+                 range_end: &Expr,
+                 inclusive: bool,
+                 body: &[Stmt]|
+                 -> Result<(), RuntimeError> {
+                    let start_val = match rt.eval_expr(range_start)? {
+                        Value::Num(n) => n as usize,
+                        _ => return Ok(()),
+                    };
+                    let end_val = match rt.eval_expr(range_end)? {
+                        Value::Num(n) => n as usize,
+                        _ => return Ok(()),
+                    };
+                    let end = if inclusive { end_val + 1 } else { end_val };
+                    for i in start_val..end {
+                        rt.push_scope();
+                        let cursor_name = format!("__cursor_{}", arr);
+                        let arr_val = rt.eval_expr(&Expr::Ident(arr.to_string(), 0))?;
+                        if let Value::Array(ref elements) = arr_val {
+                            if let Some(elem) = elements.get(i) {
+                                rt.declare(cursor_name.clone(), None, 0)?;
+                                rt.set_var(cursor_name.clone(), elem.clone(), 0)?;
+                            }
+                        }
+                        for s in body {
+                            match rt.run_stmt(s) {
+                                Ok(_) => {}
+                                Err(RuntimeError::BreakSignal) => {
+                                    rt.pop_scope();
+                                    return Ok(());
+                                }
+                                Err(RuntimeError::ContinueSignal) => break,
+                                Err(e) => {
+                                    rt.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        rt.pop_scope();
+                    }
+                    Ok(())
+                };
+
+            run_while_in_block(
+                self,
+                &arr,
+                *start_slot,
+                &range_start,
+                &range_end,
+                *inclusive,
+                &body,
+            )?;
+            for chain in then_chains.iter() {
+                run_while_in_block(
+                    self,
+                    &chain.arr,
+                    chain.start_slot,
+                    &chain.range_start,
+                    &chain.range_end,
+                    chain.inclusive,
+                    &chain.body,
+                )?;
+            }
+            if let Some(res_expr) = &result {
+                let _ = self.eval_expr(res_expr)?;
             }
             Ok(())
         }

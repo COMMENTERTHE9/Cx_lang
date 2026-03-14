@@ -326,6 +326,44 @@ impl Analyzer {
                             ty: SemanticType::Numeric,
                         }
                     }
+                    Expr::Index(base_expr, idx_expr, pos) => {
+                        let arr_name = match base_expr.as_ref() {
+                            Expr::Ident(name, _) => name.clone(),
+                            _ => {
+                                return Err(SemanticError {
+                                    msg: "bad assignment target".to_string(),
+                                    pos: *pos,
+                                });
+                            }
+                        };
+                        let (binding, initialized) = {
+                            let info =
+                                self.lookup_var(&arr_name).ok_or_else(|| SemanticError {
+                                    msg: format!(
+                                        "use of undeclared variable '{}'",
+                                        arr_name
+                                    ),
+                                    pos: *pos,
+                                })?;
+                            (info.binding, info.initialized)
+                        };
+                        if !initialized {
+                            return Err(SemanticError {
+                                msg: format!(
+                                    "use of uninitialized variable '{}'",
+                                    arr_name
+                                ),
+                                pos: *pos,
+                            });
+                        }
+                        let sem_idx = self.analyze_expr(idx_expr)?;
+                        SemanticLValue::IndexAccess {
+                            binding,
+                            name: arr_name,
+                            index: Box::new(sem_idx),
+                            ty: SemanticType::Numeric,
+                        }
+                    }
                     _ => {
                         return Err(SemanticError {
                             msg: "bad assignment target".to_string(),
@@ -530,6 +568,74 @@ impl Analyzer {
                 Ok(SemanticStmt::When {
                     expr: semantic_expr,
                     arms: semantic_arms,
+                    pos: *pos,
+                })
+            }
+            Stmt::StructDef {
+                name,
+                fields,
+                pos,
+            } => {
+                let sem_fields: Vec<(String, SemanticType)> = fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), semantic_type_from_decl(t.clone())))
+                    .collect();
+                Ok(SemanticStmt::StructDef {
+                    name: name.clone(),
+                    fields: sem_fields,
+                    pos: *pos,
+                })
+            }
+            Stmt::WhileIn {
+                arr,
+                start_slot,
+                range_start,
+                range_end,
+                inclusive,
+                body,
+                then_chains,
+                result,
+                pos,
+            } => {
+                let sem_start = self.analyze_expr(range_start)?;
+                let sem_end = self.analyze_expr(range_end)?;
+                let sem_body = body
+                    .iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let sem_chains = then_chains
+                    .iter()
+                    .map(|chain| {
+                        let cs = self.analyze_expr(&chain.range_start)?;
+                        let ce = self.analyze_expr(&chain.range_end)?;
+                        let cb = chain
+                            .body
+                            .iter()
+                            .map(|s| self.analyze_stmt(s))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        Ok(SemanticWhileInChain {
+                            arr: chain.arr.clone(),
+                            start_slot: chain.start_slot,
+                            range_start: cs,
+                            range_end: ce,
+                            inclusive: chain.inclusive,
+                            body: cb,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, SemanticError>>()?;
+                let sem_result = match result {
+                    Some(e) => Some(self.analyze_expr(e)?),
+                    None => None,
+                };
+                Ok(SemanticStmt::WhileIn {
+                    arr: arr.clone(),
+                    start_slot: *start_slot,
+                    range_start: sem_start,
+                    range_end: sem_end,
+                    inclusive: *inclusive,
+                    body: sem_body,
+                    then_chains: sem_chains,
+                    result: sem_result,
                     pos: *pos,
                 })
             }

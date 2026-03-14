@@ -108,6 +108,16 @@ pub struct WhenArm {
 
 // AST statements produced by the parser
 #[derive(Debug, Clone)]
+pub struct WhileInChain {
+    pub arr: String,
+    pub start_slot: usize,
+    pub range_start: Expr,
+    pub range_end: Expr,
+    pub inclusive: bool,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     EnumDef {
         name: String,
@@ -187,6 +197,22 @@ pub enum Stmt {
         pos: usize,
     },
     Continue {
+        pos: usize,
+    },
+    StructDef {
+        name: String,
+        fields: Vec<(String, Type)>,
+        pos: usize,
+    },
+    WhileIn {
+        arr: String,
+        start_slot: usize,
+        range_start: Expr,
+        range_end: Expr,
+        inclusive: bool,
+        body: Vec<Stmt>,
+        then_chains: Vec<WhileInChain>,
+        result: Option<Expr>,
         pos: usize,
     },
     When {
