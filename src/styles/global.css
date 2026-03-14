@@ -175,10 +175,15 @@ body::after {
     --tw-prose-headings: var(--cx-text);
     --tw-prose-links: var(--cx-accent);
     --tw-prose-code: var(--cx-text);
+    --tw-prose-bold: var(--cx-text);
+    --tw-prose-lead: var(--cx-text-2);
     --tw-prose-quotes: var(--cx-text);
     --tw-prose-hr: var(--cx-border);
-    --tw-prose-bullets: var(--cx-border-2);
+    --tw-prose-bullets: var(--cx-border);
     --tw-prose-counters: var(--cx-text-2);
+    --tw-prose-captions: var(--cx-text-2);
+    --tw-prose-th-borders: var(--cx-border);
+    --tw-prose-td-borders: var(--cx-border);
 }
 .prose code, .prose pre { font-family: var(--cx-mono); }
 .prose code { font-weight: 500; }

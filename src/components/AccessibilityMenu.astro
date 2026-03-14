@@ -11,14 +11,14 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
     </svg>
   </button>
 
-  <div class="a11y-menu" role="menu" aria-label="Accessibility">
+  <div class="a11y-menu acc-menu" role="menu" aria-label="Accessibility">
     <div class="a11y-title">ACCESSIBILITY</div>
 
     <div class="a11y-group">
       <div class="a11y-label">Theme</div>
       <div class="a11y-row">
-        <button class="a11y-chip" data-theme="default" type="button">Default</button>
-        <button class="a11y-chip" data-theme="light" type="button">Light</button>
+        <button class="a11y-chip acc-pill" data-theme="default" type="button" aria-pressed="false">Default</button>
+        <button class="a11y-chip acc-pill" data-theme="light" type="button" aria-pressed="false">Light</button>
       </div>
     </div>
 
@@ -126,11 +126,21 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
     document.addEventListener("click", () => setOpen(false));
     menu.addEventListener("click", (e) => e.stopPropagation());
 
+    const themeButtons = [...menu.querySelectorAll("[data-theme]")];
+
+    function syncThemeButtons() {
+      const s = load();
+      themeButtons.forEach((b) => {
+        b.setAttribute("aria-pressed", b.getAttribute("data-theme") === s.theme ? "true" : "false");
+      });
+    }
+
     menu.querySelectorAll("[data-theme]").forEach((b) => {
       b.addEventListener("click", () => {
         const s = load();
         s.theme = b.getAttribute("data-theme");
         apply(s);
+        syncThemeButtons();
       });
     });
 
@@ -148,12 +158,14 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
       s.contrast = s.contrast === "high" ? "normal" : "high";
       apply(s);
       syncToggle();
+      syncThemeButtons();
     });
 
     sel.addEventListener("change", () => {
       const s = load();
       s.cbm = sel.value;
       apply(s);
+      syncThemeButtons();
     });
 
     reset.addEventListener("click", () => {
@@ -161,10 +173,12 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
       apply(s);
       sel.value = "";
       syncToggle();
+      syncThemeButtons();
     });
 
     sel.value = load().cbm || "";
     syncToggle();
+    syncThemeButtons();
     setOpen(false);
   }
 </script>
@@ -201,6 +215,11 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
     z-index: 50;
   }
   .a11y-menu[data-open="true"]{ display:block; }
+
+  .acc-menu{
+    background: var(--cx-surface);
+    border: 1px solid var(--cx-border);
+  }
 
   .a11y-title{
     font-family: var(--cx-mono);
@@ -239,6 +258,18 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
   }
   .a11y-chip:hover{
     border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
+  }
+
+  .acc-pill{
+    background: var(--cx-surface);
+    color: var(--cx-text);
+    border: 1px solid var(--cx-border);
+  }
+
+  .acc-pill[aria-pressed="true"]{
+    background: color-mix(in srgb, var(--cx-accent) 22%, var(--cx-surface));
+    border-color: var(--cx-accent);
+    color: var(--cx-text);
   }
 
   .a11y-select{
@@ -292,5 +323,48 @@ const id = `a11y_${Math.random().toString(16).slice(2)}`;
   .a11y-reset:hover{
     border-color: color-mix(in srgb, var(--cx-accent) 45%, var(--cx-border));
     color: var(--cx-text);
+  }
+
+  html.theme-high-contrast .acc-pill{
+    background: #000;
+    color: #fff;
+    border-color: #fff;
+  }
+
+  html.theme-high-contrast .acc-pill[aria-pressed="true"]{
+    background: #fff;
+    color: #000;
+    border-color: #fff;
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+
+  html.theme-high-contrast .acc-menu{
+    background: #000;
+    border-color: #fff;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  html.theme-high-contrast .a11y-toggle{
+    background: #000;
+    border-color: #fff;
+    box-shadow: none;
+  }
+
+  html.theme-high-contrast .a11y-toggle .knob{
+    background: #fff;
+    border: 1px solid #000;
+  }
+
+  html.theme-high-contrast .a11y-toggle[data-on="true"]{
+    background: #fff;
+    border-color: #fff;
+    box-shadow: none;
+  }
+
+  html.theme-high-contrast .a11y-toggle[data-on="true"] .knob{
+    background: #000;
+    border: 1px solid #fff;
   }
 </style>

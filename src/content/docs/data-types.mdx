@@ -1,0 +1,142 @@
+---
+title: Data Types
+description: The built-in types currently visible in Cx.
+order: 3
+section: Core
+---
+
+# Data Types
+
+This page separates the type surface into three groups:
+
+- what is safe to teach
+- what exists but is still rough
+- what is designed but not ready to treat as normal runtime behavior
+
+That line matters. Cx is still early, and the docs should not pretend otherwise.
+
+## Stable today (safe to teach)
+
+These are the core types to teach first.
+
+### Integers
+
+Cx currently exposes a signed `t` family:
+
+```cx
+t8
+t16
+t32
+t64
+t128
+```
+
+Examples:
+
+```cx
+small: t8 = 5
+count: t64 = 42
+big: t128 = 999999999999
+```
+
+### Boolean
+
+Boolean values use `bool`:
+
+```cx
+flag: bool = true
+other: bool = false
+```
+
+### Strings
+
+Strings use `str`:
+
+```cx
+name: str = "Zara"
+message: str = "hello {name}"
+```
+
+String templates are part of the current runtime behavior.
+
+## Exists but rough
+
+These types or type-shaped features are present in the surface or runtime, but should not be treated as polished public features yet.
+
+### `Handle<T>`
+
+`Handle<T>` is real in the runtime and worth knowing about, but it belongs to a more advanced part of the language:
+
+```cx
+let h;
+h = Handle.new(99)
+print(h.val)
+h.drop()
+```
+
+This is not rough in the sense of being imaginary. It exists. But it is not a beginner type, and it should be taught with its runtime model, not as a casual primitive.
+
+### `char`
+
+`char` appears in the current syntax reference.
+
+It exists in the surface, but this page does not treat it as a fully settled everyday feature yet. Until it is better covered by runtime verification, treat it as present but not a first-pass teaching target.
+
+### `strref`
+
+`strref` exists in the type/runtime surface.
+
+Right now it should be treated as thin and specialized. It is better understood as part of internal or boundary behavior than as a fully documented everyday type.
+
+### `Container`
+
+`Container` also exists in the type/runtime surface.
+
+At the moment it is mostly relevant around `copy_into(...)` behavior and related runtime plumbing. It should not be taught as a normal first-line user type.
+
+### Arrays
+
+Array syntax appears in the parser and AST surface.
+
+That does not make arrays a stable public feature yet. They exist, but they are not ready to be taught here as a dependable part of the language.
+
+## Designed / not implemented
+
+These belong to the design surface, not the safe teaching surface.
+
+### Unknown
+
+Cx reserves `?` for unknown values.
+
+It is important to the language direction, but it should not be presented here as a normal runnable type feature unless runtime behavior is being verified directly.
+
+### `when`
+
+`when` is part of the language direction and appears in syntax discussions, but it does not belong in the stable type surface today.
+
+It is listed here only because readers will see it mentioned elsewhere. Treat it as designed rather than settled.
+
+## Summary
+
+Safe to teach first:
+
+- `t8`
+- `t16`
+- `t32`
+- `t64`
+- `t128`
+- `bool`
+- `str`
+
+Present but rough:
+
+- `Handle<T>`
+- `char`
+- `strref`
+- `Container`
+- arrays
+
+Designed / not implemented:
+
+- unknown via `?`
+- `when` as a normal settled language feature

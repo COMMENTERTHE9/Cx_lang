@@ -1,0 +1,158 @@
+---
+title: Functions
+description: How functions are defined, called, and returned from in Cx.
+order: 4
+section: Core
+---
+
+# Functions
+
+Functions in Cx use `fnc`.
+
+They are meant to stay direct: typed where it matters, short where possible, explicit when needed.
+
+## Works today
+
+### Basic function definition
+
+A function with parameters and a return type looks like this:
+
+```cx
+fnc add(a: t64, b: t64) -> t64 {
+    a + b
+}
+```
+
+The final bare expression is the return value.
+
+### Function without a return type
+
+If a function performs work and does not return a value, the return type can be omitted:
+
+```cx
+fnc greet(name: str) {
+    print(name)
+}
+```
+
+### Explicit return
+
+Cx supports explicit `return`:
+
+```cx
+fnc pick(a: t64, b: t64) -> t64 {
+    return a;
+}
+```
+
+### Implicit return
+
+The last expression in the function body is the implicit return value:
+
+```cx
+fnc double(x: t64) -> t64 {
+    x + x
+}
+```
+
+### Forward calls
+
+Top-level forward calls work today:
+
+```cx
+outer()
+
+fnc outer() {
+    print(99)
+}
+```
+
+### Nested functions
+
+Nested functions are scoped to their containing function and do not leak globally.
+
+## Exists but rough
+
+### Calls as statements
+
+Function calls work normally:
+
+```cx
+result: t64 = add(2, 3)
+greet("Zara");
+```
+
+Recommended for now: if a call is not the final expression in a function body, end it with `;`.
+
+That is practical guidance, not a final language-lawyer rule. Parser behavior is still settling in a few places.
+
+### Copy modes
+
+Cx currently exposes three special parameter forms:
+
+#### `.copy`
+
+```cx
+fnc inner(x.copy) -> t64 {
+    x = x + 5;
+    x
+}
+```
+
+Operationally, `.copy` behaves like inout-style writeback in the current runtime.
+
+The safest description today is: it acts like a copied value that can write a final value back to the caller. That describes current behavior without freezing the long-term design too early.
+
+#### `.copy.free`
+
+```cx
+fnc inner(x.copy.free) -> t64 {
+    x = x + 5;
+    x
+}
+```
+
+This is the isolated form. It does not write changes back to the caller in the current runtime.
+
+#### `copy_into(...)`
+
+```cx
+fnc inner(t: copy_into(x, y, z)) -> t64 {
+    t.x + t.y + t.z
+}
+
+result: t64 = inner(copy_into(x, y, z));
+```
+
+This builds a container-like argument with named fields.
+
+These forms are real and worth documenting, but they still belong to the “current runtime behavior” category more than the “fully settled long-term semantics” category.
+
+## Designed / not implemented
+
+This page does not treat `when` or unknown-driven control flow as part of the stable function model.
+
+If those forms appear elsewhere in language discussions, read them as part of the design direction unless they are being verified against the current runtime directly.
+
+## Summary
+
+Works today:
+
+- `fnc` definitions
+- typed parameters
+- optional return types
+- explicit `return`
+- implicit final-expression return
+- forward calls
+- nested functions
+
+Exists but rough:
+
+- call-statement semicolon guidance
+- `.copy`
+- `.copy.free`
+- `copy_into(...)`
+
+Designed / not implemented:
+
+- function-adjacent control flow that is not yet stable in runtime use

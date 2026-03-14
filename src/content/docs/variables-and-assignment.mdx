@@ -1,0 +1,108 @@
+---
+title: Variables and Assignment
+description: How values are declared, assigned, and updated in Cx today.
+order: 2
+section: Core
+---
+
+# Variables and Assignment
+
+This page covers the variable and assignment forms that are visible in Cx today.
+
+The goal here is practical: what you can write now, what is stable enough to teach, and what is still unsettled.
+
+## Works today
+
+### Untyped declaration
+
+You can declare a variable without assigning a value yet:
+
+```cx
+let x;
+x = 56
+```
+
+The value assigned later determines the type.
+
+### Typed declaration with assignment
+
+You can declare a variable with a type and an initial value in one line:
+
+```cx
+score: t64 = 10
+name: str = "Zara"
+flag: bool = true
+```
+
+This is the clearest form when the type matters.
+
+### Typed declaration without assignment
+
+You can also declare a typed variable first and assign later:
+
+```cx
+let hp: t64;
+hp = 100
+```
+
+Use this when the type is known but the value is not ready yet.
+
+### Reassignment
+
+Existing variables can be reassigned:
+
+```cx
+x = x + 1
+name = "Lena"
+flag = false
+```
+
+If the name already exists, `=` updates it.
+
+## Exists but rough
+
+### Compound assignment
+
+Cx currently supports compact compound assignment syntax:
+
+```cx
+i +1=
+i +2=
+i -1=
+i *2=
+i /2=
+i %2=
+```
+
+This is the current interpreter form. It is not a settled design.
+
+It exists because it matches the current tokenization and parser behavior, and it may change later.
+
+The accepted form is compact, as shown above. Do not assume `i += 1` works.
+
+## Designed / not implemented
+
+### Unknown values
+
+Cx reserves `?` for unknown values, but this should not be taught as stable executable syntax yet.
+
+Treat it as design-level syntax for now. The parser and type surface may mention it, but the runtime is not a safe source of truth for everyday use yet.
+
+That means this page does not present runnable `?` examples as normal variable syntax.
+
+## Summary
+
+Safe to teach today:
+
+- `let x;`
+- `name: Type = value`
+- typed declaration before later assignment
+- reassignment with `=`
+
+Present but still rough:
+
+- compact compound assignment like `i +1=`
+
+Not ready to teach as normal syntax:
+
+- unknown-value assignment with `?`
