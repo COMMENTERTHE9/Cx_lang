@@ -32,6 +32,6 @@ pub fn parse_backend_flag(args: &[String]) -> BackendKind {
 
 pub fn lower_to_ir(
     program: &crate::frontend::semantic_types::SemanticProgram,
-) -> Result<crate::ir::IrModule, crate::ir::lower::LoweringError> {
+) -> crate::ir::IrModule {
     crate::ir::lower::lower_program(program)
 }
