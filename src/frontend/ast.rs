@@ -45,13 +45,14 @@ pub enum Type {
     Enum(String),
     Unknown,
     Handle(Box<Type>),
+    Array(usize, Box<Type>),
 }
 
 // AST-level value - owned, no arena lifetime
 // Used by parser and AST nodes only
 #[derive(Debug, Clone)]
 pub enum AstValue {
-    Num(u128),
+    Num(i128),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -72,6 +73,8 @@ pub enum Expr {
     Range(Box<Expr>, Box<Expr>, bool),
     Unary(Op, Box<Expr>, usize),
     Bin(Box<Expr>, Op, usize, Box<Expr>),
+    ArrayLit(Vec<Expr>),
+    Index(Box<Expr>, Box<Expr>, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +107,16 @@ pub struct WhenArm {
 }
 
 // AST statements produced by the parser
+#[derive(Debug, Clone)]
+pub struct WhileInChain {
+    pub arr: String,
+    pub start_slot: usize,
+    pub range_start: Expr,
+    pub range_end: Expr,
+    pub inclusive: bool,
+    pub body: Vec<Stmt>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     EnumDef {
@@ -184,6 +197,22 @@ pub enum Stmt {
         pos: usize,
     },
     Continue {
+        pos: usize,
+    },
+    StructDef {
+        name: String,
+        fields: Vec<(String, Type)>,
+        pos: usize,
+    },
+    WhileIn {
+        arr: String,
+        start_slot: usize,
+        range_start: Expr,
+        range_end: Expr,
+        inclusive: bool,
+        body: Vec<Stmt>,
+        then_chains: Vec<WhileInChain>,
+        result: Option<Expr>,
         pos: usize,
     },
     When {

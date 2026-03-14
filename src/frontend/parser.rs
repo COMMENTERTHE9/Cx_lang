@@ -22,6 +22,8 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::Unary(_, _, pos) => *pos,
         Expr::Range(a, _, _) => expr_pos(a),
         Expr::Bin(_, _, pos, _) => *pos,
+        Expr::ArrayLit(_) => 0,
+        Expr::Index(_, _, pos) => *pos,
     }
 }
 
@@ -29,17 +31,25 @@ fn type_parser<'a, I>() -> impl Parser<'a, I, Type, ParserError<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
 {
-    select! {
-        Token::TypeT8   => Type::T8,
-        Token::TypeT16  => Type::T16,
-        Token::TypeT32  => Type::T32,
-        Token::TypeT64  => Type::T64,
-        Token::TypeT128 => Type::T128,
-        Token::TypeBool => Type::Bool,
-        Token::TypeStr  => Type::Str,
+    let scalar = select! {
+        Token::TypeT8     => Type::T8,
+        Token::TypeT16    => Type::T16,
+        Token::TypeT32    => Type::T32,
+        Token::TypeT64    => Type::T64,
+        Token::TypeT128   => Type::T128,
+        Token::TypeBool   => Type::Bool,
+        Token::TypeStr    => Type::Str,
         Token::TypeStrRef => Type::StrRef,
-        Token::TypeChar => Type::Char,
-    }
+        Token::TypeChar   => Type::Char,
+    };
+
+    let array = just(Token::PunctBracketOpen)
+        .ignore_then(select! { Token::LiteralInt(n) => n as usize })
+        .then_ignore(just(Token::PunctBracketClose))
+        .then(scalar.clone())
+        .map(|(size, elem_ty)| Type::Array(size, Box::new(elem_ty)));
+
+    array.or(scalar)
 }
 
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
@@ -152,22 +162,49 @@ where
             .clone()
             .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose));
 
+        let array_lit = expr
+            .clone()
+            .separated_by(just(Token::PunctComma))
+            .allow_trailing()
+            .collect::<Vec<_>>()
+            .delimited_by(
+                just(Token::PunctBracketOpen),
+                just(Token::PunctBracketClose),
+            )
+            .map(|elems| Expr::ArrayLit(elems));
+
         let primary = literal
             .or(enum_variant)
             .or(handle_new)
             .or(handle_drop)
             .or(handle_val)
             .or(ident_or_call)
-            .or(paren);
+            .or(paren)
+            .or(array_lit);
+
+        let indexed = primary
+            .clone()
+            .then(
+                just(Token::PunctColon)
+                    .ignore_then(just(Token::PunctBracketOpen))
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctBracketClose))
+                    .map_with(|idx_expr, e: &mut ParseExtra<'a, '_, I>| (idx_expr, e.span().start))
+                    .or_not(),
+            )
+            .map(|(base, idx)| match idx {
+                Some((idx_expr, pos)) => Expr::Index(Box::new(base), Box::new(idx_expr), pos),
+                None => base,
+            });
 
         let unary = choice((
             just(Token::OpMul).to(Op::Mul),
             just(Token::OpSub).to(Op::Minus),
         ))
         .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start))
-        .then(primary.clone())
+        .then(indexed.clone())
         .map(|((op, pos), expr)| Expr::Unary(op, Box::new(expr), pos))
-        .or(primary.clone());
+        .or(indexed.clone());
 
         let mul_div_op = select! {
             Token::OpMul => Op::Mul,
@@ -240,6 +277,29 @@ where
             .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
             .then_ignore(semi.clone())
             .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos })
+            .boxed();
+
+        let index_assign = ident
+            .clone()
+            .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBracketClose))
+            .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start))
+            .then(expr.clone())
+            .then_ignore(semi.clone().or_not())
+            .map(
+                |((((name, name_pos), idx_expr), pos_eq), val_expr)| Stmt::Assign {
+                    target: Expr::Index(
+                        Box::new(Expr::Ident(name, name_pos)),
+                        Box::new(idx_expr),
+                        name_pos,
+                    ),
+                    expr: val_expr,
+                    pos_eq,
+                },
+            )
             .boxed();
 
         let assign = ident
@@ -456,8 +516,8 @@ where
                     .then(select! { Token::LiteralInt(n) => n })
                     .map(|((start, inclusive), end)| {
                         WhenPattern::Range(
-                            AstValue::Num(start as u128),
-                            AstValue::Num(end as u128),
+                            AstValue::Num(start),
+                            AstValue::Num(end),
                             inclusive,
                         )
                     }),
@@ -560,6 +620,78 @@ where
             .then(when_arm.repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
             .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos })
+            .boxed();
+
+        // while in arr:[slot], start..end { body } then in arr2:[slot], start..end { body }
+        let arr_slot = ident
+            .clone()
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBracketClose));
+
+        let while_in_range = expr
+            .clone()
+            .then(choice((
+                just(Token::RangeInclusive).to(true),
+                just(Token::RangeExclusive).to(false),
+            )))
+            .then(expr.clone());
+
+        let then_chain = just(Token::KeywordThen)
+            .ignore_then(just(Token::KeywordIn))
+            .ignore_then(arr_slot.clone())
+            .then_ignore(just(Token::PunctComma))
+            .then(while_in_range.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(
+                |(((arr, slot_expr), ((start, inclusive), end)), body)| {
+                    let start_slot = match &slot_expr {
+                        Expr::Val(AstValue::Num(n)) => *n as usize,
+                        _ => 0,
+                    };
+                    WhileInChain {
+                        arr,
+                        start_slot,
+                        range_start: start,
+                        range_end: end,
+                        inclusive,
+                        body,
+                    }
+                },
+            );
+
+        let while_in = just(Token::KeywordWhile)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::KeywordIn))
+            .then(arr_slot.clone())
+            .then_ignore(just(Token::PunctComma))
+            .then(while_in_range.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .then(then_chain.repeated().collect::<Vec<_>>())
+            .map(
+                |((((pos, (arr, slot_expr)), ((start, inclusive), end)), body), chains)| {
+                    let start_slot = match &slot_expr {
+                        Expr::Val(AstValue::Num(n)) => *n as usize,
+                        _ => 0,
+                    };
+                    Stmt::WhileIn {
+                        arr,
+                        start_slot,
+                        range_start: start,
+                        range_end: end,
+                        inclusive,
+                        body,
+                        then_chains: chains,
+                        result: None,
+                        pos,
+                    }
+                },
+            )
             .boxed();
 
         let while_stmt = just(Token::KeywordWhile)
@@ -682,7 +814,7 @@ where
             .map(|(((name, pos), op), n)| Stmt::CompoundAssign {
                 name,
                 op,
-                operand: Expr::Val(AstValue::Num(n as u128)),
+                operand: Expr::Val(AstValue::Num(n)),
                 pos,
             })
             .boxed();
@@ -696,9 +828,11 @@ where
             ret,
             typed_assign,
             compound_assign,
+            index_assign,
             assign,
             block,
             when_stmt,
+            while_in,
             while_stmt,
             for_stmt,
             loop_stmt,

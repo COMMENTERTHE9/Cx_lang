@@ -17,13 +17,13 @@ pub struct ValueId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IrModule {
     pub debug_name: String,
     pub functions: Vec<IrFunction>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct IrFunction {
     pub name: String,
     pub params: Vec<IrParam>,

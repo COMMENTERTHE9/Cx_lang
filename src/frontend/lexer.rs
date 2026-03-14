@@ -49,9 +49,6 @@ pub enum Token {
     #[token("let")]
     KeywordLet,
 
-    #[token("struct")]
-    KeywordStruct,
-
     #[token("print")]
     KeywordPrint,
 

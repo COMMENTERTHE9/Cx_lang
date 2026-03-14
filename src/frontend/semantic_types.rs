@@ -33,7 +33,7 @@ pub enum SemanticType {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticValue {
-    Num(u128),
+    Num(i128),
     Float(f64),
     Str(String),
     Bool(bool),
@@ -134,6 +134,12 @@ pub enum SemanticLValue {
         field: String,
         ty: SemanticType,
     },
+    IndexAccess {
+        binding: BindingId,
+        name: String,
+        index: Box<SemanticExpr>,
+        ty: SemanticType,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,11 +213,26 @@ pub struct SemanticFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SemanticWhileInChain {
+    pub arr: String,
+    pub start_slot: usize,
+    pub range_start: SemanticExpr,
+    pub range_end: SemanticExpr,
+    pub inclusive: bool,
+    pub body: Vec<SemanticStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SemanticStmt {
     EnumDef {
         enum_id: EnumId,
         name: String,
         variants: Vec<String>,
+        pos: usize,
+    },
+    StructDef {
+        name: String,
+        fields: Vec<(String, SemanticType)>,
         pos: usize,
     },
     Decl {
@@ -282,6 +303,17 @@ pub enum SemanticStmt {
         pos: usize,
     },
     Continue {
+        pos: usize,
+    },
+    WhileIn {
+        arr: String,
+        start_slot: usize,
+        range_start: SemanticExpr,
+        range_end: SemanticExpr,
+        inclusive: bool,
+        body: Vec<SemanticStmt>,
+        then_chains: Vec<SemanticWhileInChain>,
+        result: Option<SemanticExpr>,
         pos: usize,
     },
     When {
