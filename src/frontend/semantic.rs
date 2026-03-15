@@ -586,6 +586,43 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
+            Stmt::IfElse {
+                condition,
+                then_body,
+                else_ifs,
+                else_body,
+                pos,
+            } => {
+                let semantic_condition = self.analyze_expr(condition)?;
+                let semantic_then = then_body
+                    .iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut semantic_else_ifs = Vec::new();
+                for (cond, body) in else_ifs {
+                    let sem_cond = self.analyze_expr(cond)?;
+                    let sem_body = body
+                        .iter()
+                        .map(|s| self.analyze_stmt(s))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    semantic_else_ifs.push((sem_cond, sem_body));
+                }
+                let semantic_else = else_body
+                    .as_ref()
+                    .map(|body| {
+                        body.iter()
+                            .map(|s| self.analyze_stmt(s))
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()?;
+                Ok(SemanticStmt::IfElse {
+                    condition: semantic_condition,
+                    then_body: semantic_then,
+                    else_ifs: semantic_else_ifs,
+                    else_body: semantic_else,
+                    pos: *pos,
+                })
+            }
             Stmt::WhileIn {
                 arr,
                 start_slot,

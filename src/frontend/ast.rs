@@ -204,6 +204,13 @@ pub enum Stmt {
         fields: Vec<(String, Type)>,
         pos: usize,
     },
+    IfElse {
+        condition: Expr,
+        then_body: Vec<Stmt>,
+        else_ifs: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+        pos: usize,
+    },
     WhileIn {
         arr: String,
         start_slot: usize,

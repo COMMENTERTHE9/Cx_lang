@@ -1160,6 +1160,65 @@ impl RunTime {
             Ok(())
         }
         Stmt::StructDef { .. } => Ok(()),
+        Stmt::IfElse {
+            condition,
+            then_body,
+            else_ifs,
+            else_body,
+            ..
+        } => {
+            let cond_val = self.eval_expr(condition)?;
+            let is_truthy = matches!(cond_val, Value::Bool(true) | Value::TBool(1));
+            if is_truthy {
+                self.push_scope();
+                for s in then_body {
+                    match self.run_stmt(s) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            self.pop_scope();
+                            return Err(e);
+                        }
+                    }
+                }
+                self.pop_scope();
+            } else {
+                let mut matched = false;
+                for (cond, body) in else_ifs {
+                    let v = self.eval_expr(cond)?;
+                    if matches!(v, Value::Bool(true) | Value::TBool(1)) {
+                        self.push_scope();
+                        for s in body {
+                            match self.run_stmt(s) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        self.pop_scope();
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    if let Some(body) = else_body {
+                        self.push_scope();
+                        for s in body {
+                            match self.run_stmt(s) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    self.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                        }
+                        self.pop_scope();
+                    }
+                }
+            }
+            Ok(())
+        }
         Stmt::WhileIn {
             arr,
             start_slot,

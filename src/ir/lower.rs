@@ -200,6 +200,9 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         SemanticStmt::StructDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "StructDef".to_string(),
         }),
+        SemanticStmt::IfElse { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "IfElse".to_string(),
+        }),
         SemanticStmt::WhileIn { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "WhileIn".to_string(),
         }),

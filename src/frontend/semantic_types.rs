@@ -305,6 +305,13 @@ pub enum SemanticStmt {
     Continue {
         pos: usize,
     },
+    IfElse {
+        condition: SemanticExpr,
+        then_body: Vec<SemanticStmt>,
+        else_ifs: Vec<(SemanticExpr, Vec<SemanticStmt>)>,
+        else_body: Option<Vec<SemanticStmt>>,
+        pos: usize,
+    },
     WhileIn {
         arr: String,
         start_slot: usize,
