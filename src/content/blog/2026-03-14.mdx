@@ -1,0 +1,11 @@
+---
+title: "Cx Dev Log — 2026-03-14"
+date: 2026-03-14
+description: "Quiet day after the compound-types revert — regrouping on the right staging approach for arrays and structs."
+---
+
+No new code landed today. After yesterday's revert of the combined arrays/structs/`while-in` push, today was about stepping back and letting the dust settle before committing to a re-landing plan.
+
+The revert left the compiler pipeline clean, which is exactly where it should be before the next attempt. The decision from yesterday still holds: arrays and index operations go in first as a standalone change, validated end-to-end through parse, semantic analysis, IR, and runtime before anything else stacks on top. Structs come after, as their own pass. That ordering hasn't changed, but there's no rush to push it through before the approach is solid.
+
+Days like this are part of the process. The temptation after a revert is to immediately re-land a trimmed-down version, but giving it a beat avoids carrying forward assumptions from the first attempt that may not hold. Next step is still the same: arrays and index writes, staged carefully, with tests at each compiler layer.
