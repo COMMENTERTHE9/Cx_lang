@@ -94,6 +94,12 @@ pub enum Token {
     #[token("then")]
     KeywordThen,
 
+    #[token("if")]
+    KeywordIf,
+
+    #[token("else")]
+    KeywordElse,
+
     #[token("enum")]
     KeywordEnum,
 

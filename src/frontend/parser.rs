@@ -663,6 +663,40 @@ where
                 },
             );
 
+        let if_else = recursive(|if_else| {
+            let if_body = just(Token::PunctBraceOpen)
+                .ignore_then(stmt.clone().repeated().collect::<Vec<_>>())
+                .then_ignore(just(Token::PunctBraceClose));
+
+            just(Token::KeywordIf)
+                .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+                .then(expr.clone())
+                .then(if_body.clone())
+                .then(
+                    just(Token::KeywordElse)
+                        .ignore_then(just(Token::KeywordIf))
+                        .ignore_then(expr.clone())
+                        .then(if_body.clone())
+                        .repeated()
+                        .collect::<Vec<_>>(),
+                )
+                .then(
+                    just(Token::KeywordElse)
+                        .ignore_then(if_body.clone())
+                        .or_not(),
+                )
+                .map(|((((pos, condition), then_body), else_ifs), else_body)| {
+                    Stmt::IfElse {
+                        condition,
+                        then_body,
+                        else_ifs,
+                        else_body,
+                        pos,
+                    }
+                })
+                .boxed()
+        });
+
         let while_in = just(Token::KeywordWhile)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then_ignore(just(Token::KeywordIn))
@@ -752,6 +786,7 @@ where
 
         let func_def = recursive(|func_def| {
             let func_body_stmt = choice((
+                if_else.clone(),
                 decl.clone(),
                 func_def.clone(),
                 print.clone(),
@@ -821,6 +856,7 @@ where
 
         choice((
             enum_def,
+            if_else.clone(),
             decl,
             func_def,
             print,
