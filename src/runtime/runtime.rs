@@ -47,6 +47,8 @@ pub struct RunTime {
     pub string_arena: Vec<u8>,
     pub handles: HandleRegistry<Value>,
     pub enums: HashMap<String, EnumRuntimeInfo>,
+    pub structs: HashMap<String, Vec<(String, Type)>>,
+    pub impls: HashMap<(String, String), (Vec<(String, Type)>, (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>))>,
     scopes: Vec<ScopeFrame>,
     funcs: HashMap<String, FuncDef>,
     pub debug_scope: bool,
@@ -131,6 +133,8 @@ impl RunTime {
             string_arena: Vec::new(),
             handles: HandleRegistry::new(),
             enums: HashMap::new(),
+            structs: HashMap::new(),
+            impls: HashMap::new(),
             scopes: vec![ScopeFrame {
                 vars: HashMap::new(),
                 freed: HashSet::new(),
@@ -369,20 +373,33 @@ impl RunTime {
         let logged = value.clone();
         for frame in self.scopes.iter_mut().rev() {
             if let Some(entry) = frame.vars.get_mut(container) {
-                if let Some(Value::Container(map)) = &mut entry.val {
-                    map.insert(field.to_string(), value);
-                    if self.debug_scope {
-                        diagnostics::print_scope_event(&ScopeEvent::Mutate(
-                            format!("{}.{}", container, field),
-                            logged,
-                        ));
+                match &mut entry.val {
+                    Some(Value::Container(map)) => {
+                        map.insert(field.to_string(), value);
+                        if self.debug_scope {
+                            diagnostics::print_scope_event(&ScopeEvent::Mutate(
+                                format!("{}.{}", container, field),
+                                logged,
+                            ));
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
-                } else {
-                    return Err(RuntimeError::NotAContainer {
-                        pos,
-                        name: container.to_string(),
-                    });
+                    Some(Value::Struct(_, map)) => {
+                        map.insert(field.to_string(), value);
+                        if self.debug_scope {
+                            diagnostics::print_scope_event(&ScopeEvent::Mutate(
+                                format!("{}.{}", container, field),
+                                logged,
+                            ));
+                        }
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(RuntimeError::NotAContainer {
+                            pos,
+                            name: container.to_string(),
+                        });
+                    }
                 }
             }
         }
@@ -390,6 +407,22 @@ impl RunTime {
             pos,
             name: container.to_string(),
         })
+    }
+
+    pub fn get_field(&self, container: &str, field: &str, pos: usize) -> Result<Value, RuntimeError> {
+        for frame in self.scopes.iter().rev() {
+            if let Some(entry) = frame.vars.get(container) {
+                match &entry.val {
+                    Some(Value::Struct(_, map)) | Some(Value::Container(map)) => {
+                        return map.get(field).cloned().ok_or_else(|| {
+                            RuntimeError::UndefinedVar { pos, name: format!("{}.{}", container, field) }
+                        });
+                    }
+                    _ => return Err(RuntimeError::NotAContainer { pos, name: container.to_string() }),
+                }
+            }
+        }
+        Err(RuntimeError::UndefinedVar { pos, name: container.to_string() })
     }
 
     pub fn get_var(&self, name: &str, pos: usize) -> Result<Value, RuntimeError> {
@@ -422,23 +455,42 @@ impl RunTime {
                     let (off, len) = self.alloc_str(s);
                     Value::Str(off, len)
                 }
+                AstValue::StructInstance(name, fields) => {
+                    let mut map = HashMap::new();
+                    for (fname, fexpr) in fields {
+                        let val = self.eval_expr(fexpr)?;
+                        map.insert(fname.clone(), val);
+                    }
+                    return Ok(Value::Struct(name.clone(), map));
+                }
             }),
             Expr::Ident(name, pos) => self.get_var(name, *pos),
             Expr::DotAccess(container, field) => {
                 for frame in self.scopes.iter().rev() {
                     if let Some(entry) = frame.vars.get(container) {
-                        if let Some(Value::Container(map)) = &entry.val {
-                            return map.get(field).cloned().ok_or_else(|| {
-                                RuntimeError::UndefinedVar {
+                        match &entry.val {
+                            Some(Value::Container(map)) => {
+                                return map.get(field).cloned().ok_or_else(|| {
+                                    RuntimeError::UndefinedVar {
+                                        pos: 0,
+                                        name: format!("{}.{}", container, field),
+                                    }
+                                });
+                            }
+                            Some(Value::Struct(_, map)) => {
+                                return map.get(field).cloned().ok_or_else(|| {
+                                    RuntimeError::UndefinedVar {
+                                        pos: 0,
+                                        name: format!("{}.{}", container, field),
+                                    }
+                                });
+                            }
+                            _ => {
+                                return Err(RuntimeError::NotAContainer {
                                     pos: 0,
-                                    name: format!("{}.{}", container, field),
-                                }
-                            });
-                        } else {
-                            return Err(RuntimeError::NotAContainer {
-                                pos: 0,
-                                name: container.to_string(),
-                            });
+                                    name: container.to_string(),
+                                });
+                            }
                         }
                     }
                 }
@@ -510,15 +562,9 @@ impl RunTime {
                 }
             }
             Expr::Unary(op, inner, pos) => {
-                if let (Op::Mul, Expr::Ident(name, _)) = (op, inner.as_ref()) {
-                    let cursor_name = format!("__cursor_{}", name);
-                    if let Ok(cursor_val) = self.eval_expr(&Expr::Ident(cursor_name, *pos)) {
-                        return Ok(cursor_val);
-                    }
-                }
                 let val = self.eval_expr(inner)?;
                 match (op, val) {
-                    (Op::Minus, Value::Num(n)) => Ok(Value::Num(-n)),
+                    (Op::Minus, Value::Num(n)) => Ok(Value::Num(n.wrapping_neg())),
                     (Op::Minus, Value::Float(f)) => Ok(Value::Float(-f)),
                     (Op::Mul, v) => Ok(v),
                     _ => Err(RuntimeError::BadAssignTarget { pos: *pos }),
@@ -545,6 +591,62 @@ impl RunTime {
                         .unwrap_or(Value::Unknown(Type::Unknown))),
                     _ => Err(RuntimeError::BadAssignTarget { pos: *pos }),
                 }
+            }
+            Expr::MethodCall(instance, method, args, pos) => {
+                let instance_val = self.get_var(instance, *pos)?;
+                let type_name = match &instance_val {
+                    Value::Struct(name, _) => name.clone(),
+                    _ => return Err(RuntimeError::NotAContainer { pos: *pos, name: instance.clone() }),
+                };
+
+                let (aliases, (_, params, _, body, ret_expr)) = self.impls
+                    .get(&(type_name.clone(), method.clone()))
+                    .cloned()
+                    .ok_or_else(|| RuntimeError::UndefinedVar { pos: *pos, name: format!("{}.{}", instance, method) })?;
+
+                self.push_function_scope();
+
+                let call_result = (|| -> Result<Value, RuntimeError> {
+                    let alias_name = aliases[0].0.clone();
+                    let alias_ty = Type::Struct(type_name.clone());
+                    self.set_var_typed(alias_name.clone(), alias_ty, instance_val, *pos)?;
+
+                    for (param, arg) in params.iter().zip(args.iter()) {
+                        if let (ParamKind::Typed(pname, _), CallArg::Expr(expr)) = (param, arg) {
+                            let val = self.eval_expr(expr)?;
+                            self.set_var_typed(pname.clone(), type_of_value(&val), val, *pos)?;
+                        }
+                    }
+
+                    for stmt in &body {
+                        match self.run_stmt(stmt) {
+                            Ok(_) => {}
+                            Err(RuntimeError::EarlyReturn(val)) => return Ok(val),
+                            Err(e) => return Err(e),
+                        }
+                    }
+
+                    if let Some(expr) = &ret_expr {
+                        self.eval_expr(expr)
+                    } else {
+                        Ok(Value::Num(0))
+                    }
+                })();
+
+                let mutated_alias = if call_result.is_ok() {
+                    let alias_name = aliases[0].0.clone();
+                    self.get_var(&alias_name, *pos).ok()
+                } else {
+                    None
+                };
+
+                self.pop_scope();
+
+                if let Some(mutated) = mutated_alias {
+                    let _ = self.set_var(instance.clone(), mutated, *pos);
+                }
+
+                call_result
             }
             Expr::Call(name, args, pos) => {
                 if name == "is_known" {
@@ -709,7 +811,7 @@ impl RunTime {
             },
             Op::Mul => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => {
-                    Ok(Value::Num(a.checked_mul(*b).unwrap_or(i128::MAX)))
+                    Ok(Value::Num(a.checked_mul(*b).unwrap_or(u128::MAX as i128)))
                 }
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
@@ -862,6 +964,25 @@ impl RunTime {
 
     pub fn run_stmt(&mut self, stmt: &Stmt) -> Result<(), RuntimeError> {
     match stmt {
+        Stmt::StructDef { name, fields, .. } => {
+            self.structs.insert(name.clone(), fields.clone());
+            Ok(())
+        }
+        Stmt::ImplBlock { aliases, methods, .. } => {
+            for (method_name, params, ret_ty, body, ret_expr) in methods {
+                for (_, alias_type) in aliases {
+                    let type_key = match alias_type {
+                        Type::Struct(name) => name.clone(),
+                        _ => continue,
+                    };
+                    self.impls.insert(
+                        (type_key, method_name.clone()),
+                        (aliases.clone(), (method_name.clone(), params.clone(), ret_ty.clone(), body.clone(), ret_expr.clone())),
+                    );
+                }
+            }
+            Ok(())
+        }
         Stmt::EnumDef {
             name,
             variants,
@@ -927,23 +1048,6 @@ impl RunTime {
                 Expr::DotAccess(container, field) => {
                     self.set_container_field(&container, &field, value, *pos_eq)
                 }
-                Expr::Index(base_expr, idx_expr, pos) => {
-                    let arr_name = match base_expr.as_ref() {
-                        Expr::Ident(name, _) => name.clone(),
-                        _ => return Err(RuntimeError::BadAssignTarget { pos: *pos }),
-                    };
-                    let idx = match self.eval_expr(&idx_expr)? {
-                        Value::Num(n) => n as usize,
-                        _ => return Err(RuntimeError::BadAssignTarget { pos: *pos }),
-                    };
-                    let mut arr_val = self.get_var(&arr_name, *pos)?;
-                    if let Value::Array(ref mut elems) = arr_val {
-                        if idx < elems.len() {
-                            elems[idx] = value;
-                        }
-                    }
-                    self.set_var(arr_name, arr_val, *pos)
-                }
                 _ => Err(RuntimeError::BadAssignTarget { pos: *pos_eq }),
             }
         }
@@ -987,6 +1091,10 @@ impl RunTime {
                 }
                 Value::Handle(h) => println!("handle({},{})", h.slot, h.gen),
                 Value::Container(map) => println!("{:?}", map),
+                Value::Struct(name, map) => {
+                    let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(self, v.clone()))).collect();
+                    println!("{} {{ {} }}", name, parts.join(", "));
+                }
             }
             Ok(())
         }
@@ -1010,6 +1118,10 @@ impl RunTime {
                 Value::Unknown(_) => print!("?"),
                 Value::Handle(h) => print!("handle({},{})", h.slot, h.gen),
                 Value::Container(map) => print!("{:?}", map),
+                Value::Struct(name, map) => {
+                    let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(self, v.clone()))).collect();
+                    print!("{} {{ {} }}", name, parts.join(", "));
+                }
                 Value::Array(elems) => {
                     let parts: Vec<String> = elems
                         .iter()
@@ -1163,149 +1275,6 @@ impl RunTime {
             }
             Ok(())
         }
-        Stmt::StructDef { .. } => Ok(()),
-        Stmt::IfElse {
-            condition,
-            then_body,
-            else_ifs,
-            else_body,
-            ..
-        } => {
-            let cond_val = self.eval_expr(condition)?;
-            let is_truthy = matches!(cond_val, Value::Bool(true) | Value::TBool(1));
-            if is_truthy {
-                self.push_scope();
-                for s in then_body {
-                    match self.run_stmt(s) {
-                        Ok(_) => {}
-                        Err(e) => {
-                            self.pop_scope();
-                            return Err(e);
-                        }
-                    }
-                }
-                self.pop_scope();
-            } else {
-                let mut matched = false;
-                for (cond, body) in else_ifs {
-                    let v = self.eval_expr(cond)?;
-                    if matches!(v, Value::Bool(true) | Value::TBool(1)) {
-                        self.push_scope();
-                        for s in body {
-                            match self.run_stmt(s) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    self.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                        }
-                        self.pop_scope();
-                        matched = true;
-                        break;
-                    }
-                }
-                if !matched {
-                    if let Some(body) = else_body {
-                        self.push_scope();
-                        for s in body {
-                            match self.run_stmt(s) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    self.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                        }
-                        self.pop_scope();
-                    }
-                }
-            }
-            Ok(())
-        }
-        Stmt::WhileIn {
-            arr,
-            start_slot,
-            range_start,
-            range_end,
-            inclusive,
-            body,
-            then_chains,
-            result,
-            pos: _,
-        } => {
-            let run_while_in_block =
-                |rt: &mut RunTime,
-                 arr: &str,
-                 start_slot: usize,
-                 range_start: &Expr,
-                 range_end: &Expr,
-                 inclusive: bool,
-                 body: &[Stmt]|
-                 -> Result<(), RuntimeError> {
-                    let start_val = match rt.eval_expr(range_start)? {
-                        Value::Num(n) => n as usize,
-                        _ => return Ok(()),
-                    };
-                    let end_val = match rt.eval_expr(range_end)? {
-                        Value::Num(n) => n as usize,
-                        _ => return Ok(()),
-                    };
-                    let end = if inclusive { end_val + 1 } else { end_val };
-                    for i in start_val..end {
-                        rt.push_scope();
-                        let cursor_name = format!("__cursor_{}", arr);
-                        let arr_val = rt.eval_expr(&Expr::Ident(arr.to_string(), 0))?;
-                        if let Value::Array(ref elements) = arr_val {
-                            if let Some(elem) = elements.get(i) {
-                                rt.declare(cursor_name.clone(), None, 0)?;
-                                rt.set_var(cursor_name.clone(), elem.clone(), 0)?;
-                            }
-                        }
-                        for s in body {
-                            match rt.run_stmt(s) {
-                                Ok(_) => {}
-                                Err(RuntimeError::BreakSignal) => {
-                                    rt.pop_scope();
-                                    return Ok(());
-                                }
-                                Err(RuntimeError::ContinueSignal) => break,
-                                Err(e) => {
-                                    rt.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                        }
-                        rt.pop_scope();
-                    }
-                    Ok(())
-                };
-
-            run_while_in_block(
-                self,
-                &arr,
-                *start_slot,
-                &range_start,
-                &range_end,
-                *inclusive,
-                &body,
-            )?;
-            for chain in then_chains.iter() {
-                run_while_in_block(
-                    self,
-                    &chain.arr,
-                    chain.start_slot,
-                    &chain.range_start,
-                    &chain.range_end,
-                    chain.inclusive,
-                    &chain.body,
-                )?;
-            }
-            if let Some(res_expr) = &result {
-                let _ = self.eval_expr(res_expr)?;
-            }
-            Ok(())
-        }
         Stmt::While { cond, body, .. } => {
             loop {
                 let val = self.eval_expr(&cond)?;
@@ -1431,15 +1400,25 @@ impl RunTime {
         Stmt::Break { .. } => Err(RuntimeError::BreakSignal),
         Stmt::Continue { .. } => Err(RuntimeError::ContinueSignal),
         Stmt::CompoundAssign {
-            name,
+            target,
             op,
             operand,
             pos,
         } => {
-            let current = self.get_var(&name, *pos)?;
-            let rhs = self.eval_expr(&operand)?;
-            let result = self.apply_op(current, op.clone(), *pos, rhs)?;
-            self.set_var(name.clone(), result, *pos)
+            match target {
+                AssignTarget::Var(name) => {
+                    let current = self.get_var(name, *pos)?;
+                    let rhs = self.eval_expr(operand)?;
+                    let result = self.apply_op(current, op.clone(), *pos, rhs)?;
+                    self.set_var(name.clone(), result, *pos)
+                }
+                AssignTarget::Field(container, field) => {
+                    let current = self.get_field(container, field, *pos)?;
+                    let rhs = self.eval_expr(operand)?;
+                    let result = self.apply_op(current, op.clone(), *pos, rhs)?;
+                    self.set_container_field(container, field, result, *pos)
+                }
+            }
         }
     }
 }
@@ -1468,6 +1447,10 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
         }
         Value::Handle(h) => format!("handle({},{})", h.slot, h.gen),
         Value::Container(map) => format!("{:?}", map),
+        Value::Struct(name, map) => {
+            let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(rt, v.clone()))).collect();
+            format!("{} {{ {} }}", name, parts.join(", "))
+        }
     }
 }
 
@@ -1484,6 +1467,7 @@ fn type_of_value(v: &Value) -> Type {
         Value::Handle(_) => Type::Handle(Box::new(Type::T128)),
         Value::Container(_) => Type::Container,
         Value::Array(_) => Type::Array(0, Box::new(Type::Unknown)),
+        Value::Struct(name, _) => Type::Struct(name.clone()),
     }
 }
 
@@ -1508,6 +1492,7 @@ fn value_matches_type(v: &Value, t: &Type) -> bool {
         (Value::Handle(_), Type::Handle(_)) => true,
         (Value::TBool(_), Type::Bool) => true,
         (Value::Array(_), Type::Array(_, _)) => true,
+        (Value::Struct(name, _), Type::Struct(t)) if name == t => true,
         (Value::Unknown(_), _) => true,
         _ => false,
     }

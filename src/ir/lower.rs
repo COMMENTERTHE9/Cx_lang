@@ -150,11 +150,6 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
                         construct: "Assign::DotAccess".to_string(),
                     })
                 }
-                SemanticLValue::IndexAccess { .. } => {
-                    Err(LoweringError::UnsupportedSemanticConstruct {
-                        construct: "Assign::IndexAccess".to_string(),
-                    })
-                }
             }
         }
         SemanticStmt::TypedAssign {
@@ -196,15 +191,6 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         }),
         SemanticStmt::Block { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "Block".to_string(),
-        }),
-        SemanticStmt::StructDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "StructDef".to_string(),
-        }),
-        SemanticStmt::IfElse { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "IfElse".to_string(),
-        }),
-        SemanticStmt::WhileIn { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "WhileIn".to_string(),
         }),
         SemanticStmt::While { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "While".to_string(),
@@ -442,6 +428,9 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         }),
         SemanticType::TypeParam(_) => Err(LoweringError::UnsupportedSemanticType {
             ty: "TypeParam".to_string(),
+        }),
+        SemanticType::Struct(_) => Err(LoweringError::UnsupportedSemanticType {
+            ty: "Struct".to_string(),
         }),
     }
 }

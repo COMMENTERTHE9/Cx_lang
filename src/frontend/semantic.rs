@@ -41,6 +41,8 @@ pub struct Analyzer {
     in_function: bool,
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
+    structs: HashMap<String, Vec<(String, Type)>>,
+    pub impls: HashMap<String, Vec<(String, Vec<(String, Vec<ParamKind>, Option<Type>)>)>>,
     enum_defs: Vec<SemanticEnum>,
     next_binding_id: u32,
     next_function_id: u32,
@@ -56,6 +58,8 @@ impl Analyzer {
             in_function: false,
             funcs: HashMap::new(),
             enums: HashMap::new(),
+            structs: HashMap::new(),
+            impls: HashMap::new(),
             enum_defs: Vec::new(),
             next_binding_id: 0,
             next_function_id: 0,
@@ -231,6 +235,19 @@ impl Analyzer {
 
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
+            Stmt::StructDef { name, fields, pos } => {
+                self.structs.insert(name.clone(), fields.clone());
+                Ok(SemanticStmt::Block {
+                    stmts: vec![],
+                    pos: *pos,
+                })
+            }
+            Stmt::ImplBlock { pos, .. } => {
+                Ok(SemanticStmt::Block {
+                    stmts: vec![],
+                    pos: *pos,
+                })
+            }
             Stmt::EnumDef {
                 name,
                 variants,
@@ -324,44 +341,6 @@ impl Analyzer {
                             binding: Some(info.binding),
                             container: container.clone(),
                             field: field.clone(),
-                            ty: SemanticType::Numeric,
-                        }
-                    }
-                    Expr::Index(base_expr, idx_expr, pos) => {
-                        let arr_name = match base_expr.as_ref() {
-                            Expr::Ident(name, _) => name.clone(),
-                            _ => {
-                                return Err(SemanticError {
-                                    msg: "bad assignment target".to_string(),
-                                    pos: *pos,
-                                });
-                            }
-                        };
-                        let (binding, initialized) = {
-                            let info =
-                                self.lookup_var(&arr_name).ok_or_else(|| SemanticError {
-                                    msg: format!(
-                                        "use of undeclared variable '{}'",
-                                        arr_name
-                                    ),
-                                    pos: *pos,
-                                })?;
-                            (info.binding, info.initialized)
-                        };
-                        if !initialized {
-                            return Err(SemanticError {
-                                msg: format!(
-                                    "use of uninitialized variable '{}'",
-                                    arr_name
-                                ),
-                                pos: *pos,
-                            });
-                        }
-                        let sem_idx = self.analyze_expr(idx_expr)?;
-                        SemanticLValue::IndexAccess {
-                            binding,
-                            name: arr_name,
-                            index: Box::new(sem_idx),
                             ty: SemanticType::Numeric,
                         }
                     }
@@ -720,17 +699,23 @@ impl Analyzer {
             Stmt::Break { pos } => Ok(SemanticStmt::Break { pos: *pos }),
             Stmt::Continue { pos } => Ok(SemanticStmt::Continue { pos: *pos }),
             Stmt::CompoundAssign {
-                name,
+                target,
                 op,
                 operand,
                 pos,
-            } => Ok(SemanticStmt::CompoundAssign {
-                binding: self.lookup_var(name).map(|info| info.binding),
-                name: name.clone(),
-                op: *op,
-                operand: self.analyze_expr(operand)?,
-                pos: *pos,
-            }),
+            } => {
+                let name = match target {
+                    AssignTarget::Var(n) => n.clone(),
+                    AssignTarget::Field(c, _) => c.clone(),
+                };
+                Ok(SemanticStmt::CompoundAssign {
+                    binding: self.lookup_var(&name).map(|info| info.binding),
+                    name,
+                    op: *op,
+                    operand: self.analyze_expr(operand)?,
+                    pos: *pos,
+                })
+            },
         }
     }
 
@@ -953,7 +938,7 @@ impl Analyzer {
                         pos,
                     });
                 }
-                Stmt::CompoundAssign { name, .. } if name == var => {
+                Stmt::CompoundAssign { target, .. } if matches!(target, AssignTarget::Var(n) if n == var) => {
                     self.pop_scope();
                     return Err(SemanticError {
                         msg: format!("loop variable '{}' is read-only", var),
@@ -1143,6 +1128,15 @@ impl Analyzer {
                     kind: SemanticExprKind::VarRef {
                         binding: BindingId(0),
                         name: format!("index@{}", pos),
+                    },
+                })
+            }
+            Expr::MethodCall(instance, method, _, pos) => {
+                Ok(SemanticExpr {
+                    ty: SemanticType::Unknown,
+                    kind: SemanticExprKind::VarRef {
+                        binding: BindingId(0),
+                        name: format!("{}.{}@{}", instance, method, pos),
                     },
                 })
             }
@@ -1529,11 +1523,11 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
 
 fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
     let bounds: Option<(i128, i128)> = match ty {
-        Type::T8 => Some((i8::MIN as i128, i8::MAX as i128)),
-        Type::T16 => Some((i16::MIN as i128, i16::MAX as i128)),
-        Type::T32 => Some((i32::MIN as i128, i32::MAX as i128)),
-        Type::T64 => Some((i64::MIN as i128, i64::MAX as i128)),
-        Type::T128 => None,
+        Type::T8 => Some((0, u8::MAX as i128)),
+        Type::T16 => Some((0, u16::MAX as i128)),
+        Type::T32 => Some((0, u32::MAX as i128)),
+        Type::T64 => Some((0, u64::MAX as i128)),
+        Type::T128 => Some((0, u128::MAX as i128)),
         _ => None,
     };
 
@@ -1565,6 +1559,7 @@ fn semantic_type_from_decl(ty: Type) -> SemanticType {
         Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner))),
         Type::Array(_, _) => SemanticType::Unknown,
         Type::TypeParam(s) => SemanticType::TypeParam(s),
+        Type::Struct(name) => SemanticType::Struct(name),
     }
 }
 
@@ -1576,6 +1571,7 @@ fn semantic_type_from_value(value: &AstValue) -> SemanticType {
         AstValue::Bool(_) => SemanticType::Bool,
         AstValue::Char(_) => SemanticType::Char,
         AstValue::EnumVariant(enum_name, _) => SemanticType::Enum(enum_name.clone()),
+        AstValue::StructInstance(name, _) => SemanticType::Struct(name.clone()),
         AstValue::Unknown => SemanticType::Unknown,
     }
 }
@@ -1597,6 +1593,7 @@ fn semantic_value_from_ast(value: &AstValue, enums: &HashMap<String, EnumInfo>) 
                 variant_id,
             }
         }
+        AstValue::StructInstance(_, _) => SemanticValue::Unknown,
         AstValue::Unknown => SemanticValue::Unknown,
     }
 }
@@ -1694,6 +1691,12 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
     let mut analyzer = Analyzer::new();
     let mut errors = Vec::new();
     let mut semantic_stmts = Vec::with_capacity(program.stmts.len());
+
+    for stmt in &program.stmts {
+        if let Stmt::StructDef { name, fields, .. } = stmt {
+            analyzer.structs.insert(name.clone(), fields.clone());
+        }
+    }
 
     for stmt in &program.stmts {
         if let Stmt::FuncDef {

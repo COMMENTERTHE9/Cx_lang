@@ -14,6 +14,7 @@ pub enum Value {
     Handle(crate::runtime::handle::Handle),
     Container(HashMap<String, Value>),
     Array(Vec<Value>),
+    Struct(String, HashMap<String, Value>),
 }
 
 #[derive(Debug)]

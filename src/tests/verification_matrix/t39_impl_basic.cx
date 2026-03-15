@@ -1,0 +1,18 @@
+struct Player {
+    health: t32,
+}
+
+player_methods: impl (p: Player) {
+    fnc take_damage(amount: t32) {
+        p.health -= amount
+    }
+
+    fnc is_alive() -> bool {
+        p.health > 0
+    }
+}
+
+let p;
+p = Player { health: 100 }
+p.take_damage(30)
+print(p.health)

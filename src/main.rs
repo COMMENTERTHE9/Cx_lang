@@ -197,6 +197,29 @@ fn run_with_interpreter(program: Program, input: &str, flags: &DebugFlags) {
     rt.debug_scope = flags.scope;
 
     for stmt in &program.stmts {
+        if let Stmt::StructDef { name, fields, .. } = stmt {
+            rt.structs.insert(name.clone(), fields.clone());
+        }
+    }
+
+    for stmt in &program.stmts {
+        if let Stmt::ImplBlock { aliases, methods, .. } = stmt {
+            for (method_name, params, ret_ty, body, ret_expr) in methods {
+                for (_, alias_type) in aliases {
+                    let type_key = match alias_type {
+                        Type::Struct(name) => name.clone(),
+                        _ => continue,
+                    };
+                    rt.impls.insert(
+                        (type_key, method_name.clone()),
+                        (aliases.clone(), (method_name.clone(), params.clone(), ret_ty.clone(), body.clone(), ret_expr.clone())),
+                    );
+                }
+            }
+        }
+    }
+
+    for stmt in &program.stmts {
         if let Stmt::FuncDef {
             name,
             params,

@@ -47,6 +47,7 @@ pub enum Type {
     Handle(Box<Type>),
     Array(usize, Box<Type>),
     TypeParam(String),
+    Struct(String),
 }
 
 // AST-level value - owned, no arena lifetime
@@ -59,6 +60,7 @@ pub enum AstValue {
     Bool(bool),
     Char(char),
     EnumVariant(String, String),
+    StructInstance(String, Vec<(String, Expr)>),
     Unknown,
 }
 
@@ -76,6 +78,7 @@ pub enum Expr {
     Bin(Box<Expr>, Op, usize, Box<Expr>),
     ArrayLit(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>, usize),
+    MethodCall(String, String, Vec<CallArg>, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -107,19 +110,26 @@ pub struct WhenArm {
     pub pos: usize,
 }
 
-// AST statements produced by the parser
 #[derive(Debug, Clone)]
-pub struct WhileInChain {
-    pub arr: String,
-    pub start_slot: usize,
-    pub range_start: Expr,
-    pub range_end: Expr,
-    pub inclusive: bool,
-    pub body: Vec<Stmt>,
+pub enum AssignTarget {
+    Var(String),
+    Field(String, String), // container_name, field_name
 }
 
+// AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    StructDef {
+        name: String,
+        fields: Vec<(String, Type)>,
+        pos: usize,
+    },
+    ImplBlock {
+        name: String,
+        aliases: Vec<(String, Type)>,
+        methods: Vec<(String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>)>,
+        pos: usize,
+    },
     EnumDef {
         name: String,
         variants: Vec<String>,
@@ -144,7 +154,7 @@ pub enum Stmt {
         pos_type: usize,
     },
     CompoundAssign {
-        name: String,
+        target: AssignTarget,
         op: Op,
         operand: Expr,
         pos: usize,
@@ -199,29 +209,6 @@ pub enum Stmt {
         pos: usize,
     },
     Continue {
-        pos: usize,
-    },
-    StructDef {
-        name: String,
-        fields: Vec<(String, Type)>,
-        pos: usize,
-    },
-    IfElse {
-        condition: Expr,
-        then_body: Vec<Stmt>,
-        else_ifs: Vec<(Expr, Vec<Stmt>)>,
-        else_body: Option<Vec<Stmt>>,
-        pos: usize,
-    },
-    WhileIn {
-        arr: String,
-        start_slot: usize,
-        range_start: Expr,
-        range_end: Expr,
-        inclusive: bool,
-        body: Vec<Stmt>,
-        then_chains: Vec<WhileInChain>,
-        result: Option<Expr>,
         pos: usize,
     },
     When {

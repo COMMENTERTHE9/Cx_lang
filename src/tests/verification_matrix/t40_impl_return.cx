@@ -1,0 +1,20 @@
+struct Counter {
+    value: t32,
+}
+
+counter_methods: impl (c: Counter) {
+    fnc increment() {
+        c.value = c.value + 1
+    }
+
+    fnc get() -> t32 {
+        c.value
+    }
+}
+
+let c;
+c = Counter { value: 0 }
+c.increment()
+c.increment()
+c.increment()
+print(c.get())

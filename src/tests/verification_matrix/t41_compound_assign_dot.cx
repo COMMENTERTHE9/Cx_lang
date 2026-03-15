@@ -1,0 +1,21 @@
+struct Player {
+    health: t32,
+    speed: t32,
+}
+
+player_methods: impl (p: Player) {
+    fnc take_damage(amount: t32) {
+        p.health -= amount
+    }
+
+    fnc double_speed() {
+        p.speed *= 2
+    }
+}
+
+let p;
+p = Player { health: 100, speed: 5 }
+p.take_damage(30)
+p.double_speed()
+print(p.health)
+print(p.speed)
