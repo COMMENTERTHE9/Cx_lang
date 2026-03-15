@@ -1,11 +1,13 @@
 ---
-title: "Cx Dev Log — 2026-03-14"
+title: "Cx Dev Log � 2026-03-14"
 date: 2026-03-14
-description: "Quiet day after the compound-types revert — regrouping on the right staging approach for arrays and structs."
+description: "No new code landed today as work shifted to evaluating next steps after the recent composite-type revert."
 ---
 
-No new code landed today. After yesterday's revert of the combined arrays/structs/`while-in` push, today was about stepping back and letting the dust settle before committing to a re-landing plan.
+Today was intentionally quiet on commits. The current codebase state is unchanged from the 2026-03-13 revert that rolled back work across arrays, index writes, while-in handling, and structs. Nothing new was merged on top of that state, so this entry is mainly about where the engineering focus moved rather than what code shipped.
 
-The revert left the compiler pipeline clean, which is exactly where it should be before the next attempt. The decision from yesterday still holds: arrays and index operations go in first as a standalone change, validated end-to-end through parse, semantic analysis, IR, and runtime before anything else stacks on top. Structs come after, as their own pass. That ordering hasn't changed, but there's no rush to push it through before the approach is solid.
+The main design signal is that composite types still need a tighter model before re-landing implementation work. Reverting broad surface-area changes bought us room to remove ambiguity in semantics first, instead of repeatedly patching behavior after the fact. For language features that interact this closely, correctness and predictability matter more than incremental churn.
 
-Days like this are part of the process. The temptation after a revert is to immediately re-land a trimmed-down version, but giving it a beat avoids carrying forward assumptions from the first attempt that may not hold. Next step is still the same: arrays and index writes, staged carefully, with tests at each compiler layer.
+The practical decision today was to keep the tree stable and avoid partial follow-up commits until the model is clear enough to implement coherently. That is slower in the short term, but it avoids accumulating one-off fixes around indexing, mutation rules, and control-flow edge cases that would be harder to unwind later.
+
+Next up is to turn this regrouping into a concrete re-entry plan: define the expected behavior for composite operations, pick sequencing for arrays vs structs, and then land narrow slices with explicit tests per slice. Once that plan is locked, development should resume with smaller, verifiable increments.
