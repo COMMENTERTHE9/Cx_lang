@@ -1,0 +1,15 @@
+---
+title: "Cx Dev Log — 2026-03-14"
+date: 2026-03-14
+description: "Two major compiler phases landed today — arrays with index assignment, while-in loops, and then-chaining (Phase 7a+7b), plus if/else across the full pipeline (Phase 7c)."
+---
+
+Big day for the Cx compiler. Two full phases shipped and merged into main. Phase 7a+7b brought arrays, index assignment, while-in loops, and then-chaining, all implemented across the pipeline from AST through parser, semantic analysis, IR lowering, and runtime. Phase 7c followed with if/else statements, also spanning the full compiler stack — lexer, parser, semantic, lowering, and runtime. Both landed via pull requests (PR #3 and PR #4) and are now on main.
+
+Arrays and index assignment were grouped together with while-in and then-chaining because these features are interdependent. You can't meaningfully test array indexing without loops and chaining to drive iteration over elements. The implementation touched ast.rs, parser.rs, semantic.rs, semantic_types.rs, lower.rs, and runtime.rs, and added three new test files for array copy, parameter passing, and return semantics.
+
+If/else was implemented as a full-pipeline feature rather than being handled at a single layer. This meant changes to the lexer for new tokens, parser for the branching syntax, semantic analysis for type checking both arms, IR lowering for conditional jumps, and runtime for execution. Diagnostics also got updated to support error reporting in conditional contexts.
+
+Separately, the automated blog publishing pipeline got a thorough shakedown. Around fifteen iterative commits went through the site branch testing the n8n workflow integration with real blog posts. The test posts were cleaned up afterward. The pipeline is now validated end-to-end with actual content going through the system.
+
+Next up is continuing down the Phase 7 roadmap. The core control flow and data structure primitives are now in place, which opens the door for more complex programs and further language features built on top of arrays and conditionals.
