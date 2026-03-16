@@ -1,0 +1,6 @@
+fnc wrap<T>(a: T) -> [1]T {
+    [a]
+}
+
+result: [1]t64 = wrap(99)
+print(result:[0])

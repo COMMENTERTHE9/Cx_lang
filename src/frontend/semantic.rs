@@ -22,6 +22,7 @@ struct FunctionInfo {
     id: FunctionId,
     params: Vec<SemanticParam>,
     ret_ty: Option<SemanticType>,
+    type_params: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -419,12 +420,13 @@ impl Analyzer {
             }
             Stmt::FuncDef {
                 name,
+                type_params,
                 params,
                 ret_ty,
                 body,
                 ret_expr,
                 pos,
-            } => self.analyze_function(name, params, ret_ty, body, ret_expr, *pos),
+            } => self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos),
             Stmt::Print { expr, pos } => Ok(SemanticStmt::Print {
                 expr: self.analyze_expr(expr)?,
                 pos: *pos,
@@ -594,6 +596,12 @@ impl Analyzer {
                 pos,
             } => {
                 let semantic_condition = self.analyze_expr(condition)?;
+                if matches!(semantic_condition.ty, SemanticType::Unknown) {
+                    return Err(SemanticError {
+                        msg: "Unknown value cannot be used as an if condition — control-critical context".to_string(),
+                        pos: *pos,
+                    });
+                }
                 let semantic_then = then_body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
@@ -729,6 +737,7 @@ impl Analyzer {
     fn analyze_function(
         &mut self,
         name: &str,
+        type_params: &[String],
         params: &[ParamKind],
         ret_ty: &Option<Type>,
         body: &[Stmt],
@@ -749,6 +758,7 @@ impl Analyzer {
                 id: func_id,
                 params: placeholders.clone(),
                 ret_ty: ret_ty.clone().map(semantic_type_from_decl),
+                type_params: type_params.to_vec(),
             },
         );
 
@@ -853,6 +863,7 @@ impl Analyzer {
         Ok(SemanticStmt::FuncDef(SemanticFunction {
             id: func_id,
             name: name.to_string(),
+            type_params: type_params.to_vec(),
             params: resolved_params,
             return_ty: ret_ty.clone().map(semantic_type_from_decl),
             body: semantic_body,
@@ -1181,12 +1192,48 @@ impl Analyzer {
             });
         }
 
+        // Resolve type parameters from typed arguments
+        let mut type_param_map: std::collections::HashMap<String, SemanticType> = std::collections::HashMap::new();
+        if !function.type_params.is_empty() {
+            for (index, arg) in args.iter().enumerate() {
+                if let Some(param) = function.params.get(index) {
+                    if let Some(SemanticType::TypeParam(tname)) = &param.ty {
+                        if let CallArg::Expr(expr) = arg {
+                            let analyzed = self.analyze_expr(expr)?;
+                            if let Some(existing) = type_param_map.get(tname) {
+                                if !types_compatible(existing, &analyzed.ty) {
+                                    return Err(SemanticError {
+                                        msg: format!(
+                                            "type parameter '{}' is bound to {:?} but argument {} has {:?}",
+                                            tname,
+                                            classify_type(existing),
+                                            index + 1,
+                                            classify_type(&analyzed.ty)
+                                        ),
+                                        pos,
+                                    });
+                                }
+                            } else {
+                                type_param_map.insert(tname.clone(), analyzed.ty.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let mut semantic_args = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
             let expected = function
                 .params
                 .get(index)
-                .and_then(|param| param.ty.clone());
+                .and_then(|param| param.ty.clone())
+                .map(|ty| match ty {
+                    SemanticType::TypeParam(ref tname) => {
+                        type_param_map.get(tname).cloned().unwrap_or(ty)
+                    }
+                    other => other,
+                });
             match arg {
                 CallArg::Expr(expr) => {
                     let expr = self.analyze_expr(expr)?;
@@ -1517,6 +1564,7 @@ fn semantic_type_from_decl(ty: Type) -> SemanticType {
         Type::Unknown => SemanticType::Unknown,
         Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner))),
         Type::Array(_, _) => SemanticType::Unknown,
+        Type::TypeParam(s) => SemanticType::TypeParam(s),
     }
 }
 
@@ -1591,7 +1639,9 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
     if expected == got || *got == SemanticType::Unknown {
         return true;
     }
-
+    if matches!(expected, SemanticType::TypeParam(_)) || matches!(got, SemanticType::TypeParam(_)) {
+        return true;
+    }
     match (expected, got) {
         (SemanticType::Numeric, other) | (other, SemanticType::Numeric) => is_numeric(other),
         _ => is_numeric(expected) && is_numeric(got),
@@ -1648,6 +1698,7 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
     for stmt in &program.stmts {
         if let Stmt::FuncDef {
             name,
+            type_params,
             params,
             ret_ty,
             ..
@@ -1664,6 +1715,7 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
                     id: func_id,
                     params: placeholders,
                     ret_ty: ret_ty.clone().map(semantic_type_from_decl),
+                    type_params: type_params.clone(),
                 },
             );
         }
@@ -1767,6 +1819,7 @@ mod tests {
             stmts: vec![
                 Stmt::FuncDef {
                     name: "foo".to_string(),
+                    type_params: vec![],
                     params: vec![ParamKind::Typed("a".to_string(), Type::T64)],
                     ret_ty: Some(Type::T64),
                     body: vec![],

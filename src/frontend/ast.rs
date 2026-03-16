@@ -46,6 +46,7 @@ pub enum Type {
     Unknown,
     Handle(Box<Type>),
     Array(usize, Box<Type>),
+    TypeParam(String),
 }
 
 // AST-level value - owned, no arena lifetime
@@ -166,6 +167,7 @@ pub enum Stmt {
     },
     FuncDef {
         name: String,
+        type_params: Vec<String>,
         params: Vec<ParamKind>,
         ret_ty: Option<Type>,
         body: Vec<Stmt>,

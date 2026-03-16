@@ -43,13 +43,17 @@ where
         Token::TypeChar   => Type::Char,
     };
 
+    let type_param = select! { Token::Identifier(s) => Type::TypeParam(s) };
+
+    let elem_ty = scalar.clone().or(type_param.clone());
+
     let array = just(Token::PunctBracketOpen)
         .ignore_then(select! { Token::LiteralInt(n) => n as usize })
         .then_ignore(just(Token::PunctBracketClose))
-        .then(scalar.clone())
+        .then(elem_ty)
         .map(|(size, elem_ty)| Type::Array(size, Box::new(elem_ty)));
 
-    array.or(scalar)
+    array.or(scalar).or(type_param)
 }
 
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
@@ -813,6 +817,18 @@ where
                 .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
                 .then(ident.clone())
                 .then(
+                    just(Token::OpLessThan)
+                        .ignore_then(
+                            select! { Token::Identifier(s) => s }
+                                .separated_by(just(Token::PunctComma))
+                                .at_least(1)
+                                .collect::<Vec<_>>(),
+                        )
+                        .then_ignore(just(Token::OpGreaterThan))
+                        .or_not()
+                        .map(|tp| tp.unwrap_or_default()),
+                )
+                .then(
                     param
                         .separated_by(just(Token::PunctComma))
                         .collect::<Vec<_>>()
@@ -821,8 +837,9 @@ where
                 .then(just(Token::PunctArrow).ignore_then(ty.clone()).or_not())
                 .then(func_body)
                 .map(
-                    |((((pos, name), params), ret_ty), (body, ret_expr))| Stmt::FuncDef {
+                    |(((((pos, name), type_params), params), ret_ty), (body, ret_expr))| Stmt::FuncDef {
                         name,
+                        type_params,
                         params,
                         ret_ty,
                         body,
