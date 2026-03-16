@@ -1,0 +1,13 @@
+---
+title: "Cx Dev Log — 2026-03-15"
+date: 2026-03-15
+description: "Structs Phase 1+2 landed on submain with impl blocks, methods, and compound assignment through dot-access, plus a new verification matrix test runner."
+---
+
+Structs landed on submain today. Phase 1 and Phase 2 shipped together in a single commit (dad4220), covering struct declarations, field access, impl blocks with methods, and compound assignment through dot-access syntax. The change touches most of the core pipeline — AST, lexer, parser, semantic analysis, type system, IR lowering, and runtime all got updates. Compound assignment operators like `+=` now work through dot-access on struct fields, which was a deliberate scope decision to get the full struct story in one pass rather than leaving dot-access assignment as a follow-up.
+
+Alongside structs, an easy wins batch landed on submain (7e747c4) bringing operator improvements, exit code handling, and a new verification matrix test runner. The matrix runner lives at `src/tests/run_matrix.sh` and introduces an expected-fail test infrastructure using a `.expected_fail` suffix convention. It covers wrong return type, missing return value, void unexpected return, arg count and type mismatches, return outside function, strref escape rejection, and arrays. The runner was added as a standalone shell script rather than integrating into the Cargo test harness — keeping it separate for now.
+
+Backend IR work is in progress on the `codex/backend-ir-from-main` branch with changes to `ir/lower.rs`, `ir/mod.rs`, and `ir/validate.rs`, though nothing committed yet. This is the next major piece moving toward a proper backend pipeline.
+
+Yesterday's daily log and dev log post were merged and pushed to their respective branches, cleaning up after some reverts and rewrites from the prior session. The pipeline from daily logs to site posts is settling into a steady rhythm. Next up: continuing the backend IR push and getting the struct work closer to main.
