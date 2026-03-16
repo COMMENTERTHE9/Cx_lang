@@ -440,6 +440,9 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::Enum(_) => Err(LoweringError::UnsupportedSemanticType {
             ty: "Enum".to_string(),
         }),
+        SemanticType::TypeParam(_) => Err(LoweringError::UnsupportedSemanticType {
+            ty: "TypeParam".to_string(),
+        }),
     }
 }
 
@@ -843,6 +846,7 @@ mod tests {
             stmts: vec![SemanticStmt::FuncDef(SemanticFunction {
                 id: FunctionId(0),
                 name: "foo".to_string(),
+                type_params: vec![],
                 params: vec![],
                 return_ty: Some(SemanticType::I64),
                 body: vec![],

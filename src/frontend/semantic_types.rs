@@ -27,6 +27,7 @@ pub enum SemanticType {
     Char,
     Enum(String),
     Unknown,
+    TypeParam(String),
     Handle(Box<SemanticType>),
     Numeric,
 }
@@ -205,6 +206,7 @@ pub struct SemanticEnum {
 pub struct SemanticFunction {
     pub id: FunctionId,
     pub name: String,
+    pub type_params: Vec<String>,
     pub params: Vec<SemanticParam>,
     pub return_ty: Option<SemanticType>,
     pub body: Vec<SemanticStmt>,

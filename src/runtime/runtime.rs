@@ -27,6 +27,7 @@ pub enum ScopeEvent {
 
 #[derive(Debug, Clone)]
 pub struct FuncDef {
+    type_params: Vec<String>,
     params: Vec<ParamKind>,
     body: Vec<Stmt>,
     ret_expr: Option<Expr>,
@@ -62,6 +63,7 @@ impl RunTime {
         self.funcs.insert(
             name,
             FuncDef {
+                type_params: vec![],
                 params,
                 body,
                 ret_expr,
@@ -1033,6 +1035,7 @@ impl RunTime {
         }
         Stmt::FuncDef {
             name,
+            type_params,
             params,
             ret_ty: _,
             body,
@@ -1040,6 +1043,7 @@ impl RunTime {
             ..
         } => {
             let def = FuncDef {
+                type_params: type_params.clone(),
                 params: params.clone(),
                 body: body.clone(),
                 ret_expr: ret_expr.clone(),
