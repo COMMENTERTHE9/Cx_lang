@@ -567,6 +567,8 @@ impl RunTime {
                     (Op::Minus, Value::Num(n)) => Ok(Value::Num(n.wrapping_neg())),
                     (Op::Minus, Value::Float(f)) => Ok(Value::Float(-f)),
                     (Op::Mul, v) => Ok(v),
+                    (Op::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+                    (Op::Not, Value::TBool(n)) => Ok(Value::TBool(if n == 0 { 1 } else if n == 1 { 0 } else { 2 })),
                     _ => Err(RuntimeError::BadAssignTarget { pos: *pos }),
                 }
             }
@@ -887,6 +889,27 @@ impl RunTime {
                     right: r.clone(),
                 }),
             },
+            Op::NotEq => match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a != b)),
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a != b)),
+                (Value::Num(a), Value::Float(b)) => Ok(Value::Bool((*a as f64) != *b)),
+                (Value::Float(a), Value::Num(b)) => Ok(Value::Bool(*a != (*b as f64))),
+                (Value::Str(a_off, a_len), Value::Str(b_off, b_len)) => Ok(Value::Bool(
+                    self.resolve_str(*a_off, *a_len) != self.resolve_str(*b_off, *b_len),
+                )),
+                (Value::Char(a), Value::Char(b)) => Ok(Value::Bool(a != b)),
+                (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(a != b)),
+                (Value::TBool(2), _) | (_, Value::TBool(2)) => Ok(Value::TBool(2)),
+                (Value::TBool(a), Value::TBool(b)) => Ok(Value::Bool(a != b)),
+                (Value::TBool(a), Value::Bool(b)) => Ok(Value::Bool((*a == 1) != *b)),
+                (Value::Bool(a), Value::TBool(b)) => Ok(Value::Bool(*a != (*b == 1))),
+                (l, r) => Err(RuntimeError::BadOperands {
+                    pos,
+                    op,
+                    left: l.clone(),
+                    right: r.clone(),
+                }),
+            },
             Op::Lt => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a < b)),
                 _ => Err(RuntimeError::BadOperands {
@@ -923,6 +946,7 @@ impl RunTime {
                     right,
                 }),
             },
+            Op::Not => unreachable!("Op::Not is unary only"),
             Op::And => match (&left, &right) {
                 (Value::Bool(a), Value::Bool(b)) => Ok(Value::Bool(*a && *b)),
                 (Value::TBool(a), Value::TBool(b)) => Ok(Value::TBool(match (a, b) {

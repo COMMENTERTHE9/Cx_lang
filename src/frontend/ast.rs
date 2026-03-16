@@ -6,10 +6,12 @@ pub enum Op {
     Div,
     Mod,
     EqEq,
+    NotEq,
     Lt,
     Gt,
     LtEq,
     GtEq,
+    Not,
     And,
     Or,
 }

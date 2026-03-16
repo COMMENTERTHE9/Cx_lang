@@ -241,6 +241,7 @@ where
         let unary = choice((
             just(Token::OpMul).to(Op::Mul),
             just(Token::OpSub).to(Op::Minus),
+            just(Token::OpBang).to(Op::Not),
         ))
         .map_with(|op, e: &mut ParseExtra<'a, '_, I>| (op, e.span().start))
         .then(indexed.clone())
@@ -276,6 +277,7 @@ where
 
         let equality_op = choice((
             just(Token::OpEqualEqual).to(Op::EqEq),
+            just(Token::OpNotEqual).to(Op::NotEq),
             just(Token::OpLessThan).to(Op::Lt),
             just(Token::OpGreaterThan).to(Op::Gt),
             just(Token::OpLessEq).to(Op::LtEq),

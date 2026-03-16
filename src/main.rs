@@ -110,7 +110,7 @@ fn main() {
         Ok(t) => t,
         Err(e) => {
             diagnostics::print_parse(&input, &e);
-            return;
+            std::process::exit(1);
         }
     };
     if let Some(t) = lex_timer {
@@ -130,7 +130,7 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             diagnostics::print_parse(&input, &e);
-            return;
+            std::process::exit(1);
         }
     };
     if let Some(t) = parse_timer {
@@ -152,7 +152,7 @@ fn main() {
                 diagnostics::print_custom(&input, &e.msg, e.pos);
             }
             diagnostics::print_summary(errors.len());
-            return;
+            std::process::exit(1);
         }
     };
     if let Some(t) = sem_timer {

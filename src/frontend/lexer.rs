@@ -197,8 +197,12 @@ pub enum Token {
     OpOr,
 
     // ── Comparison Operators ──────────────────────
+    #[token("!")]
+    OpBang,
     #[token("==")]
     OpEqualEqual,
+    #[token("!=")]
+    OpNotEqual,
 
     #[token("<=")]
     OpLessEq,

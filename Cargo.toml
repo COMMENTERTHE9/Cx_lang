@@ -17,10 +17,8 @@ jit = [
 logos = "0.16.1"
 chumsky = "0.10"
 colored = "2"
-crossterm = "0.27"
 cranelift-codegen = { version = "0.115", optional = true }
 cranelift-frontend = { version = "0.115", optional = true }
 cranelift-module = { version = "0.115", optional = true }
 cranelift-jit = { version = "0.115", optional = true }
 cranelift-native = { version = "0.115", optional = true }
-bumpalo = { version = "3", features = ["collections"] }

@@ -1101,8 +1101,13 @@ impl Analyzer {
             }),
             Expr::Unary(op, inner, pos) => {
                 let expr = self.analyze_expr(inner)?;
+                let result_ty = if *op == Op::Not {
+                    SemanticType::Bool
+                } else {
+                    expr.ty.clone()
+                };
                 Ok(SemanticExpr {
-                    ty: expr.ty.clone(),
+                    ty: result_ty,
                     kind: SemanticExprKind::Unary {
                         op: *op,
                         expr: Box::new(expr),
@@ -1368,7 +1373,7 @@ impl Analyzer {
                     },
                 })
             }
-            Op::EqEq => {
+            Op::EqEq | Op::NotEq => {
                 if lhs.ty == SemanticType::Unknown || rhs.ty == SemanticType::Unknown {
                     return Ok(SemanticExpr {
                         ty: SemanticType::Unknown,
@@ -1419,8 +1424,9 @@ impl Analyzer {
 
                 Err(SemanticError {
                     msg: format!(
-                        "cannot compare {:?} == {:?}",
+                        "cannot compare {:?} {:?} {:?}",
                         classify_type(&lhs.ty),
+                        op,
                         classify_type(&rhs.ty)
                     ),
                     pos: op_pos,
@@ -1449,6 +1455,7 @@ impl Analyzer {
                     })
                 }
             }
+            Op::Not => unreachable!("Op::Not is unary only"),
             Op::And | Op::Or => {
                 if matches!(lhs.ty, SemanticType::Bool | SemanticType::Unknown)
                     && matches!(rhs.ty, SemanticType::Bool | SemanticType::Unknown)

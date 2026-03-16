@@ -357,7 +357,7 @@ fn lower_binary(
             });
             Ok(LoweredValue { value: dst, ty })
         }
-        Op::EqEq | Op::Lt | Op::LtEq | Op::Gt | Op::GtEq => {
+        Op::EqEq | Op::NotEq | Op::Lt | Op::LtEq | Op::Gt | Op::GtEq => {
             ensure_type_match("compare lhs/rhs", lhs.ty, rhs.ty)?;
             let result_ty = lower_type(result_ty)?;
             if result_ty != IrType::Bool {
@@ -367,6 +367,7 @@ fn lower_binary(
             }
             let op = match op {
                 Op::EqEq => CompareOp::Eq,
+                Op::NotEq => CompareOp::Ne,
                 Op::Lt => CompareOp::Lt,
                 Op::LtEq => CompareOp::Le,
                 Op::Gt => CompareOp::Gt,
@@ -384,6 +385,7 @@ fn lower_binary(
                 ty: IrType::Bool,
             })
         }
+        Op::Not => unreachable!("Op::Not is unary only"),
         Op::And => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "Binary::And".to_string(),
         }),
