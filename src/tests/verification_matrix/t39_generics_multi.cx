@@ -1,0 +1,7 @@
+fnc identity<T>(x: T) -> T {
+    x
+}
+
+print(identity(10))
+print(identity(false))
+print(identity(99))
