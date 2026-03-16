@@ -1,0 +1,113 @@
+name: Cx CI
+
+on:
+  push:
+    branches:
+      - main
+      - submain
+      - 'backend/**'
+      - 'codex/backend-**'
+      - 'claude/**'
+  pull_request:
+    branches:
+      - main
+      - submain
+
+jobs:
+  frontend:
+    name: Frontend Build + Matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (no features)
+        run: cargo build
+
+      - name: Run verification matrix
+        run: |
+          PASS=0
+          FAIL=0
+          for f in src/tests/verification_matrix/*.cx; do
+            output=$(cargo run --quiet -- "$f" 2>&1 | tail -1)
+            if echo "$f" | grep -qE '\.(expected_fail|negative)\.cx$'; then
+              if echo "$output" | grep -q "error found"; then
+                echo "PASS (expected error): $f"
+                PASS=$((PASS + 1))
+              else
+                echo "FAIL (expected error but got): $f: $output"
+                FAIL=$((FAIL + 1))
+              fi
+            else
+              echo "PASS: $f: $output"
+              PASS=$((PASS + 1))
+            fi
+          done
+          echo "Matrix: $PASS passed, $FAIL failed"
+          if [ $FAIL -gt 0 ]; then exit 1; fi
+
+  backend:
+    name: Backend Build + Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-jit-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build (with jit feature)
+        run: cargo build --features jit
+
+      - name: Run tests (with jit feature)
+        run: cargo test --features jit
+
+  stale-base:
+    name: Stale Base Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check how far behind main
+        run: |
+          git fetch origin main
+          BEHIND=$(git rev-list --count HEAD..origin/main)
+          echo "Branch is $BEHIND commits behind main"
+          if [ "$BEHIND" -gt 20 ]; then
+            echo "STALE BASE: This branch is $BEHIND commits behind main."
+            echo "Rebase onto main before merging."
+            exit 1
+          fi
+
+  branch-guard:
+    name: Block Direct Push to Main
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Reject direct push
+        run: |
+          echo "Direct pushes to main are not allowed."
+          echo "Open a PR from submain or a feature branch."
+          exit 1
