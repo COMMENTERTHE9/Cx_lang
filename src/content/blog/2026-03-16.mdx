@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-03-16"
+date: 2026-03-16
+description: "Generics v1 landed with full pipeline coverage, GitHub Actions CI went live and got debugged, and the roadmap moved to v3.1."
+---
+
+Generics v1 shipped today. Not a partial implementation or a parser-only skeleton -- this is full pipeline coverage from parsing through semantic analysis to runtime, with three verification matrix tests passing. It landed alongside a working GitHub Actions CI pipeline that went from zero to operational in four commits.
+
+## Generics v1
+
+The implementation touches six files: `ast.rs`, `parser.rs`, `semantic.rs`, `semantic_types.rs`, `lower.rs`, and `runtime.rs`. It adds `Type::TypeParam` at the AST level, `SemanticType::TypeParam` in the semantic layer, `type_params` fields on `FuncDef`, `SemanticFunction`, and `FunctionInfo`, `<T>` syntax parsing, type parameter registration during analysis, T-consistency resolution at call sites, and TypeParam passthrough in `types_compatible`.
+
+Three tests confirm it works: t37 covers basic generic function calls, t38 tests generic array returns with `[N]T` syntax, and t39 exercises multi-argument generics where multiple parameters share the same type param.
+
+The whole thing is 88 insertions. Compact, but it touches every layer of the compiler. The scope was deliberately tight: single type parameter only, no struct dependency, no bounds. That keeps v1 self-contained and lets v2 (multi-param) and v3 (bounds) layer on incrementally without needing to rework the foundation.
+
+## CI from zero to green
+
+GitHub Actions CI shipped in commit 1514c16 with a 113-line workflow running the frontend verification matrix and backend tests, plus a stale-base gate. A `CONTRIBUTING.md` went out with it, documenting four branch rules for humans and agents.
+
+Two bugs surfaced immediately. First, a hardcoded Windows `target-dir` in `.cargo/config.toml` was injecting `C:\Users\Gabri\cx-build` into `LD_LIBRARY_PATH` on Ubuntu runners, causing path separator errors. That got stripped. Second, merge commits into main were triggering the branch protection guard and failing CI. The fix exempts merge commits from the branch name check.
+
+Both were quick fixes, but they highlight something worth noting: the repo is primarily developed on Windows, and CI runs on Ubuntu. Platform-specific paths leaking into config is exactly the kind of thing that only shows up when you actually run cross-platform. Having CI catch it on the first day is the whole point.
+
+## Documentation and infrastructure
+
+A broken `memory_safety.md` link was cleaned out of the README. The roadmap got bumped to v3.1, reflecting generics v1 completion, CI landing, structs status on submain, and generics v2 moving to active/in-progress.
+
+On the site branch, two commits tested a Telegram notification workflow for automated blog post notifications. That pipeline is not production-ready yet, but the plumbing is being tested.
+
+## Backend IR: stashed, not abandoned
+
+Before the merges that brought generics and CI into main, backend IR work was stashed. The stash shows an `ir/validate.rs` module being developed and `pub mod validate` / `pub use validate::*` added to `src/ir/mod.rs`. This was set aside intentionally to keep the working tree clean for merging stable features. Function lowering is in progress; if/else lowering is next on the list.
+
+## What's next
+
+Generics v2 is the natural follow-on. Multi-type-parameter support (`fnc swap<A, B>(a: A, b: B)`) is already marked active on the roadmap, and the parser extension is described as minimal given the v1 foundation that just landed.
+
+The other active thread is backend IR. Unstashing the validation module WIP and continuing from where it was paused. These two workstreams touch different layers of the compiler, so they can proceed in parallel.
+
+With CI now live, any regressions from either effort will surface quickly. That changes the development loop in a real way -- there is now a gate that catches things before they land on main.
