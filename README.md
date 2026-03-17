@@ -6,7 +6,7 @@ Cx is a systems language for game engines with deterministic memory, no garbage 
 Engine code often needs predictable allocation, explicit lifetime control, and data movement you can reason about frame to frame. Teams building gameplay, tooling, and runtime systems usually end up mixing high-level ergonomics with low-level ownership concerns by hand. Cx is aimed at that gap: a language where memory behavior is visible, stable, and intentional without turning every feature into allocator plumbing. The goal is to make engine-facing code easier to reason about under load, at boundaries, and over long-lived runtime sessions.
 
 ## The Approach
-Cx is built around arenas, handles, and explicit value movement. Owned values stay owned, handles give you stable indirection with stale-handle detection, and scoped arena cleanup keeps teardown deterministic. Unknown state is part of the language model rather than an afterthought, which lets control-flow rules stay explicit. For a deeper note on the memory model, see [docment/memory_safety.md](docment/memory_safety.md).
+Cx is built around arenas, handles, and explicit value movement. Owned values stay owned, handles give you stable indirection with stale-handle detection, and scoped arena cleanup keeps teardown deterministic. Unknown state is part of the language model rather than an afterthought, which lets control-flow rules stay explicit.
 
 ## A Code Taste
 ```cx
