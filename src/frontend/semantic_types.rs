@@ -107,6 +107,24 @@ pub enum SemanticExprKind {
         from: SemanticType,
         to: SemanticType,
     },
+    ArrayLit {
+        elements: Vec<SemanticExpr>,
+    },
+    Index {
+        target: Box<SemanticExpr>,
+        index: Box<SemanticExpr>,
+        pos: usize,
+    },
+    MethodCall {
+        instance: String,
+        method: String,
+        args: Vec<SemanticCallArg>,
+        pos: usize,
+    },
+    StructInstance {
+        type_name: String,
+        fields: Vec<(String, SemanticExpr)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -236,8 +254,7 @@ pub enum SemanticStmt {
         pos_type: usize,
     },
     CompoundAssign {
-        binding: Option<BindingId>,
-        name: String,
+        target: SemanticLValue,
         op: Op,
         operand: SemanticExpr,
         pos: usize,
@@ -290,6 +307,17 @@ pub enum SemanticStmt {
     When {
         expr: SemanticExpr,
         arms: Vec<SemanticWhenArm>,
+        pos: usize,
+    },
+    StructDef {
+        name: String,
+        fields: Vec<(String, SemanticType)>,
+        pos: usize,
+    },
+    ImplBlock {
+        name: String,
+        aliases: Vec<(String, SemanticType)>,
+        methods: Vec<SemanticFunction>,
         pos: usize,
     },
 }

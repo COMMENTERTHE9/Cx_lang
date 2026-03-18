@@ -210,6 +210,12 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         SemanticStmt::When { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "When".to_string(),
         }),
+        SemanticStmt::StructDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "StructDef".to_string(),
+        }),
+        SemanticStmt::ImplBlock { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "ImplBlock".to_string(),
+        }),
     }
 }
 
@@ -266,6 +272,18 @@ fn lower_expr(expr: &SemanticExpr, ctx: &mut LoweringCtx) -> Result<LoweredValue
         }),
         SemanticExprKind::Unary { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "Unary".to_string(),
+        }),
+        SemanticExprKind::ArrayLit { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "ArrayLit".to_string(),
+        }),
+        SemanticExprKind::Index { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "Index".to_string(),
+        }),
+        SemanticExprKind::MethodCall { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "MethodCall".to_string(),
+        }),
+        SemanticExprKind::StructInstance { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "StructInstance".to_string(),
         }),
     }
 }

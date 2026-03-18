@@ -237,14 +237,47 @@ impl Analyzer {
         match stmt {
             Stmt::StructDef { name, fields, pos } => {
                 self.structs.insert(name.clone(), fields.clone());
-                Ok(SemanticStmt::Block {
-                    stmts: vec![],
+                let semantic_fields = fields.iter()
+                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone())))
+                    .collect();
+                Ok(SemanticStmt::StructDef {
+                    name: name.clone(),
+                    fields: semantic_fields,
                     pos: *pos,
                 })
             }
-            Stmt::ImplBlock { pos, .. } => {
-                Ok(SemanticStmt::Block {
-                    stmts: vec![],
+            Stmt::ImplBlock { name, aliases, methods, pos } => {
+                let semantic_aliases: Vec<(String, SemanticType)> = aliases.iter()
+                    .map(|(aname, aty)| (aname.clone(), semantic_type_from_decl(aty.clone())))
+                    .collect();
+
+                let mut semantic_methods: Vec<SemanticFunction> = Vec::new();
+
+                for (method_name, params, ret_ty, body, ret_expr) in methods {
+                    // Prepend aliases as typed params so analyze_function declares them in scope
+                    let mut full_params = aliases.iter()
+                        .map(|(aname, aty)| ParamKind::Typed(aname.clone(), aty.clone()))
+                        .collect::<Vec<_>>();
+                    full_params.extend(params.iter().cloned());
+
+                    match self.analyze_function(method_name, &full_params, ret_ty, body, ret_expr, *pos) {
+                        Ok(SemanticStmt::FuncDef(mut sem_func)) => {
+                            // Remove the alias params from the semantic function's param list
+                            // so they don't appear as external call params
+                            sem_func.params = sem_func.params.into_iter()
+                                .skip(aliases.len())
+                                .collect();
+                            semantic_methods.push(sem_func);
+                        }
+                        Ok(_) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+
+                Ok(SemanticStmt::ImplBlock {
+                    name: name.clone(),
+                    aliases: semantic_aliases,
+                    methods: semantic_methods,
                     pos: *pos,
                 })
             }
@@ -704,13 +737,19 @@ impl Analyzer {
                 operand,
                 pos,
             } => {
-                let name = match target {
-                    AssignTarget::Var(n) => n.clone(),
-                    AssignTarget::Field(c, _) => c.clone(),
+                let sem_target = match target {
+                    AssignTarget::Var(name) => {
+                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(0));
+                        let ty = self.lookup_var(name).and_then(|info| info.inferred.clone()).unwrap_or(SemanticType::Unknown);
+                        SemanticLValue::Binding { binding, name: name.clone(), ty }
+                    }
+                    AssignTarget::Field(container, field) => {
+                        let binding = self.lookup_var(container).map(|info| info.binding);
+                        SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: SemanticType::Unknown }
+                    }
                 };
                 Ok(SemanticStmt::CompoundAssign {
-                    binding: self.lookup_var(&name).map(|info| info.binding),
-                    name,
+                    target: sem_target,
                     op: *op,
                     operand: self.analyze_expr(operand)?,
                     pos: *pos,
@@ -990,6 +1029,20 @@ impl Analyzer {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
+            Expr::Val(AstValue::StructInstance(type_name, field_exprs)) => {
+                let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
+                for (fname, fexpr) in field_exprs {
+                    let sem_expr = self.analyze_expr(fexpr)?;
+                    semantic_fields.push((fname.clone(), sem_expr));
+                }
+                Ok(SemanticExpr {
+                    ty: SemanticType::Struct(type_name.clone()),
+                    kind: SemanticExprKind::StructInstance {
+                        type_name: type_name.clone(),
+                        fields: semantic_fields,
+                    },
+                })
+            }
             Expr::Val(value) => Ok(SemanticExpr {
                 ty: semantic_type_from_value(value),
                 kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums)),
@@ -1136,12 +1189,54 @@ impl Analyzer {
                     },
                 })
             }
-            Expr::MethodCall(instance, method, _, pos) => {
+            Expr::MethodCall(instance, method, args, pos) => {
+                // look up the instance variable to find its type
+                let _instance_ty = self.lookup_var(instance)
+                    .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone()))).unwrap_or(SemanticType::Unknown))
+                    .unwrap_or(SemanticType::Unknown);
+
+                // resolve return type from impl registry if we can
+                let ret_ty = SemanticType::Unknown; // stub — full resolution after impl registry is in semantic layer
+
+                // analyze args
+                let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
+                for arg in args {
+                    match arg {
+                        CallArg::Expr(expr) => {
+                            let sem_expr = self.analyze_expr(expr)?;
+                            semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                        }
+                        CallArg::Copy(name) => {
+                            let binding = self.lookup_var(name)
+                                .map(|i| i.binding)
+                                .unwrap_or(BindingId(0));
+                            semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
+                        }
+                        CallArg::CopyFree(name) => {
+                            let binding = self.lookup_var(name)
+                                .map(|i| i.binding)
+                                .unwrap_or(BindingId(0));
+                            semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
+                        }
+                        CallArg::CopyInto(names) => {
+                            let resolved = names.iter().map(|n| {
+                                let binding = self.lookup_var(n)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(0));
+                                ResolvedBinding { binding, name: n.clone() }
+                            }).collect();
+                            semantic_args.push(SemanticCallArg::CopyInto(resolved));
+                        }
+                    }
+                }
+
                 Ok(SemanticExpr {
-                    ty: SemanticType::Unknown,
-                    kind: SemanticExprKind::VarRef {
-                        binding: BindingId(0),
-                        name: format!("{}.{}@{}", instance, method, pos),
+                    ty: ret_ty,
+                    kind: SemanticExprKind::MethodCall {
+                        instance: instance.clone(),
+                        method: method.clone(),
+                        args: semantic_args,
+                        pos: *pos,
                     },
                 })
             }
