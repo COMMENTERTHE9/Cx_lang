@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log - 2026-03-17"
+date: 2026-03-17
+description: "Backend Phase 5 lands if/else CFG lowering with SSA merges, and the frontend's submain branch ships structs, operators, and full semantic parity."
+---
+
+Two major threads moved today. The backend gained real control flow, and the frontend consolidated three feature commits into the most complete branch in the repo.
+
+## Backend Phase 5: if/else CFG and SSA merges
+
+The largest single commit in the backend's history landed on `codex/backend-ir-from-main`. 2,559 insertions across three files, the bulk in `lower.rs` (1,656 insertions) and a brand-new `validate.rs` (1,052 insertions).
+
+Before this, IR lowering only handled straight-line code. Now it constructs real control flow graphs: conditional branch lowering with explicit then/else/merge blocks, chained else-if lowering, SSA environment splitting at branch points, and join block params for SSA merges at convergence points. The design uses block params rather than phi nodes for SSA merges, a decision made back in Phase 1 that today proved out at scale through branching control flow. Block params carry values into merge blocks cleanly without the bookkeeping phi nodes require.
+
+Dead-branch return behavior is handled correctly, branch-local temporaries work, and the validator covers multi-block functions and synthetic main.
+
+The validator rewrite deserves its own mention. Over a thousand lines of validation logic shipped alongside the lowering, continuing a pattern where every new lowering capability arrives with corresponding checks to catch malformed IR immediately. The backend doesn't let new features outrun its safety net.
+
+## Submain: structs, operators, and semantic parity
+
+The `submain` branch received three commits today, all rebased from recent development sessions into a clean feature stack. Together they bring submain three commits ahead of main and make it the most feature-complete branch in the repo.
+
+**Structs Phase 1+2 and impl blocks** landed as a single commit touching 19 files across the full pipeline. Struct definition, instantiation, field read/write, impl blocks with named behavior and method dispatch, mutation writeback from impl methods to the caller, and compound assign on dot-access targets (`p.health -= amount`). A new `AssignTarget` enum distinguishes `Var` from `Field` targets. Three new verification matrix tests (impl_basic, impl_return, compound_assign_dot) cover the additions.
+
+**Easy wins** added `!=` and unary `!` operators across the full pipeline, fixed process exit codes so errors exit with code 1, introduced the `.expected_fail` marker system for negative tests, and built `run_matrix.sh` as the proper test runner with pass/fail tracking. Also cleaned out unused `bumpalo` and `crossterm` dependencies.
+
+**Semantic Parity Phase 1** brought `SemanticStmt` to full coverage of every AST construct the interpreter handles. `StructDef`, `ImplBlock`, `MethodCall`, and `StructInstance` are now represented in the semantic layer. Struct definition analysis lowers fields to `SemanticType`. ImplBlock analysis injects the alias as a prepended parameter. MethodCall analysis handles argument analysis and instance type resolution. A type-safety gap in `CompoundAssign` was also fixed, switching from a bare `String` to `SemanticLValue`.
+
+The verification matrix stays green at 45/45 after all three commits.
+
+## Decisions worth noting
+
+Submain is emerging as the integration branch for frontend features. Rather than merging each feature individually into main, related work accumulates on submain and merges as a consolidated batch. Today's three-commit stack (structs, easy wins, semantic parity) is a clear example of that pattern.
+
+Semantic parity is being built incrementally. Phase 1 adds the semantic node types and analysis passes. The interpreter still runs off the raw AST in some paths. Removing that AST path is a separate step that comes after parity is proven.
+
+## What's next
+
+The two branches need to converge. Submain has frontend features (structs, semantic parity, operators) that main lacks. The backend branch has Phase 5 that main lacks. The likely sequence: merge submain into main first, since it gates further semantic parity work. Then continue backend Phase 6 (function call lowering, letting lowered functions call each other with argument passing and arity validation) and frontend Semantic Parity Phase 2 (switching the interpreter to run off `SemanticProgram` and removing the raw AST interpretation path). Both can proceed in parallel on separate branches.
