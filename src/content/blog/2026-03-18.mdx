@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-03-18"
+date: 2026-03-18
+description: "Semantic Parity Phase 2 is taking shape with a full semantic IR interpreter written but not yet landed."
+---
+
+The biggest piece of work happening right now in Cx is Semantic Parity Phase 2: migrating the interpreter from raw AST execution to running off `SemanticProgram`. No commits landed today, but there are 782 lines of uncommitted changes across 9 files in the wonderful-saha worktree. The interpreter migration is being written. Here is where things stand.
+
+## The semantic interpreter exists
+
+The core of the work is in `src/runtime/runtime.rs`, where a full semantic IR interpreter has been written. New methods -- `eval_semantic_expr`, `run_semantic_stmt`, and `call_semantic_func` -- implement expression evaluation and statement execution against `SemanticExpr` and `SemanticStmt` types instead of raw AST nodes.
+
+The `RunTime` struct now has a `semantic_funcs` registry (`HashMap<String, SemanticFunction>`) alongside the existing function registry. This is a dual-registry setup, and that is deliberate.
+
+In `src/main.rs`, `run_with_interpreter` now accepts `SemanticProgram` instead of `Program`. The pre-pass that registers structs, functions, and impl blocks has been rewritten to work with `SemanticStmt` variants. Function registration bridges both the semantic and legacy registries so the old copy/bleedback fallback behavior still works during the transition.
+
+This is not a clean swap. It is a staged migration. Both the old AST function registry and the new semantic function registry run at the same time. The old paths remain as fallback, which means the 45-test matrix does not have to pass through the new interpreter all at once. Work can land incrementally.
+
+## Control flow gets first-class IR nodes
+
+As part of this migration, `IfElse` and `WhileIn` have been promoted to first-class nodes in both the AST and the semantic IR.
+
+In `src/frontend/ast.rs`, new statement variants for `IfElse` and `WhileIn` were added along with a `WhileInChain` struct for cursor iteration chains. The corresponding `SemanticStmt::IfElse`, `SemanticStmt::WhileIn`, and `SemanticWhileInChain` variants were added in `src/frontend/semantic_types.rs`.
+
+Previously these control flow constructs were handled through more general paths. Giving them dedicated variants in both layers makes the semantic IR complete for control flow. That is a prerequisite for the interpreter to run entirely off the semantic IR without falling back to AST interpretation for certain constructs.
+
+## Groundwork for generics in the semantic layer
+
+A smaller but notable change: the analyzer's `semantic_type_from_decl` now takes a generic params slice, and `analyze_function` gains a type parameters argument. Duplicate `StructDef` handling was removed. This is not the generics work itself, but it prepares the analyzer for generics-aware semantic analysis. It came along naturally while reworking the semantic layer for the interpreter migration.
+
+## Branch state
+
+Submain still has not been merged into main. This was flagged yesterday and remains the case. Main is still missing structs, operators, and Semantic Parity Phase 1 from the March 17 work. The wonderful-saha worktree branches from submain, so until submain merges, none of this Phase 2 work can reach main either.
+
+The branch situation is straightforward but it needs to be resolved. Two feature branches are stacked (submain, then wonderful-saha on top of it) and main is behind both.
+
+## What is next
+
+The immediate path forward has two threads:
+
+1. Finish the semantic interpreter migration in wonderful-saha. The interpreter is largely written, but the bridge between old and new runtime paths still needs work. Once the full test matrix passes through `SemanticProgram`, the raw AST interpretation path can be removed.
+
+2. Merge submain into main. This unblocks everything downstream. Until it happens, the real development state of the language lives on feature branches rather than main.
+
+On the backend side, Phase 6 (function call lowering) is next on the roadmap. No work started on it today, but it can proceed in parallel once the branch state is cleaned up.
