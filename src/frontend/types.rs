@@ -17,6 +17,26 @@ pub enum Value {
     Struct(String, HashMap<String, Value>),
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Num(a), Value::Num(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::TBool(a), Value::TBool(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::Str(a1, a2), Value::Str(b1, b2)) => a1 == b1 && a2 == b2,
+            (Value::EnumVariant(a1, a2), Value::EnumVariant(b1, b2)) => a1 == b1 && a2 == b2,
+            (Value::Unknown(a), Value::Unknown(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => a == b,
+            (Value::Handle(a), Value::Handle(b)) => a == b,
+            (Value::Container(a), Value::Container(b)) => a == b,
+            (Value::Struct(n1, a), Value::Struct(n2, b)) => n1 == n2 && a == b,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum RuntimeError {
     DivByZero {

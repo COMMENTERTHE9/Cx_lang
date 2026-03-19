@@ -216,6 +216,8 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         SemanticStmt::ImplBlock { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "ImplBlock".to_string(),
         }),
+        SemanticStmt::IfElse { .. } => Ok(()),
+        SemanticStmt::WhileIn { .. } => Ok(()),
     }
 }
 

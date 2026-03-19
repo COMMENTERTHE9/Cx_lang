@@ -380,6 +380,8 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
             eprintln!("{}ExprStmt", pad);
             print_expr(expr, depth + 1);
         }
+        Stmt::IfElse { .. } => eprintln!("{}IfElse", pad),
+        Stmt::WhileIn { .. } => eprintln!("{}WhileIn", pad),
     }
 }
 
@@ -507,6 +509,8 @@ pub fn print_stmt_summary(stmt: &Stmt) {
         Stmt::Break { .. } => "Break".to_string(),
         Stmt::Continue { .. } => "Continue".to_string(),
         Stmt::CompoundAssign { .. } => "CompoundAssign".to_string(),
+        Stmt::IfElse { .. } => "IfElse".to_string(),
+        Stmt::WhileIn { .. } => "WhileIn".to_string(),
     };
     eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }

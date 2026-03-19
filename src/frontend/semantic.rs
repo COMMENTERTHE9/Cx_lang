@@ -238,7 +238,7 @@ impl Analyzer {
             Stmt::StructDef { name, fields, pos } => {
                 self.structs.insert(name.clone(), fields.clone());
                 let semantic_fields = fields.iter()
-                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone())))
+                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
                     .collect();
                 Ok(SemanticStmt::StructDef {
                     name: name.clone(),
@@ -248,7 +248,7 @@ impl Analyzer {
             }
             Stmt::ImplBlock { name, aliases, methods, pos } => {
                 let semantic_aliases: Vec<(String, SemanticType)> = aliases.iter()
-                    .map(|(aname, aty)| (aname.clone(), semantic_type_from_decl(aty.clone())))
+                    .map(|(aname, aty)| (aname.clone(), semantic_type_from_decl(aty.clone(), &[])))
                     .collect();
 
                 let mut semantic_methods: Vec<SemanticFunction> = Vec::new();
@@ -260,7 +260,7 @@ impl Analyzer {
                         .collect::<Vec<_>>();
                     full_params.extend(params.iter().cloned());
 
-                    match self.analyze_function(method_name, &full_params, ret_ty, body, ret_expr, *pos) {
+                    match self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos) {
                         Ok(SemanticStmt::FuncDef(mut sem_func)) => {
                             // Remove the alias params from the semantic function's param list
                             // so they don't appear as external call params
@@ -301,7 +301,7 @@ impl Analyzer {
                 Ok(SemanticStmt::Decl {
                     binding,
                     name: name.clone(),
-                    ty: ty.clone().map(semantic_type_from_decl),
+                    ty: ty.clone().map(|t| semantic_type_from_decl(t, &[])),
                     pos: *pos,
                 })
             }
@@ -326,7 +326,7 @@ impl Analyzer {
                         })?;
 
                         if let Some(declared) = &info.declared {
-                            let expected = semantic_type_from_decl(declared.clone());
+                            let expected = semantic_type_from_decl(declared.clone(), &[]);
                             if !types_compatible(&expected, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(
                                     &expected,
@@ -397,7 +397,7 @@ impl Analyzer {
                 expr,
                 pos_type,
             } => {
-                let declared_ty = semantic_type_from_decl(ty.clone());
+                let declared_ty = semantic_type_from_decl(ty.clone(), &[]);
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(SemanticError {
@@ -585,21 +585,6 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
-            Stmt::StructDef {
-                name,
-                fields,
-                pos,
-            } => {
-                let sem_fields: Vec<(String, SemanticType)> = fields
-                    .iter()
-                    .map(|(n, t)| (n.clone(), semantic_type_from_decl(t.clone())))
-                    .collect();
-                Ok(SemanticStmt::StructDef {
-                    name: name.clone(),
-                    fields: sem_fields,
-                    pos: *pos,
-                })
-            }
             Stmt::IfElse {
                 condition,
                 then_body,
@@ -781,7 +766,7 @@ impl Analyzer {
             FunctionInfo {
                 id: func_id,
                 params: placeholders.clone(),
-                ret_ty: ret_ty.clone().map(semantic_type_from_decl),
+                ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                 type_params: type_params.to_vec(),
             },
         );
@@ -790,7 +775,7 @@ impl Analyzer {
         let prev_ret_ty = self.current_ret_ty.clone();
         let prev_in_function = self.in_function;
         self.in_function = true;
-        self.current_ret_ty = ret_ty.clone().map(semantic_type_from_decl);
+        self.current_ret_ty = ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params));
 
         let mut resolved_params = Vec::with_capacity(params.len());
         for param in params {
@@ -802,7 +787,7 @@ impl Analyzer {
                         binding,
                         name: param_name.clone(),
                         kind: SemanticParamKind::Typed,
-                        ty: Some(semantic_type_from_decl(param_ty.clone())),
+                        ty: Some(semantic_type_from_decl(param_ty.clone(), type_params)),
                     });
                 }
                 ParamKind::Copy(param_name) => {
@@ -872,7 +857,7 @@ impl Analyzer {
                 return Err(SemanticError {
                     msg: format!(
                         "missing return value, expected {:?}",
-                        classify_type(&semantic_type_from_decl(ret_ty.clone().unwrap()))
+                        classify_type(&semantic_type_from_decl(ret_ty.clone().unwrap(), type_params))
                     ),
                     pos,
                 });
@@ -889,7 +874,7 @@ impl Analyzer {
             name: name.to_string(),
             type_params: type_params.to_vec(),
             params: resolved_params,
-            return_ty: ret_ty.clone().map(semantic_type_from_decl),
+            return_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
             body: semantic_body,
             ret_expr: semantic_ret_expr,
             pos,
@@ -1170,29 +1155,33 @@ impl Analyzer {
             }
             Expr::Bin(lhs, op, op_pos, rhs) => self.analyze_binary(lhs, *op, *op_pos, rhs),
             Expr::ArrayLit(elems) => {
+                let mut semantic_elems = Vec::new();
                 for e in elems {
-                    self.analyze_expr(e)?;
+                    semantic_elems.push(self.analyze_expr(e)?);
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::Unknown,
-                    kind: SemanticExprKind::Value(SemanticValue::Unknown),
+                    kind: SemanticExprKind::ArrayLit {
+                        elements: semantic_elems,
+                    },
                 })
             }
             Expr::Index(base, idx, pos) => {
-                self.analyze_expr(base)?;
-                self.analyze_expr(idx)?;
+                let sem_base = self.analyze_expr(base)?;
+                let sem_idx = self.analyze_expr(idx)?;
                 Ok(SemanticExpr {
                     ty: SemanticType::Unknown,
-                    kind: SemanticExprKind::VarRef {
-                        binding: BindingId(0),
-                        name: format!("index@{}", pos),
+                    kind: SemanticExprKind::Index {
+                        target: Box::new(sem_base),
+                        index: Box::new(sem_idx),
+                        pos: *pos,
                     },
                 })
             }
             Expr::MethodCall(instance, method, args, pos) => {
                 // look up the instance variable to find its type
                 let _instance_ty = self.lookup_var(instance)
-                    .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone()))).unwrap_or(SemanticType::Unknown))
+                    .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))).unwrap_or(SemanticType::Unknown))
                     .unwrap_or(SemanticType::Unknown);
 
                 // resolve return type from impl registry if we can
@@ -1600,7 +1589,7 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
             kind: SemanticParamKind::Typed,
-            ty: Some(semantic_type_from_decl(ty.clone())),
+            ty: Some(semantic_type_from_decl(ty.clone(), &[])),
         },
         ParamKind::Copy(name) => SemanticParam {
             binding: BindingId(u32::MAX),
@@ -1644,7 +1633,7 @@ fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
     Ok(())
 }
 
-fn semantic_type_from_decl(ty: Type) -> SemanticType {
+fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
     match ty {
         Type::T8 => SemanticType::I8,
         Type::T16 => SemanticType::I16,
@@ -1658,10 +1647,16 @@ fn semantic_type_from_decl(ty: Type) -> SemanticType {
         Type::Char => SemanticType::Char,
         Type::Enum(name) => SemanticType::Enum(name),
         Type::Unknown => SemanticType::Unknown,
-        Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner))),
+        Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner, type_params))),
         Type::Array(_, _) => SemanticType::Unknown,
         Type::TypeParam(s) => SemanticType::TypeParam(s),
-        Type::Struct(name) => SemanticType::Struct(name),
+        Type::Struct(name) => {
+            if type_params.contains(&name) {
+                SemanticType::TypeParam(name)
+            } else {
+                SemanticType::Struct(name)
+            }
+        }
     }
 }
 
@@ -1716,7 +1711,7 @@ fn classify_type(ty: &SemanticType) -> SemanticType {
 fn binding_type(info: &VarInfo) -> SemanticType {
     info.declared
         .clone()
-        .map(semantic_type_from_decl)
+        .map(|t| semantic_type_from_decl(t, &[]))
         .or_else(|| info.inferred.clone())
         .unwrap_or(SemanticType::Numeric)
 }
@@ -1819,7 +1814,7 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
                 FunctionInfo {
                     id: func_id,
                     params: placeholders,
-                    ret_ty: ret_ty.clone().map(semantic_type_from_decl),
+                    ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                     type_params: type_params.clone(),
                 },
             );

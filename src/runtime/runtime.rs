@@ -1,5 +1,6 @@
 // incremental rebuild test 3
 use crate::frontend::{ast::*, diagnostics, types::*};
+use crate::frontend::semantic_types::*;
 use crate::runtime::arena::Arena;
 use crate::runtime::handle::HandleRegistry;
 use std::collections::{HashMap, HashSet};
@@ -51,6 +52,7 @@ pub struct RunTime {
     pub impls: HashMap<(String, String), (Vec<(String, Type)>, (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>))>,
     scopes: Vec<ScopeFrame>,
     funcs: HashMap<String, FuncDef>,
+    pub semantic_funcs: HashMap<String, SemanticFunction>,
     pub debug_scope: bool,
 }
 
@@ -71,6 +73,10 @@ impl RunTime {
                 ret_expr,
             },
         );
+    }
+
+    pub fn register_semantic_func(&mut self, func: SemanticFunction) {
+        self.semantic_funcs.insert(func.name.clone(), func);
     }
 
     pub fn alloc_str(&mut self, s: &str) -> (u32, u32) {
@@ -144,6 +150,7 @@ impl RunTime {
                 seen: HashSet::new(),
             }],
             funcs: HashMap::new(),
+            semantic_funcs: HashMap::new(),
             debug_scope: false,
         }
     }
@@ -1444,8 +1451,563 @@ impl RunTime {
                 }
             }
         }
+        Stmt::IfElse { .. } => Ok(()),
+        Stmt::WhileIn { .. } => Ok(()),
     }
 }
+
+    // ── Semantic IR interpreter ──────────────────────────────────────
+
+    pub fn eval_semantic_expr(&mut self, expr: &SemanticExpr) -> Result<Value, RuntimeError> {
+        match &expr.kind {
+            SemanticExprKind::Value(sv) => Ok(self.semantic_value_to_runtime(sv)),
+            SemanticExprKind::VarRef { name, .. } => {
+                self.get_var(name, 0)
+            }
+            SemanticExprKind::Unary { op, expr, pos } => {
+                let val = self.eval_semantic_expr(expr)?;
+                self.apply_unary(op, val, *pos)
+            }
+            SemanticExprKind::Binary { lhs, op, pos, rhs } => {
+                let l = self.eval_semantic_expr(lhs)?;
+                let r = self.eval_semantic_expr(rhs)?;
+                self.apply_op(l, op.clone(), *pos, r)
+            }
+            SemanticExprKind::Call { callee, args, .. } => {
+                self.call_semantic_func(callee, args, 0)
+            }
+            SemanticExprKind::DotAccess { container, field, .. } => {
+                self.get_field(container, field, 0)
+            }
+            SemanticExprKind::StructInstance { type_name, fields } => {
+                let mut map = HashMap::new();
+                for (fname, fexpr) in fields {
+                    let val = self.eval_semantic_expr(fexpr)?;
+                    map.insert(fname.clone(), val);
+                }
+                Ok(Value::Struct(type_name.clone(), map))
+            }
+            SemanticExprKind::ArrayLit { elements } => {
+                let mut vals = Vec::new();
+                for e in elements {
+                    vals.push(self.eval_semantic_expr(e)?);
+                }
+                Ok(Value::Array(vals))
+            }
+            SemanticExprKind::Index { target, index, pos } => {
+                let arr = self.eval_semantic_expr(target)?;
+                let idx = self.eval_semantic_expr(index)?;
+                match (arr, idx) {
+                    (Value::Array(elems), Value::Num(i)) => {
+                        elems.get(i as usize).cloned().ok_or_else(|| RuntimeError::UndefinedVar { pos: *pos, name: format!("index {}", i) })
+                    }
+                    _ => Err(RuntimeError::BadAssignTarget { pos: *pos })
+                }
+            }
+            SemanticExprKind::MethodCall { instance, method, args, pos } => {
+                self.call_semantic_method(instance, method, args, *pos)
+            }
+            SemanticExprKind::Range { .. } => Ok(Value::Num(0)), // stub
+            SemanticExprKind::HandleNew { .. } => Ok(Value::Num(0)), // stub
+            SemanticExprKind::HandleVal { name, pos, .. } => self.get_var(name, *pos),
+            SemanticExprKind::HandleDrop { name, pos, .. } => {
+                self.get_var(name, *pos)?;
+                Ok(Value::Num(0))
+            }
+            SemanticExprKind::Cast { expr, .. } => self.eval_semantic_expr(expr),
+        }
+    }
+
+    pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
+        match stmt {
+            SemanticStmt::Print { expr, .. } => {
+                let value = self.eval_semantic_expr(expr)?;
+                self.print_value(&value);
+                Ok(())
+            }
+            SemanticStmt::PrintInline { expr, .. } => {
+                let value = self.eval_semantic_expr(expr)?;
+                self.print_value_inline(&value);
+                Ok(())
+            }
+            SemanticStmt::Decl { name, ty, .. } => {
+                let rt_ty: Option<Type> = ty.as_ref().map(|t| semantic_type_to_ast(t));
+                self.declare(name.clone(), rt_ty, 0)
+            }
+            SemanticStmt::TypedAssign { name, ty, expr, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                let rt_ty = semantic_type_to_ast(ty);
+                let val = match (&rt_ty, val) {
+                    (Type::Bool, Value::Unknown(_)) => Value::TBool(2),
+                    (_, v) => v,
+                };
+                self.set_var_typed(name.clone(), rt_ty, val, 0)
+            }
+            SemanticStmt::Assign { target, expr, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                match target {
+                    SemanticLValue::Binding { name, .. } => self.set_var(name.clone(), val, 0),
+                    SemanticLValue::DotAccess { container, field, .. } => {
+                        self.set_container_field(container, field, val, 0)
+                    }
+                }
+            }
+            SemanticStmt::CompoundAssign { target, op, operand, .. } => {
+                match target {
+                    SemanticLValue::Binding { name, .. } => {
+                        let current = self.get_var(name, 0)?;
+                        let rhs = self.eval_semantic_expr(operand)?;
+                        let result = self.apply_op(current, op.clone(), 0, rhs)?;
+                        self.set_var(name.clone(), result, 0)
+                    }
+                    SemanticLValue::DotAccess { container, field, .. } => {
+                        let current = self.get_field(container, field, 0)?;
+                        let rhs = self.eval_semantic_expr(operand)?;
+                        let result = self.apply_op(current, op.clone(), 0, rhs)?;
+                        self.set_container_field(container, field, result, 0)
+                    }
+                }
+            }
+            SemanticStmt::Return { expr, .. } => {
+                if let Some(e) = expr {
+                    let val = self.eval_semantic_expr(e)?;
+                    Err(RuntimeError::EarlyReturn(val))
+                } else {
+                    Err(RuntimeError::EarlyReturn(Value::Num(0)))
+                }
+            }
+            SemanticStmt::ExprStmt { expr, .. } => {
+                self.eval_semantic_expr(expr)?;
+                Ok(())
+            }
+            SemanticStmt::Block { stmts, .. } => {
+                self.push_scope();
+                for s in stmts {
+                    match self.run_semantic_stmt(s) {
+                        Ok(_) => {}
+                        Err(e) => { self.pop_scope(); return Err(e); }
+                    }
+                }
+                self.pop_scope();
+                Ok(())
+            }
+            SemanticStmt::While { cond, body, .. } => {
+                loop {
+                    let cv = self.eval_semantic_expr(cond)?;
+                    match cv {
+                        Value::Bool(false) | Value::TBool(0) => break,
+                        Value::Bool(true) | Value::TBool(1) => {}
+                        _ => break,
+                    }
+                    self.push_scope();
+                    let mut should_break = false;
+                    for s in body {
+                        match self.run_semantic_stmt(s) {
+                            Ok(_) => {}
+                            Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                            Err(RuntimeError::ContinueSignal) => break,
+                            Err(e) => { self.pop_scope(); return Err(e); }
+                        }
+                    }
+                    self.pop_scope();
+                    if should_break { break; }
+                }
+                Ok(())
+            }
+            SemanticStmt::For { var, start, end, inclusive, body, .. } => {
+                let start_val = match self.eval_semantic_expr(start)? {
+                    Value::Num(n) => n,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                };
+                let end_val = match self.eval_semantic_expr(end)? {
+                    Value::Num(n) => n,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                };
+                'sem_for: {
+                    if *inclusive {
+                        for i in start_val..=end_val {
+                            self.push_scope();
+                            self.declare(var.clone(), None, 0)?;
+                            self.set_var(var.clone(), Value::Num(i), 0)?;
+                            for s in body {
+                                match self.run_semantic_stmt(s) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { self.pop_scope(); break 'sem_for; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                        }
+                    } else {
+                        for i in start_val..end_val {
+                            self.push_scope();
+                            self.declare(var.clone(), None, 0)?;
+                            self.set_var(var.clone(), Value::Num(i), 0)?;
+                            for s in body {
+                                match self.run_semantic_stmt(s) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { self.pop_scope(); break 'sem_for; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                        }
+                    }
+                }
+                Ok(())
+            }
+            SemanticStmt::Loop { body, .. } => {
+                loop {
+                    self.push_scope();
+                    let mut should_break = false;
+                    for s in body {
+                        match self.run_semantic_stmt(s) {
+                            Ok(_) => {}
+                            Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                            Err(RuntimeError::ContinueSignal) => break,
+                            Err(e) => { self.pop_scope(); return Err(e); }
+                        }
+                    }
+                    self.pop_scope();
+                    if should_break { break; }
+                }
+                Ok(())
+            }
+            SemanticStmt::Break { .. } => Err(RuntimeError::BreakSignal),
+            SemanticStmt::Continue { .. } => Err(RuntimeError::ContinueSignal),
+            SemanticStmt::FuncDef(sem_func) => {
+                // Register in semantic registry for semantic dispatch
+                self.semantic_funcs.insert(sem_func.name.clone(), sem_func.clone());
+                // Also register in AST registry for copy-param fallback path
+                self.funcs.insert(sem_func.name.clone(), FuncDef {
+                    type_params: sem_func.type_params.clone(),
+                    params: sem_func.params.iter().map(|p| semantic_param_to_ast(&p.kind)).collect(),
+                    body: vec![],
+                    ret_expr: None,
+                });
+                Ok(())
+            }
+            SemanticStmt::StructDef { name, fields, .. } => {
+                self.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect());
+                Ok(())
+            }
+            SemanticStmt::ImplBlock { aliases, methods, .. } => {
+                for sem_func in methods {
+                    for (_, alias_type) in aliases {
+                        let type_key = match alias_type {
+                            SemanticType::Struct(n) => n.clone(),
+                            _ => continue,
+                        };
+                        self.impls.insert(
+                            (type_key, sem_func.name.clone()),
+                            (aliases.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect(),
+                             (sem_func.name.clone(), sem_func.params.iter().map(|p| semantic_param_to_ast(&p.kind)).collect(),
+                              sem_func.return_ty.as_ref().map(|t| semantic_type_to_ast(t)),
+                              vec![], None))
+                        );
+                    }
+                }
+                Ok(())
+            }
+            SemanticStmt::EnumDef { name, variants, .. } => {
+                let variant_names: Vec<String> = variants.iter().map(|v| v.clone()).collect();
+                self.enums.insert(name.clone(), EnumRuntimeInfo {
+                    variants: variant_names,
+                    groups: HashMap::new(),
+                    super_group_order: HashMap::new(),
+                });
+                Ok(())
+            }
+            SemanticStmt::When { expr, arms, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                self.run_semantic_when(val, arms)
+            }
+            SemanticStmt::IfElse { .. } => Ok(()), // stub
+            SemanticStmt::WhileIn { .. } => Ok(()), // stub
+        }
+    }
+
+    fn semantic_value_to_runtime(&self, sv: &SemanticValue) -> Value {
+        match sv {
+            SemanticValue::Num(n) => Value::Num(*n),
+            SemanticValue::Float(f) => Value::Float(*f),
+            SemanticValue::Str(s) => {
+                // Allocate in arena — but for now just store as inline
+                Value::Str(0, 0) // stub — needs arena integration
+            }
+            SemanticValue::Bool(b) => Value::Bool(*b),
+            SemanticValue::Char(c) => Value::Char(*c),
+            SemanticValue::EnumVariant { enum_name, variant_name, .. } => {
+                Value::EnumVariant(enum_name.clone(), variant_name.clone())
+            }
+            SemanticValue::Unknown => Value::Unknown(Type::T32),
+        }
+    }
+
+    fn apply_unary(&self, op: &Op, val: Value, pos: usize) -> Result<Value, RuntimeError> {
+        match (op, val) {
+            (Op::Minus, Value::Num(n)) => Ok(Value::Num(n.wrapping_neg())),
+            (Op::Minus, Value::Float(f)) => Ok(Value::Float(-f)),
+            (Op::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
+            (Op::Not, Value::TBool(n)) => Ok(Value::TBool(if n == 0 { 1 } else if n == 1 { 0 } else { 2 })),
+            (Op::Mul, v) => Ok(v), // deref — passthrough for now
+            _ => Err(RuntimeError::TypeMismatch { pos, expected: Type::Unknown, got: Type::Unknown }),
+        }
+    }
+
+    fn call_semantic_func(&mut self, callee: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
+        // Built-in: is_known
+        if callee == "is_known" {
+            if let Some(SemanticCallArg::Expr(e)) = args.first() {
+                let val = self.eval_semantic_expr(e)?;
+                return Ok(match val {
+                    Value::Unknown(_) | Value::TBool(2) => Value::Bool(false),
+                    _ => Value::Bool(true),
+                });
+            }
+        }
+
+        // Built-in: print
+        if callee == "print" || callee == "println" {
+            for arg in args {
+                if let SemanticCallArg::Expr(e) = arg {
+                    let v = self.eval_semantic_expr(e)?;
+                    self.print_value(&v);
+                }
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Check if any arg uses copy semantics — if so, fall back to AST path
+        let has_copy_args = args.iter().any(|a| matches!(a,
+            SemanticCallArg::Copy { .. } | SemanticCallArg::CopyFree { .. } | SemanticCallArg::CopyInto(_)
+        ));
+
+        if has_copy_args {
+            // Convert semantic args to AST CallArgs and delegate to old eval_expr path
+            let ast_args: Vec<CallArg> = args.iter().map(|a| match a {
+                SemanticCallArg::Expr(e) => {
+                    // Evaluate the semantic expr and wrap as a literal for the AST path
+                    CallArg::Expr(Expr::Val(AstValue::Num(0))) // placeholder — will be resolved below
+                }
+                SemanticCallArg::Copy { name, .. } => CallArg::Copy(name.clone()),
+                SemanticCallArg::CopyFree { name, .. } => CallArg::CopyFree(name.clone()),
+                SemanticCallArg::CopyInto(bindings) => CallArg::CopyInto(bindings.iter().map(|b| b.name.clone()).collect()),
+            }).collect();
+
+            // For copy calls, we need to pre-evaluate semantic Expr args and inject as identifiers
+            // Build a mixed arg list: evaluate semantic exprs, keep copy args as-is
+            let mut final_args: Vec<CallArg> = Vec::new();
+            for a in args {
+                match a {
+                    SemanticCallArg::Expr(e) => {
+                        let val = self.eval_semantic_expr(e)?;
+                        // Store in a temp var and pass as ident
+                        let tmp = format!("__tmp_arg_{}", self.string_arena.len());
+                        let ty = type_of_value(&val);
+                        self.set_var_typed(tmp.clone(), ty, val, pos)?;
+                        final_args.push(CallArg::Expr(Expr::Ident(tmp, pos)));
+                    }
+                    SemanticCallArg::Copy { name, .. } => final_args.push(CallArg::Copy(name.clone())),
+                    SemanticCallArg::CopyFree { name, .. } => final_args.push(CallArg::CopyFree(name.clone())),
+                    SemanticCallArg::CopyInto(bindings) => final_args.push(CallArg::CopyInto(bindings.iter().map(|b| b.name.clone()).collect())),
+                }
+            }
+
+            return self.eval_expr(&Expr::Call(callee.to_string(), final_args, pos));
+        }
+
+        // Pure expression args — use semantic path
+        let func = self.semantic_funcs.get(callee).cloned()
+            .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: callee.to_string() })?;
+
+        // Evaluate and bind args using semantic param names
+        let mut resolved: Vec<(String, Value)> = Vec::new();
+        for (param, arg) in func.params.iter().zip(args.iter()) {
+            let val = match arg {
+                SemanticCallArg::Expr(e) => self.eval_semantic_expr(e)?,
+                _ => unreachable!("copy args handled above"),
+            };
+            resolved.push((param.name.clone(), val));
+        }
+
+        // Push scope, bind params, run semantic body
+        self.push_function_scope();
+        let result = (|| -> Result<Value, RuntimeError> {
+            for (pname, val) in resolved {
+                let ty = type_of_value(&val);
+                self.set_var_typed(pname, ty, val, pos)?;
+            }
+            for stmt in &func.body {
+                match self.run_semantic_stmt(stmt) {
+                    Ok(_) => {}
+                    Err(RuntimeError::EarlyReturn(v)) => return Ok(v),
+                    Err(e) => return Err(e),
+                }
+            }
+            if let Some(expr) = &func.ret_expr {
+                self.eval_semantic_expr(expr)
+            } else {
+                Ok(Value::Num(0))
+            }
+        })();
+        self.pop_scope();
+        result
+    }
+
+    fn call_semantic_method(&mut self, instance: &str, method: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
+        // Get instance value and type
+        let inst_val = self.get_var(instance, pos)?;
+        let type_name = match &inst_val {
+            Value::Struct(name, _) => name.clone(),
+            _ => return Err(RuntimeError::NotAContainer { pos, name: instance.to_string() }),
+        };
+
+        // Look up method in impls
+        let (aliases, (_, params, ret_ty, body, ret_expr)) = self.impls
+            .get(&(type_name.clone(), method.to_string()))
+            .cloned()
+            .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: format!("{}.{}", type_name, method) })?;
+
+        // Push scope, bind alias
+        self.push_scope();
+        for (alias_name, _) in &aliases {
+            self.declare(alias_name.clone(), None, pos)?;
+            self.set_var(alias_name.clone(), inst_val.clone(), pos)?;
+        }
+
+        // Bind params — evaluate semantic args
+        for (i, arg) in args.iter().enumerate() {
+            if let Some(param) = params.get(i) {
+                let param_name = match param {
+                    ParamKind::Typed(name, _) => name.clone(),
+                    ParamKind::Copy(name) => name.clone(),
+                    ParamKind::CopyFree(name) => name.clone(),
+                    ParamKind::CopyInto(name, _) => name.clone(),
+                };
+                let val = match arg {
+                    SemanticCallArg::Expr(e) => self.eval_semantic_expr(e)?,
+                    SemanticCallArg::Copy { name, .. } => self.get_var(name, pos)?,
+                    SemanticCallArg::CopyFree { name, .. } => self.get_var(name, pos)?,
+                    _ => Value::Num(0),
+                };
+                self.declare(param_name.clone(), None, pos)?;
+                self.set_var(param_name, val, pos)?;
+            }
+        }
+
+        // Execute body (AST body from impls registry)
+        let mut result = Value::Num(0);
+        for s in &body {
+            match self.run_stmt(s) {
+                Ok(_) => {}
+                Err(RuntimeError::EarlyReturn(v)) => { result = v; break; }
+                Err(e) => { self.pop_scope(); return Err(e); }
+            }
+        }
+        if let Some(re) = &ret_expr {
+            result = self.eval_expr(re)?;
+        }
+
+        // Write alias mutations back
+        for (alias_name, _) in &aliases {
+            if let Ok(updated) = self.get_var(alias_name, pos) {
+                self.pop_scope();
+                self.set_var(instance.to_string(), updated, pos)?;
+                return Ok(result);
+            }
+        }
+        self.pop_scope();
+        Ok(result)
+    }
+
+    fn print_value(&self, v: &Value) {
+        match v {
+            Value::Num(n) => println!("{}", n),
+            Value::Float(x) => println!("{}", x),
+            Value::Str(off, len) => println!("{}", self.resolve_str(*off, *len)),
+            Value::Bool(b) => println!("{}", b),
+            Value::TBool(b) => println!("{}", match b { 0 => "false", 1 => "true", _ => "?" }),
+            Value::Char(c) => println!("{}", c),
+            Value::EnumVariant(e, v) => println!("{}::{}", e, v),
+            Value::Unknown(_) => println!("?"),
+            Value::Array(elems) => {
+                let parts: Vec<String> = elems.iter().map(|v| format!("{:?}", v)).collect();
+                println!("[{}]", parts.join(", "));
+            }
+            Value::Handle(h) => println!("handle({},{})", h.slot, h.gen),
+            Value::Container(map) => println!("{:?}", map),
+            Value::Struct(name, map) => {
+                let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {:?}", k, v)).collect();
+                println!("{} {{ {} }}", name, parts.join(", "));
+            }
+        }
+    }
+
+    fn print_value_inline(&self, v: &Value) {
+        match v {
+            Value::Num(n) => print!("{}", n),
+            Value::Float(x) => print!("{}", x),
+            Value::Str(off, len) => print!("{}", self.resolve_str(*off, *len)),
+            Value::Bool(b) => print!("{}", b),
+            Value::TBool(b) => print!("{}", match b { 0 => "false", 1 => "true", _ => "?" }),
+            Value::Char(c) => print!("{}", c),
+            Value::EnumVariant(e, v) => print!("{}::{}", e, v),
+            Value::Unknown(_) => print!("?"),
+            Value::Array(elems) => {
+                let parts: Vec<String> = elems.iter().map(|v| format!("{:?}", v)).collect();
+                print!("[{}]", parts.join(", "));
+            }
+            Value::Handle(h) => print!("handle({},{})", h.slot, h.gen),
+            Value::Container(map) => print!("{:?}", map),
+            Value::Struct(name, map) => {
+                let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {:?}", k, v)).collect();
+                print!("{} {{ {} }}", name, parts.join(", "));
+            }
+        }
+    }
+
+    fn run_semantic_when(&mut self, val: Value, arms: &[SemanticWhenArm]) -> Result<(), RuntimeError> {
+        for arm in arms {
+            let matches = match &arm.pattern {
+                SemanticWhenPattern::Literal(sv) => {
+                    let pat_val = self.semantic_value_to_runtime(sv);
+                    val == pat_val
+                }
+                SemanticWhenPattern::Range(lo, hi, inclusive) => {
+                    let lo_val = self.semantic_value_to_runtime(lo);
+                    let hi_val = self.semantic_value_to_runtime(hi);
+                    match (&val, &lo_val, &hi_val) {
+                        (Value::Num(v), Value::Num(l), Value::Num(h)) => {
+                            if *inclusive { v >= l && v <= h } else { v >= l && v < h }
+                        }
+                        _ => false,
+                    }
+                }
+                SemanticWhenPattern::EnumVariant { enum_name, variant_name, .. } => {
+                    match &val {
+                        Value::EnumVariant(e, v) => e == enum_name && v == variant_name,
+                        _ => false,
+                    }
+                }
+                SemanticWhenPattern::Catchall => true,
+            };
+            if matches {
+                self.push_scope();
+                for s in &arm.body {
+                    match self.run_semantic_stmt(s) {
+                        Ok(_) => {}
+                        Err(e) => { self.pop_scope(); return Err(e); }
+                    }
+                }
+                self.pop_scope();
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
 }
 
 fn value_to_string(rt: &RunTime, v: Value) -> String {
@@ -1587,4 +2149,69 @@ fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeE
         }
     }
     Ok(out)
+}
+
+fn semantic_type_to_ast(st: &SemanticType) -> Type {
+    match st {
+        SemanticType::I8 => Type::T8,
+        SemanticType::I16 => Type::T16,
+        SemanticType::I32 => Type::T32,
+        SemanticType::I64 => Type::T64,
+        SemanticType::I128 => Type::T128,
+        SemanticType::F64 => Type::T64,
+        SemanticType::Bool => Type::Bool,
+        SemanticType::Str => Type::Str,
+        SemanticType::StrRef => Type::StrRef,
+        SemanticType::Char => Type::Char,
+        SemanticType::Enum(name) => Type::Enum(name.clone()),
+        SemanticType::Struct(name) => Type::Struct(name.clone()),
+        SemanticType::Container => Type::Container,
+        SemanticType::Handle(inner) => Type::Handle(Box::new(semantic_type_to_ast(inner))),
+        SemanticType::TypeParam(name) => Type::TypeParam(name.clone()),
+        SemanticType::Unknown | SemanticType::Numeric => Type::T64, // fallback
+    }
+}
+
+fn semantic_param_to_ast(sk: &SemanticParamKind) -> ParamKind {
+    match sk {
+        SemanticParamKind::Typed => ParamKind::Typed("_".into(), Type::T64), // placeholder — name comes from SemanticParam
+        SemanticParamKind::Copy => ParamKind::Copy("_".into()),
+        SemanticParamKind::CopyFree => ParamKind::CopyFree("_".into()),
+        SemanticParamKind::CopyInto => ParamKind::CopyInto(String::new(), vec![]),
+    }
+}
+
+impl From<SemanticType> for Type {
+    fn from(st: SemanticType) -> Type {
+        match st {
+            SemanticType::I8 => Type::T8,
+            SemanticType::I16 => Type::T16,
+            SemanticType::I32 => Type::T32,
+            SemanticType::I64 => Type::T64,
+            SemanticType::I128 => Type::T128,
+            SemanticType::F64 => Type::T64,
+            SemanticType::Bool => Type::Bool,
+            SemanticType::Str => Type::Str,
+            SemanticType::StrRef => Type::StrRef,
+            SemanticType::Container => Type::Container,
+            SemanticType::Char => Type::Char,
+            SemanticType::Enum(name) => Type::Enum(name),
+            SemanticType::Unknown => Type::Unknown,
+            SemanticType::Handle(inner) => Type::Handle(Box::new((*inner).into())),
+            SemanticType::Numeric => Type::T128,
+            SemanticType::Struct(name) => Type::Struct(name),
+            SemanticType::TypeParam(name) => Type::TypeParam(name),
+        }
+    }
+}
+
+impl From<SemanticParamKind> for ParamKind {
+    fn from(spk: SemanticParamKind) -> ParamKind {
+        match spk {
+            SemanticParamKind::Typed => ParamKind::Typed(String::new(), Type::Unknown),
+            SemanticParamKind::Copy => ParamKind::Copy(String::new()),
+            SemanticParamKind::CopyFree => ParamKind::CopyFree(String::new()),
+            SemanticParamKind::CopyInto => ParamKind::CopyInto(String::new(), vec![]),
+        }
+    }
 }

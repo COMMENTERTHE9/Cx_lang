@@ -44,9 +44,8 @@ where
         Token::TypeChar   => Type::Char,
     };
 
-    let type_param = select! { Token::Identifier(s) => Type::TypeParam(s) };
-    let elem_ty = scalar.clone().or(type_param.clone());
-    let named_struct = select! { Token::Identifier(s) => Type::Struct(s) };
+    let named_type = select! { Token::Identifier(s) => Type::Struct(s) };
+    let elem_ty = scalar.clone().or(named_type.clone());
 
     let array = just(Token::PunctBracketOpen)
         .ignore_then(select! { Token::LiteralInt(n) => n as usize })
@@ -54,7 +53,7 @@ where
         .then(elem_ty)
         .map(|(size, elem_ty)| Type::Array(size, Box::new(elem_ty)));
 
-    array.or(scalar).or(type_param).or(named_struct)
+    array.or(scalar).or(named_type)
 }
 
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone

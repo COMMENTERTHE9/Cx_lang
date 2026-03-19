@@ -228,6 +228,16 @@ pub struct SemanticFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SemanticWhileInChain {
+    pub arr: String,
+    pub start_slot: usize,
+    pub range_start: SemanticExpr,
+    pub range_end: SemanticExpr,
+    pub inclusive: bool,
+    pub body: Vec<SemanticStmt>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SemanticStmt {
     EnumDef {
         enum_id: EnumId,
@@ -302,6 +312,24 @@ pub enum SemanticStmt {
         pos: usize,
     },
     Continue {
+        pos: usize,
+    },
+    IfElse {
+        condition: SemanticExpr,
+        then_body: Vec<SemanticStmt>,
+        else_ifs: Vec<(SemanticExpr, Vec<SemanticStmt>)>,
+        else_body: Option<Vec<SemanticStmt>>,
+        pos: usize,
+    },
+    WhileIn {
+        arr: String,
+        start_slot: usize,
+        range_start: SemanticExpr,
+        range_end: SemanticExpr,
+        inclusive: bool,
+        body: Vec<SemanticStmt>,
+        then_chains: Vec<SemanticWhileInChain>,
+        result: Option<SemanticExpr>,
         pos: usize,
     },
     When {

@@ -160,7 +160,7 @@ fn main() {
     }
 
     match backend_kind {
-        backend::BackendKind::Interpret => run_with_interpreter(program, &input, &flags),
+        backend::BackendKind::Interpret => run_with_interpreter(semantic_program, &input, &flags),
         backend::BackendKind::Cranelift => {
             let _ir = match prepare_ir(&semantic_program) {
                 Ok(ir) => ir,
@@ -190,60 +190,57 @@ fn main() {
     }
 }
 
-fn run_with_interpreter(program: Program, input: &str, flags: &DebugFlags) {
-    // RUNTIME PHASE
+fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlags) {
+    use frontend::semantic_types::{SemanticStmt, SemanticType};
+
     let rt_timer = flags.phase.then(|| PhaseTimer::start("RUNTIME"));
     let mut rt = RunTime::new();
     rt.debug_scope = flags.scope;
 
+    // Single pre-pass — register structs, funcs, and impls from semantic program
     for stmt in &program.stmts {
-        if let Stmt::StructDef { name, fields, .. } = stmt {
-            rt.structs.insert(name.clone(), fields.clone());
-        }
-    }
-
-    for stmt in &program.stmts {
-        if let Stmt::ImplBlock { aliases, methods, .. } = stmt {
-            for (method_name, params, ret_ty, body, ret_expr) in methods {
-                for (_, alias_type) in aliases {
-                    let type_key = match alias_type {
-                        Type::Struct(name) => name.clone(),
-                        _ => continue,
-                    };
-                    rt.impls.insert(
-                        (type_key, method_name.clone()),
-                        (aliases.clone(), (method_name.clone(), params.clone(), ret_ty.clone(), body.clone(), ret_expr.clone())),
-                    );
+        match stmt {
+            SemanticStmt::StructDef { name, fields, .. } => {
+                rt.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect());
+            }
+            SemanticStmt::FuncDef(sem_func) => {
+                rt.register_semantic_func(sem_func.clone());
+                // Also register in old AST registry for copy/bleedback fallback
+                rt.register_func(
+                    sem_func.name.clone(),
+                    sem_func.params.iter().map(|p| p.kind.clone().into()).collect(),
+                    vec![],
+                    None,
+                );
+            }
+            SemanticStmt::ImplBlock { aliases, methods, .. } => {
+                for sem_func in methods {
+                    for (_, alias_type) in aliases {
+                        let type_key = match alias_type {
+                            SemanticType::Struct(n) => n.clone(),
+                            _ => continue,
+                        };
+                        rt.impls.insert(
+                            (type_key, sem_func.name.clone()),
+                            (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),
+                             (sem_func.name.clone(),
+                              sem_func.params.iter().map(|p| p.kind.clone().into()).collect(),
+                              None, vec![], None))
+                        );
+                    }
                 }
             }
+            _ => {}
         }
     }
 
-    for stmt in &program.stmts {
-        if let Stmt::FuncDef {
-            name,
-            params,
-            body,
-            ret_expr,
-            ..
-        } = stmt
-        {
-            rt.register_func(name.clone(), params.clone(), body.clone(), ret_expr.clone());
-        }
-    }
-
+    // Main execution loop — runs off SemanticProgram
     let mut step_count = 0;
-
-    for stmt in program.stmts {
-        if flags.step {
-            eprintln!("{}", format!("\n[STEP {}]", step_count + 1).cyan().bold());
-            diagnostics::print_stmt_summary(&stmt);
-            wait_for_step();
-        }
-        if let Err(err) = rt.run_stmt(&stmt) {
-            diagnostics::print_runtime(&input, &err);
+    for stmt in &program.stmts {
+        if let Err(err) = rt.run_semantic_stmt(stmt) {
+            diagnostics::print_runtime(input, &err);
             diagnostics::print_summary(1);
-            break;
+            std::process::exit(1);
         }
         step_count += 1;
     }

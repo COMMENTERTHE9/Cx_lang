@@ -118,6 +118,16 @@ pub enum AssignTarget {
     Field(String, String), // container_name, field_name
 }
 
+#[derive(Debug, Clone)]
+pub struct WhileInChain {
+    pub arr: String,
+    pub start_slot: usize,
+    pub range_start: Expr,
+    pub range_end: Expr,
+    pub inclusive: bool,
+    pub body: Vec<Stmt>,
+}
+
 // AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
@@ -211,6 +221,24 @@ pub enum Stmt {
         pos: usize,
     },
     Continue {
+        pos: usize,
+    },
+    IfElse {
+        condition: Expr,
+        then_body: Vec<Stmt>,
+        else_ifs: Vec<(Expr, Vec<Stmt>)>,
+        else_body: Option<Vec<Stmt>>,
+        pos: usize,
+    },
+    WhileIn {
+        arr: String,
+        start_slot: usize,
+        range_start: Expr,
+        range_end: Expr,
+        inclusive: bool,
+        body: Vec<Stmt>,
+        then_chains: Vec<WhileInChain>,
+        result: Option<Expr>,
         pos: usize,
     },
     When {
