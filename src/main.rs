@@ -220,6 +220,10 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
                             SemanticType::Struct(n) => n.clone(),
                             _ => continue,
                         };
+                        rt.semantic_impls.insert(
+                            (type_key.clone(), sem_func.name.clone()),
+                            (aliases.clone(), sem_func.clone()),
+                        );
                         rt.impls.insert(
                             (type_key, sem_func.name.clone()),
                             (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),

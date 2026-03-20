@@ -50,6 +50,7 @@ pub struct RunTime {
     pub enums: HashMap<String, EnumRuntimeInfo>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
     pub impls: HashMap<(String, String), (Vec<(String, Type)>, (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>))>,
+    pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, SemanticFunction)>,
     scopes: Vec<ScopeFrame>,
     funcs: HashMap<String, FuncDef>,
     pub semantic_funcs: HashMap<String, SemanticFunction>,
@@ -141,6 +142,7 @@ impl RunTime {
             enums: HashMap::new(),
             structs: HashMap::new(),
             impls: HashMap::new(),
+            semantic_impls: HashMap::new(),
             scopes: vec![ScopeFrame {
                 vars: HashMap::new(),
                 freed: HashSet::new(),
@@ -1719,6 +1721,11 @@ impl RunTime {
                             SemanticType::Struct(n) => n.clone(),
                             _ => continue,
                         };
+                        self.semantic_impls.insert(
+                            (type_key.clone(), sem_func.name.clone()),
+                            (aliases.clone(), sem_func.clone()),
+                        );
+                        // Keep existing AST impls registration for copy param fallback
                         self.impls.insert(
                             (type_key, sem_func.name.clone()),
                             (aliases.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect(),
@@ -1878,68 +1885,88 @@ impl RunTime {
 
     fn call_semantic_method(&mut self, instance: &str, method: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
         // Get instance value and type
-        let inst_val = self.get_var(instance, pos)?;
-        let type_name = match &inst_val {
+        let instance_val = self.get_var(instance, pos)?;
+        let type_name = match &instance_val {
             Value::Struct(name, _) => name.clone(),
             _ => return Err(RuntimeError::NotAContainer { pos, name: instance.to_string() }),
         };
 
-        // Look up method in impls
-        let (aliases, (_, params, ret_ty, body, ret_expr)) = self.impls
+        // Look up in semantic impl registry
+        let (aliases, sem_func) = self.semantic_impls
             .get(&(type_name.clone(), method.to_string()))
             .cloned()
-            .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: format!("{}.{}", type_name, method) })?;
+            .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: format!("{}.{}", instance, method) })?;
 
-        // Push scope, bind alias
-        self.push_scope();
-        for (alias_name, _) in &aliases {
-            self.declare(alias_name.clone(), None, pos)?;
-            self.set_var(alias_name.clone(), inst_val.clone(), pos)?;
+        // Evaluate args
+        let mut resolved_args: Vec<(String, Value)> = Vec::new();
+        for (param, arg) in sem_func.params.iter().zip(args.iter()) {
+            let val = match arg {
+                SemanticCallArg::Expr(e) => self.eval_semantic_expr(e)?,
+                SemanticCallArg::Copy { name, .. } => self.get_var(name, pos)?,
+                SemanticCallArg::CopyFree { name, .. } => self.get_var(name, pos)?,
+                SemanticCallArg::CopyInto(bindings) => {
+                    let mut map = HashMap::new();
+                    for b in bindings {
+                        map.insert(b.name.clone(), self.get_var(&b.name, pos)?);
+                    }
+                    Value::Container(map)
+                }
+            };
+            resolved_args.push((param.name.clone(), val));
         }
 
-        // Bind params — evaluate semantic args
-        for (i, arg) in args.iter().enumerate() {
-            if let Some(param) = params.get(i) {
-                let param_name = match param {
-                    ParamKind::Typed(name, _) => name.clone(),
-                    ParamKind::Copy(name) => name.clone(),
-                    ParamKind::CopyFree(name) => name.clone(),
-                    ParamKind::CopyInto(name, _) => name.clone(),
-                };
-                let val = match arg {
-                    SemanticCallArg::Expr(e) => self.eval_semantic_expr(e)?,
-                    SemanticCallArg::Copy { name, .. } => self.get_var(name, pos)?,
-                    SemanticCallArg::CopyFree { name, .. } => self.get_var(name, pos)?,
-                    _ => Value::Num(0),
-                };
-                self.declare(param_name.clone(), None, pos)?;
-                self.set_var(param_name, val, pos)?;
+        // Push scope
+        self.push_function_scope();
+
+        let result = (|| -> Result<Value, RuntimeError> {
+            // Bind each alias to the instance value
+            for (alias_name, alias_type) in &aliases {
+                let alias_ty: Type = alias_type.clone().into();
+                self.set_var_typed(alias_name.clone(), alias_ty, instance_val.clone(), pos)?;
+            }
+
+            // Bind extra args
+            for (pname, val) in resolved_args {
+                let ty = type_of_value(&val);
+                self.set_var_typed(pname, ty, val, pos)?;
+            }
+
+            // Run semantic body
+            for stmt in &sem_func.body {
+                match self.run_semantic_stmt(stmt) {
+                    Ok(_) => {}
+                    Err(RuntimeError::EarlyReturn(v)) => return Ok(v),
+                    Err(e) => return Err(e),
+                }
+            }
+
+            // Evaluate return expression
+            if let Some(expr) = &sem_func.ret_expr {
+                self.eval_semantic_expr(expr)
+            } else {
+                Ok(Value::Num(0))
+            }
+        })();
+
+        // Capture alias mutations before popping scope
+        let mut mutated_value = None;
+        if result.is_ok() {
+            for (alias_name, _) in &aliases {
+                if let Ok(mutated) = self.get_var(alias_name, pos) {
+                    mutated_value = Some(mutated);
+                    break; // primary alias only for now — multi-alias writeback is a separate fix
+                }
             }
         }
 
-        // Execute body (AST body from impls registry)
-        let mut result = Value::Num(0);
-        for s in &body {
-            match self.run_stmt(s) {
-                Ok(_) => {}
-                Err(RuntimeError::EarlyReturn(v)) => { result = v; break; }
-                Err(e) => { self.pop_scope(); return Err(e); }
-            }
-        }
-        if let Some(re) = &ret_expr {
-            result = self.eval_expr(re)?;
-        }
-
-        // Write alias mutations back
-        for (alias_name, _) in &aliases {
-            if let Ok(updated) = self.get_var(alias_name, pos) {
-                self.pop_scope();
-                self.set_var(instance.to_string(), updated, pos)?;
-                return Ok(result);
-            }
-        }
         self.pop_scope();
-        Ok(result)
+
+        // Write alias mutations back to caller scope
+        if let Some(mutated) = mutated_value {
+            let _ = self.set_var(instance.to_string(), mutated, pos);
+        }
+
+        result
     }
 
     fn print_value(&self, v: &Value) {

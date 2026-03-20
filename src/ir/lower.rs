@@ -454,6 +454,9 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::Struct(_) => Err(LoweringError::UnsupportedSemanticType {
             ty: "Struct".to_string(),
         }),
+        SemanticType::Array(_, _) => Err(LoweringError::UnsupportedSemanticType {
+            ty: "Array".to_string(),
+        }),
     }
 }
 
