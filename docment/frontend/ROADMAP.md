@@ -101,7 +101,7 @@ These are not features. These are conditions. A long gate list that never closes
 **1 — Semantic/Interpreter Parity** — most important technical blocker
 - [x] SemanticStmt at full parity with raw AST interpreter — landed on submain 2026-03-17
 - [x] StructDef, ImplBlock, MethodCall wired in semantic layer — landed on submain 2026-03-17
-- Interpreter runs off SemanticProgram
+- [x] Interpreter runs off SemanticProgram — landed on submain 2026-03-19, 47/47 matrix green
 - Raw AST interpretation path removed
 - Until this is done, everything else is built on unstable ground
 
