@@ -1,0 +1,48 @@
+---
+title: "Cx Dev Log — 2026-03-19"
+date: 2026-03-19
+description: "Semantic interpreter Phase 2 is complete, bringing the verification matrix to 47/47 with the runtime now fully running off SemanticProgram."
+---
+
+The verification matrix is 47/47. Every test passes with the runtime executing entirely through `SemanticProgram`. No more raw AST interpretation for any supported construct. Semantic interpreter Phase 2 landed today in two commits on `submain`, and this is the single most important technical milestone on the 0.1 path.
+
+## What landed
+
+Two commits brought the matrix from its previous state to full green.
+
+The first commit (369a2e9) is the big one: 693 net insertions across 9 files. It wired the full semantic interpreter into the runtime. `run_semantic_stmt` and `eval_semantic_expr` are now the primary execution path in `runtime.rs`, walking `SemanticStmt` and `SemanticExpr` trees instead of raw AST nodes. A `semantic_funcs` registry stores `SemanticFunction` objects directly for proper dispatch. Handle operations (`HandleNew`, `HandleVal`, `HandleDrop`) got real arena semantics. Method calls, struct instantiation, enum matching, and all control flow (if/else, while, while-in, for-range, when blocks) run through the semantic path.
+
+On the analyzer side, `semantic.rs` gained generic parameter awareness. The long-standing ambiguity between `TypeParam` and `Struct` for bare identifiers got resolved: the parser produces `Type::Struct` for all of them, and the semantic layer resolves to `TypeParam` when it detects a generic context. Duplicate `StructDef` handling was cleaned up. New IR nodes (`IfElse`, `WhileIn`, `SemanticWhileInChain`) were added as first-class semantic types.
+
+`main.rs` was rewritten so `run_with_interpreter` accepts `SemanticProgram` directly. A pre-pass registers structs, functions, and impl blocks from semantic IR, with function registration bridging semantic and legacy registries during the migration period.
+
+That commit brought the matrix to 44/47. Three failures remained in deeper stubs.
+
+The second commit (c730bd7) closed those last three. It's smaller (69 net insertions, 4 files) but technically dense:
+
+- `types_compatible` gained recursive array element coercion.
+- `TypedAssign` now passes `current_type_params` instead of an empty slice, so generic variable declarations resolve correctly.
+- A new `substitute_type_params` function resolves generic return types at the call site. So `fnc identity<T>(x: T): T` called with an `i64` returns `SemanticType::I64`, not `SemanticType::TypeParam("T")`.
+- `SemanticType::Array(usize, Box<SemanticType>)` was added, meaning array types now flow through the full pipeline: declaration, assignment, function return, and type compatibility.
+- Handle operations in the runtime were upgraded from stubs to real implementations with stale detection via `RuntimeError::StaleHandle`.
+- A parser ordering fix moved `handle_drop` and `handle_val` before `method_call` in the combinator chain, fixing a precedence issue where handle syntax was greedily consumed as method calls.
+
+## Key decisions
+
+**Array types are first-class in the semantic layer.** Previously, arrays produced `SemanticType::Unknown`, which effectively disabled type checking around them. The new `Array` variant propagates through the entire pipeline. This was required for the last three matrix tests.
+
+**Generic return type substitution happens at call sites, not definitions.** This is the correct approach. Without it, downstream type checking of generic function results was broken because the return type stayed as an unresolved `TypeParam`.
+
+**Handle operations are real now.** The runtime performs actual arena insert, get, and remove for handles, with stale detection. The gap between semantic IR representation and runtime behavior for handles is closed.
+
+**Parser ordering matters for handle syntax.** Both handle operations and method calls can start with an identifier followed by dot-like syntax. The parser was greedily matching handle syntax as method calls until the priority was corrected.
+
+## Current state
+
+The `submain` branch has not been merged into `main` yet. It's two commits ahead from today plus all the earlier work from the structs sprint, operators, generics v1, and semantic parity Phase 1. The full diff between main and submain is 1578 insertions and 1959 deletions across 35 files. That merge is overdue and grows riskier the longer it sits.
+
+The old AST interpretation path still exists in the codebase even though nothing runs through it anymore. Removing it is the last unchecked sub-item under Semantic/Interpreter Parity on the frontend roadmap.
+
+## What's next
+
+The immediate priorities are straightforward. Merge `submain` into `main` to get CI running against the real language state. Remove the dead AST interpreter path to formally close semantic parity. Then the 0.1 path opens up: multi-file imports, generics v2 confirmation, and backend Phase 6 (function call lowering) can all proceed on stable ground. The backend work specifically benefits from a stable semantic layer, since it can now consume semantic IR with confidence that the frontend representation is authoritative.
