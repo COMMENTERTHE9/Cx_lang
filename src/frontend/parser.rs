@@ -212,11 +212,11 @@ where
 
         let primary = literal
             .or(enum_variant)
-            .or(method_call)
-            .or(struct_literal)
             .or(handle_new)
             .or(handle_drop)
             .or(handle_val)
+            .or(method_call)
+            .or(struct_literal)
             .or(ident_or_call)
             .or(paren)
             .or(array_lit)

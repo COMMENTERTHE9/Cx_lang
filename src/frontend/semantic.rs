@@ -38,6 +38,7 @@ type Scope = HashMap<String, VarInfo>;
 pub struct Analyzer {
     scopes: Vec<Scope>,
     current_ret_ty: Option<SemanticType>,
+    current_type_params: Vec<String>,
     in_function: bool,
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
@@ -55,6 +56,7 @@ impl Analyzer {
         Self {
             scopes: vec![HashMap::new()],
             current_ret_ty: None,
+            current_type_params: vec![],
             in_function: false,
             funcs: HashMap::new(),
             enums: HashMap::new(),
@@ -318,6 +320,7 @@ impl Analyzer {
                         pos: *pos_eq,
                     });
                 }
+                let tp = self.current_type_params.clone();
                 let target = match target {
                     Expr::Ident(name, _) => {
                         let info = self.lookup_var_mut(name).ok_or_else(|| SemanticError {
@@ -326,7 +329,7 @@ impl Analyzer {
                         })?;
 
                         if let Some(declared) = &info.declared {
-                            let expected = semantic_type_from_decl(declared.clone(), &[]);
+                            let expected = semantic_type_from_decl(declared.clone(), &tp);
                             if !types_compatible(&expected, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(
                                     &expected,
@@ -356,7 +359,7 @@ impl Analyzer {
                         SemanticLValue::Binding {
                             binding: info.binding,
                             name: name.clone(),
-                            ty: binding_type(info),
+                            ty: binding_type(info, &tp),
                         }
                     }
                     Expr::DotAccess(container, field) => {
@@ -397,7 +400,7 @@ impl Analyzer {
                 expr,
                 pos_type,
             } => {
-                let declared_ty = semantic_type_from_decl(ty.clone(), &[]);
+                let declared_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(SemanticError {
@@ -773,8 +776,10 @@ impl Analyzer {
 
         self.push_scope();
         let prev_ret_ty = self.current_ret_ty.clone();
+        let prev_type_params = self.current_type_params.clone();
         let prev_in_function = self.in_function;
         self.in_function = true;
+        self.current_type_params = type_params.to_vec();
         self.current_ret_ty = ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params));
 
         let mut resolved_params = Vec::with_capacity(params.len());
@@ -866,6 +871,7 @@ impl Analyzer {
         };
 
         self.current_ret_ty = prev_ret_ty;
+        self.current_type_params = prev_type_params;
         self.in_function = prev_in_function;
         self.pop_scope();
 
@@ -1044,7 +1050,7 @@ impl Analyzer {
                     });
                 }
                 Ok(SemanticExpr {
-                    ty: binding_type(info),
+                    ty: binding_type(info, &self.current_type_params),
                     kind: SemanticExprKind::VarRef {
                         binding: info.binding,
                         name: name.clone(),
@@ -1159,8 +1165,11 @@ impl Analyzer {
                 for e in elems {
                     semantic_elems.push(self.analyze_expr(e)?);
                 }
+                let elem_ty = semantic_elems.first()
+                    .map(|e| e.ty.clone())
+                    .unwrap_or(SemanticType::Unknown);
                 Ok(SemanticExpr {
-                    ty: SemanticType::Unknown,
+                    ty: SemanticType::Array(semantic_elems.len(), Box::new(elem_ty)),
                     kind: SemanticExprKind::ArrayLit {
                         elements: semantic_elems,
                     },
@@ -1400,8 +1409,13 @@ impl Analyzer {
             }
         }
 
+        let ret_ty = substitute_type_params(
+            function.ret_ty.unwrap_or(SemanticType::I128),
+            &type_param_map,
+        );
+
         Ok(SemanticExpr {
-            ty: function.ret_ty.unwrap_or(SemanticType::I128),
+            ty: ret_ty,
             kind: SemanticExprKind::Call {
                 callee: name.to_string(),
                 function: function.id,
@@ -1648,7 +1662,7 @@ fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
         Type::Enum(name) => SemanticType::Enum(name),
         Type::Unknown => SemanticType::Unknown,
         Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner, type_params))),
-        Type::Array(_, _) => SemanticType::Unknown,
+        Type::Array(size, elem_ty) => SemanticType::Array(size, Box::new(semantic_type_from_decl(*elem_ty, type_params))),
         Type::TypeParam(s) => SemanticType::TypeParam(s),
         Type::Struct(name) => {
             if type_params.contains(&name) {
@@ -1657,6 +1671,21 @@ fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
                 SemanticType::Struct(name)
             }
         }
+    }
+}
+
+fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
+    match ty {
+        SemanticType::TypeParam(name) => {
+            map.get(&name).cloned().unwrap_or(SemanticType::TypeParam(name))
+        }
+        SemanticType::Array(size, elem) => {
+            SemanticType::Array(size, Box::new(substitute_type_params(*elem, map)))
+        }
+        SemanticType::Handle(inner) => {
+            SemanticType::Handle(Box::new(substitute_type_params(*inner, map)))
+        }
+        other => other,
     }
 }
 
@@ -1708,10 +1737,10 @@ fn classify_type(ty: &SemanticType) -> SemanticType {
     }
 }
 
-fn binding_type(info: &VarInfo) -> SemanticType {
+fn binding_type(info: &VarInfo, type_params: &[String]) -> SemanticType {
     info.declared
         .clone()
-        .map(|t| semantic_type_from_decl(t, &[]))
+        .map(|t| semantic_type_from_decl(t, type_params))
         .or_else(|| info.inferred.clone())
         .unwrap_or(SemanticType::Numeric)
 }
@@ -1737,6 +1766,9 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
         return true;
     }
     match (expected, got) {
+        (SemanticType::Array(size1, elem1), SemanticType::Array(size2, elem2)) if size1 == size2 => {
+            types_compatible(elem1, elem2)
+        }
         (SemanticType::Numeric, other) | (other, SemanticType::Numeric) => is_numeric(other),
         _ => is_numeric(expected) && is_numeric(got),
     }

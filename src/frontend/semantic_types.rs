@@ -31,6 +31,7 @@ pub enum SemanticType {
     TypeParam(String),
     Handle(Box<SemanticType>),
     Numeric,
+    Array(usize, Box<SemanticType>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

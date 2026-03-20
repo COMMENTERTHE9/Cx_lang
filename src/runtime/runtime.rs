@@ -1508,11 +1508,30 @@ impl RunTime {
                 self.call_semantic_method(instance, method, args, *pos)
             }
             SemanticExprKind::Range { .. } => Ok(Value::Num(0)), // stub
-            SemanticExprKind::HandleNew { .. } => Ok(Value::Num(0)), // stub
-            SemanticExprKind::HandleVal { name, pos, .. } => self.get_var(name, *pos),
+            SemanticExprKind::HandleNew { value, .. } => {
+                let val = self.eval_semantic_expr(value)?;
+                let h = self.handles.insert(val);
+                Ok(Value::Handle(h))
+            }
+            SemanticExprKind::HandleVal { name, pos, .. } => {
+                let val = self.get_var(name, *pos)?;
+                if let Value::Handle(h) = val {
+                    match self.handles.get(h) {
+                        Some(v) => Ok(v.clone()),
+                        None => Err(RuntimeError::StaleHandle { pos: *pos }),
+                    }
+                } else {
+                    Err(RuntimeError::StaleHandle { pos: *pos })
+                }
+            }
             SemanticExprKind::HandleDrop { name, pos, .. } => {
-                self.get_var(name, *pos)?;
-                Ok(Value::Num(0))
+                let val = self.get_var(name, *pos)?;
+                if let Value::Handle(h) = val {
+                    self.handles.remove(h);
+                    Ok(Value::Num(0))
+                } else {
+                    Err(RuntimeError::StaleHandle { pos: *pos })
+                }
             }
             SemanticExprKind::Cast { expr, .. } => self.eval_semantic_expr(expr),
         }
@@ -2168,6 +2187,7 @@ fn semantic_type_to_ast(st: &SemanticType) -> Type {
         SemanticType::Container => Type::Container,
         SemanticType::Handle(inner) => Type::Handle(Box::new(semantic_type_to_ast(inner))),
         SemanticType::TypeParam(name) => Type::TypeParam(name.clone()),
+        SemanticType::Array(size, elem_ty) => Type::Array(*size, Box::new(semantic_type_to_ast(elem_ty))),
         SemanticType::Unknown | SemanticType::Numeric => Type::T64, // fallback
     }
 }
@@ -2201,6 +2221,7 @@ impl From<SemanticType> for Type {
             SemanticType::Numeric => Type::T128,
             SemanticType::Struct(name) => Type::Struct(name),
             SemanticType::TypeParam(name) => Type::TypeParam(name),
+            SemanticType::Array(size, elem_ty) => Type::Array(size, Box::new((*elem_ty).into())),
         }
     }
 }
