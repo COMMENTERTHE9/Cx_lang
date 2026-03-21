@@ -1,0 +1,7 @@
+fnc: strref bad() {
+    let s;
+    s = "hello"
+    return s;
+}
+
+bad()

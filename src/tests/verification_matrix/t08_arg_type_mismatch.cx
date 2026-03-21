@@ -1,0 +1,4 @@
+fnc: t64 add(a: t64, b: t64) {
+    a + b
+}
+print(add(10, "hello"));

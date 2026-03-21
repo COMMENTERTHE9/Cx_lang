@@ -1,0 +1,13 @@
+a: bool = ?
+b: bool = true
+c: t64 = ?
+d: t64 = 99
+e: str = ?
+f: str = "hello"
+
+print(is_known(a))
+print(is_known(b))
+print(is_known(c))
+print(is_known(d))
+print(is_known(e))
+print(is_known(f))

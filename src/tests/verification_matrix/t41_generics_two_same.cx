@@ -1,0 +1,6 @@
+fnc: T <T> first(a: T, b: T) {
+    a
+}
+
+result: t64 = first(10, 20)
+print(result)

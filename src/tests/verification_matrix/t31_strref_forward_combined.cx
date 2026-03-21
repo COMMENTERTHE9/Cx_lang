@@ -1,0 +1,31 @@
+fnc: greet(name: str) {
+    print(name)
+}
+
+fnc: describe(item: str) {
+    print(item)
+}
+
+fnc: classify(x: t128) {
+    when x {
+        1..=5   => print(10),
+        6..=10  => print(20),
+        _       => print(99),
+    }
+}
+
+fnc: run_all() {
+    let hero;
+    hero = "Zara"
+    let weapon;
+    weapon = "rifle"
+    let score;
+    score = 7
+    greet(hero);
+    describe(weapon);
+    classify(score);
+    classify(3);
+    classify(11);
+}
+
+run_all()

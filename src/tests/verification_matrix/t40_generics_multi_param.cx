@@ -1,0 +1,7 @@
+fnc: <A, B> pair_print(a: A, b: B) {
+    print(a)
+    print(b)
+}
+
+pair_print(42, true)
+pair_print(99, false)

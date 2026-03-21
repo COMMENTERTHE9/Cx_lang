@@ -1,0 +1,12 @@
+fnc: t64 outer2() {
+    x: t64 = 5;
+
+    fnc: inner2(t: copy_into(x)) {
+        t.x = t.x + 99;
+    }
+
+    inner2(copy_into(x));
+    x
+}
+
+print(outer2());

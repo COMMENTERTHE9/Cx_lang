@@ -1,0 +1,7 @@
+fnc: str get_ref() {
+    let s;
+    s = "hello"
+    return s;
+}
+
+print(get_ref())
