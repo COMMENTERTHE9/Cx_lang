@@ -18,6 +18,7 @@ use chumsky::input::{Input, Stream};
 use chumsky::prelude::SimpleSpan;
 use chumsky::Parser;
 use colored::Colorize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -212,6 +213,13 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
                     vec![],
                     None,
                 );
+            }
+            SemanticStmt::EnumDef { name, variants, .. } => {
+                rt.enums.insert(name.clone(), EnumRuntimeInfo {
+                    variants: variants.clone(),
+                    groups: HashMap::new(),
+                    super_group_order: HashMap::new(),
+                });
             }
             SemanticStmt::ImplBlock { aliases, methods, .. } => {
                 for sem_func in methods {
