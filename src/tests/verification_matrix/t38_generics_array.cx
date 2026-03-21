@@ -1,6 +1,6 @@
-fnc: [1]T <T> wrap(a: T) {
+fnc: [1: T] <T> wrap(a: T) {
     [a]
 }
 
-result: [1]t64 = wrap(99)
+result: [1: t64] = wrap(99)
 print(result:[0])
