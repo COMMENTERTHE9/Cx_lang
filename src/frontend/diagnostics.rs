@@ -256,6 +256,14 @@ fn indent(depth: usize) -> String {
 fn print_stmt(stmt: &Stmt, depth: usize) {
     let pad = indent(depth);
     match stmt {
+        Stmt::StructDef { name, fields, .. } => {
+            let flds: Vec<String> = fields.iter().map(|(n, t)| format!("{}: {:?}", n, t)).collect();
+            eprintln!("{}StructDef({} {{ {} }})", pad, name, flds.join(", "));
+        }
+        Stmt::ImplBlock { name, methods, .. } => {
+            let mnames: Vec<&str> = methods.iter().map(|(n, _, _, _, _)| n.as_str()).collect();
+            eprintln!("{}ImplBlock({} [{}])", pad, name, mnames.join(", "));
+        }
         Stmt::EnumDef { name, variants, .. } => {
             eprintln!("{}EnumDef({}: {})", pad, name, variants.join(", "));
         }
@@ -362,9 +370,6 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                 }
             }
         }
-        Stmt::IfElse { .. } => eprintln!("{}IfElse", pad),
-        Stmt::StructDef { name, .. } => eprintln!("{}StructDef({})", pad, name),
-        Stmt::WhileIn { arr, .. } => eprintln!("{}WhileIn({})", pad, arr),
         Stmt::While { .. } => eprintln!("{}While", pad),
         Stmt::For { .. } => eprintln!("{}For", pad),
         Stmt::Loop { .. } => eprintln!("{}Loop", pad),
@@ -375,6 +380,8 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
             eprintln!("{}ExprStmt", pad);
             print_expr(expr, depth + 1);
         }
+        Stmt::IfElse { .. } => eprintln!("{}IfElse", pad),
+        Stmt::WhileIn { .. } => eprintln!("{}WhileIn", pad),
     }
 }
 
@@ -417,6 +424,17 @@ fn print_expr(expr: &Expr, depth: usize) {
             eprintln!("{}Index", pad);
             print_expr(base, depth + 1);
             print_expr(idx, depth + 1);
+        }
+        Expr::MethodCall(instance, method, args, _) => {
+            eprintln!("{}MethodCall({}.{})", pad, instance, method);
+            for a in args {
+                match a {
+                    CallArg::Expr(expr) => print_expr(expr, depth + 1),
+                    CallArg::Copy(name) => eprintln!("{}  ArgCopy({})", pad, name),
+                    CallArg::CopyFree(name) => eprintln!("{}  ArgCopyFree({})", pad, name),
+                    CallArg::CopyInto(vars) => eprintln!("{}  CopyInto({})", pad, vars.join(", ")),
+                }
+            }
         }
     }
 }
@@ -472,6 +490,8 @@ pub fn print_scope_event(event: &ScopeEvent) {
 
 pub fn print_stmt_summary(stmt: &Stmt) {
     let label = match stmt {
+        Stmt::StructDef { name, .. } => format!("StructDef {}", name),
+        Stmt::ImplBlock { name, .. } => format!("ImplBlock {}", name),
         Stmt::EnumDef { .. } => "EnumDef".to_string(),
         Stmt::Decl { name, .. } => format!("Decl {}", name),
         Stmt::Assign { .. } => "Assign".to_string(),
@@ -483,15 +503,14 @@ pub fn print_stmt_summary(stmt: &Stmt) {
         Stmt::FuncDef { name, .. } => format!("FuncDef {}", name),
         Stmt::Block { .. } => "Block".to_string(),
         Stmt::When { .. } => "When".to_string(),
-        Stmt::IfElse { .. } => "IfElse".to_string(),
-        Stmt::StructDef { name, .. } => format!("StructDef {}", name),
-        Stmt::WhileIn { arr, .. } => format!("WhileIn {}", arr),
         Stmt::While { .. } => "While".to_string(),
         Stmt::For { .. } => "For".to_string(),
         Stmt::Loop { .. } => "Loop".to_string(),
         Stmt::Break { .. } => "Break".to_string(),
         Stmt::Continue { .. } => "Continue".to_string(),
         Stmt::CompoundAssign { .. } => "CompoundAssign".to_string(),
+        Stmt::IfElse { .. } => "IfElse".to_string(),
+        Stmt::WhileIn { .. } => "WhileIn".to_string(),
     };
     eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }

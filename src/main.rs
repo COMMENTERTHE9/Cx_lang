@@ -18,6 +18,7 @@ use chumsky::input::{Input, Stream};
 use chumsky::prelude::SimpleSpan;
 use chumsky::Parser;
 use colored::Colorize;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -110,7 +111,7 @@ fn main() {
         Ok(t) => t,
         Err(e) => {
             diagnostics::print_parse(&input, &e);
-            return;
+            std::process::exit(1);
         }
     };
     if let Some(t) = lex_timer {
@@ -130,7 +131,7 @@ fn main() {
         Ok(p) => p,
         Err(e) => {
             diagnostics::print_parse(&input, &e);
-            return;
+            std::process::exit(1);
         }
     };
     if let Some(t) = parse_timer {
@@ -152,7 +153,7 @@ fn main() {
                 diagnostics::print_custom(&input, &e.msg, e.pos);
             }
             diagnostics::print_summary(errors.len());
-            return;
+            std::process::exit(1);
         }
     };
     if let Some(t) = sem_timer {
@@ -160,7 +161,7 @@ fn main() {
     }
 
     match backend_kind {
-        backend::BackendKind::Interpret => run_with_interpreter(program, &input, &flags),
+        backend::BackendKind::Interpret => run_with_interpreter(semantic_program, &input, &flags),
         backend::BackendKind::Cranelift => {
             let _ir = match prepare_ir(&semantic_program) {
                 Ok(ir) => ir,
@@ -190,37 +191,68 @@ fn main() {
     }
 }
 
-fn run_with_interpreter(program: Program, input: &str, flags: &DebugFlags) {
-    // RUNTIME PHASE
+fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlags) {
+    use frontend::semantic_types::{SemanticStmt, SemanticType};
+
     let rt_timer = flags.phase.then(|| PhaseTimer::start("RUNTIME"));
     let mut rt = RunTime::new();
     rt.debug_scope = flags.scope;
 
+    // Single pre-pass — register structs, funcs, and impls from semantic program
     for stmt in &program.stmts {
-        if let Stmt::FuncDef {
-            name,
-            params,
-            body,
-            ret_expr,
-            ..
-        } = stmt
-        {
-            rt.register_func(name.clone(), params.clone(), body.clone(), ret_expr.clone());
+        match stmt {
+            SemanticStmt::StructDef { name, fields, .. } => {
+                rt.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect());
+            }
+            SemanticStmt::FuncDef(sem_func) => {
+                rt.register_semantic_func(sem_func.clone());
+                // Also register in old AST registry for copy/bleedback fallback
+                rt.register_func(
+                    sem_func.name.clone(),
+                    sem_func.params.iter().map(|p| p.kind.clone().into()).collect(),
+                    vec![],
+                    None,
+                );
+            }
+            SemanticStmt::EnumDef { name, variants, .. } => {
+                rt.enums.insert(name.clone(), EnumRuntimeInfo {
+                    variants: variants.clone(),
+                    groups: HashMap::new(),
+                    super_group_order: HashMap::new(),
+                });
+            }
+            SemanticStmt::ImplBlock { aliases, methods, .. } => {
+                for sem_func in methods {
+                    for (_, alias_type) in aliases {
+                        let type_key = match alias_type {
+                            SemanticType::Struct(n) => n.clone(),
+                            _ => continue,
+                        };
+                        rt.semantic_impls.insert(
+                            (type_key.clone(), sem_func.name.clone()),
+                            (aliases.clone(), sem_func.clone()),
+                        );
+                        rt.impls.insert(
+                            (type_key, sem_func.name.clone()),
+                            (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),
+                             (sem_func.name.clone(),
+                              sem_func.params.iter().map(|p| p.kind.clone().into()).collect(),
+                              None, vec![], None))
+                        );
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
+    // Main execution loop — runs off SemanticProgram
     let mut step_count = 0;
-
-    for stmt in program.stmts {
-        if flags.step {
-            eprintln!("{}", format!("\n[STEP {}]", step_count + 1).cyan().bold());
-            diagnostics::print_stmt_summary(&stmt);
-            wait_for_step();
-        }
-        if let Err(err) = rt.run_stmt(&stmt) {
-            diagnostics::print_runtime(&input, &err);
+    for stmt in &program.stmts {
+        if let Err(err) = rt.run_semantic_stmt(stmt) {
+            diagnostics::print_runtime(input, &err);
             diagnostics::print_summary(1);
-            break;
+            std::process::exit(1);
         }
         step_count += 1;
     }

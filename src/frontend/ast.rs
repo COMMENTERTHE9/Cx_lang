@@ -6,10 +6,12 @@ pub enum Op {
     Div,
     Mod,
     EqEq,
+    NotEq,
     Lt,
     Gt,
     LtEq,
     GtEq,
+    Not,
     And,
     Or,
 }
@@ -47,6 +49,7 @@ pub enum Type {
     Handle(Box<Type>),
     Array(usize, Box<Type>),
     TypeParam(String),
+    Struct(String),
 }
 
 // AST-level value - owned, no arena lifetime
@@ -59,6 +62,7 @@ pub enum AstValue {
     Bool(bool),
     Char(char),
     EnumVariant(String, String),
+    StructInstance(String, Vec<(String, Expr)>),
     Unknown,
 }
 
@@ -76,6 +80,7 @@ pub enum Expr {
     Bin(Box<Expr>, Op, usize, Box<Expr>),
     ArrayLit(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>, usize),
+    MethodCall(String, String, Vec<CallArg>, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +112,12 @@ pub struct WhenArm {
     pub pos: usize,
 }
 
-// AST statements produced by the parser
+#[derive(Debug, Clone)]
+pub enum AssignTarget {
+    Var(String),
+    Field(String, String), // container_name, field_name
+}
+
 #[derive(Debug, Clone)]
 pub struct WhileInChain {
     pub arr: String,
@@ -118,8 +128,20 @@ pub struct WhileInChain {
     pub body: Vec<Stmt>,
 }
 
+// AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    StructDef {
+        name: String,
+        fields: Vec<(String, Type)>,
+        pos: usize,
+    },
+    ImplBlock {
+        name: String,
+        aliases: Vec<(String, Type)>,
+        methods: Vec<(String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>)>,
+        pos: usize,
+    },
     EnumDef {
         name: String,
         variants: Vec<String>,
@@ -144,7 +166,7 @@ pub enum Stmt {
         pos_type: usize,
     },
     CompoundAssign {
-        name: String,
+        target: AssignTarget,
         op: Op,
         operand: Expr,
         pos: usize,
@@ -199,11 +221,6 @@ pub enum Stmt {
         pos: usize,
     },
     Continue {
-        pos: usize,
-    },
-    StructDef {
-        name: String,
-        fields: Vec<(String, Type)>,
         pos: usize,
     },
     IfElse {

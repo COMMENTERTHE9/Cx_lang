@@ -10,7 +10,7 @@ use crate::frontend::semantic_types::{
 };
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
-use crate::ir::types::{IrFunction, IrModule, IrType, ValueId};
+use crate::ir::types::{BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweringError {
@@ -47,35 +47,99 @@ impl fmt::Display for LoweringError {
 
 impl std::error::Error for LoweringError {}
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct LoweredValue {
     value: ValueId,
     ty: IrType,
 }
 
+type BindingMap = HashMap<BindingId, LoweredValue>;
+
 struct LoweringCtx {
     builder: IrBuilder,
+    finished_blocks: Vec<IrBlock>,
+}
+
+struct ActiveBlock {
     block: crate::ir::builder::IrBlockBuilder,
-    bindings: HashMap<BindingId, ValueId>,
+    bindings: BindingMap,
+    terminated: bool,
+}
+
+#[derive(Clone, Debug)]
+struct FunctionLoweringSpec {
+    name: String,
+    return_ty: Option<IrType>,
+    allow_return_stmt: bool,
 }
 
 impl LoweringCtx {
     fn new() -> Self {
-        let mut builder = IrBuilder::new();
-        let block = builder.block(vec![]);
         Self {
-            builder,
-            block,
-            bindings: HashMap::new(),
+            builder: IrBuilder::new(),
+            finished_blocks: Vec::new(),
         }
-    }
-
-    fn emit(&mut self, inst: IrInst) {
-        self.block.append_inst(inst);
     }
 
     fn fresh_value(&mut self) -> ValueId {
         self.builder.fresh_value()
+    }
+
+    fn start_block(&mut self, params: Vec<BlockParam>, bindings: BindingMap) -> ActiveBlock {
+        ActiveBlock {
+            block: self.builder.block(params),
+            bindings,
+            terminated: false,
+        }
+    }
+
+    fn seal_block(&mut self, active: ActiveBlock) -> Result<(), LoweringError> {
+        if !active.terminated {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: "attempted to finish a block without a terminator".to_string(),
+            });
+        }
+
+        let block = active
+            .block
+            .finish()
+            .map_err(|err| LoweringError::InternalInvariantViolation {
+                detail: format!("failed to finalize block: {err:?}"),
+            })?;
+        self.finished_blocks.push(block);
+        Ok(())
+    }
+}
+
+impl ActiveBlock {
+    fn id(&self) -> crate::ir::types::BlockId {
+        self.block.id()
+    }
+
+    fn emit(&mut self, inst: IrInst) -> Result<(), LoweringError> {
+        if self.terminated {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: "attempted to append instruction after terminator".to_string(),
+            });
+        }
+        self.block
+            .append_inst(inst);
+        Ok(())
+    }
+
+    fn terminate(&mut self, term: IrTerminator) -> Result<(), LoweringError> {
+        if self.terminated {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: "attempted to set a second terminator".to_string(),
+            });
+        }
+        self.block.set_terminator(term).map_err(|err| {
+            LoweringError::InternalInvariantViolation {
+                detail: format!("failed to set terminator: {err:?}"),
+            }
+        })?;
+        self.terminated = true;
+        Ok(())
     }
 }
 
@@ -87,72 +151,224 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
         });
     }
 
-    let mut ctx = LoweringCtx::new();
-
-    for stmt in &program.stmts {
-        lower_stmt(stmt, &mut ctx)?;
-    }
-
-    ctx.block
-        .set_terminator(IrTerminator::Return { value: None })
-        .map_err(|err| LoweringError::InternalInvariantViolation {
-            detail: format!("failed to finalize synthetic main terminator: {err:?}"),
-        })?;
-
-    let block = ctx
-        .block
-        .finish()
-        .map_err(|err| LoweringError::InternalInvariantViolation {
-            detail: format!("failed to finalize synthetic main block: {err:?}"),
-        })?;
-
-    let mut function = IrFunction {
-        name: "main".to_string(),
-        params: vec![],
-        return_ty: None,
-        blocks: vec![],
-    };
-    ctx.builder.append_block(&mut function, block);
-
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
         functions: vec![],
     };
-    ctx.builder.append_function(&mut module, function);
+    let mut top_level_stmts = Vec::new();
+    let mut has_real_main = false;
+
+    for stmt in &program.stmts {
+        match stmt {
+            SemanticStmt::FuncDef(function) => {
+                if function.name == "main" {
+                    has_real_main = true;
+                }
+                module.functions.push(lower_semantic_function(function)?);
+            }
+            other => top_level_stmts.push(other),
+        }
+    }
+
+    if !top_level_stmts.is_empty() {
+        if has_real_main {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "real function 'main' collides with synthetic main".to_string(),
+            });
+        }
+        module
+            .functions
+            .push(lower_top_level_main(&top_level_stmts)?);
+    }
+
     Ok(module)
 }
 
-fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt]) -> Result<IrFunction, LoweringError> {
+    let spec = FunctionLoweringSpec {
+        name: "main".to_string(),
+        return_ty: None,
+        allow_return_stmt: false,
+    };
+    let mut ctx = LoweringCtx::new();
+    let entry = ctx.start_block(vec![], HashMap::new());
+    let current = lower_stmt_sequence(
+        stmts.iter().copied(),
+        &mut ctx,
+        Some(entry),
+        &spec,
+    )?;
+    if let Some(active) = current {
+        finalize_active_block(&mut ctx, active, IrTerminator::Return { value: None })?;
+    }
+
+    Ok(IrFunction {
+        name: spec.name,
+        params: vec![],
+        return_ty: None,
+        blocks: ctx.finished_blocks,
+    })
+}
+
+fn lower_semantic_function(
+    function: &crate::frontend::semantic_types::SemanticFunction,
+) -> Result<IrFunction, LoweringError> {
+    let mut ir_params = Vec::with_capacity(function.params.len());
+    let mut block_params = Vec::with_capacity(function.params.len());
+    let mut bindings = HashMap::new();
+    let return_ty = function.return_ty.as_ref().map(lower_type).transpose()?;
+
+    let mut ctx = LoweringCtx::new();
+    for param in &function.params {
+        match (&param.kind, &param.ty) {
+            (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
+                let ty = lower_type(ty)?;
+                ir_params.push(IrParam {
+                    name: param.name.clone(),
+                    ty: ty.clone(),
+                });
+                let value = ctx.fresh_value();
+                block_params.push(BlockParam {
+                    value,
+                    ty: ty.clone(),
+                });
+                bindings.insert(param.binding, LoweredValue { value, ty });
+            }
+            (crate::frontend::semantic_types::SemanticParamKind::Typed, None) => {
+                return Err(LoweringError::InternalInvariantViolation {
+                    detail: format!(
+                        "typed parameter '{}' missing semantic type in function '{}'",
+                        param.name, function.name
+                    ),
+                });
+            }
+            _ => {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "unsupported function parameter kind in '{}'",
+                        function.name
+                    ),
+                });
+            }
+        }
+    }
+
+    let spec = FunctionLoweringSpec {
+        name: function.name.clone(),
+        return_ty: return_ty.clone(),
+        allow_return_stmt: true,
+    };
+    let entry = ctx.start_block(block_params, bindings);
+    let current = lower_stmt_sequence(
+        function.body.iter(),
+        &mut ctx,
+        Some(entry),
+        &spec,
+    )?;
+
+    if current.is_none() {
+        if function.ret_expr.is_some() {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "function '{}' has both explicit return terminator and trailing return expression",
+                    function.name
+                ),
+            });
+        }
+    } else if let Some(mut active) = current {
+        if let Some(ret_expr) = &function.ret_expr {
+            let lowered = lower_expr(ret_expr, &mut ctx, &mut active)?;
+            let expected =
+                spec.return_ty
+                    .clone()
+                    .ok_or_else(|| LoweringError::InternalInvariantViolation {
+                        detail: format!(
+                            "void function '{}' has a trailing return expression",
+                            function.name
+                        ),
+                    })?;
+            ensure_type_match("function trailing return", expected, lowered.ty)?;
+            finalize_active_block(
+                &mut ctx,
+                active,
+                IrTerminator::Return {
+                    value: Some(lowered.value),
+                },
+            )?;
+        } else if spec.return_ty.is_some() {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "function '{}' requires a return value but lowering saw no return",
+                    function.name
+                ),
+            });
+        } else {
+            finalize_active_block(&mut ctx, active, IrTerminator::Return { value: None })?;
+        }
+    }
+
+    Ok(IrFunction {
+        name: function.name.clone(),
+        params: ir_params,
+        return_ty,
+        blocks: ctx.finished_blocks,
+    })
+}
+
+fn lower_stmt_sequence<'a, I>(
+    stmts: I,
+    ctx: &mut LoweringCtx,
+    mut current: Option<ActiveBlock>,
+    spec: &FunctionLoweringSpec,
+) -> Result<Option<ActiveBlock>, LoweringError>
+where
+    I: IntoIterator<Item = &'a SemanticStmt>,
+{
+    for stmt in stmts {
+        let active = current.take().ok_or_else(|| LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "statement appeared after terminator in function '{}'",
+                spec.name
+            ),
+        })?;
+        current = lower_stmt(stmt, ctx, active, spec)?;
+    }
+    Ok(current)
+}
+
+fn lower_stmt(
+    stmt: &SemanticStmt,
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+    spec: &FunctionLoweringSpec,
+) -> Result<Option<ActiveBlock>, LoweringError> {
     match stmt {
         SemanticStmt::Decl { ty, .. } => {
             if let Some(ty) = ty {
                 let _ = lower_type(ty)?;
             }
-            Ok(())
+            Ok(Some(current))
         }
         SemanticStmt::Assign { target, expr, .. } => {
-            let lowered = lower_expr(expr, ctx)?;
+            let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
                 SemanticLValue::Binding { binding, ty, .. } => {
                     let target_ty = lower_type(ty)?;
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
                     let dst = ctx.fresh_value();
-                    ctx.emit(IrInst::SsaBind {
+                    current.emit(IrInst::SsaBind {
                         dst,
-                        ty: target_ty,
+                        ty: target_ty.clone(),
                         src: lowered.value,
-                    });
-                    ctx.bindings.insert(*binding, dst);
-                    Ok(())
+                    })?;
+                    current
+                        .bindings
+                        .insert(*binding, LoweredValue { value: dst, ty: target_ty });
+                    Ok(Some(current))
                 }
                 SemanticLValue::DotAccess { .. } => {
                     Err(LoweringError::UnsupportedSemanticConstruct {
                         construct: "Assign::DotAccess".to_string(),
-                    })
-                }
-                SemanticLValue::IndexAccess { .. } => {
-                    Err(LoweringError::UnsupportedSemanticConstruct {
-                        construct: "Assign::IndexAccess".to_string(),
                     })
                 }
             }
@@ -160,30 +376,61 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         SemanticStmt::TypedAssign {
             binding, ty, expr, ..
         } => {
-            let lowered = lower_expr(expr, ctx)?;
+            let lowered = lower_expr(expr, ctx, &mut current)?;
             let target_ty = lower_type(ty)?;
             ensure_type_match("typed assignment", target_ty.clone(), lowered.ty)?;
             let dst = ctx.fresh_value();
-            ctx.emit(IrInst::SsaBind {
+            current.emit(IrInst::SsaBind {
                 dst,
-                ty: target_ty,
+                ty: target_ty.clone(),
                 src: lowered.value,
-            });
-            ctx.bindings.insert(*binding, dst);
-            Ok(())
+            })?;
+            current
+                .bindings
+                .insert(*binding, LoweredValue { value: dst, ty: target_ty });
+            Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
-            let _ = lower_expr(expr, ctx)?;
-            Ok(())
+            let _ = lower_expr(expr, ctx, &mut current)?;
+            Ok(Some(current))
+        }
+        SemanticStmt::Return { expr, .. } => {
+            if !spec.allow_return_stmt {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: "top-level Return".to_string(),
+                });
+            }
+            match (&spec.return_ty, expr) {
+                (Some(expected), Some(expr)) => {
+                    let lowered = lower_expr(expr, ctx, &mut current)?;
+                    ensure_type_match("function return", expected.clone(), lowered.ty)?;
+                    current.terminate(IrTerminator::Return {
+                        value: Some(lowered.value),
+                    })?;
+                    ctx.seal_block(current)?;
+                    Ok(None)
+                }
+                (None, None) => {
+                    current.terminate(IrTerminator::Return { value: None })?;
+                    ctx.seal_block(current)?;
+                    Ok(None)
+                }
+                (Some(_), None) => Err(LoweringError::InternalInvariantViolation {
+                    detail: format!(
+                        "non-void function '{}' lowered a return without value",
+                        spec.name
+                    ),
+                }),
+                (None, Some(_)) => Err(LoweringError::InternalInvariantViolation {
+                    detail: format!("void function '{}' lowered a return with value", spec.name),
+                }),
+            }
         }
         SemanticStmt::CompoundAssign { .. } => Err(LoweringError::UnresolvedSemanticArtifact {
             artifact: "CompoundAssign".to_string(),
         }),
         SemanticStmt::FuncDef(_) => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "FuncDef".to_string(),
-        }),
-        SemanticStmt::Return { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "top-level Return".to_string(),
+            construct: "nested FuncDef".to_string(),
         }),
         SemanticStmt::EnumDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "EnumDef".to_string(),
@@ -196,12 +443,6 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         }),
         SemanticStmt::Block { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "Block".to_string(),
-        }),
-        SemanticStmt::StructDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "StructDef".to_string(),
-        }),
-        SemanticStmt::IfElse { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "IfElse".to_string(),
         }),
         SemanticStmt::WhileIn { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "WhileIn".to_string(),
@@ -224,15 +465,248 @@ fn lower_stmt(stmt: &SemanticStmt, ctx: &mut LoweringCtx) -> Result<(), Lowering
         SemanticStmt::When { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "When".to_string(),
         }),
+        SemanticStmt::IfElse {
+            condition,
+            then_body,
+            else_ifs,
+            else_body,
+            ..
+        } => lower_if_else(
+            condition,
+            then_body,
+            else_ifs,
+            else_body.as_deref(),
+            ctx,
+            current,
+            spec,
+        ),
+        SemanticStmt::StructDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "StructDef".to_string(),
+        }),
+        SemanticStmt::ImplBlock { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "ImplBlock".to_string(),
+        }),
     }
 }
 
-fn lower_expr(expr: &SemanticExpr, ctx: &mut LoweringCtx) -> Result<LoweredValue, LoweringError> {
+fn lower_if_else(
+    condition: &SemanticExpr,
+    then_body: &[SemanticStmt],
+    else_ifs: &[(SemanticExpr, Vec<SemanticStmt>)],
+    else_body: Option<&[SemanticStmt]>,
+    ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+    spec: &FunctionLoweringSpec,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let incoming = current.bindings.clone();
+    let fallthroughs = lower_if_chain(
+        condition,
+        then_body,
+        else_ifs,
+        else_body,
+        ctx,
+        current,
+        &incoming,
+        spec,
+    )?;
+
+    match fallthroughs.len() {
+        0 => Ok(None),
+        1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
+        _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
+    }
+}
+
+fn lower_if_chain(
+    condition: &SemanticExpr,
+    then_body: &[SemanticStmt],
+    else_ifs: &[(SemanticExpr, Vec<SemanticStmt>)],
+    else_body: Option<&[SemanticStmt]>,
+    ctx: &mut LoweringCtx,
+    mut decision_block: ActiveBlock,
+    incoming: &BindingMap,
+    spec: &FunctionLoweringSpec,
+) -> Result<Vec<ActiveBlock>, LoweringError> {
+    let cond = lower_expr(condition, ctx, &mut decision_block)?;
+    ensure_type_match("if condition", IrType::Bool, cond.ty.clone())?;
+
+    let then_active = ctx.start_block(vec![], incoming.clone());
+    let then_block_id = then_active.id();
+
+    if let Some((next_arm, remaining_else_ifs)) = else_ifs.split_first() {
+        let else_active = ctx.start_block(vec![], incoming.clone());
+        let else_block_id = else_active.id();
+
+        decision_block.terminate(IrTerminator::Branch {
+            cond: cond.value,
+            then_block: then_block_id,
+            then_args: vec![],
+            else_block: else_block_id,
+            else_args: vec![],
+        })?;
+        ctx.seal_block(decision_block)?;
+
+        let mut fallthroughs = Vec::new();
+        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec)? {
+            fallthroughs.push(active);
+        }
+        fallthroughs.extend(lower_if_chain(
+            &next_arm.0,
+            &next_arm.1,
+            remaining_else_ifs,
+            else_body,
+            ctx,
+            else_active,
+            incoming,
+            spec,
+        )?);
+        Ok(fallthroughs)
+    } else {
+        let else_active = ctx.start_block(vec![], incoming.clone());
+        let else_block_id = else_active.id();
+
+        decision_block.terminate(IrTerminator::Branch {
+            cond: cond.value,
+            then_block: then_block_id,
+            then_args: vec![],
+            else_block: else_block_id,
+            else_args: vec![],
+        })?;
+        ctx.seal_block(decision_block)?;
+
+        let mut fallthroughs = Vec::new();
+        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec)? {
+            fallthroughs.push(active);
+        }
+        let else_result = if let Some(else_body) = else_body {
+            lower_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec)?
+        } else {
+            Some(else_active)
+        };
+        if let Some(active) = else_result {
+            fallthroughs.push(active);
+        }
+        Ok(fallthroughs)
+    }
+}
+
+fn merge_fallthroughs(
+    ctx: &mut LoweringCtx,
+    fallthroughs: Vec<ActiveBlock>,
+    incoming: &BindingMap,
+) -> Result<ActiveBlock, LoweringError> {
+    let mut ordered_bindings: Vec<_> = incoming.keys().copied().collect();
+    ordered_bindings.sort_by_key(|binding| binding.0);
+
+    let mut merge_param_bindings = Vec::new();
+    let mut merge_block_params = Vec::new();
+    let mut merged_bindings = HashMap::new();
+
+    for binding in ordered_bindings {
+        let incoming_value = incoming
+            .get(&binding)
+            .cloned()
+            .ok_or_else(|| LoweringError::InternalInvariantViolation {
+                detail: format!("incoming binding {} missing during merge", binding.0),
+            })?;
+
+        let path_values = fallthroughs
+            .iter()
+            .map(|active| {
+                active
+                    .bindings
+                    .get(&binding)
+                    .cloned()
+                    .ok_or_else(|| LoweringError::InternalInvariantViolation {
+                        detail: format!(
+                            "binding {} missing from branch-local SSA environment at merge",
+                            binding.0
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let first = path_values[0].clone();
+        if path_values.iter().any(|value| value.ty != first.ty) {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "binding {} merged with mismatched SSA value types",
+                    binding.0
+                ),
+            });
+        }
+
+        if path_values.iter().all(|value| *value == first) {
+            merged_bindings.insert(binding, first);
+        } else {
+            let param_value = ctx.fresh_value();
+            let block_param = BlockParam {
+                value: param_value,
+                ty: incoming_value.ty.clone(),
+            };
+            merge_param_bindings.push(binding);
+            merge_block_params.push(block_param.clone());
+            merged_bindings.insert(
+                binding,
+                LoweredValue {
+                    value: param_value,
+                    ty: block_param.ty,
+                },
+            );
+        }
+    }
+
+    let merge_block = ctx.start_block(merge_block_params, merged_bindings);
+    let merge_id = merge_block.id();
+
+    for mut active in fallthroughs {
+        let args = merge_param_bindings
+            .iter()
+            .map(|binding| {
+                active
+                    .bindings
+                    .get(binding)
+                    .map(|value| value.value)
+                    .ok_or_else(|| LoweringError::InternalInvariantViolation {
+                        detail: format!(
+                            "binding {} missing from branch-local SSA environment when building merge args",
+                            binding.0
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        active.terminate(IrTerminator::Jump {
+            target: merge_id,
+            args,
+        })?;
+        ctx.seal_block(active)?;
+    }
+
+    Ok(merge_block)
+}
+
+fn finalize_active_block(
+    ctx: &mut LoweringCtx,
+    mut active: ActiveBlock,
+    default_term: IrTerminator,
+) -> Result<(), LoweringError> {
+    if !active.terminated {
+        active.terminate(default_term)?;
+    }
+    ctx.seal_block(active)
+}
+
+fn lower_expr(
+    expr: &SemanticExpr,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
     match &expr.kind {
-        SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx),
+        SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx, active),
         SemanticExprKind::VarRef { binding, name } => {
             let ty = lower_type(&expr.ty)?;
-            let value = ctx.bindings.get(binding).copied().ok_or_else(|| {
+            let lowered = active.bindings.get(binding).cloned().ok_or_else(|| {
                 LoweringError::InternalInvariantViolation {
                     detail: format!(
                         "binding '{name}' ({}) referenced before any SSA value was assigned",
@@ -240,21 +714,24 @@ fn lower_expr(expr: &SemanticExpr, ctx: &mut LoweringCtx) -> Result<LoweredValue
                     ),
                 }
             })?;
-            Ok(LoweredValue { value, ty })
+            ensure_type_match("var ref", ty, lowered.ty.clone())?;
+            Ok(lowered)
         }
-        SemanticExprKind::Binary { lhs, op, rhs, .. } => lower_binary(lhs, *op, rhs, &expr.ty, ctx),
+        SemanticExprKind::Binary { lhs, op, rhs, .. } => {
+            lower_binary(lhs, *op, rhs, &expr.ty, ctx, active)
+        }
         SemanticExprKind::Cast { expr, from, to } => {
-            let lowered = lower_expr(expr, ctx)?;
+            let lowered = lower_expr(expr, ctx, active)?;
             let from_ty = lower_type(from)?;
             let to_ty = lower_type(to)?;
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
             let dst = ctx.fresh_value();
-            ctx.emit(IrInst::Cast {
+            active.emit(IrInst::Cast {
                 dst,
                 from: from_ty,
                 to: to_ty.clone(),
                 value: lowered.value,
-            });
+            })?;
             Ok(LoweredValue {
                 value: dst,
                 ty: to_ty,
@@ -281,6 +758,18 @@ fn lower_expr(expr: &SemanticExpr, ctx: &mut LoweringCtx) -> Result<LoweredValue
         SemanticExprKind::Unary { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "Unary".to_string(),
         }),
+        SemanticExprKind::ArrayLit { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "ArrayLit".to_string(),
+        }),
+        SemanticExprKind::Index { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "Index".to_string(),
+        }),
+        SemanticExprKind::MethodCall { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "MethodCall".to_string(),
+        }),
+        SemanticExprKind::StructInstance { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "StructInstance".to_string(),
+        }),
     }
 }
 
@@ -288,17 +777,22 @@ fn lower_value(
     value: &SemanticValue,
     semantic_ty: &SemanticType,
     ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
     let ty = lower_type(semantic_ty)?;
     let dst = ctx.fresh_value();
 
     match value {
         SemanticValue::Num(n) => {
-            ctx.emit(IrInst::ConstInt {
+            let value =
+                i128::try_from(*n).map_err(|_| LoweringError::InternalInvariantViolation {
+                    detail: format!("integer literal {n} exceeds i128 IR constant range"),
+                })?;
+            active.emit(IrInst::ConstInt {
                 dst,
                 ty: ty.clone(),
-                value: *n,
-            });
+                value,
+            })?;
             Ok(LoweredValue { value: dst, ty })
         }
         SemanticValue::Float(value) => {
@@ -307,7 +801,7 @@ fn lower_value(
                     detail: format!("float literal lowered with non-f64 type: {ty:?}"),
                 });
             }
-            ctx.emit(IrInst::ConstFloat { dst, value: *value });
+            active.emit(IrInst::ConstFloat { dst, value: *value })?;
             Ok(LoweredValue { value: dst, ty })
         }
         SemanticValue::Bool(value) => {
@@ -316,11 +810,11 @@ fn lower_value(
                     detail: format!("bool literal lowered with non-bool type: {ty:?}"),
                 });
             }
-            ctx.emit(IrInst::ConstInt {
+            active.emit(IrInst::ConstInt {
                 dst,
                 ty: IrType::Bool,
                 value: i128::from(*value),
-            });
+            })?;
             Ok(LoweredValue { value: dst, ty })
         }
         SemanticValue::Unknown => Err(LoweringError::UnsupportedSemanticType {
@@ -344,9 +838,10 @@ fn lower_binary(
     rhs: &SemanticExpr,
     result_ty: &SemanticType,
     ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
-    let lhs = lower_expr(lhs, ctx)?;
-    let rhs = lower_expr(rhs, ctx)?;
+    let lhs = lower_expr(lhs, ctx, active)?;
+    let rhs = lower_expr(rhs, ctx, active)?;
     let dst = ctx.fresh_value();
 
     match op {
@@ -362,16 +857,16 @@ fn lower_binary(
                 Op::Mod => BinaryOp::Rem,
                 _ => unreachable!(),
             };
-            ctx.emit(IrInst::Binary {
+            active.emit(IrInst::Binary {
                 dst,
                 op,
                 ty: ty.clone(),
                 lhs: lhs.value,
                 rhs: rhs.value,
-            });
+            })?;
             Ok(LoweredValue { value: dst, ty })
         }
-        Op::EqEq | Op::Lt | Op::LtEq | Op::Gt | Op::GtEq => {
+        Op::EqEq | Op::NotEq | Op::Lt | Op::LtEq | Op::Gt | Op::GtEq => {
             ensure_type_match("compare lhs/rhs", lhs.ty, rhs.ty)?;
             let result_ty = lower_type(result_ty)?;
             if result_ty != IrType::Bool {
@@ -381,23 +876,25 @@ fn lower_binary(
             }
             let op = match op {
                 Op::EqEq => CompareOp::Eq,
+                Op::NotEq => CompareOp::Ne,
                 Op::Lt => CompareOp::Lt,
                 Op::LtEq => CompareOp::Le,
                 Op::Gt => CompareOp::Gt,
                 Op::GtEq => CompareOp::Ge,
                 _ => unreachable!(),
             };
-            ctx.emit(IrInst::Compare {
+            active.emit(IrInst::Compare {
                 dst,
                 op,
                 lhs: lhs.value,
                 rhs: rhs.value,
-            });
+            })?;
             Ok(LoweredValue {
                 value: dst,
                 ty: IrType::Bool,
             })
         }
+        Op::Not => unreachable!("Op::Not is unary only"),
         Op::And => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "Binary::And".to_string(),
         }),
@@ -443,6 +940,12 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::TypeParam(_) => Err(LoweringError::UnsupportedSemanticType {
             ty: "TypeParam".to_string(),
         }),
+        SemanticType::Struct(_) => Err(LoweringError::UnsupportedSemanticType {
+            ty: "Struct".to_string(),
+        }),
+        SemanticType::Array(_, _) => Err(LoweringError::UnsupportedSemanticType {
+            ty: "Array".to_string(),
+        }),
     }
 }
 
@@ -461,9 +964,12 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend::ast::{Op, Type};
-    use crate::frontend::semantic_types::{FunctionId, SemanticFunction};
+    use crate::frontend::ast::Op;
+    use crate::frontend::semantic_types::{
+        FunctionId, SemanticFunction, SemanticLValue, SemanticParam, SemanticParamKind,
+    };
     use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
+    use crate::ir::validate::validate_module;
 
     fn int_expr(value: i128, ty: SemanticType) -> SemanticExpr {
         SemanticExpr {
@@ -511,6 +1017,72 @@ mod tests {
         }
     }
 
+    fn assign(
+        binding: BindingId,
+        name: &str,
+        ty: SemanticType,
+        expr: SemanticExpr,
+    ) -> SemanticStmt {
+        SemanticStmt::Assign {
+            target: SemanticLValue::Binding {
+                binding,
+                name: name.to_string(),
+                ty,
+            },
+            expr,
+            pos_eq: 0,
+        }
+    }
+
+    fn typed_param(binding: BindingId, name: &str, ty: SemanticType) -> SemanticParam {
+        SemanticParam {
+            binding,
+            name: name.to_string(),
+            kind: SemanticParamKind::Typed,
+            ty: Some(ty),
+        }
+    }
+
+    fn semantic_function(
+        name: &str,
+        params: Vec<SemanticParam>,
+        return_ty: Option<SemanticType>,
+        body: Vec<SemanticStmt>,
+        ret_expr: Option<SemanticExpr>,
+    ) -> SemanticStmt {
+        SemanticStmt::FuncDef(SemanticFunction {
+            id: FunctionId(0),
+            name: name.to_string(),
+            type_params: vec![],
+            params,
+            return_ty,
+            body,
+            ret_expr,
+            pos: 0,
+        })
+    }
+
+    fn if_stmt(
+        condition: SemanticExpr,
+        then_body: Vec<SemanticStmt>,
+        else_ifs: Vec<(SemanticExpr, Vec<SemanticStmt>)>,
+        else_body: Option<Vec<SemanticStmt>>,
+    ) -> SemanticStmt {
+        SemanticStmt::IfElse {
+            condition,
+            then_body,
+            else_ifs,
+            else_body,
+            pos: 0,
+        }
+    }
+
+    fn lower_and_validate(program: &SemanticProgram) -> IrModule {
+        let module = lower_program(program).expect("lowering should succeed");
+        validate_module(&module).expect("lowered IR should validate");
+        module
+    }
+
     #[test]
     fn lowers_top_level_typed_assign_into_synthetic_main() {
         let program = SemanticProgram {
@@ -523,7 +1095,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         assert_eq!(module.functions.len(), 1);
         assert_eq!(module.functions[0].name, "main");
         assert_eq!(module.functions[0].blocks.len(), 1);
@@ -541,7 +1113,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         assert!(module.functions[0].blocks[0].insts.is_empty());
     }
 
@@ -561,7 +1133,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         assert!(module.functions[0].blocks[0].insts.iter().any(|inst| {
             matches!(
                 inst,
@@ -602,7 +1174,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         let insts = &module.functions[0].blocks[0].insts;
         assert!(insts.iter().any(|inst| matches!(
             inst,
@@ -646,7 +1218,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         assert!(module.functions[0].blocks[0].insts.iter().any(|inst| {
             matches!(
                 inst,
@@ -678,22 +1250,36 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         let insts = &module.functions[0].blocks[0].insts;
-        // The typed assign should produce exactly one SsaBind.
-        // The ExprStmt with a VarRef just looks up the existing value — no new bind emitted.
-        let binds: Vec<_> = insts.iter().filter_map(|inst| match inst {
-            IrInst::SsaBind {
-                dst,
-                src,
-                ty: IrType::I64,
-            } => Some((*dst, *src)),
-            _ => None,
-        }).collect();
-        assert_eq!(binds.len(), 1, "only the typed-assign should emit a bind");
-        let (dst, _src) = binds[0];
-        // Verify the binding produced a valid SSA value
-        assert!(dst.0 > 0, "SSA value id should be positive");
+        let bind_count = insts
+            .iter()
+            .filter(|inst| {
+                matches!(
+                    inst,
+                    IrInst::SsaBind {
+                        ty: IrType::I64,
+                        ..
+                    }
+                )
+            })
+            .count();
+
+        assert_eq!(bind_count, 1);
+        assert!(matches!(
+            insts.as_slice(),
+            [
+                IrInst::ConstInt {
+                    ty: IrType::I64,
+                    value: 2,
+                    ..
+                },
+                IrInst::SsaBind {
+                    ty: IrType::I64,
+                    ..
+                }
+            ]
+        ));
     }
 
     #[test]
@@ -706,7 +1292,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("lowering should succeed");
+        let module = lower_and_validate(&program);
         assert_eq!(
             module.functions[0].blocks[0].term,
             IrTerminator::Return { value: None }
@@ -823,8 +1409,11 @@ mod tests {
     fn rejects_compound_assign() {
         let program = SemanticProgram {
             stmts: vec![SemanticStmt::CompoundAssign {
-                binding: Some(BindingId(1)),
-                name: "x".to_string(),
+                target: SemanticLValue::Binding {
+                    binding: BindingId(1),
+                    name: "x".to_string(),
+                    ty: SemanticType::I64,
+                },
                 op: Op::Plus,
                 operand: int_expr(1, SemanticType::I64),
                 pos: 0,
@@ -841,25 +1430,209 @@ mod tests {
     }
 
     #[test]
-    fn rejects_func_def() {
+    fn lowers_simple_function_with_one_parameter_and_return_value() {
         let program = SemanticProgram {
-            stmts: vec![SemanticStmt::FuncDef(SemanticFunction {
-                id: FunctionId(0),
-                name: "foo".to_string(),
-                type_params: vec![],
-                params: vec![],
-                return_ty: Some(SemanticType::I64),
-                body: vec![],
-                ret_expr: Some(int_expr(1, SemanticType::I64)),
-                pos: 0,
-            })],
+            stmts: vec![semantic_function(
+                "id",
+                vec![typed_param(BindingId(10), "x", SemanticType::I64)],
+                Some(SemanticType::I64),
+                vec![],
+                Some(binding_ref(BindingId(10), "x", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert_eq!(module.functions.len(), 1);
+        let function = &module.functions[0];
+        assert_eq!(function.name, "id");
+        assert_eq!(function.params.len(), 1);
+        assert_eq!(function.blocks.len(), 1);
+        assert_eq!(function.blocks[0].params.len(), 1);
+        assert_eq!(
+            function.blocks[0].term,
+            IrTerminator::Return {
+                value: Some(function.blocks[0].params[0].value),
+            }
+        );
+    }
+
+    #[test]
+    fn lowers_function_with_multiple_parameters() {
+        let x = BindingId(10);
+        let y = BindingId(11);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "sum",
+                vec![
+                    typed_param(x, "x", SemanticType::I64),
+                    typed_param(y, "y", SemanticType::I64),
+                ],
+                Some(SemanticType::I64),
+                vec![],
+                Some(SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::Binary {
+                        lhs: Box::new(binding_ref(x, "x", SemanticType::I64)),
+                        op: Op::Plus,
+                        pos: 0,
+                        rhs: Box::new(binding_ref(y, "y", SemanticType::I64)),
+                    },
+                }),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let function = &module.functions[0];
+        assert_eq!(function.params.len(), 2);
+        assert_eq!(function.blocks[0].params.len(), 2);
+        assert!(function.blocks[0].insts.iter().any(|inst| matches!(
+            inst,
+            IrInst::Binary {
+                op: BinaryOp::Add,
+                ty: IrType::I64,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn function_parameter_references_use_function_local_ssa_map() {
+        let x = BindingId(20);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "use_param",
+                vec![typed_param(x, "x", SemanticType::I64)],
+                Some(SemanticType::I64),
+                vec![typed_assign(
+                    BindingId(21),
+                    "y",
+                    SemanticType::I64,
+                    binding_ref(x, "x", SemanticType::I64),
+                )],
+                Some(binding_ref(BindingId(21), "y", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let function = &module.functions[0];
+        assert!(matches!(
+            function.blocks[0].insts.as_slice(),
+            [IrInst::SsaBind {
+                ty: IrType::I64,
+                src,
+                ..
+            }] if *src == function.blocks[0].params[0].value
+        ));
+    }
+
+    #[test]
+    fn function_return_with_value_lowers_to_return_some() {
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "const_ret",
+                vec![],
+                Some(SemanticType::I64),
+                vec![],
+                Some(int_expr(9, SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert!(matches!(
+            module.functions[0].blocks[0].term,
+            IrTerminator::Return { value: Some(_) }
+        ));
+    }
+
+    #[test]
+    fn typed_assignment_inside_function_lowers_correctly() {
+        let param = BindingId(30);
+        let local = BindingId(31);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "bind_local",
+                vec![typed_param(param, "x", SemanticType::I64)],
+                Some(SemanticType::I64),
+                vec![typed_assign(
+                    local,
+                    "tmp",
+                    SemanticType::I64,
+                    binding_ref(param, "x", SemanticType::I64),
+                )],
+                Some(binding_ref(local, "tmp", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert!(module.functions[0].blocks[0]
+            .insts
+            .iter()
+            .any(|inst| matches!(
+                inst,
+                IrInst::SsaBind {
+                    ty: IrType::I64,
+                    ..
+                }
+            )));
+    }
+
+    #[test]
+    fn top_level_statements_and_real_functions_lower_together() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "const_ret",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(1, SemanticType::I64)),
+                ),
+                typed_assign(
+                    BindingId(40),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(2, SemanticType::I64),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert_eq!(module.functions.len(), 2);
+        assert!(module.functions.iter().any(|f| f.name == "const_ret"));
+        assert!(module.functions.iter().any(|f| f.name == "main"));
+    }
+
+    #[test]
+    fn real_main_plus_top_level_statements_is_rejected() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "main",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(1, SemanticType::I64)),
+                ),
+                typed_assign(
+                    BindingId(41),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(2, SemanticType::I64),
+                ),
+            ],
             enums: vec![],
         };
 
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "FuncDef".to_string()
+                construct: "real function 'main' collides with synthetic main".to_string()
             }
         );
     }
@@ -878,6 +1651,37 @@ mod tests {
                 },
                 pos: 0,
             }],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnsupportedSemanticConstruct {
+                construct: "Call".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_call_expression_inside_function() {
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "bad_call",
+                vec![],
+                None,
+                vec![SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "foo".to_string(),
+                            function: FunctionId(0),
+                            args: vec![],
+                        },
+                    },
+                    pos: 0,
+                }],
+                None,
+            )],
             enums: vec![],
         };
 
@@ -936,12 +1740,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsupported_statement_inside_function() {
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "bad",
+                vec![],
+                None,
+                vec![SemanticStmt::While {
+                    cond: bool_expr(true),
+                    body: vec![],
+                    pos: 0,
+                }],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnsupportedSemanticConstruct {
+                construct: "While".to_string()
+            }
+        );
+    }
+
+    #[test]
     fn empty_program_lowers_to_empty_module() {
-        let module = lower_program(&SemanticProgram {
+        let module = lower_and_validate(&SemanticProgram {
             stmts: vec![],
             enums: vec![],
-        })
-        .expect("empty program should lower");
+        });
 
         assert!(module.functions.is_empty());
     }
@@ -970,7 +1798,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("assign should lower");
+        let module = lower_and_validate(&program);
         assert!(module.functions[0].blocks[0]
             .insts
             .iter()
@@ -995,7 +1823,7 @@ mod tests {
             enums: vec![],
         };
 
-        let module = lower_program(&program).expect("bool constant should lower");
+        let module = lower_and_validate(&program);
         assert!(module.functions[0].blocks[0].insts.iter().any(|inst| {
             matches!(
                 inst,
@@ -1006,5 +1834,555 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn declared_but_never_assigned_binding_use_inside_function_is_rejected() {
+        let binding = BindingId(50);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "bad_ref",
+                vec![],
+                Some(SemanticType::I64),
+                vec![SemanticStmt::Decl {
+                    binding,
+                    name: "x".to_string(),
+                    ty: Some(SemanticType::I64),
+                    pos: 0,
+                }],
+                Some(binding_ref(binding, "x", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        match lower_program(&program).expect_err("lowering should fail") {
+            LoweringError::InternalInvariantViolation { detail } => {
+                assert!(detail.contains("referenced before any SSA value was assigned"));
+            }
+            other => panic!("expected invariant error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_local_ssa_maps_do_not_leak_between_functions_and_main() {
+        let function_binding = BindingId(60);
+        let top_level_binding = BindingId(61);
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "f",
+                    vec![typed_param(function_binding, "x", SemanticType::I64)],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(binding_ref(function_binding, "x", SemanticType::I64)),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(function_binding, "x", SemanticType::I64),
+                    pos: 0,
+                },
+                assign(
+                    top_level_binding,
+                    "y",
+                    SemanticType::I64,
+                    int_expr(1, SemanticType::I64),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        match lower_program(&program).expect_err("lowering should fail") {
+            LoweringError::InternalInvariantViolation { detail } => {
+                assert!(detail.contains("referenced before any SSA value was assigned"));
+            }
+            other => panic!("expected invariant error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_local_ssa_maps_do_not_leak_between_functions() {
+        let shared_binding = BindingId(70);
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "f",
+                    vec![typed_param(shared_binding, "x", SemanticType::I64)],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(binding_ref(shared_binding, "x", SemanticType::I64)),
+                ),
+                semantic_function(
+                    "g",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(binding_ref(shared_binding, "x", SemanticType::I64)),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        match lower_program(&program).expect_err("lowering should fail") {
+            LoweringError::InternalInvariantViolation { detail } => {
+                assert!(detail.contains("referenced before any SSA value was assigned"));
+            }
+            other => panic!("expected invariant error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn top_level_if_lowers_into_valid_multi_block_cfg() {
+        let program = SemanticProgram {
+            stmts: vec![if_stmt(
+                bool_expr(true),
+                vec![typed_assign(
+                    BindingId(80),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(1, SemanticType::I64),
+                )],
+                vec![],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main = &module.functions[0];
+        assert_eq!(main.name, "main");
+        assert!(main.blocks.len() >= 3);
+        assert!(main.blocks.iter().any(|block| matches!(
+            block.term,
+            IrTerminator::Branch { .. }
+        )));
+    }
+
+    #[test]
+    fn top_level_if_else_lowers_and_validates() {
+        let program = SemanticProgram {
+            stmts: vec![if_stmt(
+                bool_expr(true),
+                vec![typed_assign(
+                    BindingId(81),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(1, SemanticType::I64),
+                )],
+                vec![],
+                Some(vec![typed_assign(
+                    BindingId(81),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(2, SemanticType::I64),
+                )]),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main = &module.functions[0];
+        assert!(main.blocks.iter().any(|block| matches!(
+            block.term,
+            IrTerminator::Branch { .. }
+        )));
+        assert!(main.blocks.iter().any(|block| matches!(
+            block.term,
+            IrTerminator::Jump { .. }
+        )));
+    }
+
+    #[test]
+    fn top_level_if_else_if_else_lowers_and_validates() {
+        let program = SemanticProgram {
+            stmts: vec![if_stmt(
+                bool_expr(false),
+                vec![typed_assign(
+                    BindingId(82),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(1, SemanticType::I64),
+                )],
+                vec![(
+                    bool_expr(true),
+                    vec![typed_assign(
+                        BindingId(82),
+                        "x",
+                        SemanticType::I64,
+                        int_expr(2, SemanticType::I64),
+                    )],
+                )],
+                Some(vec![typed_assign(
+                    BindingId(82),
+                    "x",
+                    SemanticType::I64,
+                    int_expr(3, SemanticType::I64),
+                )]),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let branch_count = module.functions[0]
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.term, IrTerminator::Branch { .. }))
+            .count();
+        assert!(branch_count >= 2);
+    }
+
+    #[test]
+    fn function_body_if_else_lowers_and_validates() {
+        let cond = BindingId(83);
+        let out = BindingId(84);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "choose",
+                vec![typed_param(cond, "cond", SemanticType::Bool)],
+                Some(SemanticType::I64),
+                vec![
+                    typed_assign(out, "out", SemanticType::I64, int_expr(0, SemanticType::I64)),
+                    if_stmt(
+                        binding_ref(cond, "cond", SemanticType::Bool),
+                        vec![assign(
+                            out,
+                            "out",
+                            SemanticType::I64,
+                            int_expr(1, SemanticType::I64),
+                        )],
+                        vec![],
+                        Some(vec![assign(
+                            out,
+                            "out",
+                            SemanticType::I64,
+                            int_expr(2, SemanticType::I64),
+                        )]),
+                    ),
+                ],
+                Some(binding_ref(out, "out", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let function = &module.functions[0];
+        assert!(function.blocks.len() >= 4);
+        assert!(function.blocks.iter().any(|block| matches!(
+            block.term,
+            IrTerminator::Branch { .. }
+        )));
+    }
+
+    #[test]
+    fn assignment_in_both_branches_merges_correctly() {
+        let cond = BindingId(85);
+        let x = BindingId(86);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
+                typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
+                if_stmt(
+                    binding_ref(cond, "cond", SemanticType::Bool),
+                    vec![assign(
+                        x,
+                        "x",
+                        SemanticType::I64,
+                        int_expr(1, SemanticType::I64),
+                    )],
+                    vec![],
+                    Some(vec![assign(
+                        x,
+                        "x",
+                        SemanticType::I64,
+                        int_expr(2, SemanticType::I64),
+                    )]),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(x, "x", SemanticType::I64),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert!(module.functions[0]
+            .blocks
+            .iter()
+            .any(|block| block.params.len() == 1));
+        assert!(module.functions[0].blocks.iter().any(|block| matches!(
+            block.term,
+            IrTerminator::Jump { ref args, .. } if args.len() == 1
+        )));
+    }
+
+    #[test]
+    fn unchanged_bindings_across_branches_stay_valid_after_merge() {
+        let cond = BindingId(87);
+        let x = BindingId(88);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
+                typed_assign(x, "x", SemanticType::I64, int_expr(5, SemanticType::I64)),
+                if_stmt(
+                    binding_ref(cond, "cond", SemanticType::Bool),
+                    vec![SemanticStmt::ExprStmt {
+                        expr: bool_expr(true),
+                        pos: 0,
+                    }],
+                    vec![],
+                    Some(vec![SemanticStmt::ExprStmt {
+                        expr: bool_expr(false),
+                        pos: 0,
+                    }]),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(x, "x", SemanticType::I64),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert!(module.functions[0]
+            .blocks
+            .iter()
+            .all(|block| block.params.is_empty()));
+    }
+
+    #[test]
+    fn one_branch_assignment_merges_with_incoming_value() {
+        let cond = BindingId(89);
+        let x = BindingId(90);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
+                typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
+                if_stmt(
+                    binding_ref(cond, "cond", SemanticType::Bool),
+                    vec![assign(
+                        x,
+                        "x",
+                        SemanticType::I64,
+                        int_expr(1, SemanticType::I64),
+                    )],
+                    vec![],
+                    None,
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(x, "x", SemanticType::I64),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        assert!(module.functions[0]
+            .blocks
+            .iter()
+            .any(|block| block.params.len() == 1));
+    }
+
+    #[test]
+    fn one_branch_returns_and_other_falls_through_lowers_correctly() {
+        let cond = BindingId(91);
+        let out = BindingId(92);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "branch_return",
+                vec![typed_param(cond, "cond", SemanticType::Bool)],
+                Some(SemanticType::I64),
+                vec![if_stmt(
+                    binding_ref(cond, "cond", SemanticType::Bool),
+                    vec![SemanticStmt::Return {
+                        expr: Some(int_expr(1, SemanticType::I64)),
+                        pos: 0,
+                    }],
+                    vec![],
+                    Some(vec![typed_assign(
+                        out,
+                        "out",
+                        SemanticType::I64,
+                        int_expr(2, SemanticType::I64),
+                    )]),
+                )],
+                Some(binding_ref(out, "out", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let function = &module.functions[0];
+        let return_some_count = function
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.term, IrTerminator::Return { value: Some(_) }))
+            .count();
+        assert!(return_some_count >= 2);
+    }
+
+    #[test]
+    fn both_branches_return_lowers_correctly_without_invalid_merge() {
+        let cond = BindingId(93);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "both_return",
+                vec![typed_param(cond, "cond", SemanticType::Bool)],
+                Some(SemanticType::I64),
+                vec![if_stmt(
+                    binding_ref(cond, "cond", SemanticType::Bool),
+                    vec![SemanticStmt::Return {
+                        expr: Some(int_expr(1, SemanticType::I64)),
+                        pos: 0,
+                    }],
+                    vec![],
+                    Some(vec![SemanticStmt::Return {
+                        expr: Some(int_expr(2, SemanticType::I64)),
+                        pos: 0,
+                    }]),
+                )],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let function = &module.functions[0];
+        assert_eq!(function.blocks.len(), 3);
+        assert!(function.blocks.iter().skip(1).all(|block| block.params.is_empty()));
+    }
+
+    #[test]
+    fn nested_if_lowers_correctly() {
+        let cond_a = BindingId(94);
+        let cond_b = BindingId(95);
+        let x = BindingId(96);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(cond_a, "a", SemanticType::Bool, bool_expr(true)),
+                typed_assign(cond_b, "b", SemanticType::Bool, bool_expr(false)),
+                typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
+                if_stmt(
+                    binding_ref(cond_a, "a", SemanticType::Bool),
+                    vec![if_stmt(
+                        binding_ref(cond_b, "b", SemanticType::Bool),
+                        vec![assign(
+                            x,
+                            "x",
+                            SemanticType::I64,
+                            int_expr(1, SemanticType::I64),
+                        )],
+                        vec![],
+                        Some(vec![assign(
+                            x,
+                            "x",
+                            SemanticType::I64,
+                            int_expr(2, SemanticType::I64),
+                        )]),
+                    )],
+                    vec![],
+                    Some(vec![assign(
+                        x,
+                        "x",
+                        SemanticType::I64,
+                        int_expr(3, SemanticType::I64),
+                    )]),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(x, "x", SemanticType::I64),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let branch_count = module.functions[0]
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.term, IrTerminator::Branch { .. }))
+            .count();
+        assert!(branch_count >= 2);
+    }
+
+    #[test]
+    fn rejects_unsupported_statement_inside_if_branch() {
+        let program = SemanticProgram {
+            stmts: vec![if_stmt(
+                bool_expr(true),
+                vec![SemanticStmt::While {
+                    cond: bool_expr(true),
+                    body: vec![],
+                    pos: 0,
+                }],
+                vec![],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnsupportedSemanticConstruct {
+                construct: "While".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_semantic_type_inside_if_branch() {
+        let program = SemanticProgram {
+            stmts: vec![if_stmt(
+                bool_expr(true),
+                vec![typed_assign(
+                    BindingId(97),
+                    "x",
+                    SemanticType::Numeric,
+                    SemanticExpr {
+                        ty: SemanticType::Numeric,
+                        kind: SemanticExprKind::Value(SemanticValue::Num(1)),
+                    },
+                )],
+                vec![],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnsupportedSemanticType {
+                ty: "Numeric".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_unresolved_artifact_inside_if_branch() {
+        let program = SemanticProgram {
+            stmts: vec![if_stmt(
+                bool_expr(true),
+                vec![SemanticStmt::CompoundAssign {
+                    target: SemanticLValue::Binding {
+                        binding: BindingId(98),
+                        name: "x".to_string(),
+                        ty: SemanticType::I64,
+                    },
+                    op: Op::Plus,
+                    operand: int_expr(1, SemanticType::I64),
+                    pos: 0,
+                }],
+                vec![],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnresolvedSemanticArtifact {
+                artifact: "CompoundAssign".to_string()
+            }
+        );
     }
 }

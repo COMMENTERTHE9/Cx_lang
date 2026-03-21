@@ -94,12 +94,6 @@ pub enum Token {
     #[token("then")]
     KeywordThen,
 
-    #[token("if")]
-    KeywordIf,
-
-    #[token("else")]
-    KeywordElse,
-
     #[token("enum")]
     KeywordEnum,
 
@@ -108,6 +102,12 @@ pub enum Token {
 
     #[token("Handle")]
     KeywordHandle,
+
+    #[token("struct")]
+    KeywordStruct,
+
+    #[token("impl")]
+    KeywordImpl,
 
     // ── Type Keywords ────────────────────────────
     #[token("t8")]
@@ -197,8 +197,12 @@ pub enum Token {
     OpOr,
 
     // ── Comparison Operators ──────────────────────
+    #[token("!")]
+    OpBang,
     #[token("==")]
     OpEqualEqual,
+    #[token("!=")]
+    OpNotEqual,
 
     #[token("<=")]
     OpLessEq,

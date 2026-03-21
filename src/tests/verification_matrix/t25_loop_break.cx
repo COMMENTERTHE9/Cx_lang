@@ -1,0 +1,9 @@
+let i;
+i = 0
+loop {
+    when i {
+        5 => break,
+        _ => print(i),
+    }
+    i += 1
+}
