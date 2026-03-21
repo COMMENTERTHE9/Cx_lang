@@ -37,6 +37,7 @@ jobs:
 
       - name: Run verification matrix
         run: |
+          set +e
           PASS=0
           FAIL=0
           ERRORS=()
