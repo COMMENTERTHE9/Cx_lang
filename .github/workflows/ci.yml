@@ -39,23 +39,53 @@ jobs:
         run: |
           PASS=0
           FAIL=0
-          for f in src/tests/verification_matrix/*.cx; do
-            output=$(cargo run --quiet -- "$f" 2>&1 | tail -1)
-            if echo "$f" | grep -qE '\.(expected_fail|negative)\.cx$'; then
-              if echo "$output" | grep -q "error found"; then
-                echo "PASS (expected error): $f"
+          ERRORS=()
+
+          for f in src/tests/verification_matrix/t*.cx; do
+            test_name=$(basename "$f")
+            expected_fail=false
+
+            if [ -f "${f}.expected_fail" ]; then
+              expected_fail=true
+            fi
+
+            cargo run --quiet -- "$f" > /dev/null 2>&1
+            exit_code=$?
+
+            if $expected_fail; then
+              if [ $exit_code -ne 0 ]; then
+                echo "PASS (expected fail): $test_name"
                 PASS=$((PASS + 1))
               else
-                echo "FAIL (expected error but got): $f: $output"
+                echo "FAIL (should have errored): $test_name"
                 FAIL=$((FAIL + 1))
+                ERRORS+=("$test_name")
               fi
             else
-              echo "PASS: $f: $output"
-              PASS=$((PASS + 1))
+              if [ $exit_code -eq 0 ]; then
+                echo "PASS: $test_name"
+                PASS=$((PASS + 1))
+              else
+                echo "FAIL: $test_name"
+                output=$(cargo run --quiet -- "$f" 2>&1)
+                echo "  Output: $output"
+                FAIL=$((FAIL + 1))
+                ERRORS+=("$test_name")
+              fi
             fi
           done
-          echo "Matrix: $PASS passed, $FAIL failed"
-          if [ $FAIL -gt 0 ]; then exit 1; fi
+
+          echo ""
+          echo "Matrix: $PASS passed, $FAIL failed out of $((PASS + FAIL)) total"
+
+          if [ ${#ERRORS[@]} -gt 0 ]; then
+            echo ""
+            echo "Failed tests:"
+            for e in "${ERRORS[@]}"; do
+              echo "  - $e"
+            done
+            exit 1
+          fi
 
   backend:
     name: Backend Build + Tests
