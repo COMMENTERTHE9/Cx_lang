@@ -2020,7 +2020,12 @@ impl RunTime {
             let matches = match &arm.pattern {
                 SemanticWhenPattern::Literal(sv) => {
                     let pat_val = self.semantic_value_to_runtime(sv);
-                    val == pat_val
+                    match (&val, &pat_val) {
+                        (Value::Str(vo, vl), Value::Str(po, pl)) => {
+                            self.resolve_str(*vo, *vl) == self.resolve_str(*po, *pl)
+                        }
+                        _ => val == pat_val
+                    }
                 }
                 SemanticWhenPattern::Range(lo, hi, inclusive) => {
                     let lo_val = self.semantic_value_to_runtime(lo);
