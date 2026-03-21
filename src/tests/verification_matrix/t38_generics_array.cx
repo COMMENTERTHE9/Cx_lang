@@ -1,4 +1,4 @@
-fnc wrap<T>(a: T) -> [1]T {
+fnc: [1]T <T> wrap(a: T) {
     [a]
 }
 

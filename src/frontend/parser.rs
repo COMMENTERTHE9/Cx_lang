@@ -793,31 +793,45 @@ where
                 )
                 .then_ignore(just(Token::PunctBraceClose));
 
+            // Syntax: fnc: RetType? <T>? name(params) { body }
+            // Generics parser reused in both branches
+            let generic_params = just(Token::OpLessThan)
+                .ignore_then(
+                    select! { Token::Identifier(s) => s }
+                        .separated_by(just(Token::PunctComma))
+                        .at_least(1)
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(Token::OpGreaterThan))
+                .or_not()
+                .map(|tp| tp.unwrap_or_default());
+
+            // Try: ret_ty <T>? name — or fall back to: <T>? name (no ret_ty)
+            let ret_ty_generics_name = ty.clone()
+                .then(generic_params.clone())
+                .then(ident.clone())
+                .map(|((t, tp), n)| (Some(t), tp, n))
+                .or(
+                    generic_params
+                        .then(ident.clone())
+                        .map(|(tp, n)| (None, tp, n))
+                );
+
             just(Token::KeywordFnc)
                 .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
-                .then(ident.clone())
-                .then(
-                    just(Token::OpLessThan)
-                        .ignore_then(
-                            select! { Token::Identifier(s) => s }
-                                .separated_by(just(Token::PunctComma))
-                                .at_least(1)
-                                .collect::<Vec<_>>(),
-                        )
-                        .then_ignore(just(Token::OpGreaterThan))
-                        .or_not()
-                        .map(|tp| tp.unwrap_or_default()),
-                )
+                .then_ignore(just(Token::PunctColon))
+                .then(ret_ty_generics_name)
+                .then_ignore(just(Token::PunctParenOpen))
                 .then(
                     param
                         .separated_by(just(Token::PunctComma))
-                        .collect::<Vec<_>>()
-                        .delimited_by(just(Token::PunctParenOpen), just(Token::PunctParenClose)),
+                        .allow_trailing()
+                        .collect::<Vec<_>>(),
                 )
-                .then(just(Token::PunctArrow).ignore_then(ty.clone()).or_not())
+                .then_ignore(just(Token::PunctParenClose))
                 .then(func_body)
                 .map(
-                    |(((((pos, name), type_params), params), ret_ty), (body, ret_expr))| Stmt::FuncDef {
+                    |(((pos, (ret_ty, type_params, name)), params), (body, ret_expr))| Stmt::FuncDef {
                         name,
                         type_params,
                         params,
