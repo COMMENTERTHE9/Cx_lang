@@ -1,6 +1,5 @@
 # Rust
 /target/
-Cargo.lock
 
 # Editors / IDEs
 .idea/
@@ -10,6 +9,9 @@ Cargo.lock
 # OS
 .DS_Store
 Thumbs.db
+
+# Tooling
+.claude/
 
 # Local docs
 /docment/
