@@ -4,11 +4,11 @@ struct Player {
 }
 
 player_methods: impl (p: Player) {
-    fnc take_damage(amount: t32) {
+    fnc: take_damage(amount: t32) {
         p.health -= amount
     }
 
-    fnc double_speed() {
+    fnc: double_speed() {
         p.speed *= 2
     }
 }

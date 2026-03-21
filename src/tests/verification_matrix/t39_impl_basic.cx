@@ -3,11 +3,11 @@ struct Player {
 }
 
 player_methods: impl (p: Player) {
-    fnc take_damage(amount: t32) {
+    fnc: take_damage(amount: t32) {
         p.health -= amount
     }
 
-    fnc is_alive() -> bool {
+    fnc: bool is_alive() {
         p.health > 0
     }
 }

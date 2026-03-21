@@ -3,11 +3,11 @@ struct Counter {
 }
 
 counter_methods: impl (c: Counter) {
-    fnc increment() {
+    fnc: increment() {
         c.value = c.value + 1
     }
 
-    fnc get() -> t32 {
+    fnc: t32 get() {
         c.value
     }
 }

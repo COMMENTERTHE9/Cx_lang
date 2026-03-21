@@ -1,4 +1,4 @@
-fnc identity<T>(x: T) -> T {
+fnc: T <T> identity(x: T) {
     x
 }
 
