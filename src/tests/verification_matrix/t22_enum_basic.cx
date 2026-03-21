@@ -1,0 +1,11 @@
+enum Direction { North, South, East, West }
+
+let d;
+d = Direction::North
+
+when d {
+    Direction::North => print(1),
+    Direction::South => print(2),
+    Direction::East  => print(3),
+    Direction::West  => print(4),
+}

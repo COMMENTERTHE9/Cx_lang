@@ -1,0 +1,15 @@
+// Contract test for .copy semantics
+// .copy is intended to bleed the final value back to the caller.
+// Expected output:
+// 15
+// 15
+
+x: t64 = 10
+
+fnc: t64 mutate_copy(n.copy) {
+    n = n + 5
+    n
+}
+
+print(mutate_copy(x.copy))
+print(x)

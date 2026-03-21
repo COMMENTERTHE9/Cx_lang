@@ -1,0 +1,4 @@
+fnc: t64 bad() {
+    return "hello";
+}
+bad();

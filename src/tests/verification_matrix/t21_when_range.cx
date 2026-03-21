@@ -1,0 +1,7 @@
+let x;
+x = 15
+when x {
+    1..=10  => print(1),
+    11..=20 => print(2),
+    _       => print(3),
+}

@@ -1,0 +1,16 @@
+let h;
+h = Handle.new(99)
+print(h.val)
+h.drop(
+)
+
+fnc: make_handle() {
+    let inner;
+    inner = Handle.new(123)
+    inner
+}
+
+let outer_h;
+outer_h = make_handle();
+print(outer_h.val)
+outer_h.drop()

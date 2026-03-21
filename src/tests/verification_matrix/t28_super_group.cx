@@ -1,0 +1,21 @@
+enum EntityState {
+    group ::User_states [
+        alive [
+            Running, Walking, Idle,
+        ],
+        combat [
+            Attacking, Blocking, Stunned,
+        ],
+        inactive [
+            Dead, Despawned,
+        ],
+    ]
+}
+
+let e;
+e = EntityState::Attacking
+
+when e {
+    User_states => print(1), print(2), {_},
+    inactive    => print(3),
+}

@@ -1,0 +1,11 @@
+fnc: T <T> identity(x: T) {
+    x
+}
+
+a: t64 = identity(100)
+b: bool = identity(true)
+c: t64 = identity(identity(42))
+
+print(a)
+print(b)
+print(c)

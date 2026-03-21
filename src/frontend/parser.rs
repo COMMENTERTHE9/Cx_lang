@@ -49,8 +49,9 @@ where
 
     let array = just(Token::PunctBracketOpen)
         .ignore_then(select! { Token::LiteralInt(n) => n as usize })
-        .then_ignore(just(Token::PunctBracketClose))
+        .then_ignore(just(Token::PunctColon))
         .then(elem_ty)
+        .then_ignore(just(Token::PunctBracketClose))
         .map(|(size, elem_ty)| Type::Array(size, Box::new(elem_ty)));
 
     array.or(scalar).or(named_type)

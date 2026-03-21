@@ -1,0 +1,5 @@
+fnc: t64 find(a: t64, b: t64) {
+    return a;
+    b
+}
+print(find(10, 20));

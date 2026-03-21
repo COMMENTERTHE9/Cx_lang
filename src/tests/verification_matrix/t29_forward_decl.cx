@@ -1,0 +1,5 @@
+outer()
+
+fnc: outer() {
+    print(99)
+}
