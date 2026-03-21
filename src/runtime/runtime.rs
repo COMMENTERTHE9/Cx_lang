@@ -1755,13 +1755,13 @@ impl RunTime {
         }
     }
 
-    fn semantic_value_to_runtime(&self, sv: &SemanticValue) -> Value {
+    fn semantic_value_to_runtime(&mut self, sv: &SemanticValue) -> Value {
         match sv {
             SemanticValue::Num(n) => Value::Num(*n),
             SemanticValue::Float(f) => Value::Float(*f),
             SemanticValue::Str(s) => {
-                // Allocate in arena — but for now just store as inline
-                Value::Str(0, 0) // stub — needs arena integration
+                let (off, len) = self.alloc_str(s);
+                Value::Str(off, len)
             }
             SemanticValue::Bool(b) => Value::Bool(*b),
             SemanticValue::Char(c) => Value::Char(*c),
