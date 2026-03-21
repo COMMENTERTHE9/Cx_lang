@@ -13,8 +13,5 @@ Thumbs.db
 # Tooling
 .claude/
 
-# Local docs
-/docment/
-
 # Test data / verification corpus
 /src/tests/verification_matrix/
