@@ -1884,7 +1884,7 @@ impl RunTime {
     }
 
     fn call_semantic_method(&mut self, instance: &str, method: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
-        // Get instance value and type
+        // Get primary instance value and type
         let instance_val = self.get_var(instance, pos)?;
         let type_name = match &instance_val {
             Value::Struct(name, _) => name.clone(),
@@ -1897,9 +1897,33 @@ impl RunTime {
             .cloned()
             .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: format!("{}.{}", instance, method) })?;
 
-        // Evaluate args
-        let mut resolved_args: Vec<(String, Value)> = Vec::new();
-        for (param, arg) in sem_func.params.iter().zip(args.iter()) {
+        // Aliases beyond the first are passed as leading args at the call site
+        // args[0..extra_alias_count] = additional alias values
+        // args[extra_alias_count..] = regular params
+        let extra_alias_count = aliases.len().saturating_sub(1);
+
+        // Resolve additional alias values from leading args
+        let mut alias_vals: Vec<(String, Type, Value)> = Vec::new();
+        // First alias is always the dot receiver
+        let (first_alias_name, first_alias_type) = &aliases[0];
+        alias_vals.push((first_alias_name.clone(), first_alias_type.clone().into(), instance_val.clone()));
+
+        // Remaining aliases come from leading call args
+        for i in 0..extra_alias_count {
+            let (alias_name, alias_type) = &aliases[i + 1];
+            let val = match args.get(i) {
+                Some(SemanticCallArg::Expr(e)) => self.eval_semantic_expr(e)?,
+                Some(SemanticCallArg::Copy { name, .. }) => self.get_var(name, pos)?,
+                Some(SemanticCallArg::CopyFree { name, .. }) => self.get_var(name, pos)?,
+                _ => return Err(RuntimeError::UndefinedVar { pos, name: format!("missing alias arg {}", i) }),
+            };
+            alias_vals.push((alias_name.clone(), alias_type.clone().into(), val));
+        }
+
+        // Resolve regular params from remaining args
+        let regular_args = &args[extra_alias_count..];
+        let mut resolved_params: Vec<(String, Value)> = Vec::new();
+        for (param, arg) in sem_func.params.iter().zip(regular_args.iter()) {
             let val = match arg {
                 SemanticCallArg::Expr(e) => self.eval_semantic_expr(e)?,
                 SemanticCallArg::Copy { name, .. } => self.get_var(name, pos)?,
@@ -1912,21 +1936,20 @@ impl RunTime {
                     Value::Container(map)
                 }
             };
-            resolved_args.push((param.name.clone(), val));
+            resolved_params.push((param.name.clone(), val));
         }
 
         // Push scope
         self.push_function_scope();
 
         let result = (|| -> Result<Value, RuntimeError> {
-            // Bind each alias to the instance value
-            for (alias_name, alias_type) in &aliases {
-                let alias_ty: Type = alias_type.clone().into();
-                self.set_var_typed(alias_name.clone(), alias_ty, instance_val.clone(), pos)?;
+            // Bind all aliases into scope
+            for (alias_name, alias_ty, val) in &alias_vals {
+                self.set_var_typed(alias_name.clone(), alias_ty.clone(), val.clone(), pos)?;
             }
 
-            // Bind extra args
-            for (pname, val) in resolved_args {
+            // Bind regular params
+            for (pname, val) in resolved_params {
                 let ty = type_of_value(&val);
                 self.set_var_typed(pname, ty, val, pos)?;
             }
@@ -1948,22 +1971,36 @@ impl RunTime {
             }
         })();
 
-        // Capture alias mutations before popping scope
-        let mut mutated_value = None;
+        // Capture all alias mutations before popping scope
+        let mut mutated_aliases: Vec<(String, Value)> = Vec::new();
         if result.is_ok() {
-            for (alias_name, _) in &aliases {
+            for (alias_name, _, _) in &alias_vals {
                 if let Ok(mutated) = self.get_var(alias_name, pos) {
-                    mutated_value = Some(mutated);
-                    break; // primary alias only for now — multi-alias writeback is a separate fix
+                    mutated_aliases.push((alias_name.clone(), mutated));
                 }
             }
         }
 
         self.pop_scope();
 
-        // Write alias mutations back to caller scope
-        if let Some(mutated) = mutated_value {
-            let _ = self.set_var(instance.to_string(), mutated, pos);
+        // Write all alias mutations back to caller scope
+        // First alias writes back to instance
+        // Additional aliases write back to the variable names passed as leading args
+        if result.is_ok() {
+            for (i, (_, mutated)) in mutated_aliases.iter().enumerate() {
+                if i == 0 {
+                    let _ = self.set_var(instance.to_string(), mutated.clone(), pos);
+                } else if i <= extra_alias_count {
+                    // Get the original variable name from the leading arg
+                    if let Some(SemanticCallArg::Expr(e)) = args.get(i - 1) {
+                        if let SemanticExprKind::VarRef { name, .. } = &e.kind {
+                            let _ = self.set_var(name.clone(), mutated.clone(), pos);
+                        }
+                    } else if let Some(SemanticCallArg::Copy { name, .. }) = args.get(i - 1) {
+                        let _ = self.set_var(name.clone(), mutated.clone(), pos);
+                    }
+                }
+            }
         }
 
         result

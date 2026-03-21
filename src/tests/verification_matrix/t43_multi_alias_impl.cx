@@ -1,0 +1,28 @@
+struct Player {
+    health: t32,
+    position: t32,
+}
+
+struct World {
+    origin: t32,
+    gravity: t32,
+}
+
+world_sync: impl (p: Player, w: World) {
+    fnc: sync_position() {
+        p.position = w.origin
+    }
+
+    fnc: apply_gravity() {
+        p.health -= w.gravity
+    }
+}
+
+let p;
+p = Player { health: 100, position: 0 }
+let w;
+w = World { origin: 50, gravity: 10 }
+p.sync_position(w)
+p.apply_gravity(w)
+print(p.position)
+print(p.health)
