@@ -39,6 +39,7 @@ pub enum Type {
     T32,
     T64,
     T128,
+    F64,
     Bool,
     Str,
     StrRef,

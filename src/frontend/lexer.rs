@@ -131,6 +131,9 @@ pub enum Token {
     #[token("t128")]
     TypeT128,
 
+    #[token("f64")]
+    TypeF64,
+
     #[token("bool")]
     TypeBool,
 
