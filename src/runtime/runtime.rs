@@ -27,19 +27,10 @@ pub enum ScopeEvent {
     ArenaReset { bytes: usize, chunks: usize },
 }
 
-#[derive(Debug, Clone)]
-pub struct FuncDef {
-    type_params: Vec<String>,
-    params: Vec<ParamKind>,
-    body: Vec<Stmt>,
-    ret_expr: Option<Expr>,
-}
-
 pub struct ScopeFrame {
     pub vars: HashMap<String, VarEntry>,
     pub freed: HashSet<String>,
     pub bleed_back: HashMap<String, (usize, String)>,
-    pub local_funcs: HashMap<String, FuncDef>,
     pub arena: Option<Arena>,
     pub seen: HashSet<String>,
     // inner param name -> (outer scope index, outer var name)
@@ -50,34 +41,14 @@ pub struct RunTime {
     pub handles: HandleRegistry<Value>,
     pub enums: HashMap<String, EnumRuntimeInfo>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
-    pub impls: HashMap<(String, String), (Vec<(String, Type)>, (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>))>,
     pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, Arc<SemanticFunction>)>,
     scopes: Vec<ScopeFrame>,
-    funcs: HashMap<String, FuncDef>,
     pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
     pub consts: HashMap<String, Value>,
 }
 
 impl RunTime {
-    pub fn register_func(
-        &mut self,
-        name: String,
-        params: Vec<ParamKind>,
-        body: Vec<Stmt>,
-        ret_expr: Option<Expr>,
-    ) {
-        self.funcs.insert(
-            name,
-            FuncDef {
-                type_params: vec![],
-                params,
-                body,
-                ret_expr,
-            },
-        );
-    }
-
     pub fn register_semantic_func(&mut self, func: SemanticFunction) {
         self.semantic_funcs.insert(func.name.clone(), Arc::new(func));
     }
@@ -143,17 +114,15 @@ impl RunTime {
             handles: HandleRegistry::new(),
             enums: HashMap::new(),
             structs: HashMap::new(),
-            impls: HashMap::new(),
             semantic_impls: HashMap::new(),
             scopes: vec![ScopeFrame {
                 vars: HashMap::new(),
                 freed: HashSet::new(),
                 bleed_back: HashMap::new(),
-                local_funcs: HashMap::new(),
+
                 arena: None, // top level is not a function scope
                 seen: HashSet::new(),
             }],
-            funcs: HashMap::new(),
             semantic_funcs: HashMap::new(),
             debug_scope: false,
             consts: HashMap::new(),
@@ -165,7 +134,6 @@ impl RunTime {
             vars: HashMap::new(),
             freed: HashSet::new(),
             bleed_back: HashMap::new(),
-            local_funcs: HashMap::new(),
             arena: None, // block scope - no arena
             seen: HashSet::new(),
         });
@@ -182,7 +150,6 @@ impl RunTime {
             vars: HashMap::new(),
             freed: HashSet::new(),
             bleed_back: HashMap::new(),
-            local_funcs: HashMap::new(),
             arena: Some(Arena::new()), // function scope - gets its own arena
             seen: HashSet::new(),
         });
@@ -932,15 +899,7 @@ impl RunTime {
             SemanticStmt::Break { .. } => Err(RuntimeError::BreakSignal),
             SemanticStmt::Continue { .. } => Err(RuntimeError::ContinueSignal),
             SemanticStmt::FuncDef(sem_func) => {
-                // Register in semantic registry for semantic dispatch
                 self.semantic_funcs.insert(sem_func.name.clone(), Arc::new(sem_func.clone()));
-                // Also register in AST registry for copy-param fallback path
-                self.funcs.insert(sem_func.name.clone(), FuncDef {
-                    type_params: sem_func.type_params.clone(),
-                    params: sem_func.params.iter().map(|p| semantic_param_to_ast(&p.kind)).collect(),
-                    body: vec![],
-                    ret_expr: None,
-                });
                 Ok(())
             }
             SemanticStmt::StructDef { name, fields, .. } => {
@@ -955,16 +914,8 @@ impl RunTime {
                             _ => continue,
                         };
                         self.semantic_impls.insert(
-                            (type_key.clone(), sem_func.name.clone()),
-                            (aliases.clone(), Arc::new(sem_func.clone())),
-                        );
-                        // Keep existing AST impls registration for copy param fallback
-                        self.impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),
-                             (sem_func.name.clone(), sem_func.params.iter().map(|p| semantic_param_to_ast(&p.kind)).collect(),
-                              sem_func.return_ty.as_ref().map(|t| t.clone().into()),
-                              vec![], None))
+                            (aliases.clone(), Arc::new(sem_func.clone())),
                         );
                     }
                 }
@@ -1645,15 +1596,6 @@ fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeE
         }
     }
     Ok(out)
-}
-
-fn semantic_param_to_ast(sk: &SemanticParamKind) -> ParamKind {
-    match sk {
-        SemanticParamKind::Typed => ParamKind::Typed("_".into(), Type::T64), // placeholder — name comes from SemanticParam
-        SemanticParamKind::Copy => ParamKind::Copy("_".into()),
-        SemanticParamKind::CopyFree => ParamKind::CopyFree("_".into()),
-        SemanticParamKind::CopyInto => ParamKind::CopyInto(String::new(), vec![]),
-    }
 }
 
 impl From<SemanticType> for Type {
