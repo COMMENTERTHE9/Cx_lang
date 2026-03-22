@@ -1,0 +1,18 @@
+x: t32 = 2
+
+result: t32 = when x {
+    1 => 10,
+    2 => 20,
+    _ => 0,
+}
+
+print(result)
+
+y: t32 = 5
+label: t32 = when y {
+    1 => 100,
+    2 => 200,
+    _ => 999,
+}
+
+print(label)

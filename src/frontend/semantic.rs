@@ -1078,6 +1078,36 @@ impl Analyzer {
                     },
                 })
             }
+            Expr::When(match_expr, arms, pos) => {
+                let semantic_match = self.analyze_expr(match_expr)?;
+                let mut semantic_arms = Vec::new();
+                let mut result_ty = SemanticType::Unknown;
+                for (i, arm) in arms.iter().enumerate() {
+                    let pattern = self.analyze_when_pattern(&arm.pattern);
+                    let body: Vec<SemanticStmt> = match &arm.body {
+                        WhenBody::Stmts(stmts) => stmts.iter()
+                            .map(|s| self.analyze_stmt(s))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        WhenBody::SuperGroup(_) => Vec::new(),
+                    };
+                    if i == 0 {
+                        if let Some(last) = body.last() {
+                            if let SemanticStmt::ExprStmt { expr, .. } = last {
+                                result_ty = expr.ty.clone();
+                            }
+                        }
+                    }
+                    semantic_arms.push(SemanticWhenArm { pattern, body, pos: arm.pos });
+                }
+                Ok(SemanticExpr {
+                    ty: result_ty,
+                    kind: SemanticExprKind::When {
+                        expr: Box::new(semantic_match),
+                        arms: semantic_arms,
+                        pos: *pos,
+                    },
+                })
+            }
             Expr::MethodCall(instance, method, args, pos) => {
                 // look up the instance variable to find its type
                 let _instance_ty = self.lookup_var(instance)

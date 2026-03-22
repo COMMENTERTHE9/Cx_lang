@@ -82,6 +82,7 @@ pub enum Expr {
     ArrayLit(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>, usize),
     MethodCall(String, String, Vec<CallArg>, usize),
+    When(Box<Expr>, Vec<WhenArm>, usize),
 }
 
 #[derive(Debug, Clone)]

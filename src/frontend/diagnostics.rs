@@ -437,6 +437,10 @@ fn print_expr(expr: &Expr, depth: usize) {
                 }
             }
         }
+        Expr::When(match_expr, arms, _) => {
+            eprintln!("{}WhenExpr({} arms)", pad, arms.len());
+            print_expr(match_expr, depth + 1);
+        }
     }
 }
 

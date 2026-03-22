@@ -734,6 +734,11 @@ impl RunTime {
                     _ => Err(RuntimeError::BadAssignTarget { pos: *pos })
                 }
             }
+            SemanticExprKind::When { expr, arms, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                let result = self.run_semantic_when(val, arms)?;
+                Ok(result)
+            }
             SemanticExprKind::MethodCall { instance, method, args, pos } => {
                 self.call_semantic_method(instance, method, args, *pos)
             }
@@ -983,7 +988,8 @@ impl RunTime {
             }
             SemanticStmt::When { expr, arms, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
-                self.run_semantic_when(val, arms)
+                self.run_semantic_when(val, arms)?;
+                Ok(())
             }
             SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
                 let cond_val = self.eval_semantic_expr(condition)?;
@@ -1445,7 +1451,7 @@ impl RunTime {
         print!("{}", value_to_string(self, val.clone()));
     }
 
-    fn run_semantic_when(&mut self, val: Value, arms: &[SemanticWhenArm]) -> Result<(), RuntimeError> {
+    fn run_semantic_when(&mut self, val: Value, arms: &[SemanticWhenArm]) -> Result<Value, RuntimeError> {
         for arm in arms {
             let matches = match &arm.pattern {
                 SemanticWhenPattern::Literal(sv) => {
@@ -1477,17 +1483,25 @@ impl RunTime {
             };
             if matches {
                 self.push_scope();
+                let mut last_val = Value::Num(0);
                 for s in &arm.body {
-                    match self.run_semantic_stmt(s) {
-                        Ok(_) => {}
-                        Err(e) => { self.pop_scope(); return Err(e); }
+                    match s {
+                        SemanticStmt::ExprStmt { expr, .. } => {
+                            last_val = self.eval_semantic_expr(expr)?;
+                        }
+                        _ => {
+                            match self.run_semantic_stmt(s) {
+                                Ok(_) => {}
+                                Err(e) => { self.pop_scope(); return Err(e); }
+                            }
+                        }
                     }
                 }
                 self.pop_scope();
-                return Ok(());
+                return Ok(last_val);
             }
         }
-        Ok(())
+        Ok(Value::Num(0))
     }
 }
 

@@ -126,6 +126,11 @@ pub enum SemanticExprKind {
         type_name: String,
         fields: Vec<(String, SemanticExpr)>,
     },
+    When {
+        expr: Box<SemanticExpr>,
+        arms: Vec<SemanticWhenArm>,
+        pos: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
