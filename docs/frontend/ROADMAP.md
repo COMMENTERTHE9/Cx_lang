@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.3 — 2026-03-22
+v4.4 — 2026-03-22
 
 ---
 
@@ -126,12 +126,12 @@ These are not features. These are conditions. A long gate list that never closes
 
 ### Hard Blockers (must ship, 0.1 does not exist without these)
 
-- [ ] `f64` type keyword — runtime exists, surface syntax missing. 1-hour fix, breaking change post-0.1
+- [x] `f64` type keyword — full pipeline landed 2026-03-22, t55 passing
 - [ ] Generic structs `Struct<T>` — stdlib needs them. `Handle<T>` already works, extend to user-defined structs
 - [ ] `read(var)` stdin input — without input, programs are calculators. `input("prompt", var)` also needed
-- [ ] `const` declarations — literal-only. Semantic pass rejects reassignment
-- [ ] Value-producing `when` — `let x = when y { 1 => 10, _ => 0 }`. Semantic structure already there
-- [ ] `when` block-body arms — verified working with a matrix test
+- [x] `const` declarations — landed 2026-03-22, t56/t57 passing
+- [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
+- [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [ ] Multi-file imports working — programs can span multiple .cx files
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
@@ -149,7 +149,7 @@ These are not features. These are conditions. A long gate list that never closes
 ### Quality Gates (strongly desired, delays release if missing)
 
 - [ ] `:=` type inference for literals and simple expressions
-- [ ] `when` as value-producing expression
+- [x] `when` as value-producing expression — landed 2026-03-22
 - [ ] Pattern matching — named binding `as v` and guard clauses `if n > 5`
 - [ ] `NullPoint<T>` — nullable pointer mapping into unknown/known model
 - [ ] Generics v3 — type bounds `T: Numeric`, `T: Known`
@@ -203,6 +203,13 @@ These are not features. These are conditions. A long gate list that never closes
 - seen and order on RunTime — cleared correctly, no accumulation
 - run_stmt free function vs eval_expr method — structural inconsistency resolved
 
+**Language Features Sprint — Complete (2026-03-22)**
+- f64 type keyword — full pipeline lexer to runtime, t55 passing
+- const declarations + pub keyword — literal-only, semantic rejects reassignment, t56/t57
+- Value-producing when — full pipeline, t59 passing
+- when block-body arms — verified with t58
+- SemanticType::Void — void function call typing fixed
+
 **Code Quality Sprint — Complete (2026-03-22)**
 - Arc<SemanticFunction> — function bodies stored as Arc, no clone on every call
 - sem_err! macro — 51 SemanticError constructions collapsed to 1-line macro calls
@@ -216,9 +223,8 @@ These are not features. These are conditions. A long gate list that never closes
 
 ## Active 🔄
 
-- **Backend IR Phase 6** — function call lowering. IR lowering handles if/else. Calls, loops, structs not yet lowered.
+- **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
 - **t42 generics fix** — TypeParam vs Struct ambiguity in nested generic calls. Known root cause, fix in progress.
-- **`f64` surface keyword** — runtime complete, parser keyword missing. Next quick win.
 
 ---
 
@@ -231,7 +237,7 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught.
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries.
-- **`when` block-body arms** — single-expression arms tested, block bodies not yet verified with a matrix test.
+- ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
 - **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
 - **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
@@ -497,6 +503,17 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 54 tests, 54/54 green
 - Version bumped to v4.2
+
+## Key Changes from v4.3
+
+- f64, const, value-producing when, when block-body arms all checked off as hard blockers
+- Language Features Sprint added to Done
+- Backend IR Phase 6 updated — Stages 2b/3 (function call lowering + validation) landed
+- f64 surface keyword removed from Active (complete)
+- when block-body arms removed from Known Gaps (resolved)
+- when as value-producing expression checked off in Quality Gates
+- Test matrix at 59 tests, 59/59 green
+- Version bumped to v4.4
 
 ## Key Changes from v4.2
 
