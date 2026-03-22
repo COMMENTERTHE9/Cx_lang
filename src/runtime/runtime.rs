@@ -2215,50 +2215,12 @@ impl RunTime {
         result
     }
 
-    fn print_value(&self, v: &Value) {
-        match v {
-            Value::Num(n) => println!("{}", n),
-            Value::Float(x) => println!("{}", x),
-            Value::Str(off, len) => println!("{}", self.resolve_str(*off, *len)),
-            Value::Bool(b) => println!("{}", b),
-            Value::TBool(b) => println!("{}", match b { 0 => "false", 1 => "true", _ => "?" }),
-            Value::Char(c) => println!("{}", c),
-            Value::EnumVariant(e, v) => println!("{}::{}", e, v),
-            Value::Unknown(_) => println!("?"),
-            Value::Array(elems) => {
-                let parts: Vec<String> = elems.iter().map(|v| format!("{:?}", v)).collect();
-                println!("[{}]", parts.join(", "));
-            }
-            Value::Handle(h) => println!("handle({},{})", h.slot, h.gen),
-            Value::Container(map) => println!("{:?}", map),
-            Value::Struct(name, map) => {
-                let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {:?}", k, v)).collect();
-                println!("{} {{ {} }}", name, parts.join(", "));
-            }
-        }
+    fn print_value(&self, val: &Value) {
+        println!("{}", value_to_string(self, val.clone()));
     }
 
-    fn print_value_inline(&self, v: &Value) {
-        match v {
-            Value::Num(n) => print!("{}", n),
-            Value::Float(x) => print!("{}", x),
-            Value::Str(off, len) => print!("{}", self.resolve_str(*off, *len)),
-            Value::Bool(b) => print!("{}", b),
-            Value::TBool(b) => print!("{}", match b { 0 => "false", 1 => "true", _ => "?" }),
-            Value::Char(c) => print!("{}", c),
-            Value::EnumVariant(e, v) => print!("{}::{}", e, v),
-            Value::Unknown(_) => print!("?"),
-            Value::Array(elems) => {
-                let parts: Vec<String> = elems.iter().map(|v| format!("{:?}", v)).collect();
-                print!("[{}]", parts.join(", "));
-            }
-            Value::Handle(h) => print!("handle({},{})", h.slot, h.gen),
-            Value::Container(map) => print!("{:?}", map),
-            Value::Struct(name, map) => {
-                let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {:?}", k, v)).collect();
-                print!("{} {{ {} }}", name, parts.join(", "));
-            }
-        }
+    fn print_value_inline(&self, val: &Value) {
+        print!("{}", value_to_string(self, val.clone()));
     }
 
     fn run_semantic_when(&mut self, val: Value, arms: &[SemanticWhenArm]) -> Result<(), RuntimeError> {
