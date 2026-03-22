@@ -9,6 +9,15 @@ pub struct SemanticError {
     pub pos: usize,
 }
 
+macro_rules! sem_err {
+    ($pos:expr, $msg:expr) => {
+        SemanticError { msg: $msg.to_string(), pos: $pos }
+    };
+    ($pos:expr, $fmt:literal, $($arg:expr),+) => {
+        SemanticError { msg: format!($fmt, $($arg),+), pos: $pos }
+    };
+}
+
 #[derive(Debug, Clone)]
 struct VarInfo {
     binding: BindingId,
@@ -113,10 +122,7 @@ impl Analyzer {
         let binding = self.fresh_binding();
         let scope = self.scopes.last_mut().unwrap();
         if scope.contains_key(name) {
-            return Err(SemanticError {
-                msg: format!("variable already declared in this scope: {}", name),
-                pos,
-            });
+            return Err(sem_err!(pos, "variable already declared in this scope: {}", name));
         }
         scope.insert(
             name.to_string(),
@@ -314,19 +320,12 @@ impl Analyzer {
             } => {
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
-                    return Err(SemanticError {
-                        msg: "cannot assign a StrRef to a variable — use an owned str instead"
-                            .to_string(),
-                        pos: *pos_eq,
-                    });
+                    return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
                 let tp = self.current_type_params.clone();
                 let target = match target {
                     Expr::Ident(name, _) => {
-                        let info = self.lookup_var_mut(name).ok_or_else(|| SemanticError {
-                            msg: format!("use of undeclared variable '{}'", name),
-                            pos: *pos_eq,
-                        })?;
+                        let info = self.lookup_var_mut(name).ok_or_else(|| sem_err!(*pos_eq, "use of undeclared variable '{}'", name))?;
 
                         if let Some(declared) = &info.declared {
                             let expected = semantic_type_from_decl(declared.clone(), &tp);
@@ -363,15 +362,9 @@ impl Analyzer {
                         }
                     }
                     Expr::DotAccess(container, field) => {
-                        let info = self.lookup_var(container).ok_or_else(|| SemanticError {
-                            msg: format!("use of undeclared variable '{}'", container),
-                            pos: *pos_eq,
-                        })?;
+                        let info = self.lookup_var(container).ok_or_else(|| sem_err!(*pos_eq, "use of undeclared variable '{}'", container))?;
                         if !info.initialized {
-                            return Err(SemanticError {
-                                msg: format!("use of uninitialized variable '{}'", container),
-                                pos: *pos_eq,
-                            });
+                            return Err(sem_err!(*pos_eq, "use of uninitialized variable '{}'", container));
                         }
                         SemanticLValue::DotAccess {
                             binding: Some(info.binding),
@@ -381,10 +374,7 @@ impl Analyzer {
                         }
                     }
                     _ => {
-                        return Err(SemanticError {
-                            msg: "bad assignment target".to_string(),
-                            pos: *pos_eq,
-                        });
+                        return Err(sem_err!(*pos_eq, "bad assignment target"));
                     }
                 };
 
@@ -403,11 +393,7 @@ impl Analyzer {
                 let declared_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
-                    return Err(SemanticError {
-                        msg: "cannot assign a StrRef to a variable — use an owned str instead"
-                            .to_string(),
-                        pos: *pos_type,
-                    });
+                    return Err(sem_err!(*pos_type, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
 
                 if let Expr::Val(AstValue::Num(n)) = expr {
@@ -492,13 +478,7 @@ impl Analyzer {
                                         .any(|(_, subs)| subs.iter().any(|(sub, _)| sub == group_name))
                             });
                             if !found {
-                                return Err(SemanticError {
-                                    msg: format!(
-                                        "'{}' is not a known group or super-group name",
-                                        group_name
-                                    ),
-                                    pos: *pos,
-                                });
+                                return Err(sem_err!(*pos, "'{}' is not a known group or super-group name", group_name));
                             }
                         }
 
@@ -511,10 +491,7 @@ impl Analyzer {
                                 let super_name = if let WhenPattern::Group(_, name) = &arm.pattern {
                                     name.clone()
                                 } else {
-                                    return Err(SemanticError {
-                                        msg: "super-group handler list is only valid on a group pattern arm".to_string(),
-                                        pos: *pos,
-                                    });
+                                    return Err(sem_err!(*pos, "super-group handler list is only valid on a group pattern arm"));
                                 };
 
                                 let sub_groups: Vec<String> = self
@@ -528,21 +505,10 @@ impl Analyzer {
                                                 subs.iter().map(|(s, _)| s.clone()).collect()
                                             })
                                     })
-                                    .ok_or_else(|| SemanticError {
-                                        msg: format!("'{}' is not a known super-group name", super_name),
-                                        pos: *pos,
-                                    })?;
+                                    .ok_or_else(|| sem_err!(*pos, "'{}' is not a known super-group name", super_name))?;
 
                                 if handlers.len() != sub_groups.len() {
-                                    return Err(SemanticError {
-                                        msg: format!(
-                                            "super-group '{}' has {} sub-groups but {} handlers were provided",
-                                            super_name,
-                                            sub_groups.len(),
-                                            handlers.len()
-                                        ),
-                                        pos: *pos,
-                                    });
+                                    return Err(sem_err!(*pos, "super-group '{}' has {} sub-groups but {} handlers were provided", super_name, sub_groups.len(), handlers.len()));
                                 }
 
                                 let mut semantic_stmts = Vec::new();
@@ -551,15 +517,7 @@ impl Analyzer {
                                         SuperGroupHandler::Placeholder => {
                                             let sub_name = &sub_groups[i];
                                             if !explicit_groups.contains(sub_name) {
-                                                return Err(SemanticError {
-                                                    msg: format!(
-                                                        "{{_}} at position {} covers sub-group '{}' but no explicit arm for '{}' exists in this when block",
-                                                        i + 1,
-                                                        sub_name,
-                                                        sub_name
-                                                    ),
-                                                    pos: *pos,
-                                                });
+                                                return Err(sem_err!(*pos, "{{_}} at position {} covers sub-group '{}' but no explicit arm for '{}' exists in this when block", i + 1, sub_name, sub_name));
                                             }
                                         }
                                         SuperGroupHandler::Stmts(stmts) => {
@@ -597,10 +555,7 @@ impl Analyzer {
             } => {
                 let semantic_condition = self.analyze_expr(condition)?;
                 if matches!(semantic_condition.ty, SemanticType::Unknown) {
-                    return Err(SemanticError {
-                        msg: "Unknown value cannot be used as an if condition — control-critical context".to_string(),
-                        pos: *pos,
-                    });
+                    return Err(sem_err!(*pos, "Unknown value cannot be used as an if condition — control-critical context"));
                 }
                 let semantic_then = then_body
                     .iter()
@@ -687,10 +642,7 @@ impl Analyzer {
             Stmt::While { cond, body, pos } => {
                 let semantic_cond = self.analyze_expr(cond)?;
                 if matches!(semantic_cond.ty, SemanticType::Unknown) {
-                    return Err(SemanticError {
-                        msg: "Unknown value cannot be used as a loop condition â€” control-critical context".to_string(),
-                        pos: *pos,
-                    });
+                    return Err(sem_err!(*pos, "Unknown value cannot be used as a loop condition â€” control-critical context"));
                 }
                 let semantic_body = body
                     .iter()
@@ -837,35 +789,18 @@ impl Analyzer {
         let semantic_ret_expr = if let Some(expr) = ret_expr {
             let mut expr = self.analyze_expr(expr)?;
             if expr.ty == SemanticType::StrRef {
-                return Err(SemanticError {
-                    msg: "cannot return a StrRef — it does not outlive its origin scope"
-                        .to_string(),
-                    pos,
-                });
+                return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
             }
             if let Some(expected) = &self.current_ret_ty {
                 if !types_compatible(expected, &expr.ty) {
-                    return Err(SemanticError {
-                        msg: format!(
-                            "return type mismatch: expected {:?}, got {:?}",
-                            classify_type(expected),
-                            classify_type(&expr.ty)
-                        ),
-                        pos,
-                    });
+                    return Err(sem_err!(pos, "return type mismatch: expected {:?}, got {:?}", classify_type(expected), classify_type(&expr.ty)));
                 }
                 expr = insert_cast_if_needed(expr, expected);
             }
             Some(expr)
         } else {
             if ret_ty.is_some() && !contains_return_stmt(body) {
-                return Err(SemanticError {
-                    msg: format!(
-                        "missing return value, expected {:?}",
-                        classify_type(&semantic_type_from_decl(ret_ty.clone().unwrap(), type_params))
-                    ),
-                    pos,
-                });
+                return Err(sem_err!(pos, "missing return value, expected {:?}", classify_type(&semantic_type_from_decl(ret_ty.clone().unwrap(), type_params))));
             }
             None
         };
@@ -893,50 +828,27 @@ impl Analyzer {
         pos: usize,
     ) -> Result<SemanticStmt, SemanticError> {
         if !self.in_function {
-            return Err(SemanticError {
-                msg: "return used outside function body".to_string(),
-                pos,
-            });
+            return Err(sem_err!(pos, "return used outside function body"));
         }
 
         let expr = match (expr, self.current_ret_ty.clone()) {
             (Some(expr), Some(expected)) => {
                 let expr = self.analyze_expr(expr)?;
                 if expr.ty == SemanticType::StrRef {
-                    return Err(SemanticError {
-                        msg: "cannot return a StrRef — it does not outlive its origin scope"
-                            .to_string(),
-                        pos,
-                    });
+                    return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
                 }
                 if !types_compatible(&expected, &expr.ty) {
-                    return Err(SemanticError {
-                        msg: format!(
-                            "return type mismatch: expected {:?}, got {:?}",
-                            classify_type(&expected),
-                            classify_type(&expr.ty)
-                        ),
-                        pos,
-                    });
+                    return Err(sem_err!(pos, "return type mismatch: expected {:?}, got {:?}", classify_type(&expected), classify_type(&expr.ty)));
                 }
                 Some(insert_cast_if_needed(expr, &expected))
             }
             (None, None) => None,
             (None, Some(expected)) => {
-                return Err(SemanticError {
-                    msg: format!(
-                        "missing return value, expected {:?}",
-                        classify_type(&expected)
-                    ),
-                    pos,
-                });
+                return Err(sem_err!(pos, "missing return value, expected {:?}", classify_type(&expected)));
             }
             (Some(expr), None) => {
                 self.analyze_expr(expr)?;
-                return Err(SemanticError {
-                    msg: "unexpected return value in void function".to_string(),
-                    pos,
-                });
+                return Err(sem_err!(pos, "unexpected return value in void function"));
             }
         };
 
@@ -963,17 +875,11 @@ impl Analyzer {
                     ..
                 } if name == var => {
                     self.pop_scope();
-                    return Err(SemanticError {
-                        msg: format!("loop variable '{}' is read-only", var),
-                        pos,
-                    });
+                    return Err(sem_err!(pos, "loop variable '{}' is read-only", var));
                 }
                 Stmt::CompoundAssign { target, .. } if matches!(target, AssignTarget::Var(n) if n == var) => {
                     self.pop_scope();
-                    return Err(SemanticError {
-                        msg: format!("loop variable '{}' is read-only", var),
-                        pos,
-                    });
+                    return Err(sem_err!(pos, "loop variable '{}' is read-only", var));
                 }
                 _ => semantic_body.push(self.analyze_stmt(stmt)?),
             }
@@ -1039,15 +945,9 @@ impl Analyzer {
                 kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums)),
             }),
             Expr::Ident(name, pos) => {
-                let info = self.lookup_var(name).ok_or_else(|| SemanticError {
-                    msg: format!("use of undeclared variable '{}'", name),
-                    pos: *pos,
-                })?;
+                let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
                 if !info.initialized {
-                    return Err(SemanticError {
-                        msg: format!("use of uninitialized variable '{}'", name),
-                        pos: *pos,
-                    });
+                    return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
                 }
                 Ok(SemanticExpr {
                     ty: binding_type(info, &self.current_type_params),
@@ -1058,15 +958,9 @@ impl Analyzer {
                 })
             }
             Expr::DotAccess(container, field) => {
-                let info = self.lookup_var(container).ok_or_else(|| SemanticError {
-                    msg: format!("use of undeclared variable '{}'", container),
-                    pos: 0,
-                })?;
+                let info = self.lookup_var(container).ok_or_else(|| sem_err!(0, "use of undeclared variable '{}'", container))?;
                 if !info.initialized {
-                    return Err(SemanticError {
-                        msg: format!("use of uninitialized variable '{}'", container),
-                        pos: 0,
-                    });
+                    return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::I128,
@@ -1080,11 +974,7 @@ impl Analyzer {
             Expr::HandleNew(inner, pos) => {
                 let inner_analyzed = self.analyze_expr(inner)?;
                 if inner_analyzed.ty == SemanticType::StrRef {
-                    return Err(SemanticError {
-                        msg: "cannot store a StrRef in a Handle — use an owned str instead"
-                            .to_string(),
-                        pos: *pos,
-                    });
+                    return Err(sem_err!(*pos, "cannot store a StrRef in a Handle — use an owned str instead"));
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::Handle(Box::new(SemanticType::I128)),
@@ -1095,15 +985,9 @@ impl Analyzer {
                 })
             }
             Expr::HandleVal(name, pos) => {
-                let info = self.lookup_var(name).ok_or_else(|| SemanticError {
-                    msg: format!("use of undeclared variable '{}'", name),
-                    pos: *pos,
-                })?;
+                let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
                 if !info.initialized {
-                    return Err(SemanticError {
-                        msg: format!("use of uninitialized variable '{}'", name),
-                        pos: *pos,
-                    });
+                    return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::I128,
@@ -1115,15 +999,9 @@ impl Analyzer {
                 })
             }
             Expr::HandleDrop(name, pos) => {
-                let info = self.lookup_var(name).ok_or_else(|| SemanticError {
-                    msg: format!("use of undeclared variable '{}'", name),
-                    pos: *pos,
-                })?;
+                let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
                 if !info.initialized {
-                    return Err(SemanticError {
-                        msg: format!("use of uninitialized variable '{}'", name),
-                        pos: *pos,
-                    });
+                    return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::Handle(Box::new(SemanticType::I128)),
@@ -1251,10 +1129,7 @@ impl Analyzer {
             let expr = match args.first() {
                 Some(CallArg::Expr(expr)) => self.analyze_expr(expr)?,
                 _ => {
-                    return Err(SemanticError {
-                        msg: format!("call to undefined function '{}'", name),
-                        pos,
-                    });
+                    return Err(sem_err!(pos, "call to undefined function '{}'", name));
                 }
             };
             return Ok(SemanticExpr {
@@ -1267,21 +1142,10 @@ impl Analyzer {
             });
         }
 
-        let function = self.funcs.get(name).cloned().ok_or_else(|| SemanticError {
-            msg: format!("call to undefined function '{}'", name),
-            pos,
-        })?;
+        let function = self.funcs.get(name).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
 
         if args.len() != function.params.len() {
-            return Err(SemanticError {
-                msg: format!(
-                    "function '{}' expects {} argument(s), got {}",
-                    name,
-                    function.params.len(),
-                    args.len()
-                ),
-                pos,
-            });
+            return Err(sem_err!(pos, "function '{}' expects {} argument(s), got {}", name, function.params.len(), args.len()));
         }
 
         // Resolve type parameters from typed arguments
@@ -1294,16 +1158,7 @@ impl Analyzer {
                             let analyzed = self.analyze_expr(expr)?;
                             if let Some(existing) = type_param_map.get(tname) {
                                 if !types_compatible(existing, &analyzed.ty) {
-                                    return Err(SemanticError {
-                                        msg: format!(
-                                            "type parameter '{}' is bound to {:?} but argument {} has {:?}",
-                                            tname,
-                                            classify_type(existing),
-                                            index + 1,
-                                            classify_type(&analyzed.ty)
-                                        ),
-                                        pos,
-                                    });
+                                    return Err(sem_err!(pos, "type parameter '{}' is bound to {:?} but argument {} has {:?}", tname, classify_type(existing), index + 1, classify_type(&analyzed.ty)));
                                 }
                             } else {
                                 type_param_map.insert(tname.clone(), analyzed.ty.clone());
@@ -1331,16 +1186,7 @@ impl Analyzer {
                     let expr = self.analyze_expr(expr)?;
                     let expr = if let Some(expected) = expected {
                         if !types_compatible(&expected, &expr.ty) {
-                            return Err(SemanticError {
-                                msg: format!(
-                                    "argument {} to '{}': expected {:?}, got {:?}",
-                                    index + 1,
-                                    name,
-                                    classify_type(&expected),
-                                    classify_type(&expr.ty)
-                                ),
-                                pos,
-                            });
+                            return Err(sem_err!(pos, "argument {} to '{}': expected {:?}, got {:?}", index + 1, name, classify_type(&expected), classify_type(&expr.ty)));
                         }
                         insert_cast_if_needed(expr, &expected)
                     } else {
@@ -1349,15 +1195,9 @@ impl Analyzer {
                     semantic_args.push(SemanticCallArg::Expr(expr));
                 }
                 CallArg::Copy(outer_name) => {
-                    let info = self.lookup_var(outer_name).ok_or_else(|| SemanticError {
-                        msg: format!("'.copy' argument '{}' has not been declared", outer_name),
-                        pos,
-                    })?;
+                    let info = self.lookup_var(outer_name).ok_or_else(|| sem_err!(pos, "'.copy' argument '{}' has not been declared", outer_name))?;
                     if !info.initialized {
-                        return Err(SemanticError {
-                            msg: format!("'.copy' argument '{}' is not initialized", outer_name),
-                            pos,
-                        });
+                        return Err(sem_err!(pos, "'.copy' argument '{}' is not initialized", outer_name));
                     }
                     semantic_args.push(SemanticCallArg::Copy {
                         binding: info.binding,
@@ -1365,15 +1205,9 @@ impl Analyzer {
                     });
                 }
                 CallArg::CopyFree(outer_name) => {
-                    let info = self.lookup_var(outer_name).ok_or_else(|| SemanticError {
-                        msg: format!("'.copy' argument '{}' has not been declared", outer_name),
-                        pos,
-                    })?;
+                    let info = self.lookup_var(outer_name).ok_or_else(|| sem_err!(pos, "'.copy' argument '{}' has not been declared", outer_name))?;
                     if !info.initialized {
-                        return Err(SemanticError {
-                            msg: format!("'.copy' argument '{}' is not initialized", outer_name),
-                            pos,
-                        });
+                        return Err(sem_err!(pos, "'.copy' argument '{}' is not initialized", outer_name));
                     }
                     semantic_args.push(SemanticCallArg::CopyFree {
                         binding: info.binding,
@@ -1383,21 +1217,9 @@ impl Analyzer {
                 CallArg::CopyInto(outer_names) => {
                     let mut resolved = Vec::with_capacity(outer_names.len());
                     for outer_name in outer_names {
-                        let info = self.lookup_var(outer_name).ok_or_else(|| SemanticError {
-                            msg: format!(
-                                "copy_into variable '{}' has not been declared",
-                                outer_name
-                            ),
-                            pos,
-                        })?;
+                        let info = self.lookup_var(outer_name).ok_or_else(|| sem_err!(pos, "copy_into variable '{}' has not been declared", outer_name))?;
                         if !info.initialized {
-                            return Err(SemanticError {
-                                msg: format!(
-                                    "copy_into variable '{}' is not initialized",
-                                    outer_name
-                                ),
-                                pos,
-                            });
+                            return Err(sem_err!(pos, "copy_into variable '{}' is not initialized", outer_name));
                         }
                         resolved.push(ResolvedBinding {
                             binding: info.binding,
@@ -1448,14 +1270,7 @@ impl Analyzer {
                     });
                 }
                 if !is_numeric(&lhs.ty) || !is_numeric(&rhs.ty) {
-                    return Err(SemanticError {
-                        msg: format!(
-                            "arithmetic requires numeric operands, got {:?} and {:?}",
-                            classify_type(&lhs.ty),
-                            classify_type(&rhs.ty)
-                        ),
-                        pos: op_pos,
-                    });
+                    return Err(sem_err!(op_pos, "arithmetic requires numeric operands, got {:?} and {:?}", classify_type(&lhs.ty), classify_type(&rhs.ty)));
                 }
 
                 let result_ty = common_numeric_type(&lhs.ty, &rhs.ty);
@@ -1520,15 +1335,7 @@ impl Analyzer {
                     });
                 }
 
-                Err(SemanticError {
-                    msg: format!(
-                        "cannot compare {:?} {:?} {:?}",
-                        classify_type(&lhs.ty),
-                        op,
-                        classify_type(&rhs.ty)
-                    ),
-                    pos: op_pos,
-                })
+                Err(sem_err!(op_pos, "cannot compare {:?} {:?} {:?}", classify_type(&lhs.ty), op, classify_type(&rhs.ty)))
             }
             Op::Lt | Op::Gt | Op::LtEq | Op::GtEq => {
                 if lhs.ty == SemanticType::Unknown || rhs.ty == SemanticType::Unknown {
@@ -1572,14 +1379,7 @@ impl Analyzer {
                         },
                     })
                 } else {
-                    Err(SemanticError {
-                        msg: format!(
-                            "logical operation requires bool operands, got {:?} and {:?}",
-                            classify_type(&lhs.ty),
-                            classify_type(&rhs.ty)
-                        ),
-                        pos: op_pos,
-                    })
+                    Err(sem_err!(op_pos, "logical operation requires bool operands, got {:?} and {:?}", classify_type(&lhs.ty), classify_type(&rhs.ty)))
                 }
             }
         }
@@ -1587,14 +1387,7 @@ impl Analyzer {
 }
 
 fn type_mismatch_error(expected: &SemanticType, got: &SemanticType, pos: usize) -> SemanticError {
-    SemanticError {
-        msg: format!(
-            "type mismatch: expected {:?}, got {:?}",
-            classify_type(expected),
-            classify_type(got)
-        ),
-        pos,
-    }
+    sem_err!(pos, "type mismatch: expected {:?}, got {:?}", classify_type(expected), classify_type(got))
 }
 
 fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
@@ -1638,10 +1431,7 @@ fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
 
     if let Some((min, max)) = bounds {
         if n < min || n > max {
-            return Err(SemanticError {
-                msg: format!("value {} overflows type {:?} (range {}..{})", n, ty, min, max),
-                pos,
-            });
+            return Err(sem_err!(pos, "value {} overflows type {:?} (range {}..{})", n, ty, min, max));
         }
     }
     Ok(())
