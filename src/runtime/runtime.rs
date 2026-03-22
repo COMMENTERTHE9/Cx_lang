@@ -6,13 +6,6 @@ use crate::runtime::handle::HandleRegistry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
-pub struct EnumRuntimeInfo {
-    pub variants: Vec<String>,
-    pub groups: HashMap<String, Vec<String>>,
-    pub super_group_order: HashMap<String, Vec<String>>,
-}
-
 #[derive(Debug)]
 pub enum ScopeEvent {
     Open(String),
@@ -39,7 +32,6 @@ pub struct ScopeFrame {
 pub struct RunTime {
     pub string_arena: Vec<u8>,
     pub handles: HandleRegistry<Value>,
-    pub enums: HashMap<String, EnumRuntimeInfo>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
     pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, Arc<SemanticFunction>)>,
     scopes: Vec<ScopeFrame>,
@@ -62,24 +54,6 @@ impl RunTime {
     pub fn resolve_str(&self, offset: u32, len: u32) -> &str {
         let bytes = &self.string_arena[offset as usize..(offset + len) as usize];
         std::str::from_utf8(bytes).expect("arena string was not valid utf8")
-    }
-
-    fn super_group_handler_index(
-        &self,
-        enum_name: &str,
-        super_name: &str,
-        variant_name: &str,
-    ) -> Option<usize> {
-        let info = self.enums.get(enum_name)?;
-        let sub_names = info.super_group_order.get(super_name)?;
-        sub_names.iter().enumerate().find_map(|(i, sub)| {
-            let members = info.groups.get(sub)?;
-            if members.iter().any(|m| m == variant_name) {
-                Some(i)
-            } else {
-                None
-            }
-        })
     }
 
     fn resolve_assigned_value(&mut self, value: Value, pos: usize) -> Result<Value, RuntimeError> {
@@ -112,7 +86,6 @@ impl RunTime {
         Self {
             string_arena: Vec::new(),
             handles: HandleRegistry::new(),
-            enums: HashMap::new(),
             structs: HashMap::new(),
             semantic_impls: HashMap::new(),
             scopes: vec![ScopeFrame {
@@ -931,13 +904,9 @@ impl RunTime {
                 self.set_var_typed(name.clone(), ast_ty, val, 0)?;
                 Ok(())
             }
-            SemanticStmt::EnumDef { name, variants, .. } => {
-                let variant_names: Vec<String> = variants.iter().map(|v| v.clone()).collect();
-                self.enums.insert(name.clone(), EnumRuntimeInfo {
-                    variants: variant_names,
-                    groups: HashMap::new(),
-                    super_group_order: HashMap::new(),
-                });
+            SemanticStmt::EnumDef { .. } => {
+                // Enum variants are resolved at semantic analysis time
+                // Runtime registration not needed — when matching uses SemanticWhenPattern
                 Ok(())
             }
             SemanticStmt::When { expr, arms, .. } => {

@@ -209,13 +209,7 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
             SemanticStmt::FuncDef(sem_func) => {
                 rt.register_semantic_func(sem_func.clone());
             }
-            SemanticStmt::EnumDef { name, variants, .. } => {
-                rt.enums.insert(name.clone(), EnumRuntimeInfo {
-                    variants: variants.clone(),
-                    groups: HashMap::new(),
-                    super_group_order: HashMap::new(),
-                });
-            }
+            SemanticStmt::EnumDef { .. } => {}
             SemanticStmt::ImplBlock { aliases, methods, .. } => {
                 for sem_func in methods {
                     for (_, alias_type) in aliases {
