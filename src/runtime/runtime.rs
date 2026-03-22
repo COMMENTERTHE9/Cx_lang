@@ -56,6 +56,7 @@ pub struct RunTime {
     funcs: HashMap<String, FuncDef>,
     pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
+    pub consts: HashMap<String, Value>,
 }
 
 impl RunTime {
@@ -155,6 +156,7 @@ impl RunTime {
             funcs: HashMap::new(),
             semantic_funcs: HashMap::new(),
             debug_scope: false,
+            consts: HashMap::new(),
         }
     }
 
@@ -284,6 +286,9 @@ impl RunTime {
     }
 
     pub fn set_var(&mut self, name: String, value: Value, pos: usize) -> Result<(), RuntimeError> {
+        if self.consts.contains_key(&name) {
+            return Err(RuntimeError::BadAssignTarget { pos });
+        }
         let value = self.resolve_assigned_value(value, pos)?;
         let mut target_idx = None;
         for i in (0..self.scopes.len()).rev() {
@@ -958,6 +963,13 @@ impl RunTime {
                         );
                     }
                 }
+                Ok(())
+            }
+            SemanticStmt::ConstDecl { name, ty, value, .. } => {
+                let val = self.eval_semantic_expr(value)?;
+                self.consts.insert(name.clone(), val.clone());
+                let ast_ty: Type = ty.clone().into();
+                self.set_var_typed(name.clone(), ast_ty, val, 0)?;
                 Ok(())
             }
             SemanticStmt::EnumDef { name, variants, .. } => {

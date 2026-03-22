@@ -382,6 +382,7 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
         }
         Stmt::IfElse { .. } => eprintln!("{}IfElse", pad),
         Stmt::WhileIn { .. } => eprintln!("{}WhileIn", pad),
+        Stmt::ConstDecl { name, ty, .. } => eprintln!("{}ConstDecl({}: {:?})", pad, name, ty),
     }
 }
 
@@ -511,6 +512,7 @@ pub fn print_stmt_summary(stmt: &Stmt) {
         Stmt::CompoundAssign { .. } => "CompoundAssign".to_string(),
         Stmt::IfElse { .. } => "IfElse".to_string(),
         Stmt::WhileIn { .. } => "WhileIn".to_string(),
+        Stmt::ConstDecl { name, .. } => format!("ConstDecl {}", name),
     };
     eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }

@@ -243,7 +243,19 @@ impl Analyzer {
 
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
-            Stmt::StructDef { name, fields, pos } => {
+            Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
+                let semantic_value = self.analyze_expr(value)?;
+                let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
+                self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                Ok(SemanticStmt::ConstDecl {
+                    name: name.clone(),
+                    ty: sem_ty,
+                    value: semantic_value,
+                    is_pub: *is_pub,
+                    pos: *pos,
+                })
+            }
+            Stmt::StructDef { name, fields, pos, .. } => {
                 self.structs.insert(name.clone(), fields.clone());
                 let semantic_fields = fields.iter()
                     .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
@@ -254,7 +266,7 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
-            Stmt::ImplBlock { name, aliases, methods, pos } => {
+            Stmt::ImplBlock { name, aliases, methods, pos, .. } => {
                 let semantic_aliases: Vec<(String, SemanticType)> = aliases.iter()
                     .map(|(aname, aty)| (aname.clone(), semantic_type_from_decl(aty.clone(), &[])))
                     .collect();
@@ -427,6 +439,7 @@ impl Analyzer {
                 body,
                 ret_expr,
                 pos,
+                ..
             } => self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos),
             Stmt::Print { expr, pos } => Ok(SemanticStmt::Print {
                 expr: self.analyze_expr(expr)?,

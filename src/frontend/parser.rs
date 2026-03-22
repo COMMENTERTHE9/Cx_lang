@@ -529,6 +529,7 @@ where
             .map(|((pos, name), fields)| Stmt::StructDef {
                 name,
                 fields,
+                is_pub: false,
                 pos,
             })
             .boxed();
@@ -946,6 +947,7 @@ where
                         ret_ty,
                         body,
                         ret_expr,
+                        is_pub: false,
                         pos,
                     },
                 )
@@ -993,12 +995,30 @@ where
                     name,
                     aliases,
                     methods: method_data,
+                    is_pub: false,
                     pos,
                 }
             })
             .boxed();
 
+        let const_decl = just(Token::KeywordConst)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident.clone())
+            .then_ignore(just(Token::PunctColon))
+            .then(ty.clone())
+            .then_ignore(just(Token::OpAssign))
+            .then(expr.clone())
+            .map(|(((pos, name), decl_ty), value)| Stmt::ConstDecl {
+                name,
+                ty: decl_ty,
+                value,
+                is_pub: false,
+                pos,
+            })
+            .boxed();
+
         choice((
+            const_decl,
             struct_def,
             impl_block,
             enum_def,

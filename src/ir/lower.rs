@@ -522,6 +522,7 @@ fn lower_stmt(
         ),
         SemanticStmt::StructDef { .. } => { unsupported!("StructDef") },
         SemanticStmt::ImplBlock { .. } => { unsupported!("ImplBlock") },
+        SemanticStmt::ConstDecl { .. } => { unsupported!("ConstDecl") },
     }
 }
 

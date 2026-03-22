@@ -349,6 +349,13 @@ pub enum SemanticStmt {
         methods: Vec<SemanticFunction>,
         pos: usize,
     },
+    ConstDecl {
+        name: String,
+        ty: SemanticType,
+        value: SemanticExpr,
+        is_pub: bool,
+        pos: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
