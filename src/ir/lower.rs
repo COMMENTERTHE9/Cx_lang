@@ -20,6 +20,14 @@ macro_rules! unsupported {
     };
 }
 
+macro_rules! unsupported_type {
+    ($name:literal) => {
+        return Err(LoweringError::UnsupportedSemanticType {
+            ty: $name.to_string(),
+        })
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweringError {
     UnsupportedSemanticConstruct { construct: String },
@@ -919,39 +927,17 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::I128 => Ok(IrType::I128),
         SemanticType::F64 => Ok(IrType::F64),
         SemanticType::Bool => Ok(IrType::Bool),
-        SemanticType::Numeric => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Numeric".to_string(),
-        }),
-        SemanticType::Unknown => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Unknown".to_string(),
-        }),
-        SemanticType::Handle(_) => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Handle".to_string(),
-        }),
-        SemanticType::StrRef => Err(LoweringError::UnsupportedSemanticType {
-            ty: "StrRef".to_string(),
-        }),
-        SemanticType::Container => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Container".to_string(),
-        }),
-        SemanticType::Str => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Str".to_string(),
-        }),
-        SemanticType::Char => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Char".to_string(),
-        }),
-        SemanticType::Enum(_) => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Enum".to_string(),
-        }),
-        SemanticType::TypeParam(_) => Err(LoweringError::UnsupportedSemanticType {
-            ty: "TypeParam".to_string(),
-        }),
-        SemanticType::Struct(_) => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Struct".to_string(),
-        }),
-        SemanticType::Array(_, _) => Err(LoweringError::UnsupportedSemanticType {
-            ty: "Array".to_string(),
-        }),
+        SemanticType::Numeric => { unsupported_type!("Numeric") },
+        SemanticType::Unknown => { unsupported_type!("Unknown") },
+        SemanticType::Handle(_) => { unsupported_type!("Handle") },
+        SemanticType::StrRef => { unsupported_type!("StrRef") },
+        SemanticType::Container => { unsupported_type!("Container") },
+        SemanticType::Str => { unsupported_type!("Str") },
+        SemanticType::Char => { unsupported_type!("Char") },
+        SemanticType::Enum(_) => { unsupported_type!("Enum") },
+        SemanticType::TypeParam(_) => { unsupported_type!("TypeParam") },
+        SemanticType::Struct(_) => { unsupported_type!("Struct") },
+        SemanticType::Array(_, _) => { unsupported_type!("Array") },
     }
 }
 
