@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::frontend::ast::Op;
 use crate::frontend::semantic_types::{
-    BindingId, SemanticExpr, SemanticExprKind, SemanticLValue, SemanticParamKind,
-    SemanticProgram, SemanticStmt, SemanticType, SemanticValue,
+    BindingId, SemanticCallArg, SemanticExpr, SemanticExprKind, SemanticLValue,
+    SemanticParamKind, SemanticProgram, SemanticStmt, SemanticType, SemanticValue,
 };
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
@@ -778,7 +778,64 @@ fn lower_expr(
                 ty: to_ty,
             })
         }
-        SemanticExprKind::Call { .. } => { unsupported!("Call") },
+        SemanticExprKind::Call { callee, function: _, args } => {
+            let (param_types, return_ty) = {
+                let sig = ctx.signature_table.get(callee).ok_or_else(|| {
+                    LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!("function '{}'", callee),
+                    }
+                })?;
+                (sig.param_types.clone(), sig.return_ty.clone())
+            };
+
+            let return_ty = return_ty.ok_or_else(|| {
+                LoweringError::UnsupportedSemanticConstruct {
+                    construct: "void function call — IrType::Void pending".to_string(),
+                }
+            })?;
+
+            if args.len() != param_types.len() {
+                return Err(LoweringError::InternalInvariantViolation {
+                    detail: format!(
+                        "call to '{}': expected {} arguments, got {}",
+                        callee, param_types.len(), args.len()
+                    ),
+                });
+            }
+
+            let mut lowered_args = Vec::new();
+            for (i, arg) in args.iter().enumerate() {
+                match arg {
+                    SemanticCallArg::Expr(expr) => {
+                        let lowered = lower_expr(expr, ctx, active)?;
+                        ensure_type_match(
+                            &format!("argument {} of call to '{}'", i, callee),
+                            param_types[i].clone(),
+                            lowered.ty,
+                        )?;
+                        lowered_args.push(lowered.value);
+                    }
+                    _ => {
+                        return Err(LoweringError::UnsupportedSemanticConstruct {
+                            construct: format!("non-Expr call argument in call to '{}'", callee),
+                        });
+                    }
+                }
+            }
+
+            let dst = ctx.fresh_value();
+            active.emit(IrInst::Call {
+                dst: Some(dst),
+                callee: callee.clone(),
+                args: lowered_args,
+                return_ty: Some(return_ty.clone()),
+            })?;
+
+            Ok(LoweredValue {
+                value: dst,
+                ty: return_ty,
+            })
+        },
         SemanticExprKind::DotAccess { .. } => { unsupported!("DotAccess") },
         SemanticExprKind::HandleNew { .. } => { unsupported!("HandleNew") },
         SemanticExprKind::HandleVal { .. } => { unsupported!("HandleVal") },
@@ -965,7 +1022,8 @@ mod tests {
     use super::*;
     use crate::frontend::ast::Op;
     use crate::frontend::semantic_types::{
-        FunctionId, SemanticFunction, SemanticLValue, SemanticParam, SemanticParamKind,
+        FunctionId, SemanticCallArg, SemanticFunction, SemanticLValue, SemanticParam,
+        SemanticParamKind,
     };
     use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
     use crate::ir::validate::validate_module;
@@ -1637,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_call_expression() {
+    fn rejects_call_to_unresolved_function() {
         let program = SemanticProgram {
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
@@ -1655,14 +1713,14 @@ mod tests {
 
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
-            LoweringError::UnsupportedSemanticConstruct {
-                construct: "Call".to_string()
+            LoweringError::UnresolvedSemanticArtifact {
+                artifact: "function 'foo'".to_string(),
             }
         );
     }
 
     #[test]
-    fn rejects_call_expression_inside_function() {
+    fn rejects_call_to_unresolved_function_inside_function() {
         let program = SemanticProgram {
             stmts: vec![semantic_function(
                 "bad_call",
@@ -1686,8 +1744,202 @@ mod tests {
 
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnresolvedSemanticArtifact {
+                artifact: "function 'foo'".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn lowers_direct_call_in_expr_stmt() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "get_value",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(42, SemanticType::I64)),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "get_value".to_string(),
+                            function: FunctionId(0),
+                            args: vec![],
+                        },
+                    },
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let call_insts: Vec<_> = main_fn.blocks.iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { .. }))
+            .collect();
+        assert_eq!(call_insts.len(), 1);
+        match &call_insts[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_some());
+                assert_eq!(callee, "get_value");
+                assert!(args.is_empty());
+                assert_eq!(*return_ty, Some(IrType::I64));
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn lowers_call_with_args_and_assignment() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "add_one",
+                    vec![typed_param(BindingId(0), "x", SemanticType::I64)],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(0, SemanticType::I64)),
+                ),
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(10),
+                    name: "result".to_string(),
+                    ty: SemanticType::I64,
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "add_one".to_string(),
+                            function: FunctionId(0),
+                            args: vec![SemanticCallArg::Expr(int_expr(5, SemanticType::I64))],
+                        },
+                    },
+                    pos_type: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let call_insts: Vec<_> = main_fn.blocks.iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { .. }))
+            .collect();
+        assert_eq!(call_insts.len(), 1);
+        match &call_insts[0] {
+            IrInst::Call { callee, args, .. } => {
+                assert_eq!(callee, "add_one");
+                assert_eq!(args.len(), 1);
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn rejects_call_arity_mismatch() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "needs_one",
+                    vec![typed_param(BindingId(0), "x", SemanticType::I64)],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(0, SemanticType::I64)),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "needs_one".to_string(),
+                            function: FunctionId(0),
+                            args: vec![],
+                        },
+                    },
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::InternalInvariantViolation {
+                detail: "call to 'needs_one': expected 1 arguments, got 0".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_void_call() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "do_nothing",
+                    vec![],
+                    None,
+                    vec![],
+                    None,
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "do_nothing".to_string(),
+                            function: FunctionId(0),
+                            args: vec![],
+                        },
+                    },
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "Call".to_string()
+                construct: "void function call — IrType::Void pending".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_non_expr_call_arg() {
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "takes_one",
+                    vec![typed_param(BindingId(0), "x", SemanticType::I64)],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(0, SemanticType::I64)),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "takes_one".to_string(),
+                            function: FunctionId(0),
+                            args: vec![SemanticCallArg::Copy {
+                                binding: BindingId(5),
+                                name: "y".to_string(),
+                            }],
+                        },
+                    },
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should fail"),
+            LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr call argument in call to 'takes_one'".to_string(),
             }
         );
     }
