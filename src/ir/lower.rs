@@ -5,12 +5,20 @@ use std::fmt;
 
 use crate::frontend::ast::Op;
 use crate::frontend::semantic_types::{
-    BindingId, SemanticExpr, SemanticExprKind, SemanticLValue, SemanticProgram, SemanticStmt,
-    SemanticType, SemanticValue,
+    BindingId, SemanticExpr, SemanticExprKind, SemanticLValue, SemanticParamKind,
+    SemanticProgram, SemanticStmt, SemanticType, SemanticValue,
 };
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
 use crate::ir::types::{BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId};
+
+macro_rules! unsupported {
+    ($name:literal) => {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: $name.to_string(),
+        })
+    };
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoweringError {
@@ -54,6 +62,51 @@ struct LoweredValue {
 }
 
 type BindingMap = HashMap<BindingId, LoweredValue>;
+
+struct FunctionSignature {
+    param_types: Vec<IrType>,
+    return_ty: Option<IrType>,
+}
+
+fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionSignature> {
+    let mut table = HashMap::new();
+    for stmt in &program.stmts {
+        if let SemanticStmt::FuncDef(function) = stmt {
+            let mut param_types = Vec::new();
+            let mut all_params_ok = true;
+            for param in &function.params {
+                match param.kind {
+                    SemanticParamKind::Typed => {
+                        let Some(ref ty) = param.ty else {
+                            all_params_ok = false;
+                            break;
+                        };
+                        match lower_type(ty) {
+                            Ok(ir_ty) => param_types.push(ir_ty),
+                            Err(_) => { all_params_ok = false; break; }
+                        }
+                    }
+                    _ => { all_params_ok = false; break; }
+                }
+            }
+            if !all_params_ok { continue; }
+
+            let return_ty = match &function.return_ty {
+                Some(ty) => match lower_type(ty) {
+                    Ok(ir_ty) => Some(ir_ty),
+                    Err(_) => continue,
+                },
+                None => None,
+            };
+
+            table.insert(function.name.clone(), FunctionSignature {
+                param_types,
+                return_ty,
+            });
+        }
+    }
+    table
+}
 
 struct LoweringCtx {
     builder: IrBuilder,
@@ -157,6 +210,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
     };
     let mut top_level_stmts = Vec::new();
     let mut has_real_main = false;
+    let _signature_table = build_signature_table(program);
 
     for stmt in &program.stmts {
         match stmt {
@@ -432,39 +486,17 @@ fn lower_stmt(
         SemanticStmt::FuncDef(_) => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "nested FuncDef".to_string(),
         }),
-        SemanticStmt::EnumDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "EnumDef".to_string(),
-        }),
-        SemanticStmt::Print { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Print".to_string(),
-        }),
-        SemanticStmt::PrintInline { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "PrintInline".to_string(),
-        }),
-        SemanticStmt::Block { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Block".to_string(),
-        }),
-        SemanticStmt::WhileIn { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "WhileIn".to_string(),
-        }),
-        SemanticStmt::While { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "While".to_string(),
-        }),
-        SemanticStmt::For { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "For".to_string(),
-        }),
-        SemanticStmt::Loop { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Loop".to_string(),
-        }),
-        SemanticStmt::Break { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Break".to_string(),
-        }),
-        SemanticStmt::Continue { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Continue".to_string(),
-        }),
-        SemanticStmt::When { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "When".to_string(),
-        }),
+        SemanticStmt::EnumDef { .. } => { unsupported!("EnumDef") },
+        SemanticStmt::Print { .. } => { unsupported!("Print") },
+        SemanticStmt::PrintInline { .. } => { unsupported!("PrintInline") },
+        SemanticStmt::Block { .. } => { unsupported!("Block") },
+        SemanticStmt::WhileIn { .. } => { unsupported!("WhileIn") },
+        SemanticStmt::While { .. } => { unsupported!("While") },
+        SemanticStmt::For { .. } => { unsupported!("For") },
+        SemanticStmt::Loop { .. } => { unsupported!("Loop") },
+        SemanticStmt::Break { .. } => { unsupported!("Break") },
+        SemanticStmt::Continue { .. } => { unsupported!("Continue") },
+        SemanticStmt::When { .. } => { unsupported!("When") },
         SemanticStmt::IfElse {
             condition,
             then_body,
@@ -480,12 +512,8 @@ fn lower_stmt(
             current,
             spec,
         ),
-        SemanticStmt::StructDef { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "StructDef".to_string(),
-        }),
-        SemanticStmt::ImplBlock { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "ImplBlock".to_string(),
-        }),
+        SemanticStmt::StructDef { .. } => { unsupported!("StructDef") },
+        SemanticStmt::ImplBlock { .. } => { unsupported!("ImplBlock") },
     }
 }
 
@@ -737,39 +765,17 @@ fn lower_expr(
                 ty: to_ty,
             })
         }
-        SemanticExprKind::Call { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Call".to_string(),
-        }),
-        SemanticExprKind::DotAccess { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "DotAccess".to_string(),
-        }),
-        SemanticExprKind::HandleNew { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "HandleNew".to_string(),
-        }),
-        SemanticExprKind::HandleVal { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "HandleVal".to_string(),
-        }),
-        SemanticExprKind::HandleDrop { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "HandleDrop".to_string(),
-        }),
-        SemanticExprKind::Range { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Range".to_string(),
-        }),
-        SemanticExprKind::Unary { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Unary".to_string(),
-        }),
-        SemanticExprKind::ArrayLit { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "ArrayLit".to_string(),
-        }),
-        SemanticExprKind::Index { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Index".to_string(),
-        }),
-        SemanticExprKind::MethodCall { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "MethodCall".to_string(),
-        }),
-        SemanticExprKind::StructInstance { .. } => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "StructInstance".to_string(),
-        }),
+        SemanticExprKind::Call { .. } => { unsupported!("Call") },
+        SemanticExprKind::DotAccess { .. } => { unsupported!("DotAccess") },
+        SemanticExprKind::HandleNew { .. } => { unsupported!("HandleNew") },
+        SemanticExprKind::HandleVal { .. } => { unsupported!("HandleVal") },
+        SemanticExprKind::HandleDrop { .. } => { unsupported!("HandleDrop") },
+        SemanticExprKind::Range { .. } => { unsupported!("Range") },
+        SemanticExprKind::Unary { .. } => { unsupported!("Unary") },
+        SemanticExprKind::ArrayLit { .. } => { unsupported!("ArrayLit") },
+        SemanticExprKind::Index { .. } => { unsupported!("Index") },
+        SemanticExprKind::MethodCall { .. } => { unsupported!("MethodCall") },
+        SemanticExprKind::StructInstance { .. } => { unsupported!("StructInstance") },
     }
 }
 
