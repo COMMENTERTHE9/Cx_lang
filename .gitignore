@@ -1,5 +1,6 @@
 # Rust
 /target/
+*.log
 
 # Editors / IDEs
 .idea/
@@ -13,5 +14,3 @@ Thumbs.db
 # Tooling
 .claude/
 
-# Test data / verification corpus
-/src/tests/verification_matrix/
