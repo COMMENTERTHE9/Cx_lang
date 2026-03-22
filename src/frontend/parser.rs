@@ -722,6 +722,44 @@ where
             )
             .boxed();
 
+        let if_stmt = just(Token::KeywordIf)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(
+                stmt.clone()
+                    .repeated()
+                    .collect::<Vec<_>>()
+            )
+            .then_ignore(just(Token::PunctBraceClose))
+            .then(
+                just(Token::KeywordElse)
+                    .ignore_then(just(Token::KeywordIf))
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctBraceOpen))
+                    .then(stmt.clone().repeated().collect::<Vec<_>>())
+                    .then_ignore(just(Token::PunctBraceClose))
+                    .repeated()
+                    .collect::<Vec<_>>()
+            )
+            .then(
+                just(Token::KeywordElse)
+                    .ignore_then(just(Token::PunctBraceOpen))
+                    .ignore_then(stmt.clone().repeated().collect::<Vec<_>>())
+                    .then_ignore(just(Token::PunctBraceClose))
+                    .or_not()
+            )
+            .map(|((((pos, condition), then_body), else_ifs), else_body)| {
+                Stmt::IfElse {
+                    condition,
+                    then_body,
+                    else_ifs,
+                    else_body,
+                    pos,
+                }
+            })
+            .boxed();
+
         let loop_stmt = just(Token::KeywordLoop)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then_ignore(just(Token::PunctBraceOpen))
@@ -779,6 +817,7 @@ where
                 typed_assign.clone(),
                 compound_assign.clone(),
                 assign.clone(),
+                if_stmt.clone(),
                 when_stmt.clone(),
                 block.clone(),
                 expr_stmt_with_semi.clone(),
@@ -905,6 +944,7 @@ where
             index_assign,
             assign,
             block,
+            if_stmt,
             when_stmt,
             while_stmt,
             for_stmt,

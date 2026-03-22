@@ -1811,6 +1811,15 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Return { .. } => true,
         Stmt::Block { stmts, .. } => contains_return_stmt(stmts),
+        Stmt::IfElse { then_body, else_ifs, else_body, .. } => {
+            contains_return_stmt(then_body)
+                || else_ifs.iter().any(|(_, body)| contains_return_stmt(body))
+                || else_body.as_ref().map_or(false, |b| contains_return_stmt(b))
+        }
+        Stmt::While { body, .. } => contains_return_stmt(body),
+        Stmt::For { body, .. } => contains_return_stmt(body),
+        Stmt::Loop { body, .. } => contains_return_stmt(body),
+        Stmt::When { .. } => false,
         Stmt::FuncDef { .. } => false,
         _ => false,
     }

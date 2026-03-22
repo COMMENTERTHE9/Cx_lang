@@ -1750,7 +1750,63 @@ impl RunTime {
                 let val = self.eval_semantic_expr(expr)?;
                 self.run_semantic_when(val, arms)
             }
-            SemanticStmt::IfElse { .. } => Ok(()), // stub
+            SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
+                let cond_val = self.eval_semantic_expr(condition)?;
+                let is_true = match &cond_val {
+                    Value::Bool(b) => *b,
+                    Value::TBool(0) => false,
+                    Value::TBool(1) => true,
+                    Value::Num(n) => *n != 0,
+                    _ => false,
+                };
+
+                if is_true {
+                    self.push_scope();
+                    for stmt in then_body {
+                        match self.run_semantic_stmt(stmt) {
+                            Ok(_) => {}
+                            Err(e) => { self.pop_scope(); return Err(e); }
+                        }
+                    }
+                    self.pop_scope();
+                    return Ok(());
+                }
+
+                for (else_if_cond, else_if_body) in else_ifs {
+                    let cond_val = self.eval_semantic_expr(else_if_cond)?;
+                    let is_true = match &cond_val {
+                        Value::Bool(b) => *b,
+                        Value::TBool(0) => false,
+                        Value::TBool(1) => true,
+                        Value::Num(n) => *n != 0,
+                        _ => false,
+                    };
+                    if is_true {
+                        self.push_scope();
+                        for stmt in else_if_body {
+                            match self.run_semantic_stmt(stmt) {
+                                Ok(_) => {}
+                                Err(e) => { self.pop_scope(); return Err(e); }
+                            }
+                        }
+                        self.pop_scope();
+                        return Ok(());
+                    }
+                }
+
+                if let Some(else_body) = else_body {
+                    self.push_scope();
+                    for stmt in else_body {
+                        match self.run_semantic_stmt(stmt) {
+                            Ok(_) => {}
+                            Err(e) => { self.pop_scope(); return Err(e); }
+                        }
+                    }
+                    self.pop_scope();
+                }
+
+                Ok(())
+            }
             SemanticStmt::WhileIn { .. } => Ok(()), // stub
         }
     }

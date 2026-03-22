@@ -76,6 +76,12 @@ pub enum Token {
     #[token("while")]
     KeywordWhile,
 
+    #[token("if")]
+    KeywordIf,
+
+    #[token("else")]
+    KeywordElse,
+
     #[token("for")]
     KeywordFor,
 
