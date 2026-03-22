@@ -4,6 +4,7 @@ use crate::frontend::semantic_types::*;
 use crate::runtime::arena::Arena;
 use crate::runtime::handle::HandleRegistry;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct EnumRuntimeInfo {
@@ -50,10 +51,10 @@ pub struct RunTime {
     pub enums: HashMap<String, EnumRuntimeInfo>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
     pub impls: HashMap<(String, String), (Vec<(String, Type)>, (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>))>,
-    pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, SemanticFunction)>,
+    pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, Arc<SemanticFunction>)>,
     scopes: Vec<ScopeFrame>,
     funcs: HashMap<String, FuncDef>,
-    pub semantic_funcs: HashMap<String, SemanticFunction>,
+    pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
 }
 
@@ -77,7 +78,7 @@ impl RunTime {
     }
 
     pub fn register_semantic_func(&mut self, func: SemanticFunction) {
-        self.semantic_funcs.insert(func.name.clone(), func);
+        self.semantic_funcs.insert(func.name.clone(), Arc::new(func));
     }
 
     pub fn alloc_str(&mut self, s: &str) -> (u32, u32) {
@@ -1552,12 +1553,12 @@ impl RunTime {
                 Ok(())
             }
             SemanticStmt::Decl { name, ty, .. } => {
-                let rt_ty: Option<Type> = ty.as_ref().map(|t| semantic_type_to_ast(t));
+                let rt_ty: Option<Type> = ty.as_ref().map(|t| t.clone().into());
                 self.declare(name.clone(), rt_ty, 0)
             }
             SemanticStmt::TypedAssign { name, ty, expr, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
-                let rt_ty = semantic_type_to_ast(ty);
+                let rt_ty: Type = ty.clone().into();
                 let val = match (&rt_ty, val) {
                     (Type::Bool, Value::Unknown(_)) => Value::TBool(2),
                     (_, v) => v,
@@ -1700,7 +1701,7 @@ impl RunTime {
             SemanticStmt::Continue { .. } => Err(RuntimeError::ContinueSignal),
             SemanticStmt::FuncDef(sem_func) => {
                 // Register in semantic registry for semantic dispatch
-                self.semantic_funcs.insert(sem_func.name.clone(), sem_func.clone());
+                self.semantic_funcs.insert(sem_func.name.clone(), Arc::new(sem_func.clone()));
                 // Also register in AST registry for copy-param fallback path
                 self.funcs.insert(sem_func.name.clone(), FuncDef {
                     type_params: sem_func.type_params.clone(),
@@ -1711,7 +1712,7 @@ impl RunTime {
                 Ok(())
             }
             SemanticStmt::StructDef { name, fields, .. } => {
-                self.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect());
+                self.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect());
                 Ok(())
             }
             SemanticStmt::ImplBlock { aliases, methods, .. } => {
@@ -1723,14 +1724,14 @@ impl RunTime {
                         };
                         self.semantic_impls.insert(
                             (type_key.clone(), sem_func.name.clone()),
-                            (aliases.clone(), sem_func.clone()),
+                            (aliases.clone(), Arc::new(sem_func.clone())),
                         );
                         // Keep existing AST impls registration for copy param fallback
                         self.impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect(),
+                            (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),
                              (sem_func.name.clone(), sem_func.params.iter().map(|p| semantic_param_to_ast(&p.kind)).collect(),
-                              sem_func.return_ty.as_ref().map(|t| semantic_type_to_ast(t)),
+                              sem_func.return_ty.as_ref().map(|t| t.clone().into()),
                               vec![], None))
                         );
                     }
@@ -2445,28 +2446,6 @@ fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeE
         }
     }
     Ok(out)
-}
-
-fn semantic_type_to_ast(st: &SemanticType) -> Type {
-    match st {
-        SemanticType::I8 => Type::T8,
-        SemanticType::I16 => Type::T16,
-        SemanticType::I32 => Type::T32,
-        SemanticType::I64 => Type::T64,
-        SemanticType::I128 => Type::T128,
-        SemanticType::F64 => Type::T64,
-        SemanticType::Bool => Type::Bool,
-        SemanticType::Str => Type::Str,
-        SemanticType::StrRef => Type::StrRef,
-        SemanticType::Char => Type::Char,
-        SemanticType::Enum(name) => Type::Enum(name.clone()),
-        SemanticType::Struct(name) => Type::Struct(name.clone()),
-        SemanticType::Container => Type::Container,
-        SemanticType::Handle(inner) => Type::Handle(Box::new(semantic_type_to_ast(inner))),
-        SemanticType::TypeParam(name) => Type::TypeParam(name.clone()),
-        SemanticType::Array(size, elem_ty) => Type::Array(*size, Box::new(semantic_type_to_ast(elem_ty))),
-        SemanticType::Unknown | SemanticType::Numeric => Type::T64, // fallback
-    }
 }
 
 fn semantic_param_to_ast(sk: &SemanticParamKind) -> ParamKind {

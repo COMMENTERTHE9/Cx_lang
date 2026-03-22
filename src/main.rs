@@ -19,6 +19,7 @@ use chumsky::prelude::SimpleSpan;
 use chumsky::Parser;
 use colored::Colorize;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::env;
 use std::fs;
 use std::time::Instant;
@@ -230,7 +231,7 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
                         };
                         rt.semantic_impls.insert(
                             (type_key.clone(), sem_func.name.clone()),
-                            (aliases.clone(), sem_func.clone()),
+                            (aliases.clone(), Arc::new(sem_func.clone())),
                         );
                         rt.impls.insert(
                             (type_key, sem_func.name.clone()),
