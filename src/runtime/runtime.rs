@@ -735,7 +735,10 @@ impl RunTime {
                     Err(RuntimeError::StaleHandle { pos: *pos })
                 }
             }
-            SemanticExprKind::Cast { expr, .. } => self.eval_semantic_expr(expr),
+            SemanticExprKind::Cast { expr, to, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                Ok(apply_numeric_cast(val, to))
+            }
         }
     }
 
@@ -1483,6 +1486,35 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
             let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(rt, v.clone()))).collect();
             format!("{} {{ {} }}", name, parts.join(", "))
         }
+    }
+}
+
+fn apply_numeric_cast(val: Value, to: &SemanticType) -> Value {
+    match val {
+        Value::Num(n) => {
+            let truncated = match to {
+                SemanticType::I8   => (n as i8) as i128,
+                SemanticType::I16  => (n as i16) as i128,
+                SemanticType::I32  => (n as i32) as i128,
+                SemanticType::I64  => (n as i64) as i128,
+                SemanticType::I128 => n,
+                SemanticType::F64  => return Value::Float(n as f64),
+                _ => n,
+            };
+            Value::Num(truncated)
+        }
+        Value::Float(f) => {
+            match to {
+                SemanticType::I8   => Value::Num((f as i8) as i128),
+                SemanticType::I16  => Value::Num((f as i16) as i128),
+                SemanticType::I32  => Value::Num((f as i32) as i128),
+                SemanticType::I64  => Value::Num((f as i64) as i128),
+                SemanticType::I128 => Value::Num(f as i128),
+                SemanticType::F64  => Value::Float(f),
+                _ => Value::Float(f),
+            }
+        }
+        other => other,
     }
 }
 
