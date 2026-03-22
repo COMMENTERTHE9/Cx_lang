@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.1 — 2026-03-17
+v4.2 — 2026-03-22
 
 ---
 
@@ -38,13 +38,13 @@ Cx is a systems language for game engine developers. The goal is explicit memory
 These are not features. These are conditions. A long gate list that never closes is a project killer — so the gates are split into two honest tiers.
 
 **Hard blockers — 0.1 cannot ship without these:**
-- Semantic/interpreter parity complete — interpreter runs off SemanticProgram, raw AST path removed
+- ~~Semantic/interpreter parity complete~~ ✅ — interpreter runs off SemanticProgram, raw AST path deleted
 - Multi-file imports working — programs can span multiple .cx files
-- Generics v2 complete — multiple type parameters on functions (confirm current status before publishing)
-- Structs, methods, impl blocks working end to end
+- ~~Generics v2 complete~~ ✅ — multiple type parameters on functions, confirmed working
+- ~~Structs, methods, impl blocks working end to end~~ ✅
 - print promoted to function — must happen before backend locks calling convention
 - UTF-8 decision locked
-- CI runs the full matrix on every PR and must be green — run_matrix.sh wired into GitHub Actions
+- ~~CI runs the full matrix on every PR and must be green~~ ✅ — run_matrix.sh wired into GitHub Actions
 
 **Quality gates — must be true or have a tracked plan before 0.1:**
 - Parser, semantic layer, and interpreter agree on all supported constructs — no silent behavioral divergence
@@ -85,6 +85,12 @@ These are not features. These are conditions. A long gate list that never closes
 - GitHub Actions CI — frontend matrix + backend tests + stale base gate
 - CONTRIBUTING.md
 - run_matrix.sh wired into CI — full matrix runs on every PR
+- Generics v2 — multiple type parameters on functions, t52/t53 passing
+- Multi-struct impl blocks — impl (p: Player, w: World), t43 passing, multi-alias writeback working
+- Semantic/interpreter parity complete — raw AST path (eval_expr + run_stmt) deleted, ~790 lines removed
+- Copy semantics native in semantic path — bleed_back mechanism, no fallback to old AST path
+- `*arr` deref operator for cursor access — apply_unary Op::Mul returns arr[0]
+- contains_return_stmt recursion fix — now detects returns inside if/else/while/for/loop branches
 
 **Cleanup Sprint — Complete**
 - u128 to i128 — negative numbers now work
@@ -94,24 +100,34 @@ These are not features. These are conditions. A long gate list that never closes
 - seen and order on RunTime — cleared correctly, no accumulation
 - run_stmt free function vs eval_expr method — structural inconsistency resolved
 
+**Code Quality Sprint — Complete (2026-03-22)**
+- Arc<SemanticFunction> — function bodies stored as Arc, no clone on every call
+- sem_err! macro — 51 SemanticError constructions collapsed to 1-line macro calls
+- unsupported! + unsupported_type! macros in ir/lower.rs — 35 arms collapsed
+- print_value + print_value_inline unified via value_to_string
+- semantic_type_to_ast duplicate deleted — replaced with From<SemanticType> for Type
+- Test matrix renumbered — 10 duplicate pairs fixed, 54 tests total
+- Old AST interpreter deleted — eval_expr (~314 lines) + run_stmt (~462 lines) removed
+
 ---
 
 ## Active — 0.1 Work 🔄
 
-**1 — Semantic/Interpreter Parity** — most important technical blocker
+**1 — Semantic/Interpreter Parity** ✅ COMPLETE
 - [x] SemanticStmt at full parity with raw AST interpreter — landed on submain 2026-03-17
 - [x] StructDef, ImplBlock, MethodCall wired in semantic layer — landed on submain 2026-03-17
 - [x] Interpreter runs off SemanticProgram — landed on submain 2026-03-19, 47/47 matrix green
-- Raw AST interpretation path removed
-- Until this is done, everything else is built on unstable ground
+- [x] Raw AST interpretation path deleted — eval_expr + run_stmt removed 2026-03-22
+- [x] Copy semantics native — bleed_back mechanism, no fallback to old path
 
-**2 — Generics v2**
-- Multiple type parameters: fnc swap<A, B>(a: A, b: B)
-- Confirm current status with owning dev before this doc goes out — may already be landed
+**2 — Generics v2** ✅ COMPLETE
+- [x] Multiple type parameters: fnc swap<A, B>(a: A, b: B) — t52, t53 passing
+- Known gap: t42 TypeParam vs Struct ambiguity in nested generic calls (tracked, expected_fail)
 
 **3 — Backend IR**
 - Function lowering in progress
-- if/else lowering next
+- if/else lowering landed
+- Most constructs stubbed with unsupported! macro
 - Cranelift stubs, not yet functional
 - Backend does not block 0.1 frontend release — but must stay in sync
 
@@ -230,7 +246,7 @@ Before the release candidate is cut these are frozen. No breaking changes after 
 ## Post-0.1 — Language Core 🔲
 
 - gene + phen trait system — language identity feature, not optional flavor. Design pass needed now even though implementation is later. Defines how operator overloading, bounded polymorphism, and the stdlib are structured.
-- Multi-struct impl blocks — impl (p: Player, w: World)
+- ~~Multi-struct impl blocks~~ — moved to Done ✅, impl (p: Player, w: World) working with multi-alias writeback
 - Operator overloading — blocked on gene/phen. Vector3 + Vector3 is not a nice-to-have in a game engine language.
 - Full pattern matching — array patterns, nested patterns
 - Labeled breaks for nested loops
@@ -356,6 +372,16 @@ These need active design work before any implementation can begin.
 
 ---
 
+## Known Gaps — Tracked ⚠️
+
+These are known issues with expected_fail markers. They do not block CI but need resolution before 0.1.
+
+- **t42 — TypeParam vs Struct ambiguity** — nested generic calls where a type parameter name collides with a struct name. Parser/semantic layer cannot disambiguate. Tracked as generics v2 follow-up.
+- **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
+- **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
+
+---
+
 ## Key Changes from v4.0
 
 - Release gates split into two honest tiers — hard blockers and quality gates
@@ -365,3 +391,15 @@ These need active design work before any implementation can begin.
 - CI matrix gate added — run_matrix.sh wired into GitHub Actions is a hard blocker
 - Generics v2 status flagged for confirmation before doc goes out
 - Version bumped to v4.1
+
+## Key Changes from v4.1
+
+- Semantic/interpreter parity marked COMPLETE — raw AST path deleted (~790 lines)
+- Generics v2 marked COMPLETE — multiple type params confirmed working
+- Multi-struct impl blocks moved from Post-0.1 to Done — already implemented
+- Code quality sprint added to Done — Arc, macros, dead code removal
+- Known Gaps section added — t42, t33, t32 tracked with expected_fail
+- 4 of 7 hard blockers now resolved (parity, generics, structs, CI)
+- 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
+- Test matrix at 54 tests, 54/54 green
+- Version bumped to v4.2
