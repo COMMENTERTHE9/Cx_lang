@@ -1,0 +1,4 @@
+score: f64 = 3.14
+velocity: f64 = 9.8
+result: f64 = score + velocity
+print(result)

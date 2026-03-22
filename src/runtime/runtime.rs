@@ -1512,7 +1512,7 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
 fn type_of_value(v: &Value) -> Type {
     match v {
         Value::Num(_) => Type::T128,
-        Value::Float(_) => Type::T64,
+        Value::Float(_) => Type::F64,
         Value::Str(_, _) => Type::Str,
         Value::Bool(_) => Type::Bool,
         Value::TBool(_) => Type::Bool,
@@ -1533,6 +1533,7 @@ fn value_matches_type(v: &Value, t: &Type) -> bool {
         (Value::Num(_), Type::T32) => true,
         (Value::Num(_), Type::T64) => true,
         (Value::Num(_), Type::T128) => true,
+        (Value::Float(_), Type::F64) => true,
         (Value::Float(_), Type::T8) => true,
         (Value::Float(_), Type::T16) => true,
         (Value::Float(_), Type::T32) => true,
@@ -1637,7 +1638,7 @@ impl From<SemanticType> for Type {
             SemanticType::I32 => Type::T32,
             SemanticType::I64 => Type::T64,
             SemanticType::I128 => Type::T128,
-            SemanticType::F64 => Type::T64,
+            SemanticType::F64 => Type::F64,
             SemanticType::Bool => Type::Bool,
             SemanticType::Str => Type::Str,
             SemanticType::StrRef => Type::StrRef,

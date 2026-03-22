@@ -38,6 +38,7 @@ where
         Token::TypeT32    => Type::T32,
         Token::TypeT64    => Type::T64,
         Token::TypeT128   => Type::T128,
+        Token::TypeF64    => Type::F64,
         Token::TypeBool   => Type::Bool,
         Token::TypeStr    => Type::Str,
         Token::TypeStrRef => Type::StrRef,

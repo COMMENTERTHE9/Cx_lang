@@ -1444,6 +1444,7 @@ fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
         Type::T32 => SemanticType::I32,
         Type::T64 => SemanticType::I64,
         Type::T128 => SemanticType::I128,
+        Type::F64 => SemanticType::F64,
         Type::Bool => SemanticType::Bool,
         Type::Str => SemanticType::Str,
         Type::StrRef => SemanticType::StrRef,
