@@ -1275,7 +1275,7 @@ impl Analyzer {
         }
 
         let ret_ty = substitute_type_params(
-            function.ret_ty.unwrap_or(SemanticType::I128),
+            function.ret_ty.unwrap_or(SemanticType::Void),
             &type_param_map,
         );
 

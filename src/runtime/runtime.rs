@@ -1619,6 +1619,7 @@ impl From<SemanticType> for Type {
             SemanticType::Struct(name) => Type::Struct(name),
             SemanticType::TypeParam(name) => Type::TypeParam(name),
             SemanticType::Array(size, elem_ty) => Type::Array(size, Box::new((*elem_ty).into())),
+            SemanticType::Void => Type::Unknown,
         }
     }
 }

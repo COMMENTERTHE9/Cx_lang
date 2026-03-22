@@ -944,6 +944,7 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::TypeParam(_) => { unsupported_type!("TypeParam") },
         SemanticType::Struct(_) => { unsupported_type!("Struct") },
         SemanticType::Array(_, _) => { unsupported_type!("Array") },
+        SemanticType::Void => { unsupported_type!("Void") },
     }
 }
 
