@@ -82,6 +82,7 @@ pub enum Expr {
     ArrayLit(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>, usize),
     MethodCall(String, String, Vec<CallArg>, usize),
+    When(Box<Expr>, Vec<WhenArm>, usize),
 }
 
 #[derive(Debug, Clone)]
@@ -135,12 +136,21 @@ pub enum Stmt {
     StructDef {
         name: String,
         fields: Vec<(String, Type)>,
+        is_pub: bool,
         pos: usize,
     },
     ImplBlock {
         name: String,
         aliases: Vec<(String, Type)>,
         methods: Vec<(String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>)>,
+        is_pub: bool,
+        pos: usize,
+    },
+    ConstDecl {
+        name: String,
+        ty: Type,
+        value: Expr,
+        is_pub: bool,
         pos: usize,
     },
     EnumDef {
@@ -195,6 +205,7 @@ pub enum Stmt {
         ret_ty: Option<Type>,
         body: Vec<Stmt>,
         ret_expr: Option<Expr>,
+        is_pub: bool,
         pos: usize,
     },
     Block {

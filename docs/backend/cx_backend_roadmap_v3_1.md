@@ -116,6 +116,7 @@ These are conditions, not features. All must be true before 0.1 ships.
 - Dynamic dispatch
 - Closures and lambdas
 - Async and continuations
+- when blocks — produces structured UnsupportedSemanticConstruct error; when lowering will require design work for TBool three-way branching (true/false/unknown requires two nested Branch instructions since IR only has two-way Branch)
 
 This list is intentional. Unsupported constructs must produce structured errors, not silently misbehave.
 
@@ -180,6 +181,29 @@ This list is intentional. Unsupported constructs must produce structured errors,
 
 ---
 
+**Phase 0.5 — Backend Trait Interface Change** *(pre-Phase 13 gate)*
+
+The current `Backend` trait in `backend/mod.rs` takes `&Program` (the raw AST), not `&IrModule`. The `let _ir = prepare_ir(...)` in `main.rs` builds the IR and immediately discards it. Both Cranelift and LLVM stub backends receive the original AST, not the lowered IR.
+
+This must be changed before Phase 13 begins. The trait signature must become:
+
+```
+pub trait Backend {
+    fn execute(&self, module: &IrModule) -> Result<(), String>;
+}
+```
+
+This touches `backend/mod.rs`, `cranelift/jit.rs`, `cranelift/aot.rs`, `llvm/aot.rs`, and `main.rs`. It is a load-bearing API break that wires the IR pipeline together.
+
+Also: `backend/mod.rs` line 1 has `#![allow(dead_code)]` which suppresses all dead code warnings for the module. This should be removed or replaced with per-item `#[allow(dead_code)]` when Phase 13 wires the real pipeline so new dead code gets caught.
+
+Done when:
+- `Backend::execute` takes `&IrModule`
+- `main.rs` passes lowered IR into backend dispatch instead of discarding it
+- All backend stubs compile against the new signature
+
+---
+
 ## Active 🔄
 
 **Phase 6 — Function Call Lowering** *(next up)*
@@ -203,6 +227,8 @@ Goal: let already-lowered functions call each other.
 - Direct vs intrinsic call distinction established
 - Call validation in validator
 - Tests for call-containing IR
+
+Implementation note: `build_signature_table` in `lower.rs` builds a `HashMap<String, FunctionSignature>` from all function definitions. This must be wired into `LoweringCtx` on construction so call sites can resolve callee signatures for arity and type validation.
 
 Done when:
 - Simple direct calls lower successfully
@@ -247,10 +273,18 @@ Without this phase, parity testing is incomplete — the backend could produce o
 - Struct field layout — ordering, alignment, padding rules
 - Array element layout — stride, alignment
 - str and strref layout at backend boundary
+  - Arena ownership question: the tree-walk interpreter's arena is a Vec<u8> in RunTime. In JIT mode, does the JIT call into the same RunTime arena via intrinsic calls, maintain its own separate arena, or treat strings as heap-allocated (arena as interpreter-only optimization)? This decision affects strref escape rules since strref is an arena view that cannot outlive the arena. Must be answered before any string layout is defined.
 - Handle<T> runtime representation
 - TBool representation — 0/1/2 wire format preserved through backend
+  - Runtime representation decision needed: u8, enum, or tagged union
+  - IR type question: does IrType need a TBool variant or is it lowered as IrType::I8 with convention?
+  - Unknown propagation strategy: does unknown checking happen in IR instructions or as runtime intrinsic calls?
+  - Arithmetic on unknown-infected values: propagation cost and mechanism must be defined
+  - TBool function parameters: calling convention implications — a TBool param is not a bool param
+  - This is one of the most distinctive parts of the language and needs a full design pass before Phase 8 closes
 - Function calling convention — how arguments are passed and returned
 - Parameter passing rules — by value, by reference, for each type
+- Copy parameter bleed-back convention — (x.copy) requires the modified parameter value to be written back to the caller's variable on return. This is non-standard. Options: pass by pointer and let callee write through it, return a struct containing return value plus all modified copy params, or use a secondary return slot. This decision affects every function call involving .copy parameters and must be resolved before Phase 8 closes.
 - Return value rules — small values, large values, void
 - Synthetic main vs real main conventions documented
 - Layout tests — struct sizes, field offsets, array strides match documented rules
@@ -270,7 +304,8 @@ Goal: define exactly what the backend lowers as pure IR versus what becomes a ru
 
 - Define backend-visible runtime entry points
 - Categorize every builtin — pure IR, runtime call, or intrinsic
-- print — classified and lowered correctly now that it is promoted to a function
+- print — classified and lowered correctly once it is promoted to a function
+  - **Cross-roadmap dependency:** print has not been promoted to a function yet in the frontend. Phase 9 cannot close until the frontend ships print as a real function with a proper call signature. If the frontend changes print behavior (e.g., newline parameter, name change), Phase 9's intrinsic definition changes too.
 - Allocation operations — arena, handle registry interactions
 - Handle registry operations — insert, get, remove, stale detection
 - String boundary operations — str copy-on-boundary, strref validity
@@ -293,7 +328,7 @@ Done when:
 Goal: lower loop constructs after branch lowering is stable.
 
 - while loop lowering — header, body, exit blocks
-- for loop lowering
+- for loop lowering — **depends on Phase 11 range expression lowering**; the `for i in 0..5` construct requires the range expression to be lowered first, which is currently rejected by unsupported! in lower_expr. For loops will not work until range lowering ships. Either range lowering must be pulled into Phase 10 or Phase 11 range work must complete before Phase 10 for-loops are attempted.
 - Loop-carried values through block params
 - Backedge handling
 - break lowering — exits to loop exit block
@@ -301,6 +336,7 @@ Goal: lower loop constructs after branch lowering is stable.
 - Returns inside loop body handled correctly
 - Loop-aware SSA — values defined inside loop not visible outside
 - Validator support for loop CFG — backedges, dominance-like invariants
+- Loop variable read-only invariant — the runtime enforces RuntimeError::ReadOnlyLoopVar (for loop variable is read-only inside body). The IR validator must enforce this too: a binding that is a loop variable must never appear as the destination of an assignment instruction inside the loop body. This is a correctness guarantee the backend inherits from the runtime.
 
 Done when:
 - while and for loops lower into valid CFG
@@ -314,7 +350,7 @@ Done when:
 
 Goal: shrink the unsupported surface area intentionally. Every construct in this phase either gets supported or gets a documented, structured rejection. Nothing is silently unsupported.
 
-- CompoundAssign — += style forms
+- CompoundAssign — += style forms — **cross-roadmap dependency:** the current Cx compound assign syntax is `i +1=`, not `i += 1`. If the frontend changes this syntax before 0.1, the IR representation of compound assign changes too. The frontend and backend roadmaps must be synchronized on this decision before Phase 11 implementation begins.
 - Unary expressions
 - Range expressions
 - Dot access and field indexing forms
@@ -324,6 +360,7 @@ Goal: shrink the unsupported surface area intentionally. Every construct in this
 - Assignment semantics with field and index writes
 - Side-effect ordering — evaluation order documented and stable
 - Temporary evaluation order — consistent with semantic layer
+- when block lowering or structured rejection — when blocks are Cx's primary branching form and must appear explicitly in Phase 11. Either lower to nested branch chains or produce a documented UnsupportedSemanticConstruct error. Design note: basic enum variant when compiles to tag comparisons, range when compiles to bounds checks, TBool when requires a three-way branch (true/false/unknown) which the current two-way Branch IR cannot express without two nested Branch instructions.
 
 Done when:
 - Every construct either lowers or produces a named, structured error
@@ -418,6 +455,7 @@ Done when:
 - At least one multi-function program works
 - Test harness automates execution and comparison
 - Performance is not the gate — correctness is
+- **Early parity opportunity:** after this phase, a minimal differential harness can compare interpreter vs JIT output on the arithmetic subset (t01–t05). This does not require layout to be frozen. Starting parity checks here — before the full Phase 12 harness — catches divergence early. Consider splitting: "minimal harness for arithmetic subset" after Phase 14, "full parity harness" as Phase 12.
 
 ---
 
@@ -575,12 +613,18 @@ Phase 5  — branches          → required before Phase 10 loops
 Phase 6  — calls             → required before meaningful Cranelift execution
 Phase 7  — diagnostics       → required before Cranelift debugging is possible
 Phase 8  — ABI and layout    → required before parity results are trustworthy
-Phase 9  — intrinsics        → required before builtins and runtime behavior land
-Phase 10 — loops             → required before full control flow surface is covered
+Phase 9  — intrinsics        → required before builtins and runtime behavior land; depends on frontend promoting print to a function
+Phase 10 — loops             → required before full control flow surface is covered; for-loop lowering depends on Phase 11 range expressions
+Phase 11 — surface area      → range expression lowering must complete before Phase 10 for-loops work
 Phase 12 — harness           → defines what parity means — must exist before parity claims are made
 Phase 13 — skeleton          → required before any JIT execution is attempted
 Phase 14 — host boundary     → required before harness can capture JIT output reliably
 Phase 15 — JIT 0.1 target    → closes only after all 0.1 hard blockers are satisfied
+
+Known cross-roadmap dependencies:
+- Frontend: print promoted to function → Phase 9 cannot close without it
+- Frontend: compound assign syntax decision (i +1= vs i += 1) → Phase 11 depends on this
+- Frontend: float type keyword decision → Phase 8 scalar layout depends on this
 ```
 
 Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
@@ -596,6 +640,9 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 - IR validator
 - Function lowering
 - if / else lowering
+
+**Pre-Phase 13 Gate**
+- Backend trait interface change (Phase 0.5) — must ship before Cranelift skeleton
 
 **Active**
 - Function call lowering

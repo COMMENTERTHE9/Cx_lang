@@ -1,0 +1,5 @@
+const MAX_HP: t32 = 100
+const GRAVITY: f64 = 9.8
+
+print(MAX_HP)
+print(GRAVITY)

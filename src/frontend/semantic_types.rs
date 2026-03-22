@@ -32,6 +32,7 @@ pub enum SemanticType {
     Handle(Box<SemanticType>),
     Numeric,
     Array(usize, Box<SemanticType>),
+    Void,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +126,11 @@ pub enum SemanticExprKind {
     StructInstance {
         type_name: String,
         fields: Vec<(String, SemanticExpr)>,
+    },
+    When {
+        expr: Box<SemanticExpr>,
+        arms: Vec<SemanticWhenArm>,
+        pos: usize,
     },
 }
 
@@ -347,6 +353,13 @@ pub enum SemanticStmt {
         name: String,
         aliases: Vec<(String, SemanticType)>,
         methods: Vec<SemanticFunction>,
+        pos: usize,
+    },
+    ConstDecl {
+        name: String,
+        ty: SemanticType,
+        value: SemanticExpr,
+        is_pub: bool,
         pos: usize,
     },
 }

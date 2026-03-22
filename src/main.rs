@@ -207,13 +207,6 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
             }
             SemanticStmt::FuncDef(sem_func) => {
                 rt.register_semantic_func(sem_func.clone());
-                // Also register in old AST registry for copy/bleedback fallback
-                rt.register_func(
-                    sem_func.name.clone(),
-                    sem_func.params.iter().map(|p| p.kind.clone().into()).collect(),
-                    vec![],
-                    None,
-                );
             }
             SemanticStmt::EnumDef { name, variants, .. } => {
                 rt.enums.insert(name.clone(), EnumRuntimeInfo {
@@ -230,15 +223,8 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
                             _ => continue,
                         };
                         rt.semantic_impls.insert(
-                            (type_key.clone(), sem_func.name.clone()),
-                            (aliases.clone(), Arc::new(sem_func.clone())),
-                        );
-                        rt.impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),
-                             (sem_func.name.clone(),
-                              sem_func.params.iter().map(|p| p.kind.clone().into()).collect(),
-                              None, vec![], None))
+                            (aliases.clone(), Arc::new(sem_func.clone())),
                         );
                     }
                 }

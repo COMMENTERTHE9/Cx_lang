@@ -71,6 +71,7 @@ struct LoweredValue {
 
 type BindingMap = HashMap<BindingId, LoweredValue>;
 
+#[derive(Clone)]
 struct FunctionSignature {
     param_types: Vec<IrType>,
     return_ty: Option<IrType>,
@@ -119,6 +120,7 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
 struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
+    signature_table: HashMap<String, FunctionSignature>,
 }
 
 struct ActiveBlock {
@@ -135,10 +137,11 @@ struct FunctionLoweringSpec {
 }
 
 impl LoweringCtx {
-    fn new() -> Self {
+    fn new(signature_table: HashMap<String, FunctionSignature>) -> Self {
         Self {
             builder: IrBuilder::new(),
             finished_blocks: Vec::new(),
+            signature_table,
         }
     }
 
@@ -218,7 +221,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
     };
     let mut top_level_stmts = Vec::new();
     let mut has_real_main = false;
-    let _signature_table = build_signature_table(program);
+    let signature_table = build_signature_table(program);
 
     for stmt in &program.stmts {
         match stmt {
@@ -226,7 +229,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function)?);
+                module.functions.push(lower_semantic_function(function, &signature_table)?);
             }
             other => top_level_stmts.push(other),
         }
@@ -240,19 +243,19 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table)?);
     }
 
     Ok(module)
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt]) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
         allow_return_stmt: false,
     };
-    let mut ctx = LoweringCtx::new();
+    let mut ctx = LoweringCtx::new(signature_table.clone());
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
         stmts.iter().copied(),
@@ -274,13 +277,14 @@ fn lower_top_level_main(stmts: &[&SemanticStmt]) -> Result<IrFunction, LoweringE
 
 fn lower_semantic_function(
     function: &crate::frontend::semantic_types::SemanticFunction,
+    signature_table: &HashMap<String, FunctionSignature>,
 ) -> Result<IrFunction, LoweringError> {
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
     let mut bindings = HashMap::new();
     let return_ty = function.return_ty.as_ref().map(lower_type).transpose()?;
 
-    let mut ctx = LoweringCtx::new();
+    let mut ctx = LoweringCtx::new(signature_table.clone());
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -522,6 +526,7 @@ fn lower_stmt(
         ),
         SemanticStmt::StructDef { .. } => { unsupported!("StructDef") },
         SemanticStmt::ImplBlock { .. } => { unsupported!("ImplBlock") },
+        SemanticStmt::ConstDecl { .. } => { unsupported!("ConstDecl") },
     }
 }
 
@@ -784,6 +789,7 @@ fn lower_expr(
         SemanticExprKind::Index { .. } => { unsupported!("Index") },
         SemanticExprKind::MethodCall { .. } => { unsupported!("MethodCall") },
         SemanticExprKind::StructInstance { .. } => { unsupported!("StructInstance") },
+        SemanticExprKind::When { .. } => { unsupported!("WhenExpr") },
     }
 }
 
@@ -938,6 +944,7 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::TypeParam(_) => { unsupported_type!("TypeParam") },
         SemanticType::Struct(_) => { unsupported_type!("Struct") },
         SemanticType::Array(_, _) => { unsupported_type!("Array") },
+        SemanticType::Void => { unsupported_type!("Void") },
     }
 }
 

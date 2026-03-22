@@ -243,7 +243,19 @@ impl Analyzer {
 
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
-            Stmt::StructDef { name, fields, pos } => {
+            Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
+                let semantic_value = self.analyze_expr(value)?;
+                let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
+                self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                Ok(SemanticStmt::ConstDecl {
+                    name: name.clone(),
+                    ty: sem_ty,
+                    value: semantic_value,
+                    is_pub: *is_pub,
+                    pos: *pos,
+                })
+            }
+            Stmt::StructDef { name, fields, pos, .. } => {
                 self.structs.insert(name.clone(), fields.clone());
                 let semantic_fields = fields.iter()
                     .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
@@ -254,7 +266,7 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
-            Stmt::ImplBlock { name, aliases, methods, pos } => {
+            Stmt::ImplBlock { name, aliases, methods, pos, .. } => {
                 let semantic_aliases: Vec<(String, SemanticType)> = aliases.iter()
                     .map(|(aname, aty)| (aname.clone(), semantic_type_from_decl(aty.clone(), &[])))
                     .collect();
@@ -427,6 +439,7 @@ impl Analyzer {
                 body,
                 ret_expr,
                 pos,
+                ..
             } => self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos),
             Stmt::Print { expr, pos } => Ok(SemanticStmt::Print {
                 expr: self.analyze_expr(expr)?,
@@ -1065,6 +1078,36 @@ impl Analyzer {
                     },
                 })
             }
+            Expr::When(match_expr, arms, pos) => {
+                let semantic_match = self.analyze_expr(match_expr)?;
+                let mut semantic_arms = Vec::new();
+                let mut result_ty = SemanticType::Unknown;
+                for (i, arm) in arms.iter().enumerate() {
+                    let pattern = self.analyze_when_pattern(&arm.pattern);
+                    let body: Vec<SemanticStmt> = match &arm.body {
+                        WhenBody::Stmts(stmts) => stmts.iter()
+                            .map(|s| self.analyze_stmt(s))
+                            .collect::<Result<Vec<_>, _>>()?,
+                        WhenBody::SuperGroup(_) => Vec::new(),
+                    };
+                    if i == 0 {
+                        if let Some(last) = body.last() {
+                            if let SemanticStmt::ExprStmt { expr, .. } = last {
+                                result_ty = expr.ty.clone();
+                            }
+                        }
+                    }
+                    semantic_arms.push(SemanticWhenArm { pattern, body, pos: arm.pos });
+                }
+                Ok(SemanticExpr {
+                    ty: result_ty,
+                    kind: SemanticExprKind::When {
+                        expr: Box::new(semantic_match),
+                        arms: semantic_arms,
+                        pos: *pos,
+                    },
+                })
+            }
             Expr::MethodCall(instance, method, args, pos) => {
                 // look up the instance variable to find its type
                 let _instance_ty = self.lookup_var(instance)
@@ -1232,7 +1275,7 @@ impl Analyzer {
         }
 
         let ret_ty = substitute_type_params(
-            function.ret_ty.unwrap_or(SemanticType::I128),
+            function.ret_ty.unwrap_or(SemanticType::Void),
             &type_param_map,
         );
 
@@ -1757,6 +1800,7 @@ mod tests {
                     body: vec![],
                     ret_expr: Some(ident("a")),
                     pos: 0,
+                    is_pub: false,
                 },
                 Stmt::ExprStmt {
                     expr: Expr::Call("foo".to_string(), vec![CallArg::Expr(num(1))], 0),

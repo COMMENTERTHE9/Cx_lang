@@ -25,6 +25,7 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::ArrayLit(_) => 0,
         Expr::Index(_, _, pos) => *pos,
         Expr::MethodCall(_, _, _, pos) => *pos,
+        Expr::When(_, _, pos) => *pos,
     }
 }
 
@@ -212,6 +213,56 @@ where
             )
             .map(|elems| Expr::ArrayLit(elems));
 
+        let when_expr_arm = {
+            let pattern = choice((
+                select! { Token::Identifier(s) if s == "_" => WhenPattern::Catchall },
+                just(Token::KeywordUnknown).map(|_| WhenPattern::Literal(AstValue::Unknown)),
+                select! { Token::LiteralInt(n) => n }
+                    .then(choice((
+                        just(Token::RangeInclusive).to(true),
+                        just(Token::RangeExclusive).to(false),
+                    )))
+                    .then(select! { Token::LiteralInt(n) => n })
+                    .map(|((start, inclusive), end)| {
+                        WhenPattern::Range(
+                            AstValue::Num(start),
+                            AstValue::Num(end),
+                            inclusive,
+                        )
+                    }),
+                ident
+                    .clone()
+                    .then_ignore(just(Token::PunctDoubleColon))
+                    .then(ident.clone())
+                    .map(|(enum_name, variant)| WhenPattern::EnumVariant(enum_name, variant)),
+                expr.clone().map(|e| match e {
+                    Expr::Val(v) => WhenPattern::Literal(v),
+                    _ => WhenPattern::Catchall,
+                }),
+            ))
+            .boxed();
+
+            pattern
+                .map_with(|pattern, e: &mut ParseExtra<'a, '_, I>| (pattern, e.span().start))
+                .then_ignore(just(Token::PunctFatArrow))
+                .then(expr.clone())
+                .then_ignore(just(Token::PunctComma).or_not())
+                .map(|((pattern, pos), value_expr)| WhenArm {
+                    pattern,
+                    body: WhenBody::Stmts(vec![Stmt::ExprStmt { expr: value_expr, _pos: pos }]),
+                    pos,
+                })
+        };
+
+        let when_expr = just(Token::KeywordWhen)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(when_expr_arm.repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, match_expr), arms)| Expr::When(Box::new(match_expr), arms, pos))
+            .boxed();
+
         let primary = literal
             .or(enum_variant)
             .or(handle_new)
@@ -219,6 +270,7 @@ where
             .or(handle_val)
             .or(method_call)
             .or(struct_literal)
+            .or(when_expr)
             .or(ident_or_call)
             .or(paren)
             .or(array_lit)
@@ -529,6 +581,7 @@ where
             .map(|((pos, name), fields)| Stmt::StructDef {
                 name,
                 fields,
+                is_pub: false,
                 pos,
             })
             .boxed();
@@ -946,6 +999,7 @@ where
                         ret_ty,
                         body,
                         ret_expr,
+                        is_pub: false,
                         pos,
                     },
                 )
@@ -993,12 +1047,30 @@ where
                     name,
                     aliases,
                     methods: method_data,
+                    is_pub: false,
                     pos,
                 }
             })
             .boxed();
 
+        let const_decl = just(Token::KeywordConst)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident.clone())
+            .then_ignore(just(Token::PunctColon))
+            .then(ty.clone())
+            .then_ignore(just(Token::OpAssign))
+            .then(expr.clone())
+            .map(|(((pos, name), decl_ty), value)| Stmt::ConstDecl {
+                name,
+                ty: decl_ty,
+                value,
+                is_pub: false,
+                pos,
+            })
+            .boxed();
+
         choice((
+            const_decl,
             struct_def,
             impl_block,
             enum_def,

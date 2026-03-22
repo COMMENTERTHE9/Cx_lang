@@ -382,6 +382,7 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
         }
         Stmt::IfElse { .. } => eprintln!("{}IfElse", pad),
         Stmt::WhileIn { .. } => eprintln!("{}WhileIn", pad),
+        Stmt::ConstDecl { name, ty, .. } => eprintln!("{}ConstDecl({}: {:?})", pad, name, ty),
     }
 }
 
@@ -436,6 +437,10 @@ fn print_expr(expr: &Expr, depth: usize) {
                 }
             }
         }
+        Expr::When(match_expr, arms, _) => {
+            eprintln!("{}WhenExpr({} arms)", pad, arms.len());
+            print_expr(match_expr, depth + 1);
+        }
     }
 }
 
@@ -486,31 +491,4 @@ pub fn print_scope_event(event: &ScopeEvent) {
             }
         }
     }
-}
-
-pub fn print_stmt_summary(stmt: &Stmt) {
-    let label = match stmt {
-        Stmt::StructDef { name, .. } => format!("StructDef {}", name),
-        Stmt::ImplBlock { name, .. } => format!("ImplBlock {}", name),
-        Stmt::EnumDef { .. } => "EnumDef".to_string(),
-        Stmt::Decl { name, .. } => format!("Decl {}", name),
-        Stmt::Assign { .. } => "Assign".to_string(),
-        Stmt::TypedAssign { name, .. } => format!("TypedAssign {}", name),
-        Stmt::Print { .. } => "Print".to_string(),
-        Stmt::PrintInline { .. } => "PrintInline".to_string(),
-        Stmt::ExprStmt { .. } => "ExprStmt".to_string(),
-        Stmt::Return { .. } => "Return".to_string(),
-        Stmt::FuncDef { name, .. } => format!("FuncDef {}", name),
-        Stmt::Block { .. } => "Block".to_string(),
-        Stmt::When { .. } => "When".to_string(),
-        Stmt::While { .. } => "While".to_string(),
-        Stmt::For { .. } => "For".to_string(),
-        Stmt::Loop { .. } => "Loop".to_string(),
-        Stmt::Break { .. } => "Break".to_string(),
-        Stmt::Continue { .. } => "Continue".to_string(),
-        Stmt::CompoundAssign { .. } => "CompoundAssign".to_string(),
-        Stmt::IfElse { .. } => "IfElse".to_string(),
-        Stmt::WhileIn { .. } => "WhileIn".to_string(),
-    };
-    eprintln!("{}", format!("  [stmt] {}", label).white().dimmed());
 }

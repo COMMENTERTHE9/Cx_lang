@@ -58,6 +58,12 @@ pub enum Token {
     #[token("fnc")]
     KeywordFnc,
 
+    #[token("const")]
+    KeywordConst,
+
+    #[token("pub")]
+    KeywordPub,
+
     #[token("return")]
     KeywordReturn,
 
