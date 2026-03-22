@@ -1,0 +1,19 @@
+x: t32 = 10
+
+if x > 5 {
+    print(1)
+} else {
+    print(0)
+}
+
+if x > 20 {
+    print(99)
+} else if x > 5 {
+    print(2)
+} else {
+    print(0)
+}
+
+if x == 10 {
+    print(3)
+}

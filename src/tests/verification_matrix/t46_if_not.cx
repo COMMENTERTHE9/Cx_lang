@@ -1,0 +1,22 @@
+x: bool = false
+
+if !x {
+    print(1)
+} else {
+    print(0)
+}
+
+y: t32 = 5
+
+if !(y == 5) {
+    print(99)
+} else {
+    print(2)
+}
+
+alive: bool = true
+if !alive {
+    print(99)
+} else {
+    print(3)
+}

@@ -4,6 +4,7 @@ use crate::frontend::semantic_types::*;
 use crate::runtime::arena::Arena;
 use crate::runtime::handle::HandleRegistry;
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct EnumRuntimeInfo {
@@ -50,10 +51,10 @@ pub struct RunTime {
     pub enums: HashMap<String, EnumRuntimeInfo>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
     pub impls: HashMap<(String, String), (Vec<(String, Type)>, (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>))>,
-    pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, SemanticFunction)>,
+    pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, Arc<SemanticFunction>)>,
     scopes: Vec<ScopeFrame>,
     funcs: HashMap<String, FuncDef>,
-    pub semantic_funcs: HashMap<String, SemanticFunction>,
+    pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
 }
 
@@ -77,7 +78,7 @@ impl RunTime {
     }
 
     pub fn register_semantic_func(&mut self, func: SemanticFunction) {
-        self.semantic_funcs.insert(func.name.clone(), func);
+        self.semantic_funcs.insert(func.name.clone(), Arc::new(func));
     }
 
     pub fn alloc_str(&mut self, s: &str) -> (u32, u32) {
@@ -1552,12 +1553,12 @@ impl RunTime {
                 Ok(())
             }
             SemanticStmt::Decl { name, ty, .. } => {
-                let rt_ty: Option<Type> = ty.as_ref().map(|t| semantic_type_to_ast(t));
+                let rt_ty: Option<Type> = ty.as_ref().map(|t| t.clone().into());
                 self.declare(name.clone(), rt_ty, 0)
             }
             SemanticStmt::TypedAssign { name, ty, expr, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
-                let rt_ty = semantic_type_to_ast(ty);
+                let rt_ty: Type = ty.clone().into();
                 let val = match (&rt_ty, val) {
                     (Type::Bool, Value::Unknown(_)) => Value::TBool(2),
                     (_, v) => v,
@@ -1700,7 +1701,7 @@ impl RunTime {
             SemanticStmt::Continue { .. } => Err(RuntimeError::ContinueSignal),
             SemanticStmt::FuncDef(sem_func) => {
                 // Register in semantic registry for semantic dispatch
-                self.semantic_funcs.insert(sem_func.name.clone(), sem_func.clone());
+                self.semantic_funcs.insert(sem_func.name.clone(), Arc::new(sem_func.clone()));
                 // Also register in AST registry for copy-param fallback path
                 self.funcs.insert(sem_func.name.clone(), FuncDef {
                     type_params: sem_func.type_params.clone(),
@@ -1711,7 +1712,7 @@ impl RunTime {
                 Ok(())
             }
             SemanticStmt::StructDef { name, fields, .. } => {
-                self.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect());
+                self.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect());
                 Ok(())
             }
             SemanticStmt::ImplBlock { aliases, methods, .. } => {
@@ -1723,14 +1724,14 @@ impl RunTime {
                         };
                         self.semantic_impls.insert(
                             (type_key.clone(), sem_func.name.clone()),
-                            (aliases.clone(), sem_func.clone()),
+                            (aliases.clone(), Arc::new(sem_func.clone())),
                         );
                         // Keep existing AST impls registration for copy param fallback
                         self.impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.iter().map(|(n, t)| (n.clone(), semantic_type_to_ast(t))).collect(),
+                            (aliases.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect(),
                              (sem_func.name.clone(), sem_func.params.iter().map(|p| semantic_param_to_ast(&p.kind)).collect(),
-                              sem_func.return_ty.as_ref().map(|t| semantic_type_to_ast(t)),
+                              sem_func.return_ty.as_ref().map(|t| t.clone().into()),
                               vec![], None))
                         );
                     }
@@ -1750,8 +1751,213 @@ impl RunTime {
                 let val = self.eval_semantic_expr(expr)?;
                 self.run_semantic_when(val, arms)
             }
-            SemanticStmt::IfElse { .. } => Ok(()), // stub
-            SemanticStmt::WhileIn { .. } => Ok(()), // stub
+            SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
+                let cond_val = self.eval_semantic_expr(condition)?;
+                let is_true = match &cond_val {
+                    Value::Bool(b) => *b,
+                    Value::TBool(0) => false,
+                    Value::TBool(1) => true,
+                    Value::Num(n) => *n != 0,
+                    _ => false,
+                };
+
+                if is_true {
+                    self.push_scope();
+                    for stmt in then_body {
+                        match self.run_semantic_stmt(stmt) {
+                            Ok(_) => {}
+                            Err(e) => { self.pop_scope(); return Err(e); }
+                        }
+                    }
+                    self.pop_scope();
+                    return Ok(());
+                }
+
+                for (else_if_cond, else_if_body) in else_ifs {
+                    let cond_val = self.eval_semantic_expr(else_if_cond)?;
+                    let is_true = match &cond_val {
+                        Value::Bool(b) => *b,
+                        Value::TBool(0) => false,
+                        Value::TBool(1) => true,
+                        Value::Num(n) => *n != 0,
+                        _ => false,
+                    };
+                    if is_true {
+                        self.push_scope();
+                        for stmt in else_if_body {
+                            match self.run_semantic_stmt(stmt) {
+                                Ok(_) => {}
+                                Err(e) => { self.pop_scope(); return Err(e); }
+                            }
+                        }
+                        self.pop_scope();
+                        return Ok(());
+                    }
+                }
+
+                if let Some(else_body) = else_body {
+                    self.push_scope();
+                    for stmt in else_body {
+                        match self.run_semantic_stmt(stmt) {
+                            Ok(_) => {}
+                            Err(e) => { self.pop_scope(); return Err(e); }
+                        }
+                    }
+                    self.pop_scope();
+                }
+
+                Ok(())
+            }
+            SemanticStmt::WhileIn { arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, .. } => {
+                let start_val = match self.eval_semantic_expr(range_start)? {
+                    Value::Num(n) => n,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                };
+                let end_val = match self.eval_semantic_expr(range_end)? {
+                    Value::Num(n) => n,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                };
+
+                // Primary chain
+                'primary: {
+                    if *inclusive {
+                        for i in start_val..=end_val {
+                            let elem = {
+                                let arr_val = self.get_var(arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if *start_slot < elems.len() { elems[*start_slot] = elem; }
+                                    self.set_var(arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break 'primary; }
+                        }
+                    } else {
+                        for i in start_val..end_val {
+                            let elem = {
+                                let arr_val = self.get_var(arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if *start_slot < elems.len() { elems[*start_slot] = elem; }
+                                    self.set_var(arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break 'primary; }
+                        }
+                    }
+                }
+
+                // Then chains
+                for chain in then_chains {
+                    let chain_start = match self.eval_semantic_expr(&chain.range_start)? {
+                        Value::Num(n) => n,
+                        _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                    };
+                    let chain_end = match self.eval_semantic_expr(&chain.range_end)? {
+                        Value::Num(n) => n,
+                        _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                    };
+                    if chain.inclusive {
+                        for i in chain_start..=chain_end {
+                            let elem = {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: chain.arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if chain.start_slot < elems.len() { elems[chain.start_slot] = elem; }
+                                    self.set_var(chain.arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in &chain.body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break; }
+                        }
+                    } else {
+                        for i in chain_start..chain_end {
+                            let elem = {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: chain.arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if chain.start_slot < elems.len() { elems[chain.start_slot] = elem; }
+                                    self.set_var(chain.arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in &chain.body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break; }
+                        }
+                    }
+                }
+
+                if let Some(result_expr) = result {
+                    self.eval_semantic_expr(result_expr)?;
+                }
+
+                Ok(())
+            }
         }
     }
 
@@ -1778,7 +1984,10 @@ impl RunTime {
             (Op::Minus, Value::Float(f)) => Ok(Value::Float(-f)),
             (Op::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
             (Op::Not, Value::TBool(n)) => Ok(Value::TBool(if n == 0 { 1 } else if n == 1 { 0 } else { 2 })),
-            (Op::Mul, v) => Ok(v), // deref — passthrough for now
+            (Op::Mul, Value::Array(elems)) => {
+                elems.get(0).cloned().ok_or_else(|| RuntimeError::BadAssignTarget { pos })
+            }
+            (Op::Mul, v) => Ok(v),
             _ => Err(RuntimeError::TypeMismatch { pos, expected: Type::Unknown, got: Type::Unknown }),
         }
     }
@@ -2237,28 +2446,6 @@ fn expand_template(rt: &RunTime, s: &str, pos: usize) -> Result<String, RuntimeE
         }
     }
     Ok(out)
-}
-
-fn semantic_type_to_ast(st: &SemanticType) -> Type {
-    match st {
-        SemanticType::I8 => Type::T8,
-        SemanticType::I16 => Type::T16,
-        SemanticType::I32 => Type::T32,
-        SemanticType::I64 => Type::T64,
-        SemanticType::I128 => Type::T128,
-        SemanticType::F64 => Type::T64,
-        SemanticType::Bool => Type::Bool,
-        SemanticType::Str => Type::Str,
-        SemanticType::StrRef => Type::StrRef,
-        SemanticType::Char => Type::Char,
-        SemanticType::Enum(name) => Type::Enum(name.clone()),
-        SemanticType::Struct(name) => Type::Struct(name.clone()),
-        SemanticType::Container => Type::Container,
-        SemanticType::Handle(inner) => Type::Handle(Box::new(semantic_type_to_ast(inner))),
-        SemanticType::TypeParam(name) => Type::TypeParam(name.clone()),
-        SemanticType::Array(size, elem_ty) => Type::Array(*size, Box::new(semantic_type_to_ast(elem_ty))),
-        SemanticType::Unknown | SemanticType::Numeric => Type::T64, // fallback
-    }
 }
 
 fn semantic_param_to_ast(sk: &SemanticParamKind) -> ParamKind {

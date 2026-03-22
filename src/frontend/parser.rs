@@ -697,6 +697,72 @@ where
             .map(|((pos, cond), body)| Stmt::While { cond, body, pos })
             .boxed();
 
+        let while_in_stmt = just(Token::KeywordWhile)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::KeywordIn))
+            .then(select! { Token::Identifier(name) => name })
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(select! { Token::LiteralInt(n) => n as usize })
+            .then_ignore(just(Token::PunctBracketClose))
+            .then_ignore(just(Token::PunctComma))
+            .then(expr.clone())
+            .then(
+                just(Token::RangeExclusive)
+                    .to(false)
+                    .or(just(Token::RangeInclusive).to(true))
+            )
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(stmt.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .then(
+                just(Token::KeywordThen)
+                    .ignore_then(just(Token::KeywordIn))
+                    .ignore_then(select! { Token::Identifier(name) => name })
+                    .then_ignore(just(Token::PunctColon))
+                    .then_ignore(just(Token::PunctBracketOpen))
+                    .then(select! { Token::LiteralInt(n) => n as usize })
+                    .then_ignore(just(Token::PunctBracketClose))
+                    .then_ignore(just(Token::PunctComma))
+                    .then(expr.clone())
+                    .then(
+                        just(Token::RangeExclusive)
+                            .to(false)
+                            .or(just(Token::RangeInclusive).to(true))
+                    )
+                    .then(expr.clone())
+                    .then_ignore(just(Token::PunctBraceOpen))
+                    .then(stmt.clone().repeated().collect::<Vec<_>>())
+                    .then_ignore(just(Token::PunctBraceClose))
+                    .map(|(((((chain_arr, chain_slot), chain_start), chain_inclusive), chain_end), chain_body)| {
+                        WhileInChain {
+                            arr: chain_arr,
+                            start_slot: chain_slot,
+                            range_start: chain_start,
+                            range_end: chain_end,
+                            inclusive: chain_inclusive,
+                            body: chain_body,
+                        }
+                    })
+                    .repeated()
+                    .collect::<Vec<_>>()
+            )
+            .map(|(((((((pos, arr), start_slot), range_start), inclusive), range_end), body), then_chains)| {
+                Stmt::WhileIn {
+                    arr,
+                    start_slot,
+                    range_start,
+                    range_end,
+                    inclusive,
+                    body,
+                    then_chains,
+                    result: None,
+                    pos,
+                }
+            })
+            .boxed();
+
         let for_stmt = just(Token::KeywordFor)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
@@ -720,6 +786,44 @@ where
                     pos,
                 },
             )
+            .boxed();
+
+        let if_stmt = just(Token::KeywordIf)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(
+                stmt.clone()
+                    .repeated()
+                    .collect::<Vec<_>>()
+            )
+            .then_ignore(just(Token::PunctBraceClose))
+            .then(
+                just(Token::KeywordElse)
+                    .ignore_then(just(Token::KeywordIf))
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctBraceOpen))
+                    .then(stmt.clone().repeated().collect::<Vec<_>>())
+                    .then_ignore(just(Token::PunctBraceClose))
+                    .repeated()
+                    .collect::<Vec<_>>()
+            )
+            .then(
+                just(Token::KeywordElse)
+                    .ignore_then(just(Token::PunctBraceOpen))
+                    .ignore_then(stmt.clone().repeated().collect::<Vec<_>>())
+                    .then_ignore(just(Token::PunctBraceClose))
+                    .or_not()
+            )
+            .map(|((((pos, condition), then_body), else_ifs), else_body)| {
+                Stmt::IfElse {
+                    condition,
+                    then_body,
+                    else_ifs,
+                    else_body,
+                    pos,
+                }
+            })
             .boxed();
 
         let loop_stmt = just(Token::KeywordLoop)
@@ -779,6 +883,8 @@ where
                 typed_assign.clone(),
                 compound_assign.clone(),
                 assign.clone(),
+                if_stmt.clone(),
+                while_in_stmt.clone(),
                 when_stmt.clone(),
                 block.clone(),
                 expr_stmt_with_semi.clone(),
@@ -905,7 +1011,9 @@ where
             index_assign,
             assign,
             block,
+            if_stmt,
             when_stmt,
+            while_in_stmt,
             while_stmt,
             for_stmt,
             loop_stmt,
