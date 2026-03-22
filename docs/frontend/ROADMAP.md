@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.2 — 2026-03-22
+v4.3 — 2026-03-22
 
 ---
 
@@ -33,27 +33,130 @@ Cx is a systems language for game engine developers. The goal is explicit memory
 
 ---
 
+## Syntax Decisions — Locked
+
+These decisions are frozen as of 2026-03-22. No breaking changes after 0.1.
+
+**Types:**
+- Integer types: `t8`, `t16`, `t32`, `t64`, `t128` — signed, wrapping arithmetic at declared width
+- Float type: `f64` — single float width at 0.1, `f32` post-0.1
+- Boolean: `bool` — two-state. `tbool` — three-state (true/false/unknown)
+- String: `str` — owned. `strref` — arena view, cannot escape scope
+- Other: `char`, `Handle<T>`, `NullPoint<T>`
+
+**Integer overflow behavior — wrapping:**
+All integer arithmetic wraps at the declared width. A `t8` variable wraps at 255. This is explicit and documented. Game engines expect wrapping — silent saturation or trapping would be surprising.
+
+**Semicolons — always optional:**
+Newlines terminate statements. Semicolons are ignored if present. One consistent rule, no exceptions, no context-dependent behavior.
+
+**Compound assign — standard infix:**
+`+=`, `-=`, `*=`, `/=`, `%=` — frozen. No postfix form.
+
+**`*` operator — multiplication only:**
+`*` means multiplication in all positions. `arr:[0]` is the cursor/index access syntax. The `*arr` shorthand for `arr:[0]` is removed — it was confusing because `*` already means multiplication. Use `arr:[0]` consistently.
+
+**Array type syntax — `[N: Type]`:**
+`arr: [5: t64]` — size colon type inside brackets. Frozen.
+
+**Array index syntax — `arr:[0]`:**
+Colon before bracket distinguishes index access from type annotation. Frozen.
+
+**Function syntax — `fnc: RetType <T>? name(params)`:**
+Return type after colon. Generic params before name. Void functions omit return type. Frozen.
+
+**print functions:**
+`print(x)` — adds newline. `printn(x)` — no newline. Both are regular functions, not statements. `print!` syntax is gone.
+
+**Error model — Result\<T\> with ? propagation:**
+`Result<t64>` syntax. `Ok(val)` and `Err("msg")` variants. `?` operator propagates errors up the call chain. Unknown state is a separate concept — it does not merge with Result.
+
+**`copy_into` — survives as a distinct feature:**
+Structs and `copy_into` solve different problems. `copy_into` is about passing multiple named values with bleed-back mutation. It is not deprecated in favor of structs.
+
+**`when` arm bodies — both single expressions and blocks supported:**
+```cx
+when x {
+    1 => print("one"),
+    2 => {
+        print("two")
+        do_something()
+    },
+    _ => print("other"),
+}
+```
+
+**Pattern matching — named binding and guards targeted post-0.1:**
+Named binding (`SomeVariant as v`) and guard clauses (`n if n > 5`) are designed but not implemented at 0.1. No struct destructuring at 0.1.
+
+**`:=` type inference — strongly desired, not a hard blocker:**
+`score := 10` infers type from right-hand side. Targeted for 0.1 if time allows, not a gate.
+
+**Block comments — `/# and #/`:**
+Multiline comments use `/# ` to open and `#/` to close. Frozen.
+
+**Import syntax — `#![imports]` block:**
+```cx
+#![imports]
+math: use "std/math"
+player: use "./player"
+```
+Lazy loading implicit — only referenced symbols loaded. `pub` required for exports.
+
+**Multi-alias impl blocks:**
+```cx
+world_sync: impl (p: Player, w: World) {
+    fnc: sync() { p.position = w.origin }
+}
+p.sync(w)  /# w is second alias, passed as leading arg #/
+```
+
+**const declarations:**
+```cx
+const MAX_HP: t32 = 100
+const GRAVITY: f64 = 9.8
+```
+Literal-only initializers. Semantic pass rejects reassignment.
+
+---
+
 ## 0.1 Release Gates
 
 These are not features. These are conditions. A long gate list that never closes is a project killer — so the gates are split into two honest tiers.
 
-**Hard blockers — 0.1 cannot ship without these:**
-- ~~Semantic/interpreter parity complete~~ ✅ — interpreter runs off SemanticProgram, raw AST path deleted
-- Multi-file imports working — programs can span multiple .cx files
-- ~~Generics v2 complete~~ ✅ — multiple type parameters on functions, confirmed working
-- ~~Structs, methods, impl blocks working end to end~~ ✅
-- print promoted to function — must happen before backend locks calling convention
-- UTF-8 decision locked
-- ~~CI runs the full matrix on every PR and must be green~~ ✅ — run_matrix.sh wired into GitHub Actions
+### Hard Blockers (must ship, 0.1 does not exist without these)
 
-**Quality gates — must be true or have a tracked plan before 0.1:**
-- Parser, semantic layer, and interpreter agree on all supported constructs — no silent behavioral divergence
-- No known soundness holes in the memory boundary model
-- Minimal error model in place — Result<T> direction locked, panic vs recoverable decided
-- Basic test runner exists — assert, assert_eq, test blocks
-- Diagnostics are readable for common mistakes — parser errors, type mismatches, boundary violations
-- All examples in examples/ pass
-- Roadmap and spec match actual language behavior
+- [ ] `f64` type keyword — runtime exists, surface syntax missing. 1-hour fix, breaking change post-0.1
+- [ ] Generic structs `Struct<T>` — stdlib needs them. `Handle<T>` already works, extend to user-defined structs
+- [ ] `read(var)` stdin input — without input, programs are calculators. `input("prompt", var)` also needed
+- [ ] `const` declarations — literal-only. Semantic pass rejects reassignment
+- [ ] Value-producing `when` — `let x = when y { 1 => 10, _ => 0 }`. Semantic structure already there
+- [ ] `when` block-body arms — verified working with a matrix test
+- [ ] Multi-file imports working — programs can span multiple .cx files
+- [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
+- [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
+- [ ] print promoted to function — `print(x)` and `printn(x)` as real functions, not statements
+- [ ] UTF-8 decision locked — blocks stdlib and filesystem
+- [ ] String interpolation — `print("name: {name}")` inline variable substitution
+- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
+- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
+- [ ] Parser, semantic layer, and interpreter agree on all supported constructs
+- [ ] No known soundness holes in memory boundary model
+- [ ] All examples in `examples/` pass
+- [ ] Diagnostics readable for common mistakes
+- [ ] Roadmap and spec match actual language behavior
+
+### Quality Gates (strongly desired, delays release if missing)
+
+- [ ] `:=` type inference for literals and simple expressions
+- [ ] `when` as value-producing expression
+- [ ] Pattern matching — named binding `as v` and guard clauses `if n > 5`
+- [ ] `NullPoint<T>` — nullable pointer mapping into unknown/known model
+- [ ] Generics v3 — type bounds `T: Numeric`, `T: Known`
+- [ ] Minimal stdlib — dynamic array, hashmap, basic string utilities
+- [ ] Diagnostic improvements — better span reporting, actionable help text
+- [ ] Struct field type checking in semantic layer — currently returns I128 for all dot access
+- [ ] Method call return type resolution — currently returns Unknown
 
 ---
 
@@ -77,20 +180,20 @@ These are not features. These are conditions. A long gate list that never closes
 - TBool + is_known(x) + Unknown state runtime
 - Block comments /# ... #/
 - Arrays — declaration, init, partial init, index read/write, function pass/return, copy semantics
-- while in / then chaining — cursor iteration over arrays
-- if / else if / else statements
+- while in / then chaining — cursor iteration over arrays, full pipeline, t34/t35 passing
+- if / else if / else statements — full pipeline lexer through runtime, t44/t45/t46
 - Generics v1 — single type parameter, full pipeline parser to semantic to runtime
-- Structs Phase 1+2 — definition, instantiation, field read/write, impl blocks, method dispatch, compound assign dot-access (on submain)
-- Easy wins sprint — != operator, unary ! operator, process exit codes, .expected_fail marker system, run_matrix.sh test runner (on submain)
+- Generics v2 — multiple type parameters on functions, t52/t53 passing
+- Structs Phase 1+2 — definition, instantiation, field read/write, impl blocks, method dispatch, compound assign dot-access
+- Multi-struct impl blocks — impl (p: Player, w: World), t43 passing, multi-alias writeback working
+- Easy wins sprint — != operator, unary ! operator, process exit codes, .expected_fail marker system, run_matrix.sh test runner
 - GitHub Actions CI — frontend matrix + backend tests + stale base gate
 - CONTRIBUTING.md
 - run_matrix.sh wired into CI — full matrix runs on every PR
-- Generics v2 — multiple type parameters on functions, t52/t53 passing
-- Multi-struct impl blocks — impl (p: Player, w: World), t43 passing, multi-alias writeback working
 - Semantic/interpreter parity complete — raw AST path (eval_expr + run_stmt) deleted, ~790 lines removed
 - Copy semantics native in semantic path — bleed_back mechanism, no fallback to old AST path
-- `*arr` deref operator for cursor access — apply_unary Op::Mul returns arr[0]
 - contains_return_stmt recursion fix — now detects returns inside if/else/while/for/loop branches
+- f64 runtime support — Value::Float, SemanticType::F64, AstValue::Float all work. Surface keyword missing.
 
 **Cleanup Sprint — Complete**
 - u128 to i128 — negative numbers now work
@@ -111,25 +214,27 @@ These are not features. These are conditions. A long gate list that never closes
 
 ---
 
-## Active — 0.1 Work 🔄
+## Active 🔄
 
-**1 — Semantic/Interpreter Parity** ✅ COMPLETE
-- [x] SemanticStmt at full parity with raw AST interpreter — landed on submain 2026-03-17
-- [x] StructDef, ImplBlock, MethodCall wired in semantic layer — landed on submain 2026-03-17
-- [x] Interpreter runs off SemanticProgram — landed on submain 2026-03-19, 47/47 matrix green
-- [x] Raw AST interpretation path deleted — eval_expr + run_stmt removed 2026-03-22
-- [x] Copy semantics native — bleed_back mechanism, no fallback to old path
+- **Backend IR Phase 6** — function call lowering. IR lowering handles if/else. Calls, loops, structs not yet lowered.
+- **t42 generics fix** — TypeParam vs Struct ambiguity in nested generic calls. Known root cause, fix in progress.
+- **`f64` surface keyword** — runtime complete, parser keyword missing. Next quick win.
 
-**2 — Generics v2** ✅ COMPLETE
-- [x] Multiple type parameters: fnc swap<A, B>(a: A, b: B) — t52, t53 passing
-- Known gap: t42 TypeParam vs Struct ambiguity in nested generic calls (tracked, expected_fail)
+---
 
-**3 — Backend IR**
-- Function lowering in progress
-- if/else lowering landed
-- Most constructs stubbed with unsupported! macro
-- Cranelift stubs, not yet functional
-- Backend does not block 0.1 frontend release — but must stay in sync
+## Known Gaps — Tracked ⚠️
+
+These are known issues with expected_fail markers. They do not block CI but need resolution before 0.1.
+
+- **t42 — TypeParam vs Struct ambiguity** — nested generic calls where a type parameter name collides with a struct name. Parser/semantic layer cannot disambiguate. Tracked as generics v2 follow-up.
+- **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
+- **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
+- **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught.
+- **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries.
+- **`when` block-body arms** — single-expression arms tested, block bodies not yet verified with a matrix test.
+- **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
+- **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
+- **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
 ---
 
@@ -194,9 +299,9 @@ T: Numeric, T: Known — aliases into the existing type hierarchy, not a new con
 Design pass needed before implementation.
 
 **Pattern Matching Completeness**
-- Struct field destructuring in when arms
-- Binding in match arms
-- Guard clauses
+- Named binding in match arms (`SomeVariant as v`)
+- Guard clauses (`n if n > 5`)
+- Struct field destructuring in when arms — post-0.1
 
 **Minimal Stdlib Core**
 - Dynamic array — push, pop, len, capacity
@@ -246,7 +351,6 @@ Before the release candidate is cut these are frozen. No breaking changes after 
 ## Post-0.1 — Language Core 🔲
 
 - gene + phen trait system — language identity feature, not optional flavor. Design pass needed now even though implementation is later. Defines how operator overloading, bounded polymorphism, and the stdlib are structured.
-- ~~Multi-struct impl blocks~~ — moved to Done ✅, impl (p: Player, w: World) working with multi-alias writeback
 - Operator overloading — blocked on gene/phen. Vector3 + Vector3 is not a nice-to-have in a game engine language.
 - Full pattern matching — array patterns, nested patterns
 - Labeled breaks for nested loops
@@ -372,16 +476,6 @@ These need active design work before any implementation can begin.
 
 ---
 
-## Known Gaps — Tracked ⚠️
-
-These are known issues with expected_fail markers. They do not block CI but need resolution before 0.1.
-
-- **t42 — TypeParam vs Struct ambiguity** — nested generic calls where a type parameter name collides with a struct name. Parser/semantic layer cannot disambiguate. Tracked as generics v2 follow-up.
-- **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
-- **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
-
----
-
 ## Key Changes from v4.0
 
 - Release gates split into two honest tiers — hard blockers and quality gates
@@ -403,3 +497,14 @@ These are known issues with expected_fail markers. They do not block CI but need
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 54 tests, 54/54 green
 - Version bumped to v4.2
+
+## Key Changes from v4.2
+
+- Syntax Decisions — Locked section added — all frozen decisions in one place
+- Release gates completely rewritten — honest hard blockers and quality gates
+- Active section updated — only genuinely active work remains
+- Known Gaps expanded — struct field types, method return types, overflow, semicolons tracked
+- Multi-struct impl blocks removed from Post-0.1 — already in Done
+- `*arr` deref marked for removal — `arr:[0]` is the canonical syntax
+- f64 runtime support added to Done — surface keyword is the remaining work
+- Version bumped to v4.3
