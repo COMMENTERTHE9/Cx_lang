@@ -1800,6 +1800,7 @@ mod tests {
                     body: vec![],
                     ret_expr: Some(ident("a")),
                     pos: 0,
+                    is_pub: false,
                 },
                 Stmt::ExprStmt {
                     expr: Expr::Call("foo".to_string(), vec![CallArg::Expr(num(1))], 0),
