@@ -52,7 +52,7 @@ pub struct Analyzer {
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
     structs: HashMap<String, Vec<(String, Type)>>,
-    pub impls: HashMap<String, Vec<(String, Vec<(String, Vec<ParamKind>, Option<Type>)>)>>,
+    pub method_registry: HashMap<(String, String), SemanticFunction>,
     enum_defs: Vec<SemanticEnum>,
     next_binding_id: u32,
     next_function_id: u32,
@@ -70,7 +70,7 @@ impl Analyzer {
             funcs: HashMap::new(),
             enums: HashMap::new(),
             structs: HashMap::new(),
-            impls: HashMap::new(),
+            method_registry: HashMap::new(),
             enum_defs: Vec::new(),
             next_binding_id: 0,
             next_function_id: 0,
@@ -291,6 +291,18 @@ impl Analyzer {
                         }
                         Ok(_) => {}
                         Err(e) => return Err(e),
+                    }
+                }
+
+                // Register methods in method_registry for return type resolution
+                for sem_func in &semantic_methods {
+                    for (_, alias_type) in &semantic_aliases {
+                        if let SemanticType::Struct(type_name) = alias_type {
+                            self.method_registry.insert(
+                                (type_name.clone(), sem_func.name.clone()),
+                                sem_func.clone(),
+                            );
+                        }
                     }
                 }
 
@@ -1109,13 +1121,20 @@ impl Analyzer {
                 })
             }
             Expr::MethodCall(instance, method, args, pos) => {
-                // look up the instance variable to find its type
-                let _instance_ty = self.lookup_var(instance)
+                // Look up instance type
+                let instance_ty = self.lookup_var(instance)
                     .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))).unwrap_or(SemanticType::Unknown))
                     .unwrap_or(SemanticType::Unknown);
 
-                // resolve return type from impl registry if we can
-                let ret_ty = SemanticType::Unknown; // stub — full resolution after impl registry is in semantic layer
+                // Look up return type from method registry
+                let ret_ty = if let SemanticType::Struct(type_name) = &instance_ty {
+                    self.method_registry
+                        .get(&(type_name.clone(), method.clone()))
+                        .and_then(|f| f.return_ty.clone())
+                        .unwrap_or(SemanticType::Void)
+                } else {
+                    SemanticType::Unknown
+                };
 
                 // analyze args
                 let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
