@@ -1807,7 +1807,156 @@ impl RunTime {
 
                 Ok(())
             }
-            SemanticStmt::WhileIn { .. } => Ok(()), // stub
+            SemanticStmt::WhileIn { arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, .. } => {
+                let start_val = match self.eval_semantic_expr(range_start)? {
+                    Value::Num(n) => n,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                };
+                let end_val = match self.eval_semantic_expr(range_end)? {
+                    Value::Num(n) => n,
+                    _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                };
+
+                // Primary chain
+                'primary: {
+                    if *inclusive {
+                        for i in start_val..=end_val {
+                            let elem = {
+                                let arr_val = self.get_var(arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if *start_slot < elems.len() { elems[*start_slot] = elem; }
+                                    self.set_var(arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break 'primary; }
+                        }
+                    } else {
+                        for i in start_val..end_val {
+                            let elem = {
+                                let arr_val = self.get_var(arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if *start_slot < elems.len() { elems[*start_slot] = elem; }
+                                    self.set_var(arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break 'primary; }
+                        }
+                    }
+                }
+
+                // Then chains
+                for chain in then_chains {
+                    let chain_start = match self.eval_semantic_expr(&chain.range_start)? {
+                        Value::Num(n) => n,
+                        _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                    };
+                    let chain_end = match self.eval_semantic_expr(&chain.range_end)? {
+                        Value::Num(n) => n,
+                        _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                    };
+                    if chain.inclusive {
+                        for i in chain_start..=chain_end {
+                            let elem = {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: chain.arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if chain.start_slot < elems.len() { elems[chain.start_slot] = elem; }
+                                    self.set_var(chain.arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in &chain.body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break; }
+                        }
+                    } else {
+                        for i in chain_start..chain_end {
+                            let elem = {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                match arr_val {
+                                    Value::Array(elems) => elems.get(i as usize).cloned().unwrap_or(Value::Unknown(Type::Unknown)),
+                                    _ => return Err(RuntimeError::NotAContainer { pos: 0, name: chain.arr.clone() }),
+                                }
+                            };
+                            {
+                                let arr_val = self.get_var(&chain.arr, 0)?;
+                                if let Value::Array(mut elems) = arr_val {
+                                    if chain.start_slot < elems.len() { elems[chain.start_slot] = elem; }
+                                    self.set_var(chain.arr.clone(), Value::Array(elems), 0)?;
+                                }
+                            }
+                            self.push_scope();
+                            let mut should_break = false;
+                            for stmt in &chain.body {
+                                match self.run_semantic_stmt(stmt) {
+                                    Ok(_) => {}
+                                    Err(RuntimeError::BreakSignal) => { should_break = true; break; }
+                                    Err(RuntimeError::ContinueSignal) => break,
+                                    Err(e) => { self.pop_scope(); return Err(e); }
+                                }
+                            }
+                            self.pop_scope();
+                            if should_break { break; }
+                        }
+                    }
+                }
+
+                if let Some(result_expr) = result {
+                    self.eval_semantic_expr(result_expr)?;
+                }
+
+                Ok(())
+            }
         }
     }
 
@@ -1834,7 +1983,10 @@ impl RunTime {
             (Op::Minus, Value::Float(f)) => Ok(Value::Float(-f)),
             (Op::Not, Value::Bool(b)) => Ok(Value::Bool(!b)),
             (Op::Not, Value::TBool(n)) => Ok(Value::TBool(if n == 0 { 1 } else if n == 1 { 0 } else { 2 })),
-            (Op::Mul, v) => Ok(v), // deref — passthrough for now
+            (Op::Mul, Value::Array(elems)) => {
+                elems.get(0).cloned().ok_or_else(|| RuntimeError::BadAssignTarget { pos })
+            }
+            (Op::Mul, v) => Ok(v),
             _ => Err(RuntimeError::TypeMismatch { pos, expected: Type::Unknown, got: Type::Unknown }),
         }
     }
