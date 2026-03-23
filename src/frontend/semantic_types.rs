@@ -346,6 +346,7 @@ pub enum SemanticStmt {
     },
     StructDef {
         name: String,
+        type_params: Vec<String>,
         fields: Vec<(String, SemanticType)>,
         pos: usize,
     },

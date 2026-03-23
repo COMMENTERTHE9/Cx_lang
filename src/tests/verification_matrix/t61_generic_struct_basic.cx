@@ -1,0 +1,8 @@
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+p: Pair = Pair { first: 10, second: 20 }
+print(p.first)
+print(p.second)

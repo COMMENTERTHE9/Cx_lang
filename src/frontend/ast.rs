@@ -63,7 +63,7 @@ pub enum AstValue {
     Bool(bool),
     Char(char),
     EnumVariant(String, String),
-    StructInstance(String, Vec<(String, Expr)>),
+    StructInstance(String, Vec<Type>, Vec<(String, Expr)>),
     Unknown,
 }
 
@@ -135,6 +135,7 @@ pub struct WhileInChain {
 pub enum Stmt {
     StructDef {
         name: String,
+        type_params: Vec<String>,
         fields: Vec<(String, Type)>,
         is_pub: bool,
         pos: usize,

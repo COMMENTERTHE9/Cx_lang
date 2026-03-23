@@ -6,13 +6,6 @@ use crate::runtime::handle::HandleRegistry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
-pub struct EnumRuntimeInfo {
-    pub variants: Vec<String>,
-    pub groups: HashMap<String, Vec<String>>,
-    pub super_group_order: HashMap<String, Vec<String>>,
-}
-
 #[derive(Debug)]
 pub enum ScopeEvent {
     Open(String),
@@ -39,7 +32,6 @@ pub struct ScopeFrame {
 pub struct RunTime {
     pub string_arena: Vec<u8>,
     pub handles: HandleRegistry<Value>,
-    pub enums: HashMap<String, EnumRuntimeInfo>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
     pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, Arc<SemanticFunction>)>,
     scopes: Vec<ScopeFrame>,
@@ -62,24 +54,6 @@ impl RunTime {
     pub fn resolve_str(&self, offset: u32, len: u32) -> &str {
         let bytes = &self.string_arena[offset as usize..(offset + len) as usize];
         std::str::from_utf8(bytes).expect("arena string was not valid utf8")
-    }
-
-    fn super_group_handler_index(
-        &self,
-        enum_name: &str,
-        super_name: &str,
-        variant_name: &str,
-    ) -> Option<usize> {
-        let info = self.enums.get(enum_name)?;
-        let sub_names = info.super_group_order.get(super_name)?;
-        sub_names.iter().enumerate().find_map(|(i, sub)| {
-            let members = info.groups.get(sub)?;
-            if members.iter().any(|m| m == variant_name) {
-                Some(i)
-            } else {
-                None
-            }
-        })
     }
 
     fn resolve_assigned_value(&mut self, value: Value, pos: usize) -> Result<Value, RuntimeError> {
@@ -112,7 +86,6 @@ impl RunTime {
         Self {
             string_arena: Vec::new(),
             handles: HandleRegistry::new(),
-            enums: HashMap::new(),
             structs: HashMap::new(),
             semantic_impls: HashMap::new(),
             scopes: vec![ScopeFrame {
@@ -735,7 +708,10 @@ impl RunTime {
                     Err(RuntimeError::StaleHandle { pos: *pos })
                 }
             }
-            SemanticExprKind::Cast { expr, .. } => self.eval_semantic_expr(expr),
+            SemanticExprKind::Cast { expr, to, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                Ok(apply_numeric_cast(val, to))
+            }
         }
     }
 
@@ -928,13 +904,9 @@ impl RunTime {
                 self.set_var_typed(name.clone(), ast_ty, val, 0)?;
                 Ok(())
             }
-            SemanticStmt::EnumDef { name, variants, .. } => {
-                let variant_names: Vec<String> = variants.iter().map(|v| v.clone()).collect();
-                self.enums.insert(name.clone(), EnumRuntimeInfo {
-                    variants: variant_names,
-                    groups: HashMap::new(),
-                    super_group_order: HashMap::new(),
-                });
+            SemanticStmt::EnumDef { .. } => {
+                // Enum variants are resolved at semantic analysis time
+                // Runtime registration not needed — when matching uses SemanticWhenPattern
                 Ok(())
             }
             SemanticStmt::When { expr, arms, .. } => {
@@ -1195,13 +1167,64 @@ impl RunTime {
             }
         }
 
-        // Built-in: print
+        // Built-in: print (with newline) and printn (no newline)
         if callee == "print" || callee == "println" {
             for arg in args {
                 if let SemanticCallArg::Expr(e) = arg {
                     let v = self.eval_semantic_expr(e)?;
                     self.print_value(&v);
                 }
+            }
+            return Ok(Value::Num(0));
+        }
+        if callee == "printn" {
+            for arg in args {
+                if let SemanticCallArg::Expr(e) = arg {
+                    let v = self.eval_semantic_expr(e)?;
+                    self.print_value_inline(&v);
+                }
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: read(var) — reads a line from stdin into var
+        if callee == "read" {
+            if let Some(SemanticCallArg::Expr(e)) = args.first() {
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap_or(0);
+                let input = input.trim_end_matches('\n').trim_end_matches('\r').to_string();
+                let (off, len) = self.alloc_str(&input);
+                if let SemanticExprKind::VarRef { name, .. } = &e.kind {
+                    self.set_var(name.clone(), Value::Str(off, len), 0)?;
+                }
+                return Ok(Value::Str(off, len));
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: input("prompt", var) — prints prompt then reads into var
+        if callee == "input" {
+            let mut iter = args.iter();
+            // First arg is the prompt string
+            if let Some(SemanticCallArg::Expr(prompt_expr)) = iter.next() {
+                let prompt_val = self.eval_semantic_expr(prompt_expr)?;
+                match &prompt_val {
+                    Value::Str(off, len) => print!("{}", self.resolve_str(*off, *len)),
+                    other => print!("{}", value_to_string(self, other.clone())),
+                }
+                use std::io::Write;
+                std::io::stdout().flush().unwrap_or(());
+            }
+            // Second arg is the variable to fill
+            if let Some(SemanticCallArg::Expr(var_expr)) = iter.next() {
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap_or(0);
+                let input = input.trim_end_matches('\n').trim_end_matches('\r').to_string();
+                let (off, len) = self.alloc_str(&input);
+                if let SemanticExprKind::VarRef { name, .. } = &var_expr.kind {
+                    self.set_var(name.clone(), Value::Str(off, len), 0)?;
+                }
+                return Ok(Value::Str(off, len));
             }
             return Ok(Value::Num(0));
         }
@@ -1394,12 +1417,61 @@ impl RunTime {
         result
     }
 
+    fn expand_interpolation(&self, s: &str) -> String {
+        let mut result = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                let mut var_name = String::new();
+                let mut closed = false;
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        closed = true;
+                        break;
+                    }
+                    var_name.push(inner);
+                }
+                if closed && !var_name.is_empty() {
+                    let val = self.scopes.iter().rev()
+                        .find_map(|frame| frame.vars.get(&var_name))
+                        .and_then(|entry| entry.val.clone());
+                    match val {
+                        Some(v) => result.push_str(&value_to_string(self, v)),
+                        None => {
+                            result.push('{');
+                            result.push_str(&var_name);
+                            result.push('}');
+                        }
+                    }
+                } else if !closed {
+                    result.push('{');
+                    result.push_str(&var_name);
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
     fn print_value(&self, val: &Value) {
-        println!("{}", value_to_string(self, val.clone()));
+        match val {
+            Value::Str(off, len) => {
+                let s = self.resolve_str(*off, *len);
+                println!("{}", self.expand_interpolation(s));
+            }
+            _ => println!("{}", value_to_string(self, val.clone())),
+        }
     }
 
     fn print_value_inline(&self, val: &Value) {
-        print!("{}", value_to_string(self, val.clone()));
+        match val {
+            Value::Str(off, len) => {
+                let s = self.resolve_str(*off, *len);
+                print!("{}", self.expand_interpolation(s));
+            }
+            _ => print!("{}", value_to_string(self, val.clone())),
+        }
     }
 
     fn run_semantic_when(&mut self, val: Value, arms: &[SemanticWhenArm]) -> Result<Value, RuntimeError> {
@@ -1483,6 +1555,35 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
             let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(rt, v.clone()))).collect();
             format!("{} {{ {} }}", name, parts.join(", "))
         }
+    }
+}
+
+fn apply_numeric_cast(val: Value, to: &SemanticType) -> Value {
+    match val {
+        Value::Num(n) => {
+            let truncated = match to {
+                SemanticType::I8   => (n as i8) as i128,
+                SemanticType::I16  => (n as i16) as i128,
+                SemanticType::I32  => (n as i32) as i128,
+                SemanticType::I64  => (n as i64) as i128,
+                SemanticType::I128 => n,
+                SemanticType::F64  => return Value::Float(n as f64),
+                _ => n,
+            };
+            Value::Num(truncated)
+        }
+        Value::Float(f) => {
+            match to {
+                SemanticType::I8   => Value::Num((f as i8) as i128),
+                SemanticType::I16  => Value::Num((f as i16) as i128),
+                SemanticType::I32  => Value::Num((f as i32) as i128),
+                SemanticType::I64  => Value::Num((f as i64) as i128),
+                SemanticType::I128 => Value::Num(f as i128),
+                SemanticType::F64  => Value::Float(f),
+                _ => Value::Float(f),
+            }
+        }
+        other => other,
     }
 }
 

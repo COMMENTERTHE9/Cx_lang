@@ -1,6 +1,6 @@
 fnc: <A, B> pair_print(a: A, b: B) {
-    print(a)
-    print(b)
+    print(a);
+    print(b);
 }
 
 pair_print(42, true)

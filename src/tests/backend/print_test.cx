@@ -1,0 +1,9 @@
+fnc: t64 add(a: t64, b: t64) {
+    a + b
+}
+
+fnc: t64 main() {
+    x: t64 = 10;
+    y: t64 = add(x, 20);
+    y
+}

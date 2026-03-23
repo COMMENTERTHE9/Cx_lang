@@ -164,13 +164,14 @@ fn main() {
     match backend_kind {
         backend::BackendKind::Interpret => run_with_interpreter(semantic_program, &input, &flags),
         backend::BackendKind::Cranelift => {
-            let _ir = match prepare_ir(&semantic_program) {
+            let ir = match prepare_ir(&semantic_program) {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("{}", err);
                     return;
                 }
             };
+            println!("{}", crate::ir::printer::print_module(&ir));
             let b = backend::cranelift::CraneliftBackend;
             if let Err(msg) = b.execute(&program) {
                 eprintln!("{}", msg);
@@ -208,13 +209,7 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
             SemanticStmt::FuncDef(sem_func) => {
                 rt.register_semantic_func(sem_func.clone());
             }
-            SemanticStmt::EnumDef { name, variants, .. } => {
-                rt.enums.insert(name.clone(), EnumRuntimeInfo {
-                    variants: variants.clone(),
-                    groups: HashMap::new(),
-                    super_group_order: HashMap::new(),
-                });
-            }
+            SemanticStmt::EnumDef { .. } => {}
             SemanticStmt::ImplBlock { aliases, methods, .. } => {
                 for sem_func in methods {
                     for (_, alias_type) in aliases {

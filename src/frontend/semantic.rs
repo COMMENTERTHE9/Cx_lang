@@ -52,7 +52,8 @@ pub struct Analyzer {
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
     structs: HashMap<String, Vec<(String, Type)>>,
-    pub impls: HashMap<String, Vec<(String, Vec<(String, Vec<ParamKind>, Option<Type>)>)>>,
+    pub method_registry: HashMap<(String, String), SemanticFunction>,
+    pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     next_binding_id: u32,
     next_function_id: u32,
@@ -70,7 +71,8 @@ impl Analyzer {
             funcs: HashMap::new(),
             enums: HashMap::new(),
             structs: HashMap::new(),
-            impls: HashMap::new(),
+            method_registry: HashMap::new(),
+            struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             next_binding_id: 0,
             next_function_id: 0,
@@ -255,13 +257,17 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
-            Stmt::StructDef { name, fields, pos, .. } => {
+            Stmt::StructDef { name, type_params, fields, pos, .. } => {
                 self.structs.insert(name.clone(), fields.clone());
+                self.struct_type_params.insert(name.clone(), type_params.clone());
+                let prev_type_params = std::mem::replace(&mut self.current_type_params, type_params.clone());
                 let semantic_fields = fields.iter()
-                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
+                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &self.current_type_params)))
                     .collect();
+                self.current_type_params = prev_type_params;
                 Ok(SemanticStmt::StructDef {
                     name: name.clone(),
+                    type_params: type_params.clone(),
                     fields: semantic_fields,
                     pos: *pos,
                 })
@@ -291,6 +297,18 @@ impl Analyzer {
                         }
                         Ok(_) => {}
                         Err(e) => return Err(e),
+                    }
+                }
+
+                // Register methods in method_registry for return type resolution
+                for sem_func in &semantic_methods {
+                    for (_, alias_type) in &semantic_aliases {
+                        if let SemanticType::Struct(type_name) = alias_type {
+                            self.method_registry.insert(
+                                (type_name.clone(), sem_func.name.clone()),
+                                sem_func.clone(),
+                            );
+                        }
                     }
                 }
 
@@ -939,7 +957,7 @@ impl Analyzer {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
-            Expr::Val(AstValue::StructInstance(type_name, field_exprs)) => {
+            Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs)) => {
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
                 for (fname, fexpr) in field_exprs {
                     let sem_expr = self.analyze_expr(fexpr)?;
@@ -1109,13 +1127,20 @@ impl Analyzer {
                 })
             }
             Expr::MethodCall(instance, method, args, pos) => {
-                // look up the instance variable to find its type
-                let _instance_ty = self.lookup_var(instance)
+                // Look up instance type
+                let instance_ty = self.lookup_var(instance)
                     .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))).unwrap_or(SemanticType::Unknown))
                     .unwrap_or(SemanticType::Unknown);
 
-                // resolve return type from impl registry if we can
-                let ret_ty = SemanticType::Unknown; // stub — full resolution after impl registry is in semantic layer
+                // Look up return type from method registry
+                let ret_ty = if let SemanticType::Struct(type_name) = &instance_ty {
+                    self.method_registry
+                        .get(&(type_name.clone(), method.clone()))
+                        .and_then(|f| f.return_ty.clone())
+                        .unwrap_or(SemanticType::Void)
+                } else {
+                    SemanticType::Unknown
+                };
 
                 // analyze args
                 let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
@@ -1181,6 +1206,33 @@ impl Analyzer {
                     callee: name.to_string(),
                     function: FunctionId(u32::MAX),
                     args: vec![SemanticCallArg::Expr(expr)],
+                },
+            });
+        }
+
+        // Built-in: read(var) and input("prompt", var)
+        if name == "read" || name == "input" || name == "print" || name == "println" || name == "printn" {
+            let mut semantic_args = Vec::new();
+            for arg in args {
+                match arg {
+                    CallArg::Expr(expr) => {
+                        let sem_expr = self.analyze_expr(expr)?;
+                        semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                    }
+                    _ => {}
+                }
+            }
+            let ret_ty = if name == "read" || name == "input" {
+                SemanticType::Str
+            } else {
+                SemanticType::Void
+            };
+            return Ok(SemanticExpr {
+                ty: ret_ty,
+                kind: SemanticExprKind::Call {
+                    callee: name.to_string(),
+                    function: FunctionId(u32::MAX),
+                    args: semantic_args,
                 },
             });
         }
@@ -1531,7 +1583,7 @@ fn semantic_type_from_value(value: &AstValue) -> SemanticType {
         AstValue::Bool(_) => SemanticType::Bool,
         AstValue::Char(_) => SemanticType::Char,
         AstValue::EnumVariant(enum_name, _) => SemanticType::Enum(enum_name.clone()),
-        AstValue::StructInstance(name, _) => SemanticType::Struct(name.clone()),
+        AstValue::StructInstance(name, _, _) => SemanticType::Struct(name.clone()),
         AstValue::Unknown => SemanticType::Unknown,
     }
 }
@@ -1553,7 +1605,7 @@ fn semantic_value_from_ast(value: &AstValue, enums: &HashMap<String, EnumInfo>) 
                 variant_id,
             }
         }
-        AstValue::StructInstance(_, _) => SemanticValue::Unknown,
+        AstValue::StructInstance(_, _, _) => SemanticValue::Unknown,
         AstValue::Unknown => SemanticValue::Unknown,
     }
 }
@@ -1665,8 +1717,9 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
     let mut semantic_stmts = Vec::with_capacity(program.stmts.len());
 
     for stmt in &program.stmts {
-        if let Stmt::StructDef { name, fields, .. } = stmt {
+        if let Stmt::StructDef { name, type_params, fields, .. } = stmt {
             analyzer.structs.insert(name.clone(), fields.clone());
+            analyzer.struct_type_params.insert(name.clone(), type_params.clone());
         }
     }
 

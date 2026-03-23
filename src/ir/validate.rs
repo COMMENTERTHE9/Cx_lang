@@ -52,11 +52,28 @@ pub enum IrValidationError {
     },
 }
 
+struct ValidatorFunctionSig {
+    param_count: usize,
+    param_types: Vec<IrType>,
+    has_return: bool,
+}
+
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
 
+    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = HashMap::new();
+    for function in &module.functions {
+        function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
+            param_count: function.params.len(),
+            param_types: function.params.iter().map(|p| p.ty.clone()).collect(),
+            has_return: function.blocks.iter().any(|b| {
+                matches!(b.term, IrTerminator::Return { .. })
+            }),
+        });
+    }
+
     for (function_index, function) in module.functions.iter().enumerate() {
-        validate_function(function_index, function, &mut errors);
+        validate_function(function_index, function, &function_sigs, &mut errors);
     }
 
     if errors.is_empty() {
@@ -69,6 +86,7 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
 fn validate_function(
     function_index: usize,
     function: &IrFunction,
+    function_sigs: &HashMap<String, ValidatorFunctionSig>,
     errors: &mut Vec<IrValidationError>,
 ) {
     if function.name.is_empty() {
@@ -122,7 +140,7 @@ fn validate_function(
         }
 
         for inst in &block.insts {
-            validate_inst(function, block.id, inst, &mut defined_values, errors);
+            validate_inst(function, block.id, inst, &mut defined_values, function_sigs, errors);
         }
 
         validate_terminator(
@@ -171,6 +189,7 @@ fn validate_inst(
     block: BlockId,
     inst: &IrInst,
     defined_values: &mut HashMap<ValueId, IrType>,
+    function_sigs: &HashMap<String, ValidatorFunctionSig>,
     errors: &mut Vec<IrValidationError>,
 ) {
     match inst {
@@ -306,13 +325,50 @@ fn validate_inst(
         }
         IrInst::Call {
             dst,
+            callee,
             args,
             return_ty,
-            ..
         } => {
             for arg in args {
                 require_value(function, block, *arg, "Call arg", defined_values, errors);
             }
+
+            if let Some(sig) = function_sigs.get(callee) {
+                if args.len() != sig.param_count {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!(
+                            "Call to '{}': expected {} arguments, got {}",
+                            callee, sig.param_count, args.len()
+                        ),
+                    });
+                }
+
+                for (i, arg) in args.iter().enumerate() {
+                    if i < sig.param_types.len() {
+                        if let Some(arg_ty) = defined_values.get(arg) {
+                            if *arg_ty != sig.param_types[i] {
+                                errors.push(IrValidationError::InvalidTypeUsage {
+                                    function: function.name.clone(),
+                                    block,
+                                    detail: format!(
+                                        "Call to '{}': argument {} has type {:?}, expected {:?}",
+                                        callee, i, arg_ty, sig.param_types[i]
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            } else {
+                errors.push(IrValidationError::InvalidTypeUsage {
+                    function: function.name.clone(),
+                    block,
+                    detail: format!("Call to undefined function '{}'", callee),
+                });
+            }
+
             if let Some(dst) = dst {
                 let Some(return_ty) = return_ty else {
                     errors.push(IrValidationError::InvalidTypeUsage {

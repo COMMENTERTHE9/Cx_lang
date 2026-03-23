@@ -49,12 +49,6 @@ pub enum Token {
     #[token("let")]
     KeywordLet,
 
-    #[token("print")]
-    KeywordPrint,
-
-    #[token("print!")]
-    KeywordPrintInline,
-
     #[token("fnc")]
     KeywordFnc,
 
