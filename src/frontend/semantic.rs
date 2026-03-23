@@ -957,7 +957,7 @@ impl Analyzer {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
-            Expr::Val(AstValue::StructInstance(type_name, field_exprs)) => {
+            Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs)) => {
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
                 for (fname, fexpr) in field_exprs {
                     let sem_expr = self.analyze_expr(fexpr)?;
@@ -1583,7 +1583,7 @@ fn semantic_type_from_value(value: &AstValue) -> SemanticType {
         AstValue::Bool(_) => SemanticType::Bool,
         AstValue::Char(_) => SemanticType::Char,
         AstValue::EnumVariant(enum_name, _) => SemanticType::Enum(enum_name.clone()),
-        AstValue::StructInstance(name, _) => SemanticType::Struct(name.clone()),
+        AstValue::StructInstance(name, _, _) => SemanticType::Struct(name.clone()),
         AstValue::Unknown => SemanticType::Unknown,
     }
 }
@@ -1605,7 +1605,7 @@ fn semantic_value_from_ast(value: &AstValue, enums: &HashMap<String, EnumInfo>) 
                 variant_id,
             }
         }
-        AstValue::StructInstance(_, _) => SemanticValue::Unknown,
+        AstValue::StructInstance(_, _, _) => SemanticValue::Unknown,
         AstValue::Unknown => SemanticValue::Unknown,
     }
 }

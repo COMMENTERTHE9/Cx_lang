@@ -163,6 +163,17 @@ where
 
         let struct_literal = ident
             .clone()
+            .then(
+                just(Token::OpLessThan)
+                    .ignore_then(
+                        type_parser::<I>()
+                            .separated_by(just(Token::PunctComma))
+                            .collect::<Vec<_>>()
+                    )
+                    .then_ignore(just(Token::OpGreaterThan))
+                    .or_not()
+                    .map(|tp| tp.unwrap_or_default())
+            )
             .then_ignore(just(Token::PunctBraceOpen))
             .then(
                 ident
@@ -174,7 +185,7 @@ where
                     .collect::<Vec<_>>(),
             )
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|(name, fields)| Expr::Val(AstValue::StructInstance(name, fields)))
+            .map(|((name, type_args), fields)| Expr::Val(AstValue::StructInstance(name, type_args, fields)))
             .boxed();
 
         let enum_variant = ident

@@ -63,7 +63,7 @@ pub enum AstValue {
     Bool(bool),
     Char(char),
     EnumVariant(String, String),
-    StructInstance(String, Vec<(String, Expr)>),
+    StructInstance(String, Vec<Type>, Vec<(String, Expr)>),
     Unknown,
 }
 
