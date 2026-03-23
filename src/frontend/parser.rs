@@ -92,25 +92,18 @@ where
             .map(|vars| CallArg::CopyInto(vars))
             .or(ident
                 .clone()
+                .then_ignore(just(Token::PunctDot))
+                .then_ignore(select! { Token::Identifier(s) if s == "copy" => s })
                 .then(
                     just(Token::PunctDot)
-                        .ignore_then(select! { Token::Identifier(s) => s })
-                        .then(
-                            just(Token::PunctDot)
-                                .ignore_then(select! { Token::Identifier(s) => s })
-                                .or_not(),
-                        )
-                        .or_not(),
+                        .ignore_then(select! { Token::Identifier(s) if s == "free" => s })
+                        .or_not()
                 )
-                .map(|(name, modifier)| match modifier {
-                    Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
-                        CallArg::CopyFree(name)
-                    }
-                    Some((m1, None)) if m1 == "copy" => CallArg::Copy(name),
-                    Some((field, None)) => CallArg::Expr(Expr::DotAccess(name, field)),
-                    _ => CallArg::Expr(Expr::Ident(name, 0)),
-                })
-                .or(expr.clone().map(CallArg::Expr)))
+                .map(|(name, free)| match free {
+                    Some(_) => CallArg::CopyFree(name),
+                    None => CallArg::Copy(name),
+                }))
+                .or(expr.clone().map(CallArg::Expr))
             .boxed();
 
         let args = call_arg
@@ -448,24 +441,6 @@ where
                 expr,
                 pos_type,
             })
-            .boxed();
-
-        let print = just(Token::KeywordPrint)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
-            .then_ignore(just(Token::PunctParenOpen))
-            .then(expr.clone())
-            .then_ignore(just(Token::PunctParenClose))
-            .then_ignore(semi.clone().or_not())
-            .map(|(pos, expr)| Stmt::Print { expr, pos })
-            .boxed();
-
-        let print_inline = just(Token::KeywordPrintInline)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
-            .then_ignore(just(Token::PunctParenOpen))
-            .then(expr.clone())
-            .then_ignore(just(Token::PunctParenClose))
-            .then_ignore(semi.clone().or_not())
-            .map(|(pos, expr)| Stmt::PrintInline { expr, _pos: pos })
             .boxed();
 
         let ret = just(Token::KeywordReturn)
@@ -954,8 +929,6 @@ where
             let func_body_stmt = choice((
                 decl.clone(),
                 func_def.clone(),
-                print.clone(),
-                print_inline.clone(),
                 ret.clone(),
                 typed_assign.clone(),
                 compound_assign.clone(),
@@ -1099,8 +1072,6 @@ where
             enum_def,
             decl,
             func_def,
-            print,
-            print_inline,
             ret,
             typed_assign,
             compound_assign,

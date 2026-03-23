@@ -1167,12 +1167,21 @@ impl RunTime {
             }
         }
 
-        // Built-in: print
+        // Built-in: print (with newline) and printn (no newline)
         if callee == "print" || callee == "println" {
             for arg in args {
                 if let SemanticCallArg::Expr(e) = arg {
                     let v = self.eval_semantic_expr(e)?;
                     self.print_value(&v);
+                }
+            }
+            return Ok(Value::Num(0));
+        }
+        if callee == "printn" {
+            for arg in args {
+                if let SemanticCallArg::Expr(e) = arg {
+                    let v = self.eval_semantic_expr(e)?;
+                    self.print_value_inline(&v);
                 }
             }
             return Ok(Value::Num(0));

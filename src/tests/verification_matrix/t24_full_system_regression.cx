@@ -127,6 +127,6 @@ outer: t64 = 10
 print(outer)
 
 // print inline
-print!("done")
-print!(" ")
-print!(123)
+printn("done")
+printn(" ")
+printn(123)
