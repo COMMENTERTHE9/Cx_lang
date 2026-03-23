@@ -1,0 +1,8 @@
+struct Vec2<T> {
+    x: T,
+    y: T,
+}
+
+v: Vec2 = Vec2 { x: 1.5, y: 2.5 }
+print(v.x)
+print(v.y)

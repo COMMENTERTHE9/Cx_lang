@@ -567,6 +567,17 @@ where
         let struct_def = just(Token::KeywordStruct)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
+            .then(
+                just(Token::OpLessThan)
+                    .ignore_then(
+                        select! { Token::Identifier(s) => s }
+                            .separated_by(just(Token::PunctComma))
+                            .collect::<Vec<_>>()
+                    )
+                    .then_ignore(just(Token::OpGreaterThan))
+                    .or_not()
+                    .map(|tp| tp.unwrap_or_default())
+            )
             .then_ignore(just(Token::PunctBraceOpen))
             .then(
                 ident
@@ -578,8 +589,9 @@ where
                     .collect::<Vec<_>>(),
             )
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|((pos, name), fields)| Stmt::StructDef {
+            .map(|(((pos, name), type_params), fields)| Stmt::StructDef {
                 name,
+                type_params,
                 fields,
                 is_pub: false,
                 pos,

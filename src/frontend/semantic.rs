@@ -53,6 +53,7 @@ pub struct Analyzer {
     enums: HashMap<String, EnumInfo>,
     structs: HashMap<String, Vec<(String, Type)>>,
     pub method_registry: HashMap<(String, String), SemanticFunction>,
+    pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     next_binding_id: u32,
     next_function_id: u32,
@@ -71,6 +72,7 @@ impl Analyzer {
             enums: HashMap::new(),
             structs: HashMap::new(),
             method_registry: HashMap::new(),
+            struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             next_binding_id: 0,
             next_function_id: 0,
@@ -255,13 +257,17 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
-            Stmt::StructDef { name, fields, pos, .. } => {
+            Stmt::StructDef { name, type_params, fields, pos, .. } => {
                 self.structs.insert(name.clone(), fields.clone());
+                self.struct_type_params.insert(name.clone(), type_params.clone());
+                let prev_type_params = std::mem::replace(&mut self.current_type_params, type_params.clone());
                 let semantic_fields = fields.iter()
-                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
+                    .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &self.current_type_params)))
                     .collect();
+                self.current_type_params = prev_type_params;
                 Ok(SemanticStmt::StructDef {
                     name: name.clone(),
+                    type_params: type_params.clone(),
                     fields: semantic_fields,
                     pos: *pos,
                 })
@@ -1711,8 +1717,9 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
     let mut semantic_stmts = Vec::with_capacity(program.stmts.len());
 
     for stmt in &program.stmts {
-        if let Stmt::StructDef { name, fields, .. } = stmt {
+        if let Stmt::StructDef { name, type_params, fields, .. } = stmt {
             analyzer.structs.insert(name.clone(), fields.clone());
+            analyzer.struct_type_params.insert(name.clone(), type_params.clone());
         }
     }
 
