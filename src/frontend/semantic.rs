@@ -1204,6 +1204,33 @@ impl Analyzer {
             });
         }
 
+        // Built-in: read(var) and input("prompt", var)
+        if name == "read" || name == "input" || name == "print" || name == "println" || name == "printn" {
+            let mut semantic_args = Vec::new();
+            for arg in args {
+                match arg {
+                    CallArg::Expr(expr) => {
+                        let sem_expr = self.analyze_expr(expr)?;
+                        semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                    }
+                    _ => {}
+                }
+            }
+            let ret_ty = if name == "read" || name == "input" {
+                SemanticType::Str
+            } else {
+                SemanticType::Void
+            };
+            return Ok(SemanticExpr {
+                ty: ret_ty,
+                kind: SemanticExprKind::Call {
+                    callee: name.to_string(),
+                    function: FunctionId(u32::MAX),
+                    args: semantic_args,
+                },
+            });
+        }
+
         let function = self.funcs.get(name).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
 
         if args.len() != function.params.len() {

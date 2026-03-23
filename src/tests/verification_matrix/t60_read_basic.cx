@@ -1,0 +1,3 @@
+name: str = ""
+input("Enter your name: ", name)
+print("Your name is {name}")

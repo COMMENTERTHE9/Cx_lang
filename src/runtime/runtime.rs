@@ -1178,6 +1178,48 @@ impl RunTime {
             return Ok(Value::Num(0));
         }
 
+        // Built-in: read(var) — reads a line from stdin into var
+        if callee == "read" {
+            if let Some(SemanticCallArg::Expr(e)) = args.first() {
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap_or(0);
+                let input = input.trim_end_matches('\n').trim_end_matches('\r').to_string();
+                let (off, len) = self.alloc_str(&input);
+                if let SemanticExprKind::VarRef { name, .. } = &e.kind {
+                    self.set_var(name.clone(), Value::Str(off, len), 0)?;
+                }
+                return Ok(Value::Str(off, len));
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: input("prompt", var) — prints prompt then reads into var
+        if callee == "input" {
+            let mut iter = args.iter();
+            // First arg is the prompt string
+            if let Some(SemanticCallArg::Expr(prompt_expr)) = iter.next() {
+                let prompt_val = self.eval_semantic_expr(prompt_expr)?;
+                match &prompt_val {
+                    Value::Str(off, len) => print!("{}", self.resolve_str(*off, *len)),
+                    other => print!("{}", value_to_string(self, other.clone())),
+                }
+                use std::io::Write;
+                std::io::stdout().flush().unwrap_or(());
+            }
+            // Second arg is the variable to fill
+            if let Some(SemanticCallArg::Expr(var_expr)) = iter.next() {
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap_or(0);
+                let input = input.trim_end_matches('\n').trim_end_matches('\r').to_string();
+                let (off, len) = self.alloc_str(&input);
+                if let SemanticExprKind::VarRef { name, .. } = &var_expr.kind {
+                    self.set_var(name.clone(), Value::Str(off, len), 0)?;
+                }
+                return Ok(Value::Str(off, len));
+            }
+            return Ok(Value::Num(0));
+        }
+
         // Native copy semantics — no fallback to AST path needed
         let sem_func = self.semantic_funcs.get(callee).cloned()
             .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: callee.to_string() })?;
@@ -1366,12 +1408,61 @@ impl RunTime {
         result
     }
 
+    fn expand_interpolation(&self, s: &str) -> String {
+        let mut result = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                let mut var_name = String::new();
+                let mut closed = false;
+                for inner in chars.by_ref() {
+                    if inner == '}' {
+                        closed = true;
+                        break;
+                    }
+                    var_name.push(inner);
+                }
+                if closed && !var_name.is_empty() {
+                    let val = self.scopes.iter().rev()
+                        .find_map(|frame| frame.vars.get(&var_name))
+                        .and_then(|entry| entry.val.clone());
+                    match val {
+                        Some(v) => result.push_str(&value_to_string(self, v)),
+                        None => {
+                            result.push('{');
+                            result.push_str(&var_name);
+                            result.push('}');
+                        }
+                    }
+                } else if !closed {
+                    result.push('{');
+                    result.push_str(&var_name);
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
     fn print_value(&self, val: &Value) {
-        println!("{}", value_to_string(self, val.clone()));
+        match val {
+            Value::Str(off, len) => {
+                let s = self.resolve_str(*off, *len);
+                println!("{}", self.expand_interpolation(s));
+            }
+            _ => println!("{}", value_to_string(self, val.clone())),
+        }
     }
 
     fn print_value_inline(&self, val: &Value) {
-        print!("{}", value_to_string(self, val.clone()));
+        match val {
+            Value::Str(off, len) => {
+                let s = self.resolve_str(*off, *len);
+                print!("{}", self.expand_interpolation(s));
+            }
+            _ => print!("{}", value_to_string(self, val.clone())),
+        }
     }
 
     fn run_semantic_when(&mut self, val: Value, arms: &[SemanticWhenArm]) -> Result<Value, RuntimeError> {
