@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.4 — 2026-03-22
+v4.5 — 2026-03-23
 
 ---
 
@@ -127,17 +127,17 @@ These are not features. These are conditions. A long gate list that never closes
 ### Hard Blockers (must ship, 0.1 does not exist without these)
 
 - [x] `f64` type keyword — full pipeline landed 2026-03-22, t55 passing
-- [ ] Generic structs `Struct<T>` — stdlib needs them. `Handle<T>` already works, extend to user-defined structs
-- [ ] `read(var)` stdin input — without input, programs are calculators. `input("prompt", var)` also needed
+- [x] Generic structs `Struct<T>` — Phase 1+2 landed 2026-03-23, t61/t62/t63 passing. Known gaps: type args in variable declarations, generic field type checking not yet enforced
+- [x] `read(var)` stdin input — landed 2026-03-23, `input("prompt", var)` also implemented, t60 passing
 - [x] `const` declarations — landed 2026-03-22, t56/t57 passing
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [ ] Multi-file imports working — programs can span multiple .cx files
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
-- [ ] print promoted to function — `print(x)` and `printn(x)` as real functions, not statements
+- [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
 - [ ] UTF-8 decision locked — blocks stdlib and filesystem
-- [ ] String interpolation — `print("name: {name}")` inline variable substitution
+- [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
 - [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
 - [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
 - [ ] Parser, semantic layer, and interpreter agree on all supported constructs
@@ -210,6 +210,15 @@ These are not features. These are conditions. A long gate list that never closes
 - when block-body arms — verified with t58
 - SemanticType::Void — void function call typing fixed
 
+**IO + Generic Structs Sprint — Complete (2026-03-23)**
+- String interpolation — `{varname}` expansion at print time in string literals
+- `read(var)` and `input("prompt", var)` built-ins — stdin input
+- Generic structs Phase 1 — `struct Foo<T> { field: T }` definition, type param resolution in fields
+- Generic structs Phase 2 — `Pair<t32> { ... }` instantiation with explicit type args
+- print/printn promoted to functions — keywords removed from lexer, parse as Expr::Call
+- t42 TypeParam vs Struct ambiguity resolved — expected_fail removed
+- Dead enum group infrastructure deleted — EnumRuntimeInfo, enums field, super_group_handler_index all removed
+
 **Code Quality Sprint — Complete (2026-03-22)**
 - Arc<SemanticFunction> — function bodies stored as Arc, no clone on every call
 - sem_err! macro — 51 SemanticError constructions collapsed to 1-line macro calls
@@ -224,7 +233,7 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **t42 generics fix** — TypeParam vs Struct ambiguity in nested generic calls. Known root cause, fix in progress.
+- **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 
 ---
 
@@ -232,7 +241,7 @@ These are not features. These are conditions. A long gate list that never closes
 
 These are known issues with expected_fail markers. They do not block CI but need resolution before 0.1.
 
-- **t42 — TypeParam vs Struct ambiguity** — nested generic calls where a type parameter name collides with a struct name. Parser/semantic layer cannot disambiguate. Tracked as generics v2 follow-up.
+- ~~**t42 — TypeParam vs Struct ambiguity**~~ — resolved 2026-03-23, expected_fail removed. Print-as-function refactor eliminated the ambiguity.
 - **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
 - **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught.
@@ -294,8 +303,8 @@ Blocks stdlib. Blocks filesystem. Must be decided before either lands.
 
 ## Strongly Desired for 0.1 🔲
 
-**Generic Structs**
-Struct<T> unlocks a large amount of useful code. Lands after structs parity and generics v2.
+**Generic Structs — Phase 1+2 landed**
+Struct<T> definition and instantiation with explicit type args work. Remaining: type args in variable declarations, generic field type enforcement.
 
 **NullPoint<T>**
 Nullable pointer mapping into the unknown/known model. Game engines need nullable handles constantly.
@@ -503,6 +512,18 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 54 tests, 54/54 green
 - Version bumped to v4.2
+
+## Key Changes from v4.4
+
+- Generic structs Phase 1+2 checked off as hard blocker (with noted gaps)
+- read/input checked off as hard blocker
+- print promoted to function checked off as hard blocker
+- String interpolation checked off as hard blocker
+- t42 TypeParam vs Struct ambiguity resolved — removed from Known Gaps
+- IO + Generic Structs Sprint added to Done
+- Generic Structs in "Strongly Desired" updated to reflect partial completion
+- Test matrix at 63 tests, 63/63 green
+- Version bumped to v4.5
 
 ## Key Changes from v4.3
 
