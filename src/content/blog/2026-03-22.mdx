@@ -1,60 +1,64 @@
 ---
 title: "Cx Dev Log — 2026-03-22"
 date: 2026-03-22
-description: "Four hard blockers closed, the old AST interpreter deleted, backend IR function call lowering landed through Stage 3, and the test matrix expanded to 59 tests all green."
+description: "Four hard blockers closed, the old AST interpreter deleted, backend IR function call lowering landed through Stage 3, and the test matrix grew to 59 tests all green."
 ---
 
-This was the single biggest day on the Cx project so far. Over 25 non-merge commits landed on submain covering four new language features, a full code quality sprint, backend IR progress through Phase 6 Stage 3, and the deletion of the old AST interpreter. The test matrix went from 54 to 59, all passing.
+The most productive day on the Cx project so far. 31 non-merge work commits landed across submain, six PRs (#8 through #13) merged into main, four hard blockers for 0.1 were closed, and the old AST interpreter was finally removed. The test matrix grew from 54 to 59, all passing.
 
-## Four hard blockers closed
+## Four hard blockers down
 
-The 0.1 release has a short list of hard blockers, and four of them got knocked out today.
+The 0.1 release has a short list of hard blockers, and four of them got knocked out in a single day.
 
-**f64 type keyword** (7c1768d) went through the full pipeline: lexer, parser, semantic layer, and runtime. Test t55 confirms it works end to end. This was a gate for numeric work in 0.1.
+**f64 type keyword** (7c1768d) went through the full pipeline: lexer, parser, semantic layer, and runtime. Test t55_f64_basic.cx confirms it works end to end. This was a gate for numeric work in 0.1.
 
 **const declarations** (a7ece34) landed with literal-only initializers and semantic rejection of reassignment. The `pub` keyword for export visibility came along with it. Tests t56 (const basic) and t57 (const reassign reject, expected_fail) cover the behavior.
 
-**Value-producing when** (d24b462) means `when` blocks can now be used as expressions. This touched AST, parser, semantic layer, IR lowering, and runtime. Test t59 validates it.
+**Value-producing when** (d24b462) means `when` blocks can now be used as expressions: `let x = when y { 1 => 10, _ => 0 }`. This touched AST, parser, semantic layer, IR lowering, and runtime. Test t59_when_value.cx validates it.
 
-**when block-body arms** (e0f989e) were a known gap that's now verified working with test t58.
+**when block-body arms** (e0f989e) were a known gap that's now verified working with test t58_when_block_body.cx.
 
 All four features have matrix tests. No regressions.
 
 ## The old AST interpreter is gone
 
-The biggest piece of technical debt in the codebase was the old AST interpreter, a parallel execution path (`eval_expr` at ~314 lines, `run_stmt` at ~462 lines) that had to stay in sync with the semantic interpreter. The 2026-03-19 log predicted its removal as a next step, and today it happened (cdffec7). About 790 lines of confirmed dead code deleted from runtime.rs.
+The biggest piece of technical debt in the codebase was the old AST interpreter: `eval_expr` at roughly 314 lines and `run_stmt` at roughly 462 lines. It was a parallel execution path that had to stay in sync with the semantic interpreter. Today it was deleted (cdffec7). About 790 lines of confirmed dead code removed from runtime.rs.
 
-Additional dead code cleanup (cf7b775) removed `FuncDef`, `funcs`, `impls`, and `register_func` from diagnostics.rs, main.rs, and runtime.rs. The codebase is noticeably simpler after this.
+Additional dead code cleanup (cf7b775) removed `FuncDef`, `funcs`, `impls`, and `register_func` from diagnostics, main, and runtime. The codebase is noticeably leaner after this.
 
 ## Code quality sprint
 
-Beyond the interpreter deletion, several cleanup commits landed:
+Several cleanup commits landed alongside the interpreter deletion:
 
-- Function bodies are now stored as `Arc<SemanticFunction>` (0c0cb8a), eliminating clone-on-every-call overhead. A duplicate `semantic_type_to_ast` function was replaced with a proper `From<SemanticType> for Type` impl.
+- Function bodies are now stored as `Arc<SemanticFunction>` (0c0cb8a), eliminating clone-on-every-call overhead. A duplicate `semantic_type_to_ast` function was replaced with a `From<SemanticType> for Type` impl in the same commit.
 - `print_value` and `print_value_inline` were merged into a single `value_to_string` function (878029a).
 - Two new macros, `unsupported!` and `unsupported_type!` (5819185, 14c63e5), collapsed 35 match arms in ir/lower.rs.
 - The `sem_err!` macro (f8e021d) collapsed 51 `SemanticError` constructions down to one-line calls in semantic.rs.
 
-A `SemanticType::Void` variant (642a327) was also added so void function calls type correctly through the semantic layer and IR lowering, which was required for function call lowering in the backend.
+A `SemanticType::Void` variant (642a327) was also added so void function calls type correctly through the semantic layer. This was required before function call lowering could work in the IR backend.
 
-## Backend IR: function call lowering
+## Backend IR: function call lowering and validation
 
-Backend work moved through two stages in a single day.
+Backend work moved through two stages in a single day. This is the first day with substantial backend IR progress since Phase 6 began.
 
-**Phase 6 Stage 2b** (a6d7701) added direct function call lowering with arity and type validation in ir/lower.rs.
+**Phase 6 Stage 2b** (a6d7701) added direct function call lowering with arity and type validation in ir/lower.rs. Over 270 lines of new lowering code.
 
-**Phase 6 Stage 3** (ee2c357) brought cross-function call validation to the IR validator. It now resolves callees, checks arity, and validates argument types against function signatures.
+**Phase 6 Stage 3** (ee2c357) brought cross-function call validation to the IR validator. It now resolves callees, checks arity, and validates argument types against function signatures. 62+ lines in ir/validate.rs.
 
-An IR pretty printer is actively in progress in the working tree (about 200 lines in a new `src/ir/printer.rs`). It covers modules, functions, blocks, instructions, and terminators, and includes unit tests. This is effectively Phase 7 Stage 1, giving the backend a stable textual representation for debugging. It just hasn't been committed yet.
+The stale `backend_plan.md` was also removed (1fa9aae), superseded by `cx_backend_roadmap_v3_1.md`.
 
 ## Integration and housekeeping
 
-PRs #9 through #14 merged submain into main. Main is now current with submain up to 642a327. Three commits remain branch-local on submain: Phase 6 Stage 2b, docs cleanup, and Phase 6 Stage 3.
+PRs #8 through #13 merged submain into main. Main is now current with submain except for the three most recent commits (Phase 6 Stage 2b, Stage 3, and the backend_plan.md removal). Those will likely merge in the next PR.
 
-The test matrix was renumbered (d8cf3ef) to fix 10 duplicate test number pairs and close 2 gaps. Stale files, a leftover daily-log branch, gitignore contradictions, and unused worktrees were cleaned up. The backend roadmap was updated to v3.2, and the frontend roadmap was updated to v4.3 with syntax decisions frozen in a single reference section.
+The test matrix was renumbered (d8cf3ef) to fix 10 duplicate test number pairs and close 2 gaps. The long-standing documentation split between `docment/` and `document/` was resolved by consolidating everything into `docs/`. Stale files, gitignore contradictions, and a leftover daily-log branch were cleaned up. CI got a `set +e` fix so expected failures no longer cause the matrix runner to exit early.
+
+The backend roadmap was updated to v3.2, and the frontend roadmap was updated to v4.3 with syntax decisions frozen as the canonical reference. No breaking syntax changes after 0.1.
 
 ## What's next
 
-The IR printer is the most immediate piece of uncommitted work. Once committed, it gives backend development a stable debugging surface.
+Three submain commits still need to merge to main, which should be the next PR. After that, the next IR lowering targets are likely loops (while, for-range) and struct/method call lowering.
 
-Three submain commits still need to merge to main via what will likely be PR #15. After that, the next IR lowering targets are probably loops, when blocks, and struct operations. On the language side, the remaining hard blockers for 0.1 are multi-file imports, the error model (Result\<T\>), print-as-function, and the UTF-8 decision. Multi-file imports is the largest remaining piece of work.
+On the language side, the remaining hard blockers for 0.1 are multi-file imports, print-as-function, and the UTF-8 decision. Multi-file imports is the largest remaining piece of work: the `#![imports]` syntax is locked, but module resolution, pub enforcement, and circular import detection still need to be built. Print also needs to become a real function call rather than a statement-level construct, ideally before the backend locks the calling convention.
+
+The matrix sits at 59/59, all green.
