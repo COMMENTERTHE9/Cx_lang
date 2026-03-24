@@ -925,6 +925,41 @@ where
             })
             .boxed();
 
+        // Parse a single outer macro #[name] or #[name(args)]
+        let single_outer_macro = just(Token::MacroOuterOpen)
+            .ignore_then(select! { Token::Identifier(name) => name })
+            .then(
+                just(Token::PunctParenOpen)
+                    .ignore_then(
+                        select! {
+                            Token::LiteralString(s) => s,
+                            Token::Identifier(s) => s,
+                        }
+                        .separated_by(just(Token::PunctComma))
+                        .collect::<Vec<_>>()
+                    )
+                    .then_ignore(just(Token::PunctParenClose))
+                    .or_not()
+            )
+            .then_ignore(just(Token::PunctBracketClose))
+            .map(|(name, args)| match name.as_str() {
+                "test" => CxMacro::Test,
+                "inline" => CxMacro::Inline,
+                "reactive" => CxMacro::Reactive,
+                "deprecated" => CxMacro::Deprecated(
+                    args.and_then(|a| a.into_iter().next())
+                ),
+                "cfg" => CxMacro::Cfg(
+                    args.and_then(|a| a.into_iter().next()).unwrap_or_default()
+                ),
+                other => CxMacro::Unknown(other.to_string()),
+            });
+
+        // Collect zero or more outer macros before a declaration
+        let outer_macros = single_outer_macro
+            .repeated()
+            .collect::<Vec<CxMacro>>();
+
         let func_def = recursive(|func_def| {
             let func_body_stmt = choice((
                 decl.clone(),
@@ -974,21 +1009,24 @@ where
                         .map(|(tp, n)| (None, tp, n))
                 );
 
-            just(Token::KeywordFnc)
-                .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
-                .then_ignore(just(Token::PunctColon))
-                .then(ret_ty_generics_name)
-                .then_ignore(just(Token::PunctParenOpen))
+            outer_macros.clone()
                 .then(
-                    param
-                        .separated_by(just(Token::PunctComma))
-                        .allow_trailing()
-                        .collect::<Vec<_>>(),
+                    just(Token::KeywordFnc)
+                        .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+                        .then_ignore(just(Token::PunctColon))
+                        .then(ret_ty_generics_name)
+                        .then_ignore(just(Token::PunctParenOpen))
+                        .then(
+                            param
+                                .separated_by(just(Token::PunctComma))
+                                .allow_trailing()
+                                .collect::<Vec<_>>(),
+                        )
+                        .then_ignore(just(Token::PunctParenClose))
+                        .then(func_body)
                 )
-                .then_ignore(just(Token::PunctParenClose))
-                .then(func_body)
                 .map(
-                    |(((pos, (ret_ty, type_params, name)), params), (body, ret_expr))| Stmt::FuncDef {
+                    |(macros, (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
                         name,
                         type_params,
                         params,
@@ -996,6 +1034,7 @@ where
                         body,
                         ret_expr,
                         is_pub: false,
+                        macros,
                         pos,
                     },
                 )
@@ -1065,7 +1104,23 @@ where
             })
             .boxed();
 
+        let import_decl = select! { Token::Identifier(alias) => alias }
+            .map_with(|alias, e: &mut ParseExtra<'_, '_, I>| (alias, e.span().start))
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(select! { Token::Identifier(kw) if kw.as_str() == "use" => () })
+            .then(select! { Token::LiteralString(path) => path })
+            .map(|((alias, pos), path)| ImportDecl { alias, path, pos });
+
+        let import_block = just(Token::MacroInnerOpen)
+            .map_with(|_, e: &mut ParseExtra<'_, '_, I>| e.span().start)
+            .then_ignore(select! { Token::Identifier(name) if name.as_str() == "imports" => () })
+            .then_ignore(just(Token::PunctBracketClose))
+            .then(import_decl.repeated().collect::<Vec<_>>())
+            .map(|(pos, imports)| Stmt::ImportBlock { imports, pos })
+            .boxed();
+
         choice((
+            import_block,
             const_decl,
             struct_def,
             impl_block,

@@ -456,9 +456,43 @@ impl Analyzer {
                 ret_ty,
                 body,
                 ret_expr,
+                macros,
                 pos,
                 ..
-            } => self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos),
+            } => {
+                // Validate outer macros on this function
+                for macro_ in macros {
+                    match macro_ {
+                        CxMacro::Test => {
+                            if ret_ty.is_some() {
+                                return Err(sem_err!(*pos,
+                                    "#[test] functions must not return a value — remove the return type from {}",
+                                    name
+                                ));
+                            }
+                        }
+                        CxMacro::Inline => {}
+                        CxMacro::Reactive => {
+                            return Err(sem_err!(*pos,
+                                "#[reactive] is reserved and not yet implemented — reactive edges are post-v0.1"
+                            ));
+                        }
+                        CxMacro::Deprecated(_) => {}
+                        CxMacro::Cfg(_) => {
+                            return Err(sem_err!(*pos,
+                                "#[cfg] is reserved and not yet implemented — conditional compilation is post-v0.1"
+                            ));
+                        }
+                        CxMacro::Unknown(macro_name) => {
+                            return Err(sem_err!(*pos,
+                                "unknown macro \"#[{}]\" — this macro is not defined in this version of Cx",
+                                macro_name
+                            ));
+                        }
+                    }
+                }
+                self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos)
+            }
             Stmt::Print { expr, pos } => Ok(SemanticStmt::Print {
                 expr: self.analyze_expr(expr)?,
                 pos: *pos,
@@ -700,6 +734,26 @@ impl Analyzer {
                     .collect::<Result<Vec<_>, _>>()?,
                 pos: *pos,
             }),
+            Stmt::ImportBlock { imports, pos: _ } => {
+                // Rule 1: position enforced by parser
+
+                // Rule 2: no duplicate aliases
+                let mut seen_aliases = std::collections::HashSet::new();
+                for import in imports {
+                    if !seen_aliases.insert(import.alias.clone()) {
+                        return Err(sem_err!(import.pos, "duplicate import alias '{}'", import.alias));
+                    }
+                }
+
+                // Rule 3: no registry paths in v0.1
+                for import in imports {
+                    if !import.path.starts_with("./") && !import.path.starts_with("std/") {
+                        return Err(sem_err!(import.pos, "registry imports are not yet supported — use std/ for stdlib or ./ for local files"));
+                    }
+                }
+
+                Ok(SemanticStmt::Noop)
+            }
             Stmt::Break { pos } => Ok(SemanticStmt::Break { pos: *pos }),
             Stmt::Continue { pos } => Ok(SemanticStmt::Continue { pos: *pos }),
             Stmt::CompoundAssign {
@@ -1854,6 +1908,7 @@ mod tests {
                     ret_expr: Some(ident("a")),
                     pos: 0,
                     is_pub: false,
+                    macros: vec![],
                 },
                 Stmt::ExprStmt {
                     expr: Expr::Call("foo".to_string(), vec![CallArg::Expr(num(1))], 0),

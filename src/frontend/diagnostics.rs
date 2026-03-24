@@ -383,6 +383,9 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
         Stmt::IfElse { .. } => eprintln!("{}IfElse", pad),
         Stmt::WhileIn { .. } => eprintln!("{}WhileIn", pad),
         Stmt::ConstDecl { name, ty, .. } => eprintln!("{}ConstDecl({}: {:?})", pad, name, ty),
+        Stmt::ImportBlock { imports, .. } => {
+            eprintln!("{}ImportBlock({} imports)", pad, imports.len());
+        }
     }
 }
 

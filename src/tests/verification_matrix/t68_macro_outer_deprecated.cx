@@ -1,0 +1,6 @@
+#[deprecated("use new_foo instead")]
+fnc: old_foo() {
+    print(99)
+}
+
+old_foo()

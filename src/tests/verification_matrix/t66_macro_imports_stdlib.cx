@@ -1,0 +1,5 @@
+#![imports]
+math: use "std/math"
+
+y: t64 = 42
+print(y)

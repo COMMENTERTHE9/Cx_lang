@@ -409,6 +409,7 @@ fn lower_stmt(
     spec: &FunctionLoweringSpec,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     match stmt {
+        SemanticStmt::Noop => Ok(Some(current)),
         SemanticStmt::Decl { ty, .. } => {
             if let Some(ty) = ty {
                 let _ = lower_type(ty)?;

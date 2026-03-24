@@ -278,6 +278,13 @@ pub enum Token {
 
     #[token("]")]
     PunctBracketClose,
+
+    // ── Macros ───────────────────────────────────
+    #[token("#![")]
+    MacroInnerOpen,
+
+    #[token("#[")]
+    MacroOuterOpen,
 }
 
 pub struct ParseError {

@@ -1,0 +1,6 @@
+#![imports]
+math: use "./math"
+player: use "./player"
+
+x: t32 = 10
+print(x)

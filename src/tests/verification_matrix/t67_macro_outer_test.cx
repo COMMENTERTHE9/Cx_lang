@@ -1,0 +1,6 @@
+#[test]
+fnc: run_test() {
+    print(1)
+}
+
+run_test()

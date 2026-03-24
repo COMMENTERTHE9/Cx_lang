@@ -246,6 +246,7 @@ pub struct SemanticWhileInChain {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticStmt {
+    Noop,
     EnumDef {
         enum_id: EnumId,
         name: String,

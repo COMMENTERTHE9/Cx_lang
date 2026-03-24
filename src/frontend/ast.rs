@@ -130,9 +130,30 @@ pub struct WhileInChain {
     pub body: Vec<Stmt>,
 }
 
+#[derive(Debug, Clone)]
+pub enum CxMacro {
+    Test,
+    Inline,
+    Reactive,
+    Deprecated(Option<String>),
+    Cfg(String),
+    Unknown(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ImportDecl {
+    pub alias: String,
+    pub path: String,
+    pub pos: usize,
+}
+
 // AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    ImportBlock {
+        imports: Vec<ImportDecl>,
+        pos: usize,
+    },
     StructDef {
         name: String,
         type_params: Vec<String>,
@@ -207,6 +228,7 @@ pub enum Stmt {
         body: Vec<Stmt>,
         ret_expr: Option<Expr>,
         is_pub: bool,
+        macros: Vec<CxMacro>,
         pos: usize,
     },
     Block {

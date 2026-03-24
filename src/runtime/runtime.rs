@@ -717,6 +717,7 @@ impl RunTime {
 
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
+            SemanticStmt::Noop => Ok(()),
             SemanticStmt::Print { expr, .. } => {
                 let value = self.eval_semantic_expr(expr)?;
                 self.print_value(&value);
