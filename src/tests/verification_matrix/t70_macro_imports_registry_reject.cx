@@ -1,0 +1,5 @@
+#![imports]
+pkg: use "ricey/package"
+
+x: t32 = 10
+print(x)

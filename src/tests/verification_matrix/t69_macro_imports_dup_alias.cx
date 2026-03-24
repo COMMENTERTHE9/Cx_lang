@@ -1,0 +1,6 @@
+#![imports]
+math: use "./math"
+math: use "./other"
+
+x: t32 = 10
+print(x)
