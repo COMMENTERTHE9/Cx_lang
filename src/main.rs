@@ -190,6 +190,28 @@ fn main() {
                 eprintln!("{}", msg);
             }
         }
+        backend::BackendKind::Validate => {
+            let ir = match prepare_ir(&semantic_program) {
+                Ok(ir) => ir,
+                Err(err) => {
+                    eprintln!("Lowering failed: {}", err);
+                    return;
+                }
+            };
+            match crate::ir::validate::validate_module(&ir) {
+                Ok(()) => {
+                    println!("{}", crate::ir::printer::print_module(&ir));
+                    println!("IR validation passed.");
+                }
+                Err(errors) => {
+                    eprintln!("{}", crate::ir::printer::print_module(&ir));
+                    eprintln!("IR validation failed with {} error(s):", errors.len());
+                    for e in &errors {
+                        eprintln!("  {:?}", e);
+                    }
+                }
+            }
+        }
     }
 }
 

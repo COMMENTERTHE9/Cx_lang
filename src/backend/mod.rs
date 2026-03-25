@@ -10,6 +10,7 @@ pub enum BackendKind {
     Interpret,
     Cranelift,
     Llvm,
+    Validate,
 }
 
 pub trait Backend {
@@ -23,6 +24,7 @@ pub fn parse_backend_flag(args: &[String]) -> BackendKind {
                 "interp" => BackendKind::Interpret,
                 "cranelift" => BackendKind::Cranelift,
                 "llvm" => BackendKind::Llvm,
+                "validate" => BackendKind::Validate,
                 _ => BackendKind::Interpret,
             };
         }
