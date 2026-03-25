@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-use crate::frontend::ast::Program;
-
 pub mod cranelift;
 pub mod llvm;
 
@@ -14,7 +12,7 @@ pub enum BackendKind {
 }
 
 pub trait Backend {
-    fn execute(&self, program: &Program) -> Result<(), String>;
+    fn execute(&self, module: &crate::ir::IrModule) -> Result<(), String>;
 }
 
 pub fn parse_backend_flag(args: &[String]) -> BackendKind {
