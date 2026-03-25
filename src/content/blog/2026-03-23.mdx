@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-03-23"
+date: 2026-03-23
+description: "IO primitives unified under function syntax, generic structs landed through Phase 2, and four hard blockers closed with the test matrix growing to 63 tests."
+---
+
+The big story today is that the entire IO surface is now consistent. `print`, `printn`, `read`, and `input` are all regular function calls. No more keyword-level special cases in the lexer or parser. That shift, along with generic structs Phase 1 and 2, string interpolation, and stdin built-ins, closed four hard blockers for 0.1 in a single PR.
+
+All of this landed on main via PR #15, five non-merge commits, test matrix up from 59 to 63, all green.
+
+## Print promoted to function
+
+This was the most structurally interesting change. `KeywordPrint` and `KeywordPrintInline` were removed from the lexer entirely. The parser's print statement combinators (47 lines) were deleted. `print` and `printn` now parse as `Expr::Call` like any other function, with `printn` registered as a built-in in `call_semantic_func`.
+
+The `call_arg` parser needed a fix to handle nested calls and method calls in argument position, but otherwise the transition was straightforward. 47 lines of parser combinators out, 11 lines of runtime in.
+
+An unexpected side effect: the t42 TypeParam-vs-Struct ambiguity, a known gap since generics v2, resolved itself. That collision happened because `print` as a keyword created a parsing path that interfered with nested generic calls. Once print became a regular function call, the ambiguous path disappeared. The `expected_fail` marker on t42 was removed.
+
+## String interpolation and stdin built-ins
+
+String interpolation shipped via an `expand_interpolation` method in the runtime. `{varname}` inside string literals gets expanded at print time. Unknown variables pass through literally rather than erroring, which keeps things predictable during early development.
+
+`read(var)` reads a line from stdin into a variable. `input("prompt", var)` prints a prompt first, then reads. Both are built-in functions now, consistent with the new IO surface. Test t60 validates the basic read path using interpolation syntax.
+
+## Generic structs Phase 1 and 2
+
+Phase 1 added `type_params` to `Stmt::StructDef` and `SemanticStmt::StructDef`. The parser handles `struct Foo<T> { field: T }` and the analyzer sets `current_type_params` during field analysis so type parameters resolve correctly. A new `struct_type_params` registry tracks them in the analyzer. Tests t61 and t62 cover basic generic struct definition and f64 instantiation.
+
+Phase 2 extended `AstValue::StructInstance` to carry `Vec<Type>` type args. The parser accepts `Pair<t32> { ... }` instantiation syntax, and all `StructInstance` match sites were updated for the new three-field form. Test t63 covers explicit type arg instantiation.
+
+There are known gaps called out in the commits: type args in variable type annotations (`p: Pair<t32>`) are not yet parsed, and generic field type checking is not enforced at the semantic layer. Both are tracked in the roadmap under Active for follow-up.
+
+## Dead code cleanup
+
+The enum group runtime infrastructure was deleted: `EnumRuntimeInfo`, the `enums` field on `RunTime`, and `super_group_handler_index`. All of it was write-only. When-group matching works entirely through `SemanticWhenPattern` now, so the runtime struct was dead weight. 37 lines removed from runtime.rs, 8 from main.rs. This follows yesterday's 790-line AST interpreter removal. The codebase keeps getting leaner as the semantic path takes over.
+
+## What's next
+
+Generic structs Phase 3 is the obvious next step: type args in variable declarations and generic field type checking. Multi-file imports remain the largest hard blocker for 0.1, with `#![imports]` syntax locked but nothing implemented yet. Backend IR work (loop and struct lowering) was expected today but did not land. The IO surface unification does clear one of the backend's prerequisites for locking calling convention, so that work is unblocked whenever it picks up.
+
+Test runner and assert (`assert(cond)`, `assert_eq(a, b)`, test blocks) is another open hard blocker with no work started yet.
+
+Matrix stands at 63/63, all passing, no regressions.
