@@ -1136,8 +1136,20 @@ mod tests {
     }
 
     fn lower_and_validate(program: &SemanticProgram) -> IrModule {
-        let module = lower_program(program).expect("lowering should succeed");
-        validate_module(&module).expect("lowered IR should validate");
+        let module = match lower_program(program) {
+            Ok(m) => m,
+            Err(e) => panic!("lowering failed: {}", e),
+        };
+        if let Err(errors) = validate_module(&module) {
+            eprintln!("\n=== IR DUMP ON VALIDATION FAILURE ===");
+            eprintln!("{}", crate::ir::printer::print_module(&module));
+            eprintln!("=== VALIDATION ERRORS ===");
+            for e in &errors {
+                eprintln!("  {:?}", e);
+            }
+            eprintln!("=== END ===\n");
+            panic!("IR validation failed with {} error(s)", errors.len());
+        }
         module
     }
 
