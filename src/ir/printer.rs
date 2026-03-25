@@ -53,7 +53,7 @@ fn print_block(block: &IrBlock) -> String {
     out
 }
 
-fn print_inst(inst: &IrInst) -> String {
+pub fn print_inst(inst: &IrInst) -> String {
     match inst {
         IrInst::ConstInt { dst, ty, value } => {
             format!("{} = const {} {}", print_value_id(*dst), print_type(ty), value)
@@ -111,7 +111,7 @@ fn print_inst(inst: &IrInst) -> String {
     }
 }
 
-fn print_terminator(term: &IrTerminator) -> String {
+pub fn print_terminator(term: &IrTerminator) -> String {
     match term {
         IrTerminator::Jump { target, args } => {
             if args.is_empty() {

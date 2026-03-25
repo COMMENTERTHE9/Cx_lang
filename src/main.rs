@@ -31,6 +31,7 @@ struct DebugFlags {
     scope: bool,
     step: bool,
     phase: bool,
+    trace: bool,
 }
 
 impl DebugFlags {
@@ -42,6 +43,7 @@ impl DebugFlags {
             scope: all || args.contains(&"--debug-scope".to_string()),
             step: all || args.contains(&"--debug-step".to_string()),
             phase: all || args.contains(&"--debug-phase".to_string()),
+            trace: all || args.contains(&"--debug-trace".to_string()),
         }
     }
 }
@@ -164,7 +166,7 @@ fn main() {
     match backend_kind {
         backend::BackendKind::Interpret => run_with_interpreter(semantic_program, &input, &flags),
         backend::BackendKind::Cranelift => {
-            let ir = match prepare_ir(&semantic_program) {
+            let ir = match prepare_ir(&semantic_program, flags.trace) {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("{}", err);
@@ -178,7 +180,7 @@ fn main() {
             }
         }
         backend::BackendKind::Llvm => {
-            let _ir = match prepare_ir(&semantic_program) {
+            let _ir = match prepare_ir(&semantic_program, flags.trace) {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("{}", err);
@@ -191,7 +193,7 @@ fn main() {
             }
         }
         backend::BackendKind::Validate => {
-            let ir = match prepare_ir(&semantic_program) {
+            let ir = match prepare_ir(&semantic_program, flags.trace) {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("Lowering failed: {}", err);
@@ -304,6 +306,11 @@ fn parse_program_chumsky(tok_list: &[Tok], src: &str) -> Result<Program, Vec<Par
 
 fn prepare_ir(
     semantic_program: &SemanticProgram,
+    trace: bool,
 ) -> Result<crate::ir::IrModule, crate::ir::lower::LoweringError> {
-    backend::lower_to_ir(semantic_program)
+    if trace {
+        crate::ir::lower::lower_program_traced(semantic_program)
+    } else {
+        backend::lower_to_ir(semantic_program)
+    }
 }
