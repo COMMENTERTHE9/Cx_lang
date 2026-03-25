@@ -10,6 +10,7 @@ use frontend::ast::*;
 use frontend::diagnostics;
 use frontend::lexer::*;
 use frontend::parser;
+use frontend::resolver;
 use frontend::semantic;
 use frontend::semantic_types::SemanticProgram;
 use runtime::runtime::*;
@@ -143,6 +144,22 @@ fn main() {
     if flags.ast {
         diagnostics::print_ast(&program);
     }
+
+    // RESOLVE PHASE — multi-file imports
+    let resolved = match resolver::resolve(std::path::Path::new(&path), program) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("RESOLVE ERROR: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // For now use the entry file's program for semantic analysis
+    // Full multi-file merge comes in the next step
+    let program = resolved.files
+        .get(&resolved.entry)
+        .map(|f| f.program.clone())
+        .expect("entry file missing from resolved program");
 
     // SEMANTIC PHASE
     let sem_timer = flags.phase.then(|| PhaseTimer::start("SEMANTIC"));
