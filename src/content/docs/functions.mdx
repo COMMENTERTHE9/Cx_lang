@@ -15,10 +15,10 @@ They are meant to stay direct: typed where it matters, short where possible, exp
 
 ### Basic function definition
 
-A function with parameters and a return type looks like this:
+A function with parameters and a return type looks like this (return type goes after `fnc:`):
 
 ```cx
-fnc add(a: t64, b: t64) -> t64 {
+fnc: t64 add(a: t64, b: t64) {
     a + b
 }
 ```
@@ -27,10 +27,10 @@ The final bare expression is the return value.
 
 ### Function without a return type
 
-If a function performs work and does not return a value, the return type can be omitted:
+If a function performs work and does not return a value, omit the type after `fnc:`:
 
 ```cx
-fnc greet(name: str) {
+fnc: greet(name: str) {
     print(name)
 }
 ```
@@ -40,7 +40,7 @@ fnc greet(name: str) {
 Cx supports explicit `return`:
 
 ```cx
-fnc pick(a: t64, b: t64) -> t64 {
+fnc: t64 pick(a: t64, b: t64) {
     return a;
 }
 ```
@@ -50,7 +50,7 @@ fnc pick(a: t64, b: t64) -> t64 {
 The last expression in the function body is the implicit return value:
 
 ```cx
-fnc double(x: t64) -> t64 {
+fnc: t64 double(x: t64) {
     x + x
 }
 ```
@@ -62,7 +62,7 @@ Top-level forward calls work today:
 ```cx
 outer()
 
-fnc outer() {
+fnc: outer() {
     print(99)
 }
 ```
@@ -93,7 +93,7 @@ Cx currently exposes three special parameter forms:
 #### `.copy`
 
 ```cx
-fnc inner(x.copy) -> t64 {
+fnc: t64 inner(x.copy) {
     x = x + 5;
     x
 }
@@ -106,7 +106,7 @@ The safest description today is: it acts like a copied value that can write a fi
 #### `.copy.free`
 
 ```cx
-fnc inner(x.copy.free) -> t64 {
+fnc: t64 inner(x.copy.free) {
     x = x + 5;
     x
 }
@@ -117,7 +117,7 @@ This is the isolated form. It does not write changes back to the caller in the c
 #### `copy_into(...)`
 
 ```cx
-fnc inner(t: copy_into(x, y, z)) -> t64 {
+fnc: t64 inner(t: copy_into(x, y, z)) {
     t.x + t.y + t.z
 }
 
