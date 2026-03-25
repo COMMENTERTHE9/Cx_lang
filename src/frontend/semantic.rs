@@ -1869,6 +1869,136 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
     }
 }
 
+pub fn analyze_resolved_program(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<SemanticProgram, Vec<SemanticError>> {
+    let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
+    let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
+    let mut merged_enums: Vec<SemanticEnum> = Vec::new();
+
+    for &module_id in &resolved.topo_order {
+        let file = match resolved.files.get(&module_id) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let is_entry = module_id == resolved.entry;
+
+        // Find alias for this file if it's an imported module
+        let alias = resolved.edges.iter()
+            .find(|e| e.importee == module_id)
+            .map(|e| e.alias.clone());
+
+        // Build analyzer with module aliases from already-processed dependencies
+        let mut analyzer = Analyzer::new();
+        analyzer.module_aliases = alias_exports.clone();
+
+        // Struct pre-pass
+        for stmt in &file.program.stmts {
+            if let Stmt::StructDef { name, fields, type_params, .. } = stmt {
+                analyzer.structs.insert(name.clone(), fields.clone());
+                analyzer.struct_type_params.insert(name.clone(), type_params.clone());
+            }
+        }
+
+        // Function pre-pass
+        for stmt in &file.program.stmts {
+            if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
+                let placeholders = params.iter()
+                    .map(semantic_param_placeholder)
+                    .collect::<Vec<_>>();
+                let func_id = analyzer.fresh_function();
+                analyzer.funcs.insert(name.clone(), FunctionInfo {
+                    id: func_id,
+                    params: placeholders,
+                    ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
+                    type_params: type_params.clone(),
+                });
+            }
+        }
+
+        // Main analysis pass — skip ImportBlock statements
+        let mut file_stmts = Vec::new();
+        let mut errors = Vec::new();
+        for stmt in &file.program.stmts {
+            if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
+            match analyzer.analyze_stmt(stmt) {
+                Ok(s) => file_stmts.push(s),
+                Err(e) => errors.push(e),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        // Build ExportTable for imported modules
+        if let Some(ref alias_name) = alias {
+            let mut export_table = ExportTable::new();
+            // Extract pub functions from analyzed stmts
+            for stmt in &file_stmts {
+                if let SemanticStmt::FuncDef(sem_func) = stmt {
+                    // Check if the original AST had is_pub
+                    let is_pub = file.program.stmts.iter().any(|s| {
+                        matches!(s, Stmt::FuncDef { name, is_pub: true, .. } if name == &sem_func.name)
+                    });
+                    if is_pub {
+                        export_table.functions.insert(sem_func.name.clone(), sem_func.clone());
+                    }
+                }
+            }
+            // Extract pub structs
+            for stmt in &file.program.stmts {
+                if let Stmt::StructDef { is_pub: true, name, .. } = stmt {
+                    if let Some(fields) = analyzer.structs.get(name) {
+                        let sem_fields = fields.iter()
+                            .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
+                            .collect();
+                        export_table.structs.insert(name.clone(), sem_fields);
+                    }
+                }
+            }
+            alias_exports.insert(alias_name.clone(), export_table);
+        }
+
+        // Accumulate results
+        if is_entry {
+            merged_stmts.extend(file_stmts);
+            merged_enums.extend(analyzer.enum_defs);
+        } else {
+            // Prefix non-entry declarations with alias$ for runtime lookup
+            if let Some(ref a) = alias {
+                for stmt in file_stmts {
+                    merged_stmts.push(prefix_stmt_name(stmt, a));
+                }
+            }
+            merged_enums.extend(analyzer.enum_defs);
+        }
+    }
+
+    Ok(SemanticProgram {
+        stmts: merged_stmts,
+        enums: merged_enums,
+    })
+}
+
+fn prefix_stmt_name(stmt: SemanticStmt, prefix: &str) -> SemanticStmt {
+    match stmt {
+        SemanticStmt::FuncDef(mut func) => {
+            func.name = format!("{}${}", prefix, func.name);
+            SemanticStmt::FuncDef(func)
+        }
+        SemanticStmt::StructDef { name, fields, type_params, pos } => {
+            SemanticStmt::StructDef {
+                name: format!("{}${}", prefix, name),
+                fields,
+                type_params,
+                pos,
+            }
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
