@@ -121,12 +121,14 @@ struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
     signature_table: HashMap<String, FunctionSignature>,
+    trace: bool,
 }
 
 struct ActiveBlock {
     block: crate::ir::builder::IrBlockBuilder,
     bindings: BindingMap,
     terminated: bool,
+    trace: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -137,11 +139,12 @@ struct FunctionLoweringSpec {
 }
 
 impl LoweringCtx {
-    fn new(signature_table: HashMap<String, FunctionSignature>) -> Self {
+    fn new(signature_table: HashMap<String, FunctionSignature>, trace: bool) -> Self {
         Self {
             builder: IrBuilder::new(),
             finished_blocks: Vec::new(),
             signature_table,
+            trace,
         }
     }
 
@@ -154,6 +157,7 @@ impl LoweringCtx {
             block: self.builder.block(params),
             bindings,
             terminated: false,
+            trace: self.trace,
         }
     }
 
@@ -186,6 +190,9 @@ impl ActiveBlock {
                 detail: "attempted to append instruction after terminator".to_string(),
             });
         }
+        if self.trace {
+            eprintln!("  [trace] {}", crate::ir::printer::print_inst(&inst));
+        }
         self.block
             .append_inst(inst);
         Ok(())
@@ -207,7 +214,15 @@ impl ActiveBlock {
     }
 }
 
+pub fn lower_program_traced(program: &SemanticProgram) -> Result<IrModule, LoweringError> {
+    lower_program_inner(program, true)
+}
+
 pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringError> {
+    lower_program_inner(program, false)
+}
+
+fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
     if program.stmts.is_empty() {
         return Ok(IrModule {
             debug_name: "cxir_v0".into(),
@@ -229,7 +244,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, trace)?);
             }
             other => top_level_stmts.push(other),
         }
@@ -243,19 +258,19 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, trace)?);
     }
 
     Ok(module)
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, trace: bool) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
         allow_return_stmt: false,
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone());
+    let mut ctx = LoweringCtx::new(signature_table.clone(), trace);
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
         stmts.iter().copied(),
@@ -278,13 +293,14 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
 fn lower_semantic_function(
     function: &crate::frontend::semantic_types::SemanticFunction,
     signature_table: &HashMap<String, FunctionSignature>,
+    trace: bool,
 ) -> Result<IrFunction, LoweringError> {
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
     let mut bindings = HashMap::new();
     let return_ty = function.return_ty.as_ref().map(lower_type).transpose()?;
 
-    let mut ctx = LoweringCtx::new(signature_table.clone());
+    let mut ctx = LoweringCtx::new(signature_table.clone(), trace);
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -1136,8 +1152,20 @@ mod tests {
     }
 
     fn lower_and_validate(program: &SemanticProgram) -> IrModule {
-        let module = lower_program(program).expect("lowering should succeed");
-        validate_module(&module).expect("lowered IR should validate");
+        let module = match lower_program(program) {
+            Ok(m) => m,
+            Err(e) => panic!("lowering failed: {}", e),
+        };
+        if let Err(errors) = validate_module(&module) {
+            eprintln!("\n=== IR DUMP ON VALIDATION FAILURE ===");
+            eprintln!("{}", crate::ir::printer::print_module(&module));
+            eprintln!("=== VALIDATION ERRORS ===");
+            for e in &errors {
+                eprintln!("  {:?}", e);
+            }
+            eprintln!("=== END ===\n");
+            panic!("IR validation failed with {} error(s)", errors.len());
+        }
         module
     }
 
