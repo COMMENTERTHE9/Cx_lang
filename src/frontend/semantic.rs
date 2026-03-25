@@ -1183,6 +1183,54 @@ impl Analyzer {
                 })
             }
             Expr::MethodCall(instance, method, args, pos) => {
+                // Check if instance is a module alias — if so resolve from ExportTable
+                if let Some(export_table) = self.module_aliases.get(instance.as_str()) {
+                    if let Some(func) = export_table.functions.get(method.as_str()) {
+                        let ret_ty = func.return_ty.clone().unwrap_or(SemanticType::Void);
+                        let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
+                        for arg in args {
+                            match arg {
+                                CallArg::Expr(expr) => {
+                                    let sem_expr = self.analyze_expr(expr)?;
+                                    semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                                }
+                                CallArg::Copy(name) => {
+                                    let binding = self.lookup_var(name)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(0));
+                                    semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
+                                }
+                                CallArg::CopyFree(name) => {
+                                    let binding = self.lookup_var(name)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(0));
+                                    semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
+                                }
+                                CallArg::CopyInto(names) => {
+                                    let resolved = names.iter().map(|n| {
+                                        let binding = self.lookup_var(n)
+                                            .map(|i| i.binding)
+                                            .unwrap_or(BindingId(0));
+                                        ResolvedBinding { binding, name: n.clone() }
+                                    }).collect();
+                                    semantic_args.push(SemanticCallArg::CopyInto(resolved));
+                                }
+                            }
+                        }
+                        let mangled = format!("{}${}", instance, method);
+                        return Ok(SemanticExpr {
+                            ty: ret_ty,
+                            kind: SemanticExprKind::Call {
+                                callee: mangled,
+                                function: FunctionId(u32::MAX),
+                                args: semantic_args,
+                            },
+                        });
+                    } else {
+                        return Err(sem_err!(*pos, "function '{}' not found in module '{}'", method, instance));
+                    }
+                }
+
                 // Look up instance type
                 let instance_ty = self.lookup_var(instance)
                     .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))).unwrap_or(SemanticType::Unknown))
