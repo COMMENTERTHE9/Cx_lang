@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.5 — 2026-03-23
+v4.6 — 2026-03-24
 
 ---
 
@@ -219,6 +219,18 @@ These are not features. These are conditions. A long gate list that never closes
 - t42 TypeParam vs Struct ambiguity resolved — expected_fail removed
 - Dead enum group infrastructure deleted — EnumRuntimeInfo, enums field, super_group_handler_index all removed
 
+**Macro + Import Syntax Sprint — Complete (2026-03-24)**
+- `#![imports]` block parsing — `alias: use "path"` syntax, `ImportDecl` AST node, `Stmt::ImportBlock`
+- Import semantic validation — duplicate alias rejection, registry path rejection (only `./` and `std/` in v0.1)
+- Outer macro system — `CxMacro` enum: Test, Inline, Reactive, Deprecated, Cfg, Unknown
+- `#[test]`, `#[inline]`, `#[deprecated]` accepted on functions
+- `#[reactive]` and `#[cfg]` reserved with post-v0.1 errors
+- Unknown macro names rejected with locked diagnostics
+- `#[test]` with return type rejected
+- `macros: Vec<CxMacro>` on `Stmt::FuncDef`
+- 9 new matrix tests (t65–t73) — 4 passing, 5 expected-fail
+- Matrix at 72/72 green
+
 **Code Quality Sprint — Complete (2026-03-22)**
 - Arc<SemanticFunction> — function bodies stored as Arc, no clone on every call
 - sem_err! macro — 51 SemanticError constructions collapsed to 1-line macro calls
@@ -234,6 +246,7 @@ These are not features. These are conditions. A long gate list that never closes
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Remaining: actual file resolution, module loading, pub enforcement, circular import detection.
 
 ---
 
@@ -256,7 +269,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 ## Must Ship for 0.1 🔲
 
 **Multi-File Imports**
-- #![import] block parsing and module resolution
+- ~~#![import] block parsing~~ — landed 2026-03-24 (parser + semantic validation)
+- Module resolution — actual file loading not yet implemented
 - pub keyword enforcement — only marked declarations cross file boundaries
 - Dead symbol elimination — only referenced symbols loaded
 - Relative path resolution — ./player imports from player.cx
@@ -287,8 +301,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - Boundary violation errors — strref escape, container boundary crossing
 - Actionable help text where possible
 
-**print Promoted to Function**
-Must happen before the backend locks calling convention.
+~~**print Promoted to Function**~~
+Done — landed 2026-03-23, checked off in Hard Blockers.
 
 **UTF-8 Decision Locked**
 Blocks stdlib. Blocks filesystem. Must be decided before either lands.
@@ -512,6 +526,17 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 54 tests, 54/54 green
 - Version bumped to v4.2
+
+## Key Changes from v4.5
+
+- Macro + Import Syntax Sprint added to Done
+- `#![imports]` block parsing and semantic validation landed — import syntax is real, file resolution is next
+- Outer macro system landed — `#[test]`, `#[inline]`, `#[deprecated]`, `#[reactive]` (reserved), `#[cfg]` (reserved)
+- Multi-file imports in Must Ship updated — block parsing checked off, module resolution still open
+- Multi-file imports added to Active section — syntax done, resolution remaining
+- print Promoted to Function in Must Ship marked done (was already in Hard Blockers)
+- 9 new matrix tests (t65–t73), matrix at 72/72 green
+- Version bumped to v4.6
 
 ## Key Changes from v4.4
 
