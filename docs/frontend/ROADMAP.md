@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.6 — 2026-03-24
+v4.7 — 2026-03-25
 
 ---
 
@@ -244,9 +244,9 @@ These are not features. These are conditions. A long gate list that never closes
 
 ## Active 🔄
 
-- **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
+- **Backend IR Phase 7+** — Phase 7 debugging tools (auto-dump on validation failure, `--backend=validate` mode, `--debug-trace` flag) and Phase 0.5 (Backend trait refactored from `&Program` to `&IrModule`) merged to main 2026-03-25. IR is now the sole backend interface. Loops, structs not yet lowered.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Remaining: actual file resolution, module loading, pub enforcement, circular import detection.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Resolver (`resolver.rs`, 301 lines) landed on submain 2026-03-25: dependency graph with `ModuleId` + `ImportEdge`, topo-sorted resolution, circular import detection, clean error messages. `ExportTable` struct added to semantic layer. Remaining: wire ExportTable into semantic analysis for cross-file symbol lookup, pub enforcement, dead symbol elimination. Resolver not yet merged to main.
 
 ---
 
@@ -526,6 +526,15 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 54 tests, 54/54 green
 - Version bumped to v4.2
+
+## Key Changes from v4.6
+
+- Backend IR Phase 7 debugging tools + Phase 0.5 backend trait refactor merged to main — IR is now the sole backend interface
+- Module resolver (`resolver.rs`) landed on submain — full dependency graph, topo-sort, circular import detection, `ExportTable` foundation
+- Site syntax docs updated to match frozen spec (site branch)
+- Active section updated for both backend IR and multi-file imports progress
+- Matrix holds at 72/72 green, no regressions
+- Version bumped to v4.7
 
 ## Key Changes from v4.5
 
