@@ -47,6 +47,18 @@ hp = 100
 
 Use this when the type is known but the value is not ready yet.
 
+### Constant declarations
+
+Use `const` for values that never change. Constants must be initialized at declaration:
+
+```cx
+const MAX_HP: t32 = 100
+const GRAVITY: f64 = 9.8
+pub const TILE_SIZE: t32 = 32
+```
+
+`pub const` makes the constant publicly visible (module system is not yet implemented, but the syntax is accepted).
+
 ### Reassignment
 
 Existing variables can be reassigned:
@@ -97,6 +109,7 @@ Safe to teach today:
 - `let x;`
 - `name: Type = value`
 - typed declaration before later assignment
+- `const` declarations
 - reassignment with `=`
 
 Present but still rough:

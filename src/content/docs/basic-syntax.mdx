@@ -19,18 +19,22 @@ No module header is required. A Cx file is a flat list of function definitions a
 - Top-level `print` calls also execute directly
 
 ```cx
-fnc main() {
+fnc: main() {
     print(42)
 }
 ```
 
 ## Comments
 
-Line comments only for now. Block comments are not implemented.
+Line comments and block comments are supported:
 
 ```cx
-// this is a comment
+// this is a line comment
 x: t64 = 10  // inline comment
+
+/# this is a block comment #/
+/# it can span
+   multiple lines #/
 ```
 
 ## Variables
@@ -117,17 +121,17 @@ Do not use yet - the parser does not recognize it.
 
 ## Functions
 
-Functions use `fnc`. Parameters are typed. Return type is declared with `->`.
+Functions use `fnc:`. Parameters are typed. Return type is declared after `fnc:` before the name.
 
 - Implicit return = last expression in body
 - Explicit return uses `return`
 
 ```cx
-fnc add(a: t64, b: t64) -> t64 {
+fnc: t64 add(a: t64, b: t64) {
     a + b
 }
 
-fnc greet(name: str) {
+fnc: greet(name: str) {
     print("hello {name}")
 }
 ```
@@ -137,25 +141,23 @@ fnc greet(name: str) {
 Cx supports three distinct parameter kinds:
 
 ```cx
-fnc inner(x.copy) { ... }        // copy - bleeds final value back to outer
-fnc inner(x.copy.free) { ... }   // copy.free - isolated, nothing bleeds back
-fnc inner(t: copy_into(x, y)) { ... }  // copy_into - bundles multiple vars into container t
+fnc: inner(x.copy) { ... }        // copy - bleeds final value back to outer
+fnc: inner(x.copy.free) { ... }   // copy.free - isolated, nothing bleeds back
+fnc: inner(t: copy_into(x, y)) { ... }  // copy_into - bundles multiple vars into container t
 ```
 
 These are not overloads. They are separate semantics.
 
 ## Printing
 
-`print` and `print!` are built-ins:
+`print` and `printn` are built-in functions:
 
 ```cx
 print(42)             // prints with newline
 print("hello")        // string
-print!("no newline")  // inline, no newline appended
+printn("no newline")  // no newline appended
 print("{x} + {y}")    // template interpolation
 ```
-
-`print` is not a normal function call - you cannot assign its return value or pass it as an argument.
 
 ## Handles
 
