@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::frontend::ast::{Op, Type};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -370,4 +371,23 @@ pub enum SemanticStmt {
 pub struct SemanticProgram {
     pub stmts: Vec<SemanticStmt>,
     pub enums: Vec<SemanticEnum>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportTable {
+    pub functions: HashMap<String, SemanticFunction>,
+    pub structs: HashMap<String, Vec<(String, SemanticType)>>,
+    pub consts: HashMap<String, (SemanticType, SemanticExpr)>,
+    pub enums: HashMap<String, SemanticEnum>,
+}
+
+impl ExportTable {
+    pub fn new() -> Self {
+        ExportTable {
+            functions: HashMap::new(),
+            structs: HashMap::new(),
+            consts: HashMap::new(),
+            enums: HashMap::new(),
+        }
+    }
 }
