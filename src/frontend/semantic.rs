@@ -766,7 +766,7 @@ impl Analyzer {
             } => {
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
-                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(0));
+                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(u32::MAX));
                         let ty = self.lookup_var(name).and_then(|info| info.inferred.clone()).unwrap_or(SemanticType::Unknown);
                         SemanticLValue::Binding { binding, name: name.clone(), ty }
                     }
@@ -1049,8 +1049,19 @@ impl Analyzer {
                 if !info.initialized {
                     return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
+                let instance_ty = info.inferred.clone()
+                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .unwrap_or(SemanticType::Unknown);
+                let field_ty = if let SemanticType::Struct(struct_name) = &instance_ty {
+                    self.structs.get(struct_name)
+                        .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
+                        .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
+                        .unwrap_or(SemanticType::Unknown)
+                } else {
+                    SemanticType::Unknown
+                };
                 Ok(SemanticExpr {
-                    ty: SemanticType::I128,
+                    ty: field_ty,
                     kind: SemanticExprKind::DotAccess {
                         binding: Some(info.binding),
                         container: container.clone(),
@@ -1197,20 +1208,20 @@ impl Analyzer {
                                 CallArg::Copy(name) => {
                                     let binding = self.lookup_var(name)
                                         .map(|i| i.binding)
-                                        .unwrap_or(BindingId(0));
+                                        .unwrap_or(BindingId(u32::MAX));
                                     semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
                                 }
                                 CallArg::CopyFree(name) => {
                                     let binding = self.lookup_var(name)
                                         .map(|i| i.binding)
-                                        .unwrap_or(BindingId(0));
+                                        .unwrap_or(BindingId(u32::MAX));
                                     semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
                                 }
                                 CallArg::CopyInto(names) => {
                                     let resolved = names.iter().map(|n| {
                                         let binding = self.lookup_var(n)
                                             .map(|i| i.binding)
-                                            .unwrap_or(BindingId(0));
+                                            .unwrap_or(BindingId(u32::MAX));
                                         ResolvedBinding { binding, name: n.clone() }
                                     }).collect();
                                     semantic_args.push(SemanticCallArg::CopyInto(resolved));
@@ -1257,20 +1268,20 @@ impl Analyzer {
                         CallArg::Copy(name) => {
                             let binding = self.lookup_var(name)
                                 .map(|i| i.binding)
-                                .unwrap_or(BindingId(0));
+                                .unwrap_or(BindingId(u32::MAX));
                             semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
                         }
                         CallArg::CopyFree(name) => {
                             let binding = self.lookup_var(name)
                                 .map(|i| i.binding)
-                                .unwrap_or(BindingId(0));
+                                .unwrap_or(BindingId(u32::MAX));
                             semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
                         }
                         CallArg::CopyInto(names) => {
                             let resolved = names.iter().map(|n| {
                                 let binding = self.lookup_var(n)
                                     .map(|i| i.binding)
-                                    .unwrap_or(BindingId(0));
+                                    .unwrap_or(BindingId(u32::MAX));
                                 ResolvedBinding { binding, name: n.clone() }
                             }).collect();
                             semantic_args.push(SemanticCallArg::CopyInto(resolved));
@@ -1624,7 +1635,7 @@ fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
         Type::T16 => Some((0, u16::MAX as i128)),
         Type::T32 => Some((0, u32::MAX as i128)),
         Type::T64 => Some((0, u64::MAX as i128)),
-        Type::T128 => Some((0, u128::MAX as i128)),
+        Type::T128 => Some((i128::MIN, i128::MAX)),
         _ => None,
     };
 

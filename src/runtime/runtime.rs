@@ -453,7 +453,7 @@ impl RunTime {
             },
             Op::Mul => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => {
-                    Ok(Value::Num(a.checked_mul(*b).unwrap_or(u128::MAX as i128)))
+                    Ok(Value::Num(a.wrapping_mul(*b)))
                 }
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {

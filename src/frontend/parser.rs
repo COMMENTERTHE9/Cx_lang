@@ -508,7 +508,7 @@ where
                         ParamKind::CopyFree(name)
                     }
                     Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
-                    _ => ParamKind::Typed(name, ty_opt.unwrap()),
+                    _ => ParamKind::Typed(name, ty_opt.unwrap_or(Type::Unknown)),
                 }))
             .boxed();
 
