@@ -30,7 +30,6 @@ struct DebugFlags {
     tokens: bool,
     ast: bool,
     scope: bool,
-    step: bool,
     phase: bool,
     trace: bool,
 }
@@ -42,7 +41,6 @@ impl DebugFlags {
             tokens: all || args.contains(&"--debug-tokens".to_string()),
             ast: all || args.contains(&"--debug-ast".to_string()),
             scope: all || args.contains(&"--debug-scope".to_string()),
-            step: all || args.contains(&"--debug-step".to_string()),
             phase: all || args.contains(&"--debug-phase".to_string()),
             trace: all || args.contains(&"--debug-trace".to_string()),
         }
@@ -70,29 +68,6 @@ impl PhaseTimer {
                 .cyan()
                 .dimmed()
         );
-    }
-}
-
-fn wait_for_step() {
-    use std::io::Write;
-    eprint!("{}", "  [step] press enter to continue...".dimmed());
-    std::io::stderr().flush().ok();
-
-    #[cfg(unix)]
-    {
-        use std::io::BufRead;
-        let tty = std::fs::File::open("/dev/tty").unwrap();
-        let mut reader = std::io::BufReader::new(tty);
-        let mut line = String::new();
-        reader.read_line(&mut line).ok();
-    }
-    #[cfg(windows)]
-    {
-        use std::io::BufRead;
-        let tty = std::fs::File::open("CONIN$").unwrap();
-        let mut reader = std::io::BufReader::new(tty);
-        let mut line = String::new();
-        reader.read_line(&mut line).ok();
     }
 }
 

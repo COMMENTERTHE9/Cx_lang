@@ -20,8 +20,7 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::HandleDrop(_, pos) => *pos,
         Expr::Call(_, _, pos) => *pos,
         Expr::Unary(_, _, pos) => *pos,
-        Expr::Range(a, _, _) => expr_pos(a),
-        Expr::Bin(_, _, pos, _) => *pos,
+Expr::Bin(_, _, pos, _) => *pos,
         Expr::ArrayLit(_) => 0,
         Expr::Index(_, _, pos) => *pos,
         Expr::MethodCall(_, _, _, pos) => *pos,
@@ -672,8 +671,7 @@ where
                         span,
                         "bare identifier is not a valid super-group handler",
                     )),
-                    Stmt::Print { .. } => Ok(SuperGroupHandler::Stmts(vec![s])),
-                    Stmt::Break { .. } | Stmt::Continue { .. } => {
+Stmt::Break { .. } | Stmt::Continue { .. } => {
                         Ok(SuperGroupHandler::Stmts(vec![s]))
                     }
                     _ => Err(Rich::custom(

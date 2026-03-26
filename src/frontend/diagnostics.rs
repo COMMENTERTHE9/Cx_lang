@@ -281,15 +281,7 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
             eprintln!("{}TypedAssign({}: {:?})", pad, name, ty);
             print_expr(expr, depth + 1);
         }
-        Stmt::Print { expr, .. } => {
-            eprintln!("{}Print", pad);
-            print_expr(expr, depth + 1);
-        }
-        Stmt::PrintInline { expr, .. } => {
-            eprintln!("{}PrintInline", pad);
-            print_expr(expr, depth + 1);
-        }
-        Stmt::Return { expr, .. } => {
+Stmt::Return { expr, .. } => {
             eprintln!("{}Return", pad);
             if let Some(e) = expr {
                 print_expr(e, depth + 1);
@@ -350,7 +342,6 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
                         eprintln!("{}  Arm(Range, inclusive={})", pad, inclusive)
                     }
                     WhenPattern::Catchall => eprintln!("{}  Arm(_)", pad),
-                    WhenPattern::Placeholder => eprintln!("{}  Arm({{_}})", pad),
                 }
                 match &arm.body {
                     WhenBody::Stmts(stmts) => {
@@ -399,8 +390,7 @@ fn print_expr(expr: &Expr, depth: usize) {
         Expr::HandleVal(name, _) => eprintln!("{}{}.val", pad, name),
         Expr::HandleDrop(name, _) => eprintln!("{}{}.drop()", pad, name),
         Expr::Unary(_, _, _) => eprintln!("{}Unary", pad),
-        Expr::Range(_, _, _) => eprintln!("{}Range", pad),
-        Expr::Call(name, args, _) => {
+Expr::Call(name, args, _) => {
             eprintln!("{}Call({})", pad, name);
             for a in args {
                 match a {

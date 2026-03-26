@@ -495,15 +495,7 @@ impl Analyzer {
                 }
                 self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos)
             }
-            Stmt::Print { expr, pos } => Ok(SemanticStmt::Print {
-                expr: self.analyze_expr(expr)?,
-                pos: *pos,
-            }),
-            Stmt::PrintInline { expr, _pos } => Ok(SemanticStmt::PrintInline {
-                expr: self.analyze_expr(expr)?,
-                pos: *_pos,
-            }),
-            Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
+Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 expr: self.analyze_expr(expr)?,
                 pos: *_pos,
             }),
@@ -1007,8 +999,7 @@ impl Analyzer {
             }
             WhenPattern::Group(_, _) => SemanticWhenPattern::Catchall,
             WhenPattern::Catchall => SemanticWhenPattern::Catchall,
-            WhenPattern::Placeholder => SemanticWhenPattern::Catchall,
-        }
+}
     }
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
@@ -1111,15 +1102,7 @@ impl Analyzer {
                 })
             }
             Expr::Call(name, args, pos) => self.analyze_call(name, args, *pos),
-            Expr::Range(start, end, inclusive) => Ok(SemanticExpr {
-                ty: SemanticType::I128,
-                kind: SemanticExprKind::Range {
-                    start: Box::new(self.analyze_expr(start)?),
-                    end: Box::new(self.analyze_expr(end)?),
-                    inclusive: *inclusive,
-                },
-            }),
-            Expr::Unary(op, inner, pos) => {
+Expr::Unary(op, inner, pos) => {
                 let expr = self.analyze_expr(inner)?;
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool

@@ -718,17 +718,7 @@ impl RunTime {
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
             SemanticStmt::Noop => Ok(()),
-            SemanticStmt::Print { expr, .. } => {
-                let value = self.eval_semantic_expr(expr)?;
-                self.print_value(&value);
-                Ok(())
-            }
-            SemanticStmt::PrintInline { expr, .. } => {
-                let value = self.eval_semantic_expr(expr)?;
-                self.print_value_inline(&value);
-                Ok(())
-            }
-            SemanticStmt::Decl { name, ty, .. } => {
+SemanticStmt::Decl { name, ty, .. } => {
                 let rt_ty: Option<Type> = ty.as_ref().map(|t| t.clone().into());
                 self.declare(name.clone(), rt_ty, 0)
             }

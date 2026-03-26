@@ -278,15 +278,7 @@ pub enum SemanticStmt {
         operand: SemanticExpr,
         pos: usize,
     },
-    Print {
-        expr: SemanticExpr,
-        pos: usize,
-    },
-    PrintInline {
-        expr: SemanticExpr,
-        pos: usize,
-    },
-    ExprStmt {
+ExprStmt {
         expr: SemanticExpr,
         pos: usize,
     },
