@@ -154,16 +154,9 @@ fn main() {
         }
     };
 
-    // For now use the entry file's program for semantic analysis
-    // Full multi-file merge comes in the next step
-    let program = resolved.files
-        .get(&resolved.entry)
-        .map(|f| f.program.clone())
-        .expect("entry file missing from resolved program");
-
     // SEMANTIC PHASE
     let sem_timer = flags.phase.then(|| PhaseTimer::start("SEMANTIC"));
-    let semantic_program = match semantic::analyze_program(&program) {
+    let semantic_program = match semantic::analyze_resolved_program(&resolved) {
         Ok(program) => program,
         Err(errors) => {
             if let Some(t) = sem_timer {
