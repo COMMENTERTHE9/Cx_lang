@@ -1009,7 +1009,8 @@ where
                         .map(|(tp, n)| (None, tp, n))
                 );
 
-            outer_macros.clone()
+            just(Token::KeywordPub).or_not()
+                .then(outer_macros.clone())
                 .then(
                     just(Token::KeywordFnc)
                         .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -1026,14 +1027,14 @@ where
                         .then(func_body)
                 )
                 .map(
-                    |(macros, (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
+                    |((pub_tok, macros), (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
                         name,
                         type_params,
                         params,
                         ret_ty,
                         body,
                         ret_expr,
-                        is_pub: false,
+                        is_pub: pub_tok.is_some(),
                         macros,
                         pos,
                     },

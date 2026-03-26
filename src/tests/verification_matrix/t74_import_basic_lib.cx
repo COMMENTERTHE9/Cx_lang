@@ -1,0 +1,7 @@
+pub fnc: t32 add(a: t32, b: t32) {
+    a + b
+}
+
+pub fnc: t32 multiply(a: t32, b: t32) {
+    a * b
+}
