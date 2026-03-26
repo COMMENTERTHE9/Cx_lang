@@ -1,0 +1,69 @@
+---
+title: "Cx Dev Log — 2026-03-24"
+date: 2026-03-24
+description: "The macro system and import block syntax shipped together, adding outer macros, import parsing with semantic validation, and nine new matrix tests."
+---
+
+The macro system and `#![imports]` syntax landed today in a single commit (`cda45f7`), merged to main via PR #17. This is the first real infrastructure for multi-file programs and attribute-driven function behavior in Cx. Nine new matrix tests (t65 through t73) came with it, bringing the total from 63 to 72, all green.
+
+## What shipped
+
+The commit touches 8 source files and adds 9 test files (22 files changed, +210 / -13 lines). It breaks down into six areas.
+
+**Lexer changes.** Two new tokens: `MacroInnerOpen` for `#![` and `MacroOuterOpen` for `#[`. The existing `PunctBracketClose` handles the closing delimiter for both forms.
+
+**Import block parsing.** A new `ImportDecl` AST node with alias, path, and position, plus a `Stmt::ImportBlock` variant. The parser handles the full `#![imports]` block syntax:
+
+```cx
+#![imports]
+math: use "std/math"
+player: use "./player"
+```
+
+The `import_decl` and `import_block` combinators parse alias-colon-use-path declarations inside the block.
+
+**Import semantic validation.** Duplicate alias rejection catches repeated import aliases. Registry path rejection enforces that only `./` (relative) and `std/` (stdlib) paths are allowed in v0.1. This is validation only. Actual file loading and module resolution are not yet implemented. The syntax layer ships first, resolution comes next.
+
+**Outer macro parsing.** A `CxMacro` enum was added to the AST with six variants: `Test`, `Inline`, `Reactive`, `Deprecated(Option<String>)`, `Cfg(String)`, and `Unknown(String)`. The `single_outer_macro` combinator parses `#[name]` and `#[name(args)]` syntax. A `macros: Vec<CxMacro>` field was added to `Stmt::FuncDef`.
+
+**Outer macro semantic validation.** Five rules are enforced:
+- `#[test]` with a return type is rejected (test functions must be void)
+- `#[reactive]` produces a locked error: "reserved, post-v0.1"
+- `#[cfg]` produces a locked error: "reserved, post-v0.1"
+- Unknown macro names are rejected with a locked diagnostic
+- `#[test]`, `#[inline]`, and `#[deprecated]` are accepted on functions
+
+**Matrix tests.** Tests t65 through t73 cover every macro and import behavior:
+- t65: basic imports block parsing
+- t66: stdlib imports (`std/` paths)
+- t67: `#[test]` on a function
+- t68: `#[deprecated]` on a function
+- t69: duplicate import alias rejection (expected fail)
+- t70: registry path rejection (expected fail)
+- t71: unknown outer macro rejection (expected fail)
+- t72: `#[test]` with return type rejection (expected fail)
+- t73: `#[reactive]` reserved error (expected fail)
+
+## Design decisions
+
+**Import syntax is real, resolution is not.** The `#![imports]` block can now be parsed and semantically validated. Duplicate aliases are caught, invalid registry paths are rejected. But no actual file loading happens. Multi-file programs still cannot run. This is intentional: lock the syntax and test it, then build the resolution layer on top.
+
+**Outer macros are a closed set in v0.1.** The `CxMacro` enum has exactly six variants. Unknown names are rejected outright. There is no user-extensible macro system at 0.1. `#[reactive]` and `#[cfg]` are explicitly reserved with locked error messages, establishing them as post-0.1 features without ambiguity.
+
+**Test infrastructure is converging from both sides.** The `#[test]` attribute is now parsed and validated (no return type allowed), but there is no test runner yet. The import system can parse `std/` paths but cannot resolve them. These are heading toward a usable test story: `#[test]` functions + `assert` built-ins + a test runner. Each piece is landing independently.
+
+## Roadmap movement
+
+The `#![import]` block parsing item was checked off in Must Ship. A "Macro + Import Syntax Sprint" entry was added to the Done section. Multi-file imports moved to Active with syntax done and resolution remaining (file loading, pub enforcement, circular import detection).
+
+Two hard blockers remain open: "Multi-file imports working" (syntax is parsed but programs still cannot span multiple files) and "Basic test runner" (`#[test]` is parsed but no runner exists yet).
+
+## What's next
+
+Module resolution is the obvious next step. Making `use "./player"` actually load `player.cx`, resolve its public symbols, and make them available to the importing file is the largest remaining piece of the multi-file imports blocker.
+
+The test runner and assert built-ins are close behind. `#[test]` is parsed. `assert(cond)` and `assert_eq(a, b)` are the next pieces. Combined with a `cx test` command, that closes the test infrastructure blocker.
+
+Generic structs Phase 3 and backend IR Phase 6 continuation were both predicted yesterday but did not happen. Macro and import work took priority. They remain on the board.
+
+Matrix stands at 72/72. Up from 63/63 yesterday. Nine new tests, zero regressions.
