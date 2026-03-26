@@ -246,7 +246,7 @@ These are not features. These are conditions. A long gate list that never closes
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Remaining: actual file resolution, module loading, pub enforcement, circular import detection.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on `submain` 2026-03-25 — t74/t64 passing. Pending merge to main.
 
 ---
 
@@ -257,8 +257,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - ~~**t42 — TypeParam vs Struct ambiguity**~~ — resolved 2026-03-23, expected_fail removed. Print-as-function refactor eliminated the ambiguity.
 - **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
 - **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
-- **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught.
-- **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries.
+- **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
+- **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
 - **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
 - **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
