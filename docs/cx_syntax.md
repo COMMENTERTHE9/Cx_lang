@@ -29,16 +29,15 @@ x = x + 1
 ```
 
 ### Compound assignment
-Current syntax is compact and nonstandard:
+Standard infix form:
 ```cx
-i +1=
-i +2=
-i -1=
-i *2=
-i /2=
-i %2=
+i += 1
+i += 2
+i -= 1
+i *= 2
+i /= 2
+i %= 2
 ```
-It is **not** `i += 1` today.
 
 ## 2. Built-in Types
 
@@ -48,6 +47,7 @@ Stable, verified surface types:
 - `t32`
 - `t64`
 - `t128`
+- `f64`
 - `bool`
 - `str`
 - `char`
@@ -58,7 +58,6 @@ Additional types currently present in the surface/type system:
 - `unknown`
 - `Handle<T>`
 - `Enum(Name)` internally
-- arrays exist in the AST surface as `[N]Type`, but they are not documented here as stable user-facing syntax yet
 
 ## 3. Literals
 
@@ -126,27 +125,34 @@ a || b
 ### Unary
 ```cx
 -x
-*value
 ```
-`*` currently behaves as an identity-style dereference placeholder. Full pointer/array dereference semantics are not finished.
+
+### Index access
+```cx
+arr:[0]
+```
+Colon before bracket distinguishes index access from type annotation.
 
 ### Field access
 ```cx
 t.x
+p.health
 ```
-Used for `copy_into(...)` containers and other container-like values.
+Used for struct fields, `copy_into(...)` containers, and other container-like values.
 
 ## 5. Printing
 
-### Line print
+### Line print (adds newline)
 ```cx
 print(x)
 ```
 
-### Inline print
+### Inline print (no newline)
 ```cx
-print!(x)
+printn(x)
 ```
+
+Both `print` and `printn` are regular functions, not statements.
 
 ## 6. Functions
 
@@ -342,7 +348,7 @@ let i;
 i = 0
 while (i < 5) {
     print(i)
-    i +1=
+    i += 1
 }
 ```
 
@@ -366,7 +372,7 @@ loop {
         5 => break,
         _ => print(i),
     }
-    i +1=
+    i += 1
 }
 ```
 
@@ -375,12 +381,12 @@ loop {
 
 ## 12. Arrays and Indexing
 
-The AST and parser surface currently include array literals and indexing:
+Array literals and indexing:
 ```cx
 [1, 2, 3]
 arr:[0]
 ```
-This part of the language is not yet documented as stable because the current matrix is still centered on the core runtime features above.
+Arrays support declaration, initialization, partial init, index read/write, function pass/return, and copy semantics.
 
 ## 13. Unknown and State Checks
 
@@ -431,15 +437,121 @@ x = 3
 
 The safe rule today: if a call is not the final expression in a function body, terminate it with `;`.
 
-## 15. Current Known Syntax Gaps
+## 15. If / Else / Else-If
+
+```cx
+if x > 10 {
+    print("big")
+} else if x > 5 {
+    print("medium")
+} else {
+    print("small")
+}
+```
+
+## 16. Structs
+
+### Definition
+```cx
+struct Player {
+    health: t32,
+    speed: t32,
+}
+```
+
+### Instantiation and field access
+```cx
+let p = Player { health: 100, speed: 5 }
+print(p.health)
+```
+
+### Impl blocks
+```cx
+impl Player {
+    fnc: t32 damage(amount: t32) {
+        self.health -= amount
+        self.health
+    }
+}
+```
+
+## 17. Const Declarations
+
+```cx
+const MAX_HP: t32 = 100
+const GRAVITY: f64 = 9.8
+```
+Literal-only initializers. The semantic pass rejects reassignment.
+
+## 18. Generic Functions
+
+```cx
+fnc: <T> identity(x: T) {
+    x
+}
+```
+Single and multiple type parameters supported.
+
+## 19. Generic Structs
+
+```cx
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+```
+
+## 20. Imports
+
+Multi-file programs use `#![imports]` blocks:
+```cx
+#![imports]
+math: use "./math"
+player: use "./player"
+```
+Only `pub`-marked declarations in the imported file cross module boundaries.
+
+## 21. Input
+
+### Prompted input
+```cx
+input("Enter name: ", name)
+```
+
+### Raw read
+```cx
+read(var)
+```
+Both read from stdin and fill the target variable.
+
+## 22. String Interpolation
+
+```cx
+print("name: {name}")
+```
+Variables inside `{}` are expanded at print time.
+
+## 23. For Loops
+
+```cx
+for i in 0..10 {
+    print(i)
+}
+```
+Inclusive ranges:
+```cx
+for i in 0..=10 {
+    print(i)
+}
+```
+
+## 24. Current Known Syntax Gaps
 
 These are present in the type/runtime surface but not fully settled as end-user syntax yet:
 - `strref` exists and is semantically enforced at boundaries, but the language surface around producing real `strref` values is still thin
 - `Container` is split from `str` in the type system, but is mostly an internal/runtime-facing concept right now
-- `TBool` exists in runtime/type plumbing but is not fully surfaced as a stable language feature
-- arrays are scaffolded in the parser/AST but not yet part of the documented stable feature set
 
-## 16. Verified Source of Truth
+## 25. Verified Source of Truth
 
 If you want the real current language surface, check:
 - `src/frontend/lexer.rs`

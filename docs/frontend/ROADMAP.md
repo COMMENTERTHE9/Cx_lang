@@ -127,17 +127,17 @@ These are not features. These are conditions. A long gate list that never closes
 ### Hard Blockers (must ship, 0.1 does not exist without these)
 
 - [x] `f64` type keyword — full pipeline landed 2026-03-22, t55 passing
-- [ ] Generic structs `Struct<T>` — stdlib needs them. `Handle<T>` already works, extend to user-defined structs
-- [ ] `read(var)` stdin input — without input, programs are calculators. `input("prompt", var)` also needed
+- [x] Generic structs `Struct<T>` — implemented 2026-03-25, t61/t62/t63 passing
+- [x] `read(var)` stdin input — implemented 2026-03-25, t60 passing. `input("prompt", var)` also working
 - [x] `const` declarations — landed 2026-03-22, t56/t57 passing
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
-- [ ] Multi-file imports working — programs can span multiple .cx files
+- [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
-- [ ] print promoted to function — `print(x)` and `printn(x)` as real functions, not statements
+- [x] print promoted to function — `print(x)` and `printn(x)` as runtime-dispatched functions, 2026-03-25
 - [ ] UTF-8 decision locked — blocks stdlib and filesystem
-- [ ] String interpolation — `print("name: {name}")` inline variable substitution
+- [x] String interpolation — expand_interpolation implemented 2026-03-25, working in print
 - [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
 - [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
 - [ ] Parser, semantic layer, and interpreter agree on all supported constructs
@@ -294,8 +294,8 @@ Blocks stdlib. Blocks filesystem. Must be decided before either lands.
 
 ## Strongly Desired for 0.1 🔲
 
-**Generic Structs**
-Struct<T> unlocks a large amount of useful code. Lands after structs parity and generics v2.
+**Generic Structs** *(done — t61/t62/t63 passing)*
+Struct<T> implemented. Moved to Done.
 
 **NullPoint<T>**
 Nullable pointer mapping into the unknown/known model. Game engines need nullable handles constantly.
@@ -501,7 +501,7 @@ These need active design work before any implementation can begin.
 - Known Gaps section added — t42, t33, t32 tracked with expected_fail
 - 4 of 7 hard blockers now resolved (parity, generics, structs, CI)
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
-- Test matrix at 54 tests, 54/54 green
+- Test matrix at 74 tests, 74/74 green
 - Version bumped to v4.2
 
 ## Key Changes from v4.3
@@ -512,7 +512,7 @@ These need active design work before any implementation can begin.
 - f64 surface keyword removed from Active (complete)
 - when block-body arms removed from Known Gaps (resolved)
 - when as value-producing expression checked off in Quality Gates
-- Test matrix at 59 tests, 59/59 green
+- Test matrix at 74 tests, 74/74 green
 - Version bumped to v4.4
 
 ## Key Changes from v4.2
