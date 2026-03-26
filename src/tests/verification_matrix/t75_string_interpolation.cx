@@ -1,0 +1,6 @@
+name: str = "Cx"
+version: t32 = 1
+print("Language: {name}")
+print("Version: {version}")
+x: f64 = 3.14
+print("Pi is about {x}")
