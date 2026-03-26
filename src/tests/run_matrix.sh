@@ -27,8 +27,23 @@ for test_file in "$MATRIX_DIR"/t*.cx; do
         fi
     else
         if [ $exit_code -eq 0 ]; then
-            echo "PASS — $test_name"
-            PASS=$((PASS + 1))
+            if [ -f "${test_file}.expected_output" ]; then
+                expected=$(cat "${test_file}.expected_output")
+                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null)
+                if [ "$actual" = "$expected" ]; then
+                    echo "PASS (output verified) — $test_name"
+                    PASS=$((PASS + 1))
+                else
+                    echo "FAIL (output mismatch) — $test_name"
+                    echo "  Expected: $expected"
+                    echo "  Got:      $actual"
+                    FAIL=$((FAIL + 1))
+                    ERRORS+=("$test_name")
+                fi
+            else
+                echo "PASS — $test_name"
+                PASS=$((PASS + 1))
+            fi
         else
             echo "FAIL — $test_name"
             echo "  Output: $output"
