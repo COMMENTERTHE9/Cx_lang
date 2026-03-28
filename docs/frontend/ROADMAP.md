@@ -245,9 +245,10 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
+- **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout (Round 1, 2026-03-27), TBool (1-byte three-state), struct layout (declaration order, natural alignment, padding), array layout (fixed-size, contiguous, stride-based), enum layout (tag-only u8), and calling convention (single return, C ABI) all locked in `cx_abi_v0.1.md` with Rust-level confidence tests. Remaining open: string layout, copy parameter convention (deferred post-0.1).
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
+- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. If/else lowering next.
 
 ---
 
@@ -261,7 +262,7 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
-- **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
+- **Integer overflow partially enforced** — wrapping arithmetic fix landed 2026-03-28 (saturating → wrapping, i128::MIN edge cases guarded). Arithmetic now wraps consistently at i128 range. Per-declared-width wrapping at arithmetic time (e.g., t8 wrapping at 255 during addition) not yet implemented — width truncation still at assignment only.
 - **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
