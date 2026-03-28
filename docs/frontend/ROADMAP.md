@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.6 — 2026-03-24
+v4.7 — 2026-03-25
 
 ---
 
@@ -527,6 +527,15 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
+
+## Key Changes from v4.6
+
+- Backend IR Phase 7 debugging tools + Phase 0.5 backend trait refactor merged to main — IR is now the sole backend interface
+- Module resolver (`resolver.rs`) landed on submain — full dependency graph, topo-sort, circular import detection, `ExportTable` foundation
+- Site syntax docs updated to match frozen spec (site branch)
+- Active section updated for both backend IR and multi-file imports progress
+- Matrix holds at 72/72 green, no regressions
+- Version bumped to v4.7
 
 ## Key Changes from v4.5
 
