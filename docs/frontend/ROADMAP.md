@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.7 — 2026-03-25
+v4.8 — 2026-03-28
 
 ---
 
@@ -506,6 +506,18 @@ These need active design work before any implementation can begin.
 - hashweb traversal API and query language design
 
 ---
+
+## Key Changes from v4.7
+
+- PR #27 merged submain → main: all Phase 8 ABI work, multi-file imports, and prior audit fixes now on main
+- Phase 8 ABI fully locked for 0.1: struct layout (declaration order, natural alignment, padding), array layout (fixed-size, contiguous, stride-based), enum layout (tag-only u8), calling convention (single return, C ABI, copy params post-0.1)
+- TBool backend representation resolved: 1-byte three-state, `IrType::TBool` added
+- Wrapping arithmetic fix on submain: saturating→wrapping, i128::MIN edge cases guarded (partial hard blocker progress)
+- Phase 10 started on submain: while loop lowering with header/body/exit CFG, loop-carried SSA, backedge
+- Active section updated for Phase 8 completion, Phase 10 start, multi-file imports integration
+- Known Gaps integer overflow entry updated to reflect partial fix
+- Matrix at 78/78 on main (up from 72/72 before PR #27 merge)
+- Version bumped to v4.8
 
 ## Key Changes from v4.0
 
