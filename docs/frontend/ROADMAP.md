@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.5 — 2026-03-25
+v4.6 — 2026-03-24
 
 ---
 
@@ -127,17 +127,17 @@ These are not features. These are conditions. A long gate list that never closes
 ### Hard Blockers (must ship, 0.1 does not exist without these)
 
 - [x] `f64` type keyword — full pipeline landed 2026-03-22, t55 passing
-- [x] Generic structs `Struct<T>` — implemented 2026-03-25, t61/t62/t63 passing
-- [x] `read(var)` stdin input — implemented 2026-03-25, t60 passing. `input("prompt", var)` also working
+- [x] Generic structs `Struct<T>` — Phase 1+2 landed 2026-03-23, t61/t62/t63 passing. Known gaps: type args in variable declarations, generic field type checking not yet enforced
+- [x] `read(var)` stdin input — landed 2026-03-23, `input("prompt", var)` also implemented, t60 passing
 - [x] `const` declarations — landed 2026-03-22, t56/t57 passing
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
-- [x] print promoted to function — `print(x)` and `printn(x)` as runtime-dispatched functions, 2026-03-25
+- [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
 - [ ] UTF-8 decision locked — blocks stdlib and filesystem
-- [x] String interpolation — expand_interpolation implemented 2026-03-25, working in print
+- [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
 - [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
 - [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
 - [ ] Parser, semantic layer, and interpreter agree on all supported constructs
@@ -210,6 +210,27 @@ These are not features. These are conditions. A long gate list that never closes
 - when block-body arms — verified with t58
 - SemanticType::Void — void function call typing fixed
 
+**IO + Generic Structs Sprint — Complete (2026-03-23)**
+- String interpolation — `{varname}` expansion at print time in string literals
+- `read(var)` and `input("prompt", var)` built-ins — stdin input
+- Generic structs Phase 1 — `struct Foo<T> { field: T }` definition, type param resolution in fields
+- Generic structs Phase 2 — `Pair<t32> { ... }` instantiation with explicit type args
+- print/printn promoted to functions — keywords removed from lexer, parse as Expr::Call
+- t42 TypeParam vs Struct ambiguity resolved — expected_fail removed
+- Dead enum group infrastructure deleted — EnumRuntimeInfo, enums field, super_group_handler_index all removed
+
+**Macro + Import Syntax Sprint — Complete (2026-03-24)**
+- `#![imports]` block parsing — `alias: use "path"` syntax, `ImportDecl` AST node, `Stmt::ImportBlock`
+- Import semantic validation — duplicate alias rejection, registry path rejection (only `./` and `std/` in v0.1)
+- Outer macro system — `CxMacro` enum: Test, Inline, Reactive, Deprecated, Cfg, Unknown
+- `#[test]`, `#[inline]`, `#[deprecated]` accepted on functions
+- `#[reactive]` and `#[cfg]` reserved with post-v0.1 errors
+- Unknown macro names rejected with locked diagnostics
+- `#[test]` with return type rejected
+- `macros: Vec<CxMacro>` on `Stmt::FuncDef`
+- 9 new matrix tests (t65–t73) — 4 passing, 5 expected-fail
+- Matrix at 72/72 green
+
 **Code Quality Sprint — Complete (2026-03-22)**
 - Arc<SemanticFunction> — function bodies stored as Arc, no clone on every call
 - sem_err! macro — 51 SemanticError constructions collapsed to 1-line macro calls
@@ -224,7 +245,9 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **t42 generics fix** — TypeParam vs Struct ambiguity in nested generic calls. Known root cause, fix in progress.
+- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
+- **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
 
 ---
 
@@ -232,7 +255,7 @@ These are not features. These are conditions. A long gate list that never closes
 
 These are known issues with expected_fail markers. They do not block CI but need resolution before 0.1.
 
-- **t42 — TypeParam vs Struct ambiguity** — nested generic calls where a type parameter name collides with a struct name. Parser/semantic layer cannot disambiguate. Tracked as generics v2 follow-up.
+- ~~**t42 — TypeParam vs Struct ambiguity**~~ — resolved 2026-03-23, expected_fail removed. Print-as-function refactor eliminated the ambiguity.
 - **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
 - **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught.
@@ -247,7 +270,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 ## Must Ship for 0.1 🔲
 
 **Multi-File Imports**
-- #![import] block parsing and module resolution
+- ~~#![import] block parsing~~ — landed 2026-03-24 (parser + semantic validation)
+- Module resolution — actual file loading not yet implemented
 - pub keyword enforcement — only marked declarations cross file boundaries
 - Dead symbol elimination — only referenced symbols loaded
 - Relative path resolution — ./player imports from player.cx
@@ -278,8 +302,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - Boundary violation errors — strref escape, container boundary crossing
 - Actionable help text where possible
 
-**print Promoted to Function**
-Must happen before the backend locks calling convention.
+~~**print Promoted to Function**~~
+Done — landed 2026-03-23, checked off in Hard Blockers.
 
 **UTF-8 Decision Locked**
 Blocks stdlib. Blocks filesystem. Must be decided before either lands.
@@ -294,8 +318,8 @@ Blocks stdlib. Blocks filesystem. Must be decided before either lands.
 
 ## Strongly Desired for 0.1 🔲
 
-**Generic Structs** *(done — t61/t62/t63 passing)*
-Struct<T> implemented. Moved to Done.
+**Generic Structs — Phase 1+2 landed**
+Struct<T> definition and instantiation with explicit type args work. Remaining: type args in variable declarations, generic field type enforcement.
 
 **NullPoint<T>**
 Nullable pointer mapping into the unknown/known model. Game engines need nullable handles constantly.
@@ -503,6 +527,29 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
+
+## Key Changes from v4.5
+
+- Macro + Import Syntax Sprint added to Done
+- `#![imports]` block parsing and semantic validation landed — import syntax is real, file resolution is next
+- Outer macro system landed — `#[test]`, `#[inline]`, `#[deprecated]`, `#[reactive]` (reserved), `#[cfg]` (reserved)
+- Multi-file imports in Must Ship updated — block parsing checked off, module resolution still open
+- Multi-file imports added to Active section — syntax done, resolution remaining
+- print Promoted to Function in Must Ship marked done (was already in Hard Blockers)
+- 9 new matrix tests (t65–t73), matrix at 72/72 green
+- Version bumped to v4.6
+
+## Key Changes from v4.4
+
+- Generic structs Phase 1+2 checked off as hard blocker (with noted gaps)
+- read/input checked off as hard blocker
+- print promoted to function checked off as hard blocker
+- String interpolation checked off as hard blocker
+- t42 TypeParam vs Struct ambiguity resolved — removed from Known Gaps
+- IO + Generic Structs Sprint added to Done
+- Generic Structs in "Strongly Desired" updated to reflect partial completion
+- Test matrix at 63 tests, 63/63 green
+- Version bumped to v4.5
 
 ## Key Changes from v4.3
 
