@@ -22,6 +22,7 @@ All integers are signed two's complement. No unsigned types at 0.1. Cx type name
 | t128    | I128    | 16           | 16                | signed i128    | emulated (2x i64) |
 | f64     | F64     | 8            | 8                 | IEEE 754 double | types::F64    |
 | bool    | Bool    | 1            | 1                 | 0=false, 1=true | types::I8 (0/1) |
+| tbool   | TBool   | 1            | 1                 | 0=false, 1=true, 2=unknown | types::I8 (0/1/2) |
 
 ### Notes
 
@@ -33,8 +34,11 @@ All integers are signed two's complement. No unsigned types at 0.1. Cx type name
 
 ## Open Design Questions
 
-### TBool Representation — OPEN
+### TBool Representation — PARTIALLY LOCKED
 Three-state value: true (1), false (0), unknown (2).
+- Wire format and storage size: LOCKED. 1 byte, values 0/1/2, stored as I8 at Cranelift level.
+- IrType::TBool exists in the IR type system. Not yet produced by lower_type (awaiting SemanticType::TBool in frontend).
+- Valid operations: comparison (0/1/2), three-way branching. Invalid: arithmetic, bitwise.
 - Wire format 0/1/2 is locked from the language spec.
 - Runtime representation: u8? enum? tagged union?
 - Does IrType need a TBool variant or is it lowered as I8 with 0/1/2 convention?

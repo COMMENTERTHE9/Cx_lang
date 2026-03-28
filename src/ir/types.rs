@@ -9,6 +9,7 @@ pub enum IrType {
     I128,
     F64,
     Bool,
+    TBool,
 }
 
 impl IrType {
@@ -21,6 +22,7 @@ impl IrType {
             IrType::I128 => 16,
             IrType::F64 => 8,
             IrType::Bool => 1,
+            IrType::TBool => 1,
         }
     }
 
@@ -33,6 +35,7 @@ impl IrType {
             IrType::I128 => 16,
             IrType::F64 => 8,
             IrType::Bool => 1,
+            IrType::TBool => 1,
         }
     }
 }
@@ -160,5 +163,11 @@ mod tests {
     fn scalar_layout_size_bool() {
         assert_eq!(IrType::Bool.size_bytes(), 1);
         assert_eq!(IrType::Bool.align_bytes(), 1);
+    }
+
+    #[test]
+    fn scalar_layout_size_tbool() {
+        assert_eq!(IrType::TBool.size_bytes(), 1);
+        assert_eq!(IrType::TBool.align_bytes(), 1);
     }
 }
