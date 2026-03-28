@@ -98,9 +98,20 @@ struct { a: I8, b: I64 }
 
 Layout computation implemented in `src/ir/types.rs` as `compute_struct_layout`. Confidence tests cover single-field, padding, mixed fields, empty struct, and worst-case alignment scenarios.
 
-### Array Layout — OPEN
-- Element stride: size rounded up to alignment.
+### Array Layout — LOCKED (fixed-size only)
+
+Fixed-size arrays only at 0.1. Length is compile-time, baked into `SemanticType::Array(usize, Box<SemanticType>)`. No runtime length field, no header, no fat pointer.
+
+- Element stride: element size rounded up to element alignment.
+- Total size: `count * stride`.
+- Alignment: element alignment.
 - Contiguous in memory — no indirection.
+
+Example: `[5: t64]` → element 8 bytes, stride 8, total 40 bytes, alignment 8.
+
+Dynamic arrays (push/pop, runtime-sized) are post-0.1 stdlib work. When those land they will need a different layout (fat pointer or struct with ptr + len + cap). This section covers fixed-size arrays only.
+
+Layout computation implemented in `src/ir/types.rs` as `compute_array_layout`. Confidence tests cover i64, i8, bool, i128, and zero-length arrays.
 
 ### Enum Layout — OPEN
 - Tag representation: u8? u32?
