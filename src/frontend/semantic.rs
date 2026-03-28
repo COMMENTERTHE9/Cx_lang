@@ -55,6 +55,7 @@ pub struct Analyzer {
     pub method_registry: HashMap<(String, String), SemanticFunction>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
+    pub module_aliases: HashMap<String, ExportTable>,
     next_binding_id: u32,
     next_function_id: u32,
     next_enum_id: u32,
@@ -74,6 +75,7 @@ impl Analyzer {
             method_registry: HashMap::new(),
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
+            module_aliases: HashMap::new(),
             next_binding_id: 0,
             next_function_id: 0,
             next_enum_id: 0,
@@ -493,15 +495,7 @@ impl Analyzer {
                 }
                 self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos)
             }
-            Stmt::Print { expr, pos } => Ok(SemanticStmt::Print {
-                expr: self.analyze_expr(expr)?,
-                pos: *pos,
-            }),
-            Stmt::PrintInline { expr, _pos } => Ok(SemanticStmt::PrintInline {
-                expr: self.analyze_expr(expr)?,
-                pos: *_pos,
-            }),
-            Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
+Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 expr: self.analyze_expr(expr)?,
                 pos: *_pos,
             }),
@@ -764,7 +758,7 @@ impl Analyzer {
             } => {
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
-                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(0));
+                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(u32::MAX));
                         let ty = self.lookup_var(name).and_then(|info| info.inferred.clone()).unwrap_or(SemanticType::Unknown);
                         SemanticLValue::Binding { binding, name: name.clone(), ty }
                     }
@@ -1005,8 +999,7 @@ impl Analyzer {
             }
             WhenPattern::Group(_, _) => SemanticWhenPattern::Catchall,
             WhenPattern::Catchall => SemanticWhenPattern::Catchall,
-            WhenPattern::Placeholder => SemanticWhenPattern::Catchall,
-        }
+}
     }
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
@@ -1047,8 +1040,19 @@ impl Analyzer {
                 if !info.initialized {
                     return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
+                let instance_ty = info.inferred.clone()
+                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .unwrap_or(SemanticType::Unknown);
+                let field_ty = if let SemanticType::Struct(struct_name) = &instance_ty {
+                    self.structs.get(struct_name)
+                        .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
+                        .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
+                        .unwrap_or(SemanticType::Unknown)
+                } else {
+                    SemanticType::Unknown
+                };
                 Ok(SemanticExpr {
-                    ty: SemanticType::I128,
+                    ty: field_ty,
                     kind: SemanticExprKind::DotAccess {
                         binding: Some(info.binding),
                         container: container.clone(),
@@ -1098,15 +1102,7 @@ impl Analyzer {
                 })
             }
             Expr::Call(name, args, pos) => self.analyze_call(name, args, *pos),
-            Expr::Range(start, end, inclusive) => Ok(SemanticExpr {
-                ty: SemanticType::I128,
-                kind: SemanticExprKind::Range {
-                    start: Box::new(self.analyze_expr(start)?),
-                    end: Box::new(self.analyze_expr(end)?),
-                    inclusive: *inclusive,
-                },
-            }),
-            Expr::Unary(op, inner, pos) => {
+Expr::Unary(op, inner, pos) => {
                 let expr = self.analyze_expr(inner)?;
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool
@@ -1181,6 +1177,54 @@ impl Analyzer {
                 })
             }
             Expr::MethodCall(instance, method, args, pos) => {
+                // Check if instance is a module alias — if so resolve from ExportTable
+                if let Some(export_table) = self.module_aliases.get(instance.as_str()) {
+                    if let Some(func) = export_table.functions.get(method.as_str()) {
+                        let ret_ty = func.return_ty.clone().unwrap_or(SemanticType::Void);
+                        let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
+                        for arg in args {
+                            match arg {
+                                CallArg::Expr(expr) => {
+                                    let sem_expr = self.analyze_expr(expr)?;
+                                    semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                                }
+                                CallArg::Copy(name) => {
+                                    let binding = self.lookup_var(name)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(u32::MAX));
+                                    semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
+                                }
+                                CallArg::CopyFree(name) => {
+                                    let binding = self.lookup_var(name)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(u32::MAX));
+                                    semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
+                                }
+                                CallArg::CopyInto(names) => {
+                                    let resolved = names.iter().map(|n| {
+                                        let binding = self.lookup_var(n)
+                                            .map(|i| i.binding)
+                                            .unwrap_or(BindingId(u32::MAX));
+                                        ResolvedBinding { binding, name: n.clone() }
+                                    }).collect();
+                                    semantic_args.push(SemanticCallArg::CopyInto(resolved));
+                                }
+                            }
+                        }
+                        let mangled = format!("{}${}", instance, method);
+                        return Ok(SemanticExpr {
+                            ty: ret_ty,
+                            kind: SemanticExprKind::Call {
+                                callee: mangled,
+                                function: FunctionId(u32::MAX),
+                                args: semantic_args,
+                            },
+                        });
+                    } else {
+                        return Err(sem_err!(*pos, "function '{}' not found in module '{}'", method, instance));
+                    }
+                }
+
                 // Look up instance type
                 let instance_ty = self.lookup_var(instance)
                     .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))).unwrap_or(SemanticType::Unknown))
@@ -1207,20 +1251,20 @@ impl Analyzer {
                         CallArg::Copy(name) => {
                             let binding = self.lookup_var(name)
                                 .map(|i| i.binding)
-                                .unwrap_or(BindingId(0));
+                                .unwrap_or(BindingId(u32::MAX));
                             semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
                         }
                         CallArg::CopyFree(name) => {
                             let binding = self.lookup_var(name)
                                 .map(|i| i.binding)
-                                .unwrap_or(BindingId(0));
+                                .unwrap_or(BindingId(u32::MAX));
                             semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
                         }
                         CallArg::CopyInto(names) => {
                             let resolved = names.iter().map(|n| {
                                 let binding = self.lookup_var(n)
                                     .map(|i| i.binding)
-                                    .unwrap_or(BindingId(0));
+                                    .unwrap_or(BindingId(u32::MAX));
                                 ResolvedBinding { binding, name: n.clone() }
                             }).collect();
                             semantic_args.push(SemanticCallArg::CopyInto(resolved));
@@ -1574,7 +1618,7 @@ fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
         Type::T16 => Some((0, u16::MAX as i128)),
         Type::T32 => Some((0, u32::MAX as i128)),
         Type::T64 => Some((0, u64::MAX as i128)),
-        Type::T128 => Some((0, u128::MAX as i128)),
+        Type::T128 => Some((i128::MIN, i128::MAX)),
         _ => None,
     };
 
@@ -1816,6 +1860,136 @@ pub fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<Semanti
         })
     } else {
         Err(errors)
+    }
+}
+
+pub fn analyze_resolved_program(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<SemanticProgram, Vec<SemanticError>> {
+    let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
+    let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
+    let mut merged_enums: Vec<SemanticEnum> = Vec::new();
+
+    for &module_id in &resolved.topo_order {
+        let file = match resolved.files.get(&module_id) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let is_entry = module_id == resolved.entry;
+
+        // Find alias for this file if it's an imported module
+        let alias = resolved.edges.iter()
+            .find(|e| e.importee == module_id)
+            .map(|e| e.alias.clone());
+
+        // Build analyzer with module aliases from already-processed dependencies
+        let mut analyzer = Analyzer::new();
+        analyzer.module_aliases = alias_exports.clone();
+
+        // Struct pre-pass
+        for stmt in &file.program.stmts {
+            if let Stmt::StructDef { name, fields, type_params, .. } = stmt {
+                analyzer.structs.insert(name.clone(), fields.clone());
+                analyzer.struct_type_params.insert(name.clone(), type_params.clone());
+            }
+        }
+
+        // Function pre-pass
+        for stmt in &file.program.stmts {
+            if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
+                let placeholders = params.iter()
+                    .map(semantic_param_placeholder)
+                    .collect::<Vec<_>>();
+                let func_id = analyzer.fresh_function();
+                analyzer.funcs.insert(name.clone(), FunctionInfo {
+                    id: func_id,
+                    params: placeholders,
+                    ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
+                    type_params: type_params.clone(),
+                });
+            }
+        }
+
+        // Main analysis pass — skip ImportBlock statements
+        let mut file_stmts = Vec::new();
+        let mut errors = Vec::new();
+        for stmt in &file.program.stmts {
+            if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
+            match analyzer.analyze_stmt(stmt) {
+                Ok(s) => file_stmts.push(s),
+                Err(e) => errors.push(e),
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+
+        // Build ExportTable for imported modules
+        if let Some(ref alias_name) = alias {
+            let mut export_table = ExportTable::new();
+            // Extract pub functions from analyzed stmts
+            for stmt in &file_stmts {
+                if let SemanticStmt::FuncDef(sem_func) = stmt {
+                    // Check if the original AST had is_pub
+                    let is_pub = file.program.stmts.iter().any(|s| {
+                        matches!(s, Stmt::FuncDef { name, is_pub: true, .. } if name == &sem_func.name)
+                    });
+                    if is_pub {
+                        export_table.functions.insert(sem_func.name.clone(), sem_func.clone());
+                    }
+                }
+            }
+            // Extract pub structs
+            for stmt in &file.program.stmts {
+                if let Stmt::StructDef { is_pub: true, name, .. } = stmt {
+                    if let Some(fields) = analyzer.structs.get(name) {
+                        let sem_fields = fields.iter()
+                            .map(|(fname, ftype)| (fname.clone(), semantic_type_from_decl(ftype.clone(), &[])))
+                            .collect();
+                        export_table.structs.insert(name.clone(), sem_fields);
+                    }
+                }
+            }
+            alias_exports.insert(alias_name.clone(), export_table);
+        }
+
+        // Accumulate results
+        if is_entry {
+            merged_stmts.extend(file_stmts);
+            merged_enums.extend(analyzer.enum_defs);
+        } else {
+            // Prefix non-entry declarations with alias$ for runtime lookup
+            if let Some(ref a) = alias {
+                for stmt in file_stmts {
+                    merged_stmts.push(prefix_stmt_name(stmt, a));
+                }
+            }
+            merged_enums.extend(analyzer.enum_defs);
+        }
+    }
+
+    Ok(SemanticProgram {
+        stmts: merged_stmts,
+        enums: merged_enums,
+    })
+}
+
+fn prefix_stmt_name(stmt: SemanticStmt, prefix: &str) -> SemanticStmt {
+    match stmt {
+        SemanticStmt::FuncDef(mut func) => {
+            func.name = format!("{}${}", prefix, func.name);
+            SemanticStmt::FuncDef(func)
+        }
+        SemanticStmt::StructDef { name, fields, type_params, pos } => {
+            SemanticStmt::StructDef {
+                name: format!("{}${}", prefix, name),
+                fields,
+                type_params,
+                pos,
+            }
+        }
+        other => other,
     }
 }
 

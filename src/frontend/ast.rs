@@ -76,8 +76,7 @@ pub enum Expr {
     HandleVal(String, usize),
     HandleDrop(String, usize),
     Call(String, Vec<CallArg>, usize),
-    Range(Box<Expr>, Box<Expr>, bool),
-    Unary(Op, Box<Expr>, usize),
+Unary(Op, Box<Expr>, usize),
     Bin(Box<Expr>, Op, usize, Box<Expr>),
     ArrayLit(Vec<Expr>),
     Index(Box<Expr>, Box<Expr>, usize),
@@ -92,7 +91,6 @@ pub enum WhenPattern {
     EnumVariant(String, String),
     Group(String, String),
     Catchall,
-    Placeholder,
 }
 
 #[derive(Debug, Clone)]
@@ -204,15 +202,7 @@ pub enum Stmt {
         operand: Expr,
         pos: usize,
     },
-    Print {
-        expr: Expr,
-        pos: usize,
-    },
-    PrintInline {
-        expr: Expr,
-        _pos: usize,
-    },
-    ExprStmt {
+ExprStmt {
         expr: Expr,
         _pos: usize,
     },

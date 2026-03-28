@@ -1,0 +1,7 @@
+pub fnc: t32 public_add(a: t32, b: t32) {
+    a + b
+}
+
+fnc: t32 private_helper(x: t32) {
+    x * 2
+}
