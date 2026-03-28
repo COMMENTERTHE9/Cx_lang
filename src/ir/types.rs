@@ -40,6 +40,65 @@ impl IrType {
     }
 }
 
+pub struct StructLayout {
+    pub field_offsets: Vec<usize>,
+    pub total_size: usize,
+    pub alignment: usize,
+}
+
+pub fn compute_struct_layout(fields: &[IrType]) -> StructLayout {
+    let mut offset = 0usize;
+    let mut field_offsets = Vec::with_capacity(fields.len());
+    let mut max_align = 1usize;
+
+    for field in fields {
+        let align = field.align_bytes();
+        let size = field.size_bytes();
+        if align > max_align {
+            max_align = align;
+        }
+        let padding = (align - (offset % align)) % align;
+        offset += padding;
+        field_offsets.push(offset);
+        offset += size;
+    }
+
+    let tail_padding = (max_align - (offset % max_align)) % max_align;
+    offset += tail_padding;
+
+    StructLayout {
+        field_offsets,
+        total_size: offset,
+        alignment: max_align,
+    }
+}
+
+pub struct ArrayLayout {
+    pub element_size: usize,
+    pub stride: usize,
+    pub total_size: usize,
+    pub alignment: usize,
+}
+
+pub fn compute_array_layout(element: &IrType, count: usize) -> ArrayLayout {
+    let element_size = element.size_bytes();
+    let alignment = element.align_bytes();
+    let stride = {
+        let remainder = element_size % alignment;
+        if remainder == 0 {
+            element_size
+        } else {
+            element_size + (alignment - remainder)
+        }
+    };
+    ArrayLayout {
+        element_size,
+        stride,
+        total_size: stride * count,
+        alignment,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ValueId(pub u32);
 
@@ -169,5 +228,115 @@ mod tests {
     fn scalar_layout_size_tbool() {
         assert_eq!(IrType::TBool.size_bytes(), 1);
         assert_eq!(IrType::TBool.align_bytes(), 1);
+    }
+
+    use super::compute_struct_layout;
+
+    #[test]
+    fn struct_layout_single_i64() {
+        let layout = compute_struct_layout(&[IrType::I64]);
+        assert_eq!(layout.field_offsets, vec![0]);
+        assert_eq!(layout.total_size, 8);
+        assert_eq!(layout.alignment, 8);
+    }
+
+    #[test]
+    fn struct_layout_i8_then_i64() {
+        let layout = compute_struct_layout(&[IrType::I8, IrType::I64]);
+        assert_eq!(layout.field_offsets, vec![0, 8]);
+        assert_eq!(layout.total_size, 16);
+        assert_eq!(layout.alignment, 8);
+    }
+
+    #[test]
+    fn struct_layout_i64_then_i8() {
+        let layout = compute_struct_layout(&[IrType::I64, IrType::I8]);
+        assert_eq!(layout.field_offsets, vec![0, 8]);
+        assert_eq!(layout.total_size, 16);
+        assert_eq!(layout.alignment, 8);
+    }
+
+    #[test]
+    fn struct_layout_mixed_fields() {
+        let layout = compute_struct_layout(&[IrType::I8, IrType::I32, IrType::I16]);
+        assert_eq!(layout.field_offsets, vec![0, 4, 8]);
+        assert_eq!(layout.total_size, 12);
+        assert_eq!(layout.alignment, 4);
+    }
+
+    #[test]
+    fn struct_layout_all_i8() {
+        let layout = compute_struct_layout(&[IrType::I8, IrType::I8, IrType::I8]);
+        assert_eq!(layout.field_offsets, vec![0, 1, 2]);
+        assert_eq!(layout.total_size, 3);
+        assert_eq!(layout.alignment, 1);
+    }
+
+    #[test]
+    fn struct_layout_empty() {
+        let layout = compute_struct_layout(&[]);
+        assert_eq!(layout.field_offsets, vec![]);
+        assert_eq!(layout.total_size, 0);
+        assert_eq!(layout.alignment, 1);
+    }
+
+    #[test]
+    fn struct_layout_bool_i128_f64() {
+        let layout = compute_struct_layout(&[IrType::Bool, IrType::I128, IrType::F64]);
+        assert_eq!(layout.field_offsets, vec![0, 16, 32]);
+        assert_eq!(layout.total_size, 48);
+        assert_eq!(layout.alignment, 16);
+    }
+
+    use super::compute_array_layout;
+
+    #[test]
+    fn array_layout_5_i64() {
+        let layout = compute_array_layout(&IrType::I64, 5);
+        assert_eq!(layout.element_size, 8);
+        assert_eq!(layout.stride, 8);
+        assert_eq!(layout.total_size, 40);
+        assert_eq!(layout.alignment, 8);
+    }
+
+    #[test]
+    fn array_layout_3_i8() {
+        let layout = compute_array_layout(&IrType::I8, 3);
+        assert_eq!(layout.element_size, 1);
+        assert_eq!(layout.stride, 1);
+        assert_eq!(layout.total_size, 3);
+        assert_eq!(layout.alignment, 1);
+    }
+
+    #[test]
+    fn array_layout_0_elements() {
+        let layout = compute_array_layout(&IrType::I32, 0);
+        assert_eq!(layout.total_size, 0);
+        assert_eq!(layout.alignment, 4);
+    }
+
+    #[test]
+    fn array_layout_bool() {
+        let layout = compute_array_layout(&IrType::Bool, 10);
+        assert_eq!(layout.element_size, 1);
+        assert_eq!(layout.stride, 1);
+        assert_eq!(layout.total_size, 10);
+        assert_eq!(layout.alignment, 1);
+    }
+
+    #[test]
+    fn array_layout_i128() {
+        let layout = compute_array_layout(&IrType::I128, 2);
+        assert_eq!(layout.element_size, 16);
+        assert_eq!(layout.stride, 16);
+        assert_eq!(layout.total_size, 32);
+        assert_eq!(layout.alignment, 16);
+    }
+
+    #[test]
+    fn enum_tag_layout() {
+        // Enum tags are stored as I8 — 1 byte, align 1, values 0..255
+        assert_eq!(IrType::I8.size_bytes(), 1);
+        assert_eq!(IrType::I8.align_bytes(), 1);
     }
 }
