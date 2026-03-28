@@ -245,8 +245,9 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
+- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Remaining: actual file resolution, module loading, pub enforcement, circular import detection.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
 
 ---
 
