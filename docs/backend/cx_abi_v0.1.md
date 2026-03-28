@@ -32,6 +32,34 @@ All integers are signed two's complement. No unsigned types at 0.1. Cx type name
 
 ---
 
+## Calling Convention — LOCKED (0.1)
+
+Single return value or void. No multi-return at 0.1.
+
+| Return Type | Register | Notes |
+|-------------|----------|-------|
+| I8–I64      | RAX      | sign-extended as needed |
+| I128        | RAX:RDX  | low 64 in RAX, high 64 in RDX |
+| F64         | XMM0     | IEEE 754 double |
+| Bool        | RAX      | 0 or 1, zero-extended in RAX |
+| TBool       | RAX      | 0, 1, or 2, zero-extended in RAX |
+| void        | —        | no return register used |
+
+Parameter passing follows platform C ABI:
+- Linux x64: SystemV — first 6 integer args in RDI, RSI, RDX, RCX, R8, R9. First 8 float args in XMM0–XMM7.
+- Windows x64: fastcall — first 4 args in RCX, RDX, R8, R9 (integer) or XMM0–XMM3 (float).
+
+### Copy Param Bleed-Back — POST-0.1
+
+Copy params (`.copy`, `.copy.free`, `copy_into`) are post-0.1 for the compiled backend. The interpreter handles them correctly via `bleed_back` HashMap in `ScopeFrame`.
+
+When copy param support lands in the compiled backend:
+- Use hidden out-pointer pattern — callee receives a pointer to caller's variable, writes modified value back through it on return.
+- Observable behavior must match interpreter exactly.
+- Tests t10–t13 cover copy param semantics and must pass identically through both interpreter and compiled paths.
+
+---
+
 ## Open Design Questions
 
 ### TBool Representation — PARTIALLY LOCKED
@@ -51,10 +79,8 @@ Three-state value: true (1), false (0), unknown (2).
 - Arena ownership in JIT mode: does the JIT call into the interpreter's RunTime arena, maintain its own arena, or heap-allocate?
 - `strref` escape rules depend on arena ownership decision.
 
-### Copy Parameter Convention — OPEN
-- `(x.copy)` requires bleed-back: modified parameter written back to caller on return.
-- Options: pass by pointer, return struct with modified params, secondary return slot.
-- Decision affects every function call involving .copy parameters.
+### Copy Parameter Convention — LOCKED (post-0.1)
+Deferred to post-0.1. See Calling Convention section above for the locked decision and implementation plan.
 
 ### Struct Layout — OPEN
 - Field ordering: declaration order or optimized packing?
