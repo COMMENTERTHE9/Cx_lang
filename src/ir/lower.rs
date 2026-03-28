@@ -518,7 +518,12 @@ fn lower_stmt(
         SemanticStmt::EnumDef { .. } => { unsupported!("EnumDef") },
 SemanticStmt::Block { .. } => { unsupported!("Block") },
         SemanticStmt::WhileIn { .. } => { unsupported!("WhileIn") },
-        SemanticStmt::While { .. } => { unsupported!("While") },
+        SemanticStmt::While { cond, body, .. } => {
+    return match lower_while(cond, body, ctx, current, spec)? {
+        Some(new_active) => Ok(Some(new_active)),
+        None => Ok(None),
+    };
+},
         SemanticStmt::For { .. } => { unsupported!("For") },
         SemanticStmt::Loop { .. } => { unsupported!("Loop") },
         SemanticStmt::Break { .. } => { unsupported!("Break") },
@@ -740,6 +745,89 @@ fn merge_fallthroughs(
     }
 
     Ok(merge_block)
+}
+
+fn lower_while(
+    cond: &SemanticExpr,
+    body: &[SemanticStmt],
+    ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+    spec: &FunctionLoweringSpec,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let incoming = current.bindings.clone();
+
+    let mut ordered_bindings: Vec<_> = incoming.keys().copied().collect();
+    ordered_bindings.sort_by_key(|b| b.0);
+
+    let mut header_params = Vec::new();
+    let mut header_bindings = HashMap::new();
+    let mut entry_args = Vec::new();
+
+    for binding in &ordered_bindings {
+        let val = incoming.get(binding).unwrap();
+        let param_value = ctx.fresh_value();
+        header_params.push(BlockParam {
+            value: param_value,
+            ty: val.ty.clone(),
+        });
+        header_bindings.insert(
+            *binding,
+            LoweredValue {
+                value: param_value,
+                ty: val.ty.clone(),
+            },
+        );
+        entry_args.push(val.value);
+    }
+
+    let mut header = ctx.start_block(header_params, header_bindings.clone());
+    let header_id = header.id();
+
+    let mut current = current;
+    current.terminate(IrTerminator::Jump {
+        target: header_id,
+        args: entry_args,
+    })?;
+    ctx.seal_block(current)?;
+
+    let cond_val = lower_expr(cond, ctx, &mut header)?;
+
+    let body_block = ctx.start_block(vec![], header_bindings.clone());
+    let body_id = body_block.id();
+
+    let exit_block = ctx.start_block(vec![], header_bindings.clone());
+    let exit_id = exit_block.id();
+
+    header.terminate(IrTerminator::Branch {
+        cond: cond_val.value,
+        then_block: body_id,
+        then_args: vec![],
+        else_block: exit_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(header)?;
+
+    let body_result = lower_stmt_sequence(
+        body.iter(),
+        ctx,
+        Some(body_block),
+        spec,
+    )?;
+
+    if let Some(mut body_active) = body_result {
+        let mut backedge_args = Vec::new();
+        for binding in &ordered_bindings {
+            let val = body_active.bindings.get(binding).unwrap();
+            backedge_args.push(val.value);
+        }
+        body_active.terminate(IrTerminator::Jump {
+            target: header_id,
+            args: backedge_args,
+        })?;
+        ctx.seal_block(body_active)?;
+    }
+
+    Ok(Some(exit_block))
 }
 
 fn finalize_active_block(
@@ -2001,8 +2089,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_statement() {
         let program = SemanticProgram {
-            stmts: vec![SemanticStmt::While {
-                cond: bool_expr(true),
+            stmts: vec![SemanticStmt::Loop {
                 body: vec![],
                 pos: 0,
             }],
@@ -2012,7 +2099,7 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "While".to_string()
+                construct: "Loop".to_string()
             }
         );
     }
@@ -2024,8 +2111,7 @@ mod tests {
                 "bad",
                 vec![],
                 None,
-                vec![SemanticStmt::While {
-                    cond: bool_expr(true),
+                vec![SemanticStmt::Loop {
                     body: vec![],
                     pos: 0,
                 }],
@@ -2037,7 +2123,7 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "While".to_string()
+                construct: "Loop".to_string()
             }
         );
     }
@@ -2588,8 +2674,7 @@ mod tests {
         let program = SemanticProgram {
             stmts: vec![if_stmt(
                 bool_expr(true),
-                vec![SemanticStmt::While {
-                    cond: bool_expr(true),
+                vec![SemanticStmt::Loop {
                     body: vec![],
                     pos: 0,
                 }],
@@ -2602,9 +2687,103 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "While".to_string()
+                construct: "Loop".to_string()
             }
         );
+    }
+
+    #[test]
+    fn lowers_simple_while_loop() {
+        let program = SemanticProgram {
+            stmts: vec![
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(0),
+                    name: "x".to_string(),
+                    ty: SemanticType::I64,
+                    expr: int_expr(0, SemanticType::I64),
+                    pos_type: 0,
+                },
+                SemanticStmt::While {
+                    cond: bool_expr(true),
+                    body: vec![],
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        // Expect at least 4 blocks: entry, header, body, exit
+        assert!(main_fn.blocks.len() >= 4, "expected at least 4 blocks, got {}", main_fn.blocks.len());
+        // Header block should have a Branch terminator
+        let header = &main_fn.blocks[1];
+        assert!(matches!(header.term, IrTerminator::Branch { .. }), "header should branch");
+        // Body block should jump back to header (backedge)
+        let body = &main_fn.blocks[2];
+        match &body.term {
+            IrTerminator::Jump { target, .. } => {
+                assert_eq!(*target, header.id, "body should jump back to header");
+            }
+            _ => panic!("body should have Jump terminator"),
+        }
+    }
+
+    #[test]
+    fn lowers_while_inside_function() {
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "looper",
+                vec![],
+                Some(SemanticType::I64),
+                vec![SemanticStmt::While {
+                    cond: bool_expr(true),
+                    body: vec![],
+                    pos: 0,
+                }],
+                Some(int_expr(0, SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "looper").unwrap();
+        assert!(func.blocks.len() >= 4, "expected at least 4 blocks, got {}", func.blocks.len());
+    }
+
+    #[test]
+    fn while_loop_header_has_block_params() {
+        let program = SemanticProgram {
+            stmts: vec![
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(0),
+                    name: "x".to_string(),
+                    ty: SemanticType::I64,
+                    expr: int_expr(0, SemanticType::I64),
+                    pos_type: 0,
+                },
+                SemanticStmt::While {
+                    cond: bool_expr(true),
+                    body: vec![SemanticStmt::Assign {
+                        target: SemanticLValue::Binding {
+                            binding: BindingId(0),
+                            name: "x".to_string(),
+                            ty: SemanticType::I64,
+                        },
+                        expr: int_expr(1, SemanticType::I64),
+                        pos_eq: 0,
+                    }],
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let header = &main_fn.blocks[1];
+        // Header should have block params for the loop-carried binding
+        assert!(!header.params.is_empty(), "header should have block params for loop-carried values");
     }
 
     #[test]
