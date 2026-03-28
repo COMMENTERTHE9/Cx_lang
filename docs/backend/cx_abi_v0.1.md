@@ -113,6 +113,16 @@ Dynamic arrays (push/pop, runtime-sized) are post-0.1 stdlib work. When those la
 
 Layout computation implemented in `src/ir/types.rs` as `compute_array_layout`. Confidence tests cover i64, i8, bool, i128, and zero-length arrays.
 
-### Enum Layout — OPEN
-- Tag representation: u8? u32?
-- Variant layout for data-carrying enums (post-0.1).
+### Enum Layout — LOCKED (tag-only)
+
+Tag-only enums at 0.1. No data-carrying variants.
+
+- Tag type: `u8`, 1 byte, align 1.
+- Variant numbering: declaration order, starting at 0.
+- Max 256 variants per enum.
+- No payload, no discriminant + union layout.
+- Data-carrying enums (tag + payload) are post-0.1.
+
+Group and super-group membership is a semantic concept only — no impact on wire format. The tag is just a `u8` regardless of group structure.
+
+Note: the interpreter matches enum variants by string name, not numeric tag. The compiled backend will use numeric tags. These are different internal representations for the same value. Enum values cannot be passed between interpreted and compiled code without a translation layer. Not a 0.1 problem — documented here so it doesn't surprise anyone later.

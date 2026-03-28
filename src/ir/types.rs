@@ -332,4 +332,11 @@ mod tests {
         assert_eq!(layout.total_size, 32);
         assert_eq!(layout.alignment, 16);
     }
+
+    #[test]
+    fn enum_tag_layout() {
+        // Enum tags are stored as I8 — 1 byte, align 1, values 0..255
+        assert_eq!(IrType::I8.size_bytes(), 1);
+        assert_eq!(IrType::I8.align_bytes(), 1);
+    }
 }
