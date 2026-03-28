@@ -1,0 +1,9 @@
+/# this is a block comment #/
+x: t32 = 10
+/# inline block comment #/
+/#
+   multi
+   line
+   comment
+#/
+print(x)

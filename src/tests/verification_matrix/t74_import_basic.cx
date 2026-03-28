@@ -1,0 +1,7 @@
+#![imports]
+math: use "./t74_import_basic_lib"
+
+result: t32 = math.add(10, 20)
+print(result)
+result2: t32 = math.multiply(3, 4)
+print(result2)

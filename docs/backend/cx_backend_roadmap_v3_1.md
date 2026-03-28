@@ -181,26 +181,9 @@ This list is intentional. Unsupported constructs must produce structured errors,
 
 ---
 
-**Phase 0.5 — Backend Trait Interface Change** *(pre-Phase 13 gate)*
+**Phase 0.5 — Backend Trait Interface Change** *(DONE — 2026-03-25)*
 
-The current `Backend` trait in `backend/mod.rs` takes `&Program` (the raw AST), not `&IrModule`. The `let _ir = prepare_ir(...)` in `main.rs` builds the IR and immediately discards it. Both Cranelift and LLVM stub backends receive the original AST, not the lowered IR.
-
-This must be changed before Phase 13 begins. The trait signature must become:
-
-```
-pub trait Backend {
-    fn execute(&self, module: &IrModule) -> Result<(), String>;
-}
-```
-
-This touches `backend/mod.rs`, `cranelift/jit.rs`, `cranelift/aot.rs`, `llvm/aot.rs`, and `main.rs`. It is a load-bearing API break that wires the IR pipeline together.
-
-Also: `backend/mod.rs` line 1 has `#![allow(dead_code)]` which suppresses all dead code warnings for the module. This should be removed or replaced with per-item `#[allow(dead_code)]` when Phase 13 wires the real pipeline so new dead code gets caught.
-
-Done when:
-- `Backend::execute` takes `&IrModule`
-- `main.rs` passes lowered IR into backend dispatch instead of discarding it
-- All backend stubs compile against the new signature
+Backend trait signature changed to take `&IrModule`. `main.rs` passes lowered IR into backend dispatch. All backend stubs compile against the new signature.
 
 ---
 
@@ -238,26 +221,9 @@ Done when:
 
 ---
 
-**Phase 7 — IR Pretty Printer and Diagnostics Foundation**
+**Phase 7 — IR Pretty Printer and Diagnostics Foundation** *(DONE — 2026-03-25)*
 
-Goal: human-readable IR output and the foundation for all backend observability. Must exist before Cranelift is touched. When Cranelift fails on something the first question is always what did the IR actually look like — without this you are debugging blind.
-
-- Text format for IrModule, IrFunction, IrBlock
-- Each instruction prints with its ValueId, type, and operands
-- Each block prints with its params and terminator
-- Optional source span comments where spans are available
-- Stable textual format — same IR always prints the same way
-- Readable block param printing
-- IR dump triggered automatically on lowering test failures
-- IR dump triggered automatically on validator failures
-- Validate-only backend mode — run validation without codegen
-- Optional verbose trace flag for instruction-by-instruction output
-
-Done when:
-- Any IrModule can be printed to a stable, readable string
-- Lowering and validator test failures include IR dump automatically
-- A developer can read the output and understand what lowered
-- Validate-only mode works as a standalone diagnostic path
+IR pretty printer, `--backend=validate` mode, and `--debug-trace` verbose flag all implemented. IR dump triggered automatically on validation failure in test helper.
 
 ---
 
@@ -350,7 +316,7 @@ Done when:
 
 Goal: shrink the unsupported surface area intentionally. Every construct in this phase either gets supported or gets a documented, structured rejection. Nothing is silently unsupported.
 
-- CompoundAssign — += style forms — **cross-roadmap dependency:** the current Cx compound assign syntax is `i +1=`, not `i += 1`. If the frontend changes this syntax before 0.1, the IR representation of compound assign changes too. The frontend and backend roadmaps must be synchronized on this decision before Phase 11 implementation begins.
+- CompoundAssign — += style forms — **cross-roadmap dependency:** the Cx compound assign syntax is `i += 1` (standard infix, frozen). The IR representation of compound assign follows this form.
 - Unary expressions
 - Range expressions
 - Dot access and field indexing forms
@@ -371,7 +337,7 @@ Done when:
 
 **Phase 12 — Differential Backend Harness**
 
-Goal: make parity a real tracked system, not a vague aspiration. The frontend has a 46+ test matrix. This phase builds the infrastructure to run that same matrix through the backend and compare results automatically.
+Goal: make parity a real tracked system, not a vague aspiration. The frontend has a 74-test matrix. This phase builds the infrastructure to run that same matrix through the backend and compare results automatically.
 
 This phase should be treated as a mini-system in its own right — not just a phase.
 
@@ -623,8 +589,8 @@ Phase 15 — JIT 0.1 target    → closes only after all 0.1 hard blockers are s
 
 Known cross-roadmap dependencies:
 - Frontend: print promoted to function → Phase 9 cannot close without it
-- Frontend: compound assign syntax decision (i +1= vs i += 1) → Phase 11 depends on this
-- Frontend: float type keyword decision → Phase 8 scalar layout depends on this
+- Frontend: compound assign syntax — frozen as `i += 1` (standard infix)
+- Frontend: float type keyword — frozen as `f64`, landed 2026-03-22
 ```
 
 Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
@@ -640,15 +606,13 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 - IR validator
 - Function lowering
 - if / else lowering
-
-**Pre-Phase 13 Gate**
-- Backend trait interface change (Phase 0.5) — must ship before Cranelift skeleton
+- Backend trait interface change (Phase 0.5) — backend takes &IrModule
+- IR pretty printer and diagnostics foundation (Phase 7) — --backend=validate, --debug-trace
 
 **Active**
 - Function call lowering
 
 **Next — 0.1 Path**
-- IR pretty printer and diagnostics foundation
 - ABI and data layout
 - Runtime intrinsics boundary
 - Loop lowering

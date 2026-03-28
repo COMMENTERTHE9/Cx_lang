@@ -132,7 +132,7 @@ These are not features. These are conditions. A long gate list that never closes
 - [x] `const` declarations — landed 2026-03-22, t56/t57 passing
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
-- [ ] Multi-file imports working — programs can span multiple .cx files
+- [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
@@ -155,8 +155,8 @@ These are not features. These are conditions. A long gate list that never closes
 - [ ] Generics v3 — type bounds `T: Numeric`, `T: Known`
 - [ ] Minimal stdlib — dynamic array, hashmap, basic string utilities
 - [ ] Diagnostic improvements — better span reporting, actionable help text
-- [ ] Struct field type checking in semantic layer — currently returns I128 for all dot access
-- [ ] Method call return type resolution — currently returns Unknown
+- [x] Struct field type checking in semantic layer — fixed 2026-03-25, DotAccess resolves actual field types
+- [x] Method call return type resolution — fixed 2026-03-25, method_registry resolves return types
 
 ---
 
@@ -245,8 +245,9 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
+- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on `submain` 2026-03-25 — t74/t64 passing. Pending merge to main.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
 
 ---
 
@@ -524,7 +525,7 @@ These need active design work before any implementation can begin.
 - Known Gaps section added — t42, t33, t32 tracked with expected_fail
 - 4 of 7 hard blockers now resolved (parity, generics, structs, CI)
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
-- Test matrix at 54 tests, 54/54 green
+- Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
 
 ## Key Changes from v4.5
@@ -558,7 +559,7 @@ These need active design work before any implementation can begin.
 - f64 surface keyword removed from Active (complete)
 - when block-body arms removed from Known Gaps (resolved)
 - when as value-producing expression checked off in Quality Gates
-- Test matrix at 59 tests, 59/59 green
+- Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.4
 
 ## Key Changes from v4.2
@@ -571,3 +572,14 @@ These need active design work before any implementation can begin.
 - `*arr` deref marked for removal — `arr:[0]` is the canonical syntax
 - f64 runtime support added to Done — surface keyword is the remaining work
 - Version bumped to v4.3
+
+## Key Changes from v4.4
+
+- Struct field type checking marked complete — DotAccess resolves real field types
+- Method call return type marked complete — method_registry resolves return types
+- Test matrix at 78 tests, 78/78 green
+- Multi-file imports fully wired — resolver, semantic merge, runtime dispatch
+- Five correctness bugs fixed from audit
+- Dead code cleanup — Print/PrintInline, Range, Placeholder, wait_for_step removed
+- Output verification added to matrix runner via .expected_output sidecars
+- Version bumped to v4.5

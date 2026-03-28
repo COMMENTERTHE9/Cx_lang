@@ -20,8 +20,7 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::HandleDrop(_, pos) => *pos,
         Expr::Call(_, _, pos) => *pos,
         Expr::Unary(_, _, pos) => *pos,
-        Expr::Range(a, _, _) => expr_pos(a),
-        Expr::Bin(_, _, pos, _) => *pos,
+Expr::Bin(_, _, pos, _) => *pos,
         Expr::ArrayLit(_) => 0,
         Expr::Index(_, _, pos) => *pos,
         Expr::MethodCall(_, _, _, pos) => *pos,
@@ -508,7 +507,7 @@ where
                         ParamKind::CopyFree(name)
                     }
                     Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
-                    _ => ParamKind::Typed(name, ty_opt.unwrap()),
+                    _ => ParamKind::Typed(name, ty_opt.unwrap_or(Type::Unknown)),
                 }))
             .boxed();
 
@@ -672,8 +671,7 @@ where
                         span,
                         "bare identifier is not a valid super-group handler",
                     )),
-                    Stmt::Print { .. } => Ok(SuperGroupHandler::Stmts(vec![s])),
-                    Stmt::Break { .. } | Stmt::Continue { .. } => {
+Stmt::Break { .. } | Stmt::Continue { .. } => {
                         Ok(SuperGroupHandler::Stmts(vec![s]))
                     }
                     _ => Err(Rich::custom(
@@ -1009,7 +1007,8 @@ where
                         .map(|(tp, n)| (None, tp, n))
                 );
 
-            outer_macros.clone()
+            just(Token::KeywordPub).or_not()
+                .then(outer_macros.clone())
                 .then(
                     just(Token::KeywordFnc)
                         .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
@@ -1026,14 +1025,14 @@ where
                         .then(func_body)
                 )
                 .map(
-                    |(macros, (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
+                    |((pub_tok, macros), (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
                         name,
                         type_params,
                         params,
                         ret_ty,
                         body,
                         ret_expr,
-                        is_pub: false,
+                        is_pub: pub_tok.is_some(),
                         macros,
                         pos,
                     },

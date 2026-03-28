@@ -10,6 +10,7 @@ use frontend::ast::*;
 use frontend::diagnostics;
 use frontend::lexer::*;
 use frontend::parser;
+use frontend::resolver;
 use frontend::semantic;
 use frontend::semantic_types::SemanticProgram;
 use runtime::runtime::*;
@@ -29,7 +30,6 @@ struct DebugFlags {
     tokens: bool,
     ast: bool,
     scope: bool,
-    step: bool,
     phase: bool,
     trace: bool,
 }
@@ -41,7 +41,6 @@ impl DebugFlags {
             tokens: all || args.contains(&"--debug-tokens".to_string()),
             ast: all || args.contains(&"--debug-ast".to_string()),
             scope: all || args.contains(&"--debug-scope".to_string()),
-            step: all || args.contains(&"--debug-step".to_string()),
             phase: all || args.contains(&"--debug-phase".to_string()),
             trace: all || args.contains(&"--debug-trace".to_string()),
         }
@@ -69,29 +68,6 @@ impl PhaseTimer {
                 .cyan()
                 .dimmed()
         );
-    }
-}
-
-fn wait_for_step() {
-    use std::io::Write;
-    eprint!("{}", "  [step] press enter to continue...".dimmed());
-    std::io::stderr().flush().ok();
-
-    #[cfg(unix)]
-    {
-        use std::io::BufRead;
-        let tty = std::fs::File::open("/dev/tty").unwrap();
-        let mut reader = std::io::BufReader::new(tty);
-        let mut line = String::new();
-        reader.read_line(&mut line).ok();
-    }
-    #[cfg(windows)]
-    {
-        use std::io::BufRead;
-        let tty = std::fs::File::open("CONIN$").unwrap();
-        let mut reader = std::io::BufReader::new(tty);
-        let mut line = String::new();
-        reader.read_line(&mut line).ok();
     }
 }
 
@@ -144,9 +120,18 @@ fn main() {
         diagnostics::print_ast(&program);
     }
 
+    // RESOLVE PHASE — multi-file imports
+    let resolved = match resolver::resolve(std::path::Path::new(&path), program) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("RESOLVE ERROR: {}", e);
+            std::process::exit(1);
+        }
+    };
+
     // SEMANTIC PHASE
     let sem_timer = flags.phase.then(|| PhaseTimer::start("SEMANTIC"));
-    let semantic_program = match semantic::analyze_program(&program) {
+    let semantic_program = match semantic::analyze_resolved_program(&resolved) {
         Ok(program) => program,
         Err(errors) => {
             if let Some(t) = sem_timer {
