@@ -82,10 +82,21 @@ Three-state value: true (1), false (0), unknown (2).
 ### Copy Parameter Convention — LOCKED (post-0.1)
 Deferred to post-0.1. See Calling Convention section above for the locked decision and implementation plan.
 
-### Struct Layout — OPEN
-- Field ordering: declaration order or optimized packing?
-- Alignment: per-field natural alignment? Packed option?
-- Padding rules.
+### Struct Layout — LOCKED
+
+- Field ordering: declaration order. No reordering. C-compatible for FFI.
+- Alignment: natural alignment per field. Each field aligned to its own `align_bytes()`.
+- Padding: implicit, inserted between fields to satisfy alignment.
+- Struct total size: rounded up to largest field alignment (so arrays of structs stay aligned).
+- No `#[packed]` option at 0.1. Can be added post-0.1 without ABI break.
+
+Example:
+```
+struct { a: I8, b: I64 }
+→ offset 0: a (1 byte) + 7 padding → offset 8: b (8 bytes) → total 16, align 8
+```
+
+Layout computation implemented in `src/ir/types.rs` as `compute_struct_layout`. Confidence tests cover single-field, padding, mixed fields, empty struct, and worst-case alignment scenarios.
 
 ### Array Layout — OPEN
 - Element stride: size rounded up to alignment.
