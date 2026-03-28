@@ -1,0 +1,5 @@
+#![imports]
+lib: use "./t64_import_pub_only_lib"
+
+result: t32 = lib.public_add(5, 10)
+print(result)

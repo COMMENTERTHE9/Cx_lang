@@ -1,3 +1,5 @@
+> **SUPERSEDED** — This roadmap has been replaced by docs/frontend/ROADMAP.md (v4.4). Kept for historical reference only.
+
 # Cx Language Development Roadmap v3.1 — Updated 2026-03-16
 
 ---

@@ -165,6 +165,7 @@ fn print_type(ty: &IrType) -> &'static str {
         IrType::I128 => "i128",
         IrType::F64 => "f64",
         IrType::Bool => "bool",
+        IrType::TBool => "tbool",
     }
 }
 

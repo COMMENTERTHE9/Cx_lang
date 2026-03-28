@@ -9,6 +9,35 @@ pub enum IrType {
     I128,
     F64,
     Bool,
+    TBool,
+}
+
+impl IrType {
+    pub fn size_bytes(&self) -> usize {
+        match self {
+            IrType::I8 => 1,
+            IrType::I16 => 2,
+            IrType::I32 => 4,
+            IrType::I64 => 8,
+            IrType::I128 => 16,
+            IrType::F64 => 8,
+            IrType::Bool => 1,
+            IrType::TBool => 1,
+        }
+    }
+
+    pub fn align_bytes(&self) -> usize {
+        match self {
+            IrType::I8 => 1,
+            IrType::I16 => 2,
+            IrType::I32 => 4,
+            IrType::I64 => 8,
+            IrType::I128 => 16,
+            IrType::F64 => 8,
+            IrType::Bool => 1,
+            IrType::TBool => 1,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -92,5 +121,53 @@ mod tests {
         assert_eq!(block.params.len(), 1);
         assert_eq!(block.params[0].value, ValueId(3));
         assert_eq!(block.params[0].ty, IrType::I64);
+    }
+
+    #[test]
+    fn scalar_layout_size_i8() {
+        assert_eq!(IrType::I8.size_bytes(), 1);
+        assert_eq!(IrType::I8.align_bytes(), 1);
+    }
+
+    #[test]
+    fn scalar_layout_size_i16() {
+        assert_eq!(IrType::I16.size_bytes(), 2);
+        assert_eq!(IrType::I16.align_bytes(), 2);
+    }
+
+    #[test]
+    fn scalar_layout_size_i32() {
+        assert_eq!(IrType::I32.size_bytes(), 4);
+        assert_eq!(IrType::I32.align_bytes(), 4);
+    }
+
+    #[test]
+    fn scalar_layout_size_i64() {
+        assert_eq!(IrType::I64.size_bytes(), 8);
+        assert_eq!(IrType::I64.align_bytes(), 8);
+    }
+
+    #[test]
+    fn scalar_layout_size_i128() {
+        assert_eq!(IrType::I128.size_bytes(), 16);
+        assert_eq!(IrType::I128.align_bytes(), 16);
+    }
+
+    #[test]
+    fn scalar_layout_size_f64() {
+        assert_eq!(IrType::F64.size_bytes(), 8);
+        assert_eq!(IrType::F64.align_bytes(), 8);
+    }
+
+    #[test]
+    fn scalar_layout_size_bool() {
+        assert_eq!(IrType::Bool.size_bytes(), 1);
+        assert_eq!(IrType::Bool.align_bytes(), 1);
+    }
+
+    #[test]
+    fn scalar_layout_size_tbool() {
+        assert_eq!(IrType::TBool.size_bytes(), 1);
+        assert_eq!(IrType::TBool.align_bytes(), 1);
     }
 }
