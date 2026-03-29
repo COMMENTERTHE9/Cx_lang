@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.7 — 2026-03-25
+v4.8 — 2026-03-29
 
 ---
 
@@ -245,9 +245,10 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
+- **Backend ABI / Data Layout** — Phase 8 complete on submain: scalar layout (2026-03-27), struct layout with natural alignment and padding (7 tests), array layout fixed-size contiguous stride-based (5 tests), enum layout tag-only u8 (2026-03-28), calling convention locked (single return, C ABI). All compound type layouts locked for 0.1 in `cx_abi_v0.1.md`. Pending merge to main.
+- **Backend IR Phase 10 — Loop Lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 Rust-level tests. First backend IR loop support. If/else lowering not yet started.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
+- **Multi-file imports** — `#![imports]` block parsing, semantic validation, full resolution pipeline (resolver, semantic merge, runtime dispatch) landed. PR #27 merged submain to main 2026-03-28. t74/t64 passing on main.
 
 ---
 
@@ -261,7 +262,7 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
-- **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
+- **Integer overflow not fully enforced in arithmetic** — wrapping is the locked decision. Partial fix on submain (`d93582b` 2026-03-28): `saturating_add`/`sub` → `wrapping_add`/`sub`, guards for `i128::MIN / -1` and `i128::MIN % -1`. Arithmetic now wraps consistently at i128 range. Per-type-width wrapping at arithmetic time (e.g., t8 wrapping at 255 during addition) is still not implemented.
 - **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
@@ -527,6 +528,16 @@ These need active design work before any implementation can begin.
 - 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
+
+## Key Changes from v4.7
+
+- Active section updated: Phase 8 ABI/data layout marked complete on submain (struct, array, enum, calling convention all locked)
+- Phase 10 (while loop lowering) added to Active — first backend IR loop support on submain
+- Multi-file imports updated — PR #27 merged submain to main 2026-03-28
+- Integer overflow Known Gap updated — partial fix (wrapping consistent at i128, per-width still open)
+- Wrapping arithmetic fix on submain: saturating → wrapping, i128::MIN edge cases guarded
+- Matrix holds at 78/78 green on main
+- Version bumped to v4.8
 
 ## Key Changes from v4.6
 
