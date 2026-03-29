@@ -95,6 +95,9 @@ Named binding (`SomeVariant as v`) and guard clauses (`n if n > 5`) are designed
 **Block comments — `/# and #/`:**
 Multiline comments use `/# ` to open and `#/` to close. Frozen.
 
+**UTF-8 — strict everywhere:**
+Source files are UTF-8. `str` values are valid UTF-8 at runtime. Invalid bytes produce a runtime error. `char` is a Unicode scalar value. Binary data uses byte buffers not str.
+
 **Import syntax — `#![imports]` block:**
 ```cx
 #![imports]
@@ -136,7 +139,7 @@ These are not features. These are conditions. A long gate list that never closes
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
-- [ ] UTF-8 decision locked — blocks stdlib and filesystem
+- [x] UTF-8 decision locked — UTF-8 strict everywhere. str is valid UTF-8, invalid bytes are runtime error, char is Unicode scalar value. 2026-03-29
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
 - [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
 - [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
@@ -305,8 +308,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 ~~**print Promoted to Function**~~
 Done — landed 2026-03-23, checked off in Hard Blockers.
 
-**UTF-8 Decision Locked**
-Blocks stdlib. Blocks filesystem. Must be decided before either lands.
+**UTF-8 Decision Locked** ✅
+Decided 2026-03-29: UTF-8 strict everywhere. Source files are UTF-8. `str` values are valid UTF-8 at runtime. Invalid bytes produce a runtime error. `char` is a Unicode scalar value. Binary data uses byte buffers not str.
 
 **String Model Finalized**
 - str copy-on-boundary fully tested
@@ -524,7 +527,7 @@ These need active design work before any implementation can begin.
 - Code quality sprint added to Done — Arc, macros, dead code removal
 - Known Gaps section added — t42, t33, t32 tracked with expected_fail
 - 4 of 7 hard blockers now resolved (parity, generics, structs, CI)
-- 3 hard blockers remain: multi-file imports, print-as-function, UTF-8
+- All hard blockers from v4.2 now resolved (imports, print, UTF-8 all done)
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
 
