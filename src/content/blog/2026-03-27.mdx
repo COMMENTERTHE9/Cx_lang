@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-03-27"
+date: 2026-03-27
+description: "Phase 8 Round 1 landed scalar layout definitions and the first formal ABI design document for Cx."
+---
+
+The backend got its first real ABI groundwork today. Phase 8 Round 1 landed on `submain` with scalar layout definitions, a new ABI design document, and layout confidence tests. One commit, two files, 134 lines.
+
+## Scalar layout and the ABI doc
+
+The main deliverable is `docs/backend/cx_abi_v0.1.md`, the first formal ABI document in the project. It locks scalar layout for all Cx integer types (t8, t16, t32, t64, t128), f64, and bool. Each type gets documented size, alignment, representation, and Cranelift type mappings.
+
+The alignment model is natural alignment: every type's alignment equals its size. t8 aligns to 1, t16 to 2, t32 to 4, and so on. This is the simplest correct choice for x86-64 and matches what C compilers produce. No packed or special alignment modes at v0.1.
+
+One detail worth noting: i128 is explicitly flagged as emulated on Cranelift. Where LLVM treats i128 natively, Cranelift represents it as two i64 values. The ABI doc calls this out as a known performance difference that doesn't affect correctness.
+
+On the implementation side, `src/ir/types.rs` gained `size_bytes()` and `align_bytes()` methods on `IrType`. Seven new unit tests verify every scalar type's size and alignment, one test per type. These are Rust-level tests, not matrix tests, so the main matrix stays at 72/72.
+
+## Design-first, then codegen
+
+The approach here is a deliberate shift from how frontend work was done. Instead of implementing first and documenting later, the ABI doc takes a design-first approach. Decisions are marked LOCKED (with tests backing them) or OPEN (needing future design work). The scalar layout is LOCKED for v0.1, meaning these values are frozen.
+
+The OPEN questions are interesting because they sketch the near-term backend roadmap:
+
+- **TBool representation.** The three-state value (true/false/unknown as 0/1/2) has its wire format locked from the language spec, but how it lives in IR (u8, enum, tagged union) is unresolved. This matters once TBool values cross function call boundaries.
+- **String layout in JIT mode.** Not decided yet.
+- **Struct layout.** Field ordering, padding, and alignment rules still need design.
+- **Array and enum layout.** Also open.
+- **Copy parameter convention.** How values are passed across calls.
+
+## The submain gap
+
+This is the second consecutive day where `submain` accumulates real work without merging to main. There are now 13 commits sitting on the branch, including the multi-file import pipeline, bug fixes, dead code removal, 6 new matrix tests (bringing submain to 78/78), and now the ABI groundwork. All of it is branch-local.
+
+The multi-file import pipeline is a hard blocker for 0.1, and it's done on the branch. It just hasn't been integrated yet.
+
+## What's ahead
+
+The ABI doc's open questions point toward struct layout and TBool representation as the next design decisions. Struct layout is a natural next step since structs already work in the frontend.
+
+Beyond the backend work, the merge to main is overdue. The test runner and assert infrastructure remains a hard blocker for 0.1, now three days without movement. Same for the error model (Result\<T\>). These are the items that gate the release, and they haven't advanced while backend infrastructure work has been the focus.
