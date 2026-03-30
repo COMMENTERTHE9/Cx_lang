@@ -265,7 +265,7 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries.
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
 - **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
-- **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
+- **Expression statement semicolons** — bare expression statements (`x + 1`, `some_func()` used as a statement not assigned) still require a semicolon due to parser ambiguity. All other statements — declarations, assignments, compound assigns, returns, const — have optional semicolons. Full semicolon-free syntax requires a newline-aware parser redesign. Post-0.1.
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
 ---

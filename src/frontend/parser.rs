@@ -374,7 +374,7 @@ where
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
             .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
-            .then_ignore(semi.clone())
+            .then_ignore(semi.clone().or_not())
             .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos })
             .boxed();
 
