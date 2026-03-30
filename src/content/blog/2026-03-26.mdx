@@ -1,0 +1,54 @@
+---
+title: "Cx Dev Log — 2026-03-26"
+date: 2026-03-26
+description: "Multi-file imports went from syntax-only to a fully working resolution pipeline on submain, with 10 commits covering the resolver, semantic merge, runtime wiring, bug fixes, and six new tests."
+---
+
+Multi-file imports actually work now. Yesterday the parser could read `#![imports]` syntax but nothing happened at runtime. Today, 10 commits on `submain` built the full pipeline: file resolution, dependency graphing, semantic merge across file boundaries, and runtime dispatch. The first multi-file Cx program runs end to end.
+
+## The import pipeline
+
+Three commits form the core of the work:
+
+1. Module alias resolution wired into `analyze_method_call` in `semantic.rs`. Method calls on imported module aliases now resolve through the module's export table.
+2. A new `analyze_resolved_program` function in `semantic.rs` handles multi-file semantic merge. It takes a `ResolvedProgram` from the resolver and produces unified semantic analysis across all files in topological order.
+3. `main.rs` wired up to use `analyze_resolved_program`. The full pipeline is now: parse, resolve imports, topo-sort, semantic merge, runtime dispatch.
+
+The resolver module (`src/frontend/resolver.rs`, 301 lines) provides the graph infrastructure: `ModuleId`, `ResolvedFile`, `ResolvedProgram`, `ImportEdge`, circular import detection, and topological sorting. This was added in earlier submain commits but ties into today's semantic and runtime work.
+
+Test `t74_import_basic.cx` is the proof: it imports `t74_import_basic_lib.cx` and calls `math.add(10, 20)` and `math.multiply(3, 4)` across the file boundary. That is the first multi-file program that compiles and runs in Cx.
+
+Pub enforcement is also being tested. `t64_import_pub_only` specifically verifies that only `pub`-marked functions are visible across import boundaries, which means the resolver already enforces visibility rules, not just file loading.
+
+## Audit pass and cleanup
+
+After the import pipeline landed, an audit pass caught five semantic and runtime bugs across `parser.rs`, `semantic.rs`, and `runtime.rs`. Small fixes (+22/-11 lines), all correctness-related.
+
+Dead code from the old interpreter path got removed from 8 source files: `Print`/`PrintInline`, `Range`, `Placeholder`, and `wait_for_step` were stripped out of `ast.rs`, `diagnostics.rs`, `parser.rs`, `semantic.rs`, `semantic_types.rs`, `lower.rs`, `main.rs`, and `runtime.rs`. These were remnants of the pre-function-print era that had been accumulating.
+
+## Test infrastructure improvements
+
+The matrix runner (`run_matrix.sh`) gained output verification. If a test has a `.expected_output` sidecar file, the runner compares actual output against expected and reports `PASS (output verified)` or `FAIL (output mismatch)` instead of just checking exit codes. Two sidecar files shipped with this change (t75 and t76).
+
+Six new tests landed on submain:
+
+- `t64_import_pub_only` -- pub visibility enforcement across imports
+- `t74_import_basic` -- end-to-end two-file import
+- `t75_string_interpolation` -- `{varname}` expansion in print
+- `t76_block_comments` -- `/# ... #/` block comment syntax
+
+The submain matrix is now at 78/78, up from 72/72 on main.
+
+## Documentation sync
+
+Six documentation files were updated to reflect the current state of the language: `ROADMAP_v3.1.md`, `cx_backend_roadmap_v3_1.md`, `backlog_notes.md`, `cx_flags.md`, `cx_syntax.md`, and `docs/frontend/ROADMAP.md`. The syntax reference got the largest update at +158 lines, catching up with everything that shipped since it was last touched.
+
+The submain roadmap (v4.5) marked two quality gates done: struct field type checking via DotAccess and method call return type resolution through method_registry. There is a version divergence between main (v4.6) and submain (v4.5) that will need reconciliation when the branch merges.
+
+## The submain gap
+
+All of this is branch-local. submain is now 13 commits ahead of main with no merge in the last 24 hours. The multi-file import pipeline is a hard blocker for 0.1, and it is functionally complete on the branch. The matrix went from 72 to 78 tests. Bug fixes, dead code removal, and doc sync are all sitting there waiting.
+
+## What's next
+
+The merge to main is overdue. 13 commits of working, tested code on a branch is a lot of accumulated risk. Beyond that, test runner and assert infrastructure (`#[test]`, `assert(cond)`, `assert_eq(a, b)`, `cx test`) remains the next major hard blocker. The error model (`Result<T>`) is also blocking 0.1 and hasn't seen movement. Backend IR work (loops and structs in the lowering pipeline) has been deferred for three consecutive days while frontend blockers close out.
