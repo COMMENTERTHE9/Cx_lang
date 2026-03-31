@@ -1,0 +1,48 @@
+---
+title: "Cx Dev Log — 2026-03-30"
+date: 2026-03-30
+description: "UTF-8 encoding was locked as the string model for Cx, and the semicolon rule was refined to make declaration semicolons optional while keeping them required for expression statements."
+---
+
+Two spec-level decisions landed on `submain` today: the UTF-8 string encoding model is now locked, and the semicolon rule got a concrete refinement. Neither commit ships a new feature. Both close or narrow hard blockers by locking design decisions and documenting their boundaries. Matrix holds at 78/78.
+
+## UTF-8, locked everywhere
+
+The string encoding question is settled. Cx is strict UTF-8, full stop:
+
+- Source files must be UTF-8.
+- `str` values are valid UTF-8 at runtime. Invalid bytes produce a runtime error.
+- `char` is a Unicode scalar value (any valid code point except surrogates).
+- Binary data goes in byte buffers, not `str`.
+
+This was documented in a new Section 25 of `docs/cx_syntax.md` and checked off as a hard blocker in the roadmap. The UTF-8 "Must Ship" entry is marked done.
+
+No runtime or compiler code changed. This is a spec decision. But it matters because it unblocks stdlib and filesystem design work, both of which depend on knowing the string encoding model. Without this locked, you can't define file I/O semantics or string manipulation functions.
+
+The choice itself is opinionated and deliberate: no Latin-1 fallback, no WTF-8, no byte strings masquerading as `str`. It follows the Rust model, which is the right fit for a systems language that wants predictable string behavior. The design space is now closed.
+
+## Semicolon rule refinement
+
+The semicolon situation got narrower but is not fully resolved. A one-line parser change in `src/frontend/parser.rs:377` makes declaration semicolons optional via `.then_ignore(semi.clone().or_not())`. Expression statements still require them.
+
+The reason is straightforward: without newline awareness in the parser, `x + 1` as a bare expression statement is ambiguous. The parser cannot tell whether it is a complete statement or the beginning of a longer expression. Requiring semicolons on expression statements avoids that ambiguity without a parser rewrite.
+
+The roadmap's Known Gaps entry was updated from a vague note about inconsistent behavior to a precise description of what works and what does not. Full semicolon-optional syntax is explicitly deferred to post-0.1, because it requires a newline-aware parser redesign.
+
+This is an honest handling of a design/implementation gap. The commit does not pretend the problem is solved. It documents exactly where the ceiling is and why.
+
+## Spec-tightening phase
+
+Both of today's commits are heavy on documentation relative to code. The UTF-8 commit is pure docs. The semicolon commit is one line of parser code plus documentation updates. This pattern suggests the project is in a spec-tightening phase: locking decisions, documenting limitations, and closing design questions rather than shipping new features.
+
+That is a reasonable place to be. The frontend matrix is stable at 78/78. The backend has scalar layout locked from earlier ABI work. The remaining hard blockers (test runner, error model) are implementation work that benefits from having the spec decisions settled first.
+
+## The submain gap
+
+Both commits landed on `submain`, which is now 4 commits ahead of `main`. The other two are wrapping arithmetic and while loop lowering from earlier days. None of this has merged to main yet. The roadmap versions have diverged (v4.7 on main vs v4.6 on submain), which means the merge will hit a conflict in `docs/frontend/ROADMAP.md`.
+
+This is the fourth consecutive day where a submain-to-main merge was predicted and did not happen. It is not blocking anything right now, but the longer the gap sits, the more the roadmap conflict grows.
+
+## What is next
+
+The merge is the obvious next step. Beyond that, the test runner and `Result<T>` error model are the longest-standing hard blockers with no movement, now going on a week of being predicted and deferred. On the backend side, if/else lowering and struct layout are natural next targets given what has already landed. Whether the project stays in spec-tightening mode or shifts back to implementation will be visible in the next few days.
