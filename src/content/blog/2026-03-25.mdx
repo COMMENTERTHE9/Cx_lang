@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-03-25"
+date: 2026-03-25
+description: "The IR backend became the official interface between frontend and backend, and a full module resolver landed on submain with dependency graphs, topo-sort, and circular import detection."
+---
+
+Two big threads converged today. The IR backend refactor merged to main, cutting over the Backend trait from raw AST to IR. And on submain, a real module resolver dropped as a new 301-line `resolver.rs` that builds dependency graphs, detects circular imports, and topologically sorts files for analysis.
+
+## IR is now the backend interface
+
+PR #19 merged four commits from late March 24 into main. The headline change is Phase 0.5: the Backend trait signature moved from `&Program` (AST) to `&IrModule` (IR). Cranelift and LLVM backend stubs were updated accordingly. This is a one-way door. All backend work going forward assumes IR input. There is no path back to the AST-based backend.
+
+The other three commits in that PR are debugging tools for the IR pipeline:
+
+- Auto-dump of the full IR module on validation failure, so when an assertion fires you immediately see what went wrong.
+- A `--backend=validate` mode that runs IR lowering and validation without invoking any codegen backend. Useful for testing the IR pipeline in isolation.
+- A `--debug-trace` flag that prints each IR instruction as it's emitted during lowering.
+
+These aren't flashy, but they make working on the IR pipeline much less painful. When something breaks in lowering, you get the full IR dump and a trace of what was emitted. That matters as the lowering targets get more complex (loops and structs are next).
+
+## Module resolver on submain
+
+This is the most substantial new code of the day. Three commits on submain added a full dependency resolver:
+
+**`resolver.rs` (301 lines)** introduces `ModuleId` for stable file identification, `ImportEdge` for graph edges, `ResolvedFile` for per-file data, and `ResolvedProgram` as the topo-sorted output. It handles relative `./` path resolution, circular import detection with chain reporting, a recursion depth limit of 100, and entry path existence checks. Registry imports (`std/` without a local file) produce a clear "not supported in v0.1" error rather than silently failing.
+
+The resolver was then wired into `main.rs` between parse and semantic analysis. Single-file programs resolve trivially with no behavior change. Multi-file programs now hit the resolver, and missing imported files produce clean errors.
+
+A third commit added the `ExportTable` struct to `semantic_types.rs` with maps for functions, structs, consts, and enums. A `module_aliases` map was added to the semantic analyzer. This is the foundation for cross-file symbol resolution: when a resolved module is analyzed, its public symbols populate the export table, and importing files look up `alias.symbol`.
+
+One intentional consequence: tests t65 and t66 flipped to `expected_fail` on submain. On main, those tests pass because import blocks are parsed and validated but never resolved. On submain, the resolver correctly errors because the imported files don't exist. This is the right behavior; the tests were always going to fail once resolution was real.
+
+## Design choices worth noting
+
+The resolver builds a real dependency graph rather than just loading files. It produces stable module IDs, import edges, and topological ordering. That's more infrastructure than strictly needed for "load another .cx file," but it's the right foundation for dead symbol elimination and circular import detection, both of which are on the roadmap.
+
+The `../` path traversal issue is documented as a known v0.1 accepted risk. The resolver allows paths that escape the project directory. This is tracked, not ignored, but also not blocked on for the initial implementation.
+
+## What's still in progress
+
+All of today's work is committed. The resolver and ExportTable changes are branch-local on submain and need a PR to land on main.
+
+The ExportTable struct exists but isn't populated during analysis yet. The next step is to analyze each file in topo order from the resolved program, populate its export table with public symbols, and make those available to importing files through the alias map.
+
+Tests t65 and t66 import files that don't exist. Creating real multi-file test programs (`player.cx`, `std/math` stubs) would exercise the full resolver-to-execution pipeline across files.
+
+## What's next
+
+The immediate priority is merging submain to main to bring the resolver, ExportTable, and wiring onto the main branch. After that, wiring ExportTable into semantic analysis is the critical path for multi-file programs to actually work end-to-end. On the IR side, loop and struct lowering are the next targets now that the pipeline has proper debugging tools and the backend takes `&IrModule`.
+
+The test matrix holds at 72/72 green. No regressions from any of today's changes.
