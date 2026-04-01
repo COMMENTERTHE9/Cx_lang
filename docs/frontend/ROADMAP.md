@@ -136,10 +136,10 @@ These are not features. These are conditions. A long gate list that never closes
 - [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
-- [ ] UTF-8 decision locked — blocks stdlib and filesystem
+- [ ] UTF-8 decision locked — blocks stdlib and filesystem. *(Landed on `submain` 2026-03-29 — strict UTF-8 everywhere, pending merge to main.)*
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
-- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
-- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
+- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment. *(Landed on `submain` 2026-03-28 — wrapping arithmetic enforcement, pending merge to main.)*
+- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions. *(Landed on `submain` 2026-03-29 — optional everywhere except expression statements, pending merge to main.)*
 - [ ] Parser, semantic layer, and interpreter agree on all supported constructs
 - [ ] No known soundness holes in memory boundary model
 - [ ] All examples in `examples/` pass
@@ -261,8 +261,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
-- **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
-- **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
+- **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented. *(Enforced on `submain` 2026-03-28 — pending merge to main.)*
+- **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs. *(Addressed on `submain` 2026-03-29 — optional everywhere except expression statements, pending merge to main.)*
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
 ---
