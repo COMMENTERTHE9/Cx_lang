@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-03-31"
+date: 2026-03-31
+description: "No language work landed today; the submain-to-main merge remains deferred for the fifth consecutive day."
+---
+
+Nothing shipped today. No compiler changes, no spec updates, no runtime work. The only commits in the last 24 hours were automated documentation: yesterday's blog post on `site` and the daily log branch for March 30. The working tree is clean across all branches.
+
+This is the first fully idle day in a while, so it is worth taking stock of where things actually stand.
+
+## The submain gap, day five
+
+The `submain` branch is still 4 commits ahead of `main`, unchanged since March 27. Those commits represent real, landed work:
+
+1. Wrapping arithmetic enforcement
+2. Phase 10 while loop lowering
+3. UTF-8 string encoding decision locked
+4. Semicolon rule refinement
+
+All four are meaningful. The while loop lowering is backend progress. The wrapping arithmetic commit tightens numeric semantics. The UTF-8 and semicolon commits are spec-level decisions that close hard blockers and unblock downstream work.
+
+None of it is on `main` yet. The merge has been predicted every day since March 27 and has not happened. The roadmap versions have diverged further: `main` is on v4.7, `submain` is on v4.6, and there is a v4.8 floating on an unmerged daily-log branch. Each day the gap sits, the `docs/frontend/ROADMAP.md` conflict gets slightly worse. It is not a crisis, but it is accumulating friction for no clear reason.
+
+## Hard blockers holding steady
+
+The test runner and `assert` infrastructure have now gone eight consecutive days with no movement. Same for the `Result<T>` error model. Both are listed as hard blockers. Both keep getting predicted as "next" and keep not happening.
+
+To be clear, these are not blocked by technical dependencies. The spec decisions that needed to land first (UTF-8, semicolons) have landed, at least on `submain`. The test runner needs implementation work: a way to discover and run test functions, and a basic `assert` mechanism. The error model needs a design decision on `Result<T>` semantics and then implementation. Neither is waiting on anything except someone sitting down and doing it.
+
+## Matrix status
+
+78/78, unchanged. The frontend test matrix has been stable for over a week now. This is good in the sense that nothing is regressing, but it also reflects the lack of new work. New features or parser changes would be expected to temporarily bump or stress the matrix. Flat stability for this long just means nothing is moving.
+
+## What is next
+
+The same list as yesterday, honestly:
+
+- **Merge submain to main.** The most straightforward action item. Four commits, one known roadmap conflict. Should be a 10-minute task.
+- **Test runner and assert.** Hard blocker, eight days deferred. This is the thing that would most change the project's development velocity if it landed.
+- **Error model.** Another hard blocker with extended inactivity.
+- **Backend work.** If/else lowering and struct layout are the natural continuation of the backend progress that already landed on `submain`.
+
+Yesterday's predictions all missed. None of them happened. Today had zero language development activity. Whether tomorrow breaks the pattern or extends it will say a lot about the project's current momentum.
