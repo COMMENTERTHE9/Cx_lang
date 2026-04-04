@@ -288,7 +288,7 @@ impl Analyzer {
                         .collect::<Vec<_>>();
                     full_params.extend(params.iter().cloned());
 
-                    match self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos) {
+                    match self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false) {
                         Ok(SemanticStmt::FuncDef(mut sem_func)) => {
                             // Remove the alias params from the semantic function's param list
                             // so they don't appear as external call params
@@ -493,7 +493,8 @@ impl Analyzer {
                         }
                     }
                 }
-                self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos)
+                let is_test = macros.contains(&CxMacro::Test);
+                self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test)
             }
 Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 expr: self.analyze_expr(expr)?,
@@ -786,6 +787,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         body: &[Stmt],
         ret_expr: &Option<Expr>,
         pos: usize,
+        is_test: bool,
     ) -> Result<SemanticStmt, SemanticError> {
         let func_id = self.fresh_function();
         self.declare(name, ret_ty.clone(), None, true, pos)?;
@@ -897,6 +899,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             return_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
             body: semantic_body,
             ret_expr: semantic_ret_expr,
+            is_test,
             pos,
         }))
     }
@@ -1309,7 +1312,7 @@ Expr::Unary(op, inner, pos) => {
         }
 
         // Built-in: read(var) and input("prompt", var)
-        if name == "read" || name == "input" || name == "print" || name == "println" || name == "printn" {
+        if name == "read" || name == "input" || name == "print" || name == "println" || name == "printn" || name == "assert" || name == "assert_eq" {
             let mut semantic_args = Vec::new();
             for arg in args {
                 match arg {

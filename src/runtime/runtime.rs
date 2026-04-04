@@ -1146,7 +1146,7 @@ SemanticStmt::Decl { name, ty, .. } => {
         }
     }
 
-    fn call_semantic_func(&mut self, callee: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
+    pub fn call_semantic_func(&mut self, callee: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
         // Built-in: is_known
         if callee == "is_known" {
             if let Some(SemanticCallArg::Expr(e)) = args.first() {
@@ -1174,6 +1174,54 @@ SemanticStmt::Decl { name, ty, .. } => {
                     let v = self.eval_semantic_expr(e)?;
                     self.print_value_inline(&v);
                 }
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: assert(cond) — runtime error if condition is false
+        if callee == "assert" {
+            if let Some(SemanticCallArg::Expr(e)) = args.first() {
+                let val = self.eval_semantic_expr(e)?;
+                let passed = match val {
+                    Value::Bool(b) => b,
+                    Value::Num(n) => n != 0,
+                    _ => false,
+                };
+                if !passed {
+                    return Err(RuntimeError::AssertionFailed {
+                        msg: "assertion failed".to_string(),
+                        pos,
+                    });
+                }
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: assert_eq(a, b) — runtime error if a != b
+        if callee == "assert_eq" {
+            let mut iter = args.iter();
+            let left = if let Some(SemanticCallArg::Expr(e)) = iter.next() {
+                self.eval_semantic_expr(e)?
+            } else { return Ok(Value::Num(0)); };
+            let right = if let Some(SemanticCallArg::Expr(e)) = iter.next() {
+                self.eval_semantic_expr(e)?
+            } else { return Ok(Value::Num(0)); };
+            let equal = match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => a == b,
+                (Value::Bool(a), Value::Bool(b)) => a == b,
+                (Value::Float(a), Value::Float(b)) => a == b,
+                (Value::Str(ao, al), Value::Str(bo, bl)) => {
+                    self.resolve_str(*ao, *al) == self.resolve_str(*bo, *bl)
+                }
+                _ => false,
+            };
+            if !equal {
+                return Err(RuntimeError::AssertionFailed {
+                    msg: format!("assert_eq failed: {} != {}",
+                        value_to_string(self, left),
+                        value_to_string(self, right)),
+                    pos,
+                });
             }
             return Ok(Value::Num(0));
         }

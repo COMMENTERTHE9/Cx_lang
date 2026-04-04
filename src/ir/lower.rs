@@ -10,7 +10,7 @@ use crate::frontend::semantic_types::{
 };
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
-use crate::ir::types::{BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId};
+use crate::ir::types::{BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId};
 
 macro_rules! unsupported {
     ($name:literal) => {
@@ -132,6 +132,12 @@ struct ActiveBlock {
 }
 
 #[derive(Clone, Debug)]
+struct LoopContext {
+    header_id: BlockId,
+    exit_id: BlockId,
+    ordered_bindings: Vec<BindingId>,
+}
+
 struct FunctionLoweringSpec {
     name: String,
     return_ty: Option<IrType>,
@@ -277,6 +283,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         &mut ctx,
         Some(entry),
         &spec,
+        None,
     )?;
     if let Some(active) = current {
         finalize_active_block(&mut ctx, active, IrTerminator::Return { value: None })?;
@@ -346,6 +353,7 @@ fn lower_semantic_function(
         &mut ctx,
         Some(entry),
         &spec,
+        None,
     )?;
 
     if current.is_none() {
@@ -402,6 +410,7 @@ fn lower_stmt_sequence<'a, I>(
     ctx: &mut LoweringCtx,
     mut current: Option<ActiveBlock>,
     spec: &FunctionLoweringSpec,
+    loop_ctx: Option<&LoopContext>,
 ) -> Result<Option<ActiveBlock>, LoweringError>
 where
     I: IntoIterator<Item = &'a SemanticStmt>,
@@ -413,7 +422,7 @@ where
                 spec.name
             ),
         })?;
-        current = lower_stmt(stmt, ctx, active, spec)?;
+        current = lower_stmt(stmt, ctx, active, spec, loop_ctx)?;
     }
     Ok(current)
 }
@@ -423,6 +432,7 @@ fn lower_stmt(
     ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
     spec: &FunctionLoweringSpec,
+    loop_ctx: Option<&LoopContext>,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     match stmt {
         SemanticStmt::Noop => Ok(Some(current)),
@@ -608,7 +618,7 @@ fn lower_if_chain(
         ctx.seal_block(decision_block)?;
 
         let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec)? {
+        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, None)? {
             fallthroughs.push(active);
         }
         fallthroughs.extend(lower_if_chain(
@@ -636,11 +646,11 @@ fn lower_if_chain(
         ctx.seal_block(decision_block)?;
 
         let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec)? {
+        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, None)? {
             fallthroughs.push(active);
         }
         let else_result = if let Some(else_body) = else_body {
-            lower_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec)?
+            lower_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec, None)?
         } else {
             Some(else_active)
         };
@@ -812,6 +822,7 @@ fn lower_while(
         ctx,
         Some(body_block),
         spec,
+        None,
     )?;
 
     if let Some(mut body_active) = body_result {

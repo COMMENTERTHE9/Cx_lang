@@ -128,7 +128,7 @@ pub struct WhileInChain {
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CxMacro {
     Test,
     Inline,

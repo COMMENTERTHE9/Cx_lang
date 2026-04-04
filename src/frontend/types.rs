@@ -94,6 +94,10 @@ pub enum RuntimeError {
         name: String,
     },
     EarlyReturn(Value),
+    AssertionFailed {
+        msg: String,
+        pos: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

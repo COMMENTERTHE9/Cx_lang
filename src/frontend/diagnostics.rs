@@ -177,6 +177,10 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             "return statement used outside of a function body".to_string(),
             0,
         ),
+        RuntimeError::AssertionFailed { pos, msg } => (
+            format!("{}", msg),
+            *pos,
+        ),
     }
 }
 

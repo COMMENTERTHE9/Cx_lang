@@ -232,6 +232,7 @@ pub struct SemanticFunction {
     pub return_ty: Option<SemanticType>,
     pub body: Vec<SemanticStmt>,
     pub ret_expr: Option<SemanticExpr>,
+    pub is_test: bool,
     pub pos: usize,
 }
 
