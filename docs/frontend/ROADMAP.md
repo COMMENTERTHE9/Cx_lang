@@ -133,13 +133,13 @@ These are not features. These are conditions. A long gate list that never closes
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
-- [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
+- [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks *(implemented on `submain` 2026-04-04, `762b188` — pending merge to main)*
 - [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
-- [ ] UTF-8 decision locked — blocks stdlib and filesystem
+- [ ] UTF-8 decision locked — blocks stdlib and filesystem *(locked on `submain` 2026-03-29, `09ef2a3` — pending merge to main)*
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
-- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
-- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
+- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment *(enforced on `submain` 2026-03-28, `d93582b` — pending merge to main)*
+- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions *(enforced on `submain` 2026-03-29, `e214d15` — pending merge to main)*
 - [ ] Parser, semantic layer, and interpreter agree on all supported constructs
 - [ ] No known soundness holes in memory boundary model
 - [ ] All examples in `examples/` pass
@@ -279,12 +279,12 @@ These are known issues with expected_fail markers. They do not block CI but need
 - Circular import detection — compile error
 - Project layout defined — where files live, how modules resolve
 
-**Testing Infrastructure**
-- assert(cond) — runtime error if condition is false
-- assert_eq(a, b) — equality check with diagnostic output
-- Test blocks — functions marked as test-only, skipped in release builds
-- Test runner — cx test runs all test blocks
-- Pass/fail output with error context
+**Testing Infrastructure** *(core implemented on `submain` 2026-04-04, `762b188` — pending merge)*
+- assert(cond) — runtime error if condition is false *(done on submain)*
+- assert_eq(a, b) — equality check with diagnostic output *(done on submain)*
+- Test blocks — functions marked as test-only, skipped in release builds *(done on submain — `#[test]` macro wired through semantic layer)*
+- Test runner — `--test` CLI flag runs all test blocks *(done on submain)*
+- Pass/fail output with error context *(done on submain — PASS/FAIL per test, summary, exit code)*
 
 **Minimal Error Model**
 - Result<T> direction locked
