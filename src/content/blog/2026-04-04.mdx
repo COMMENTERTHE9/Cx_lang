@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-04-04"
+date: 2026-04-04
+description: "The test runner and Result<T> error model both landed in a single session, adding twelve new matrix tests and closing two long-predicted hard blockers."
+---
+
+Two hard blockers fell today. The basic test runner is committed on `submain`, and the full `Result<T>` error model is implemented and passing all tests in the working tree. The matrix jumped from 78/78 to 90/90 -- twelve new tests in one day. Both of these had been predicted as "next steps" in eleven consecutive daily logs. Today they actually shipped.
+
+## Test runner
+
+The test runner landed as commit `762b188` on `submain`. It adds `assert(cond)` and `assert_eq(a, b)` as built-in functions, plus a `--test` CLI mode. Changes touch eight existing files and introduce four new matrix tests.
+
+The runtime behavior is straightforward: `assert` halts with "assertion failed" when the condition is false, and `assert_eq` halts with an expected/got diagnostic on mismatch. The semantic layer handles recognition and type-checking of both calls. `--test` flag wiring lives in `main.rs`.
+
+The four new tests cover the basics:
+- `t77` and `t78` verify that `assert(true)` and `assert_eq` on strings work correctly
+- `t79` and `t80` confirm that `assert(false)` and mismatched `assert_eq` fail as expected
+
+This closes the "Basic test runner" hard blocker cleanly.
+
+## Result\<T\> error model
+
+This is the bigger piece of work -- 162 lines of changes across 9 source files, plus 16 new untracked test files (8 test cases with their expected output/fail sidecars). It is not committed yet, but the implementation is complete and all tests pass locally.
+
+The implementation follows the frozen spec exactly: `Result<T>` type syntax with angle-bracket delimiters, `Ok(val)` and `Err("msg")` as expression-level constructors, and `?` as a postfix propagation operator.
+
+The work spans every layer:
+
+**Lexer** -- `Result`, `Ok`, `Err` are now keywords.
+
+**Parser** -- `Result<T>` parses with `<`/`>` delimiters. `Ok(expr)` and `Err(expr)` parse as primary expressions. `?` parses as a postfix operator after index expressions.
+
+**Semantic layer** -- This is where most of the interesting decisions live. `Ok(expr)` wraps the inner type in `Result<T>`. `Err(expr)` enforces a string argument and produces `Result<Unknown>`, since the semantic layer can't know what `T` should be at an `Err` site without bidirectional type inference. The `?` operator validates that the inner expression is `Result<T>`, checks that the enclosing function returns `Result<U>`, and unwraps to `T`. The existing `Unknown`/compatibility rules handle the `Result<Unknown>` case naturally.
+
+**Runtime** -- `Value::ResultOk` and `Value::ResultErr` variants added. The `?` operator evaluates its inner expression: `Ok` unwraps, `Err` triggers `EarlyReturn(ResultErr(...))`. This reuses the existing `RuntimeError::EarlyReturn` path that was already in place for function returns, which keeps the implementation clean.
+
+**IR** -- Stub entries only. `ResultOk`, `ResultErr`, `Try`, and the `Result` type are all `unsupported!` in the lowerer. This is interpreter-only for now, consistent with how structs, methods, and `when` expressions are handled.
+
+The eight new tests cover the important cases:
+- `t81`-`t84` verify `Ok` returns, `Err` returns, `?` unwrapping, and three-function `?` propagation chains
+- `t85`-`t88` verify rejection of `?` outside Result-returning functions, `?` on non-Result values, Result value comparison with `assert_eq`, and that `Err(42)` is rejected (must be a string)
+
+The design decision to keep `Err` string-only at 0.1 is worth noting. No typed error payloads yet. This keeps the type system simpler and avoids a whole category of inference problems that would otherwise need solving before the milestone.
+
+## Branch state
+
+`submain` is now 5 commits ahead of `main`, up from 4 yesterday. The accumulated commits include wrapping arithmetic, while loop lowering, the UTF-8 lock, the semicolon rule, and now the test runner. No merges to main happened in the last 24 hours. The gap has been growing for over a week.
+
+## What's next
+
+The most immediate action is committing the `Result<T>` work -- it is complete and passing. After that, the submain-to-main merge is overdue. With the test runner and error model closing, the remaining hard blockers shift toward `:=` type inference, a diagnostics verification pass, and example programs. The roadmap notes that "a language release without examples is barely a release," and with most of the big feature blockers now resolved, examples become a realistic next target.
