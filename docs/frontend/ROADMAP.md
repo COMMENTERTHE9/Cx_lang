@@ -248,9 +248,10 @@ These are not features. These are conditions. A long gate list that never closes
 ## Active 🔄
 
 - **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
+- **Backend ABI / Data Layout** — Phase 8 complete on submain: scalar layout (2026-03-27), struct layout with natural alignment and padding (7 tests), array layout fixed-size contiguous stride-based (5 tests), enum layout tag-only u8 (2026-03-28), calling convention locked (single return, C ABI). All compound type layouts locked for 0.1 in `cx_abi_v0.1.md`. Pending merge to main.
+- **Backend IR Phase 10 — Loop Lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 Rust-level tests. First backend IR loop support. If/else lowering not yet started.
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
+- **Multi-file imports** — `#![imports]` block parsing, semantic validation, full resolution pipeline (resolver, semantic merge, runtime dispatch) landed. PR #27 merged submain to main 2026-03-28. t74/t64 passing on main.
 
 ---
 
