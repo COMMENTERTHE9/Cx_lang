@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-04-05"
+date: 2026-04-05
+description: "Housekeeping day merging daily-log PRs to main while the submain branch hits ten consecutive days unmerged with five commits closing four hard blockers."
+---
+
+No new language work landed today. The day was entirely branch housekeeping, but the state of the project is worth documenting because the gap between what exists and what is integrated keeps growing.
+
+## What actually landed
+
+Two daily-log pull requests merged to main:
+
+- **PR #28** (`87d68f6`) brought the 2026-03-28 daily log and roadmap v4.8 bump into main. This was the PR that carried annotations for Phase 8 ABI completion, wrapping arithmetic enforcement, and Phase 10 while-loop lowering.
+- **PR #30** (`51efe50`) brought the 2026-03-30 daily log into main.
+
+A blog post for 2026-04-04 landed on the `site` branch (`8aabd15`), covering the test runner work and Result\<T\> design from that day. The daily-log-2026-03-29 branch got synced with main via an integration merge (`dd7d687`), which likely sets it up as the next PR to merge.
+
+None of this is compiler or runtime work. Matrix holds at 78/78 on main, unchanged.
+
+## The submain gap at ten days
+
+This is the real story. The `submain` branch now carries five commits spanning eight days of work:
+
+1. `d93582b` -- wrapping arithmetic enforcement
+2. `0fa06a6` -- Phase 10 while loop lowering
+3. `09ef2a3` -- UTF-8 decision locked
+4. `e214d15` -- semicolon rule refinement
+5. `762b188` -- test runner
+
+These five commits close four hard blockers: test runner, UTF-8, integer overflow, and semicolons. All of them pass tests on submain (82/82, four more than main's 78/78). None of them are on main.
+
+Today marks the tenth consecutive daily log predicting "merge submain to main" as the number one next action. It has not happened any of those ten days. The merge has no visible conflicts, the tests pass, and the work is real. The bottleneck is not technical.
+
+## Remaining branch backlog
+
+After today's two PR merges, five daily-log branches still sit unmerged: 2026-03-29, 2026-04-01 through 2026-04-04. The 2026-03-29 branch was synced today, so it is probably next in line. Each of these branches may carry slightly different roadmap versions, which means the conflict surface in `docs/frontend/ROADMAP.md` grows with each one that waits.
+
+The roadmap on main is at v4.8 and correctly reflects only what has actually merged. The submain work is intentionally left unchecked there, which is honest but also means the roadmap understates the project's actual progress.
+
+## What is next
+
+The same list, in the same order, for the tenth time:
+
+1. **Merge submain to main.** Five commits, four hard blockers resolved, clean test run. This is the single highest-value action and has been for over a week.
+2. **Merge the remaining daily-log branches.** Reducing the branch backlog prevents roadmap conflicts from compounding.
+3. **Error model (Result\<T\>).** The next hard blocker after the test runner. Yesterday's blog post described a complete but uncommitted implementation. If that work still exists, recovering it is the priority after the submain merge lands.
+4. **`:=` type inference.** Quality gate, still unstarted.
+
+The project is in an odd place. Real, tested, blocker-closing work exists on submain. The daily logs keep documenting it. The blog posts keep summarizing it. But it has not reached main. Until that merge happens, everything downstream of it -- Result\<T\>, type inference, backend continuation -- stays blocked or speculative.
