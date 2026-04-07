@@ -1,0 +1,40 @@
+---
+title: "Cx Dev Log — 2026-04-06"
+date: 2026-04-06
+description: "No language work landed today; the submain branch enters its eleventh day carrying five unmerged commits that close four hard blockers."
+---
+
+Another day with no language work commits anywhere in the repo. No compiler changes, no runtime changes, no spec edits, no test additions. The matrix holds at 78/78 on main. Working tree is clean. The only commits in the last 24 hours were automated: yesterday's blog post on `site` and the daily log on its branch.
+
+That makes this a good time to look at where the project actually stands, because the gap between main and submain keeps growing in significance.
+
+## The submain situation
+
+The `submain` branch is now on day eleven of carrying five commits that have not been merged to main:
+
+1. Wrapping arithmetic enforcement
+2. Phase 10 while loop lowering (header/body/exit CFG, loop-carried SSA)
+3. UTF-8 decision locked
+4. Semicolon rule (optional everywhere)
+5. Basic test runner (assert, assert_eq, --test mode)
+
+These five commits close four hard blockers: test runner, UTF-8, integer overflow, and semicolons. They all pass tests on submain (82/82 by prior evidence). None of this work exists on main.
+
+The practical effect is that main understates the project's actual progress. The roadmap at `docs/frontend/ROADMAP.md` (v4.8, dated March 28) accurately reflects main's state, but that means it still shows four hard blockers as open when they have, in fact, been resolved on submain. The roadmap has not been touched in nine days.
+
+This is the single highest-leverage merge in the project right now. Five commits, four blockers closed, no visible conflicts, tests passing. Every day it stays unmerged is another day where the project's real state diverges from what main shows.
+
+## Branch backlog
+
+Six daily-log branches also remain unmerged to main: 2026-03-29 and 2026-04-01 through 2026-04-05. Each one touches the roadmap slightly differently. The longer this backlog sits, the more likely roadmap merge conflicts become when they eventually land. The 2026-03-29 branch was synced with main on April 5 but its PR still has not been created or merged.
+
+## What is next
+
+The priorities have not changed, and at this point the repetition says something on its own:
+
+- **Merge submain to main.** Eleventh consecutive daily log predicting this. It remains the bottleneck for everything downstream.
+- **Merge the daily-log branch backlog.** Six branches waiting. Each delay adds merge conflict risk.
+- **Error model (Result\<T\>).** Next hard blocker after the test runner. Previous daily logs referenced a complete but uncommitted implementation that may need to be recovered or rebuilt.
+- **`:=` type inference.** Quality gate, still unstarted. Blocked behind the higher-priority items above.
+
+None of yesterday's predictions materialized today. The project is idle from a language development perspective. The submain merge remains the clear next step whenever active development resumes.
