@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-03-28"
+date: 2026-03-28
+description: "The submain merge finally landed via PR #27, all compound type layouts locked for 0.1, and the backend gained its first loop lowering."
+---
+
+Seven commits of real work today, plus the long-pending submain merge that brought everything onto main. The backend went from scalar-only layout to full data type coverage and started producing loop IR. This was the heaviest single day of backend progress so far.
+
+## The submain merge
+
+PR #27 finally landed. This had been predicted and deferred for two consecutive days, but today it actually happened. The merge brought all the accumulated submain work onto main: the multi-file import pipeline (resolver, semantic merge, runtime dispatch), Phase 8 Round 1 scalar layout, five correctness bug fixes from the audit, dead code cleanup, output verification in the matrix runner, and 6 new matrix tests. Main is now at the full 78-test matrix.
+
+This is significant because several of those items are hard blockers for 0.1. Multi-file imports, in particular, had been done on the branch for days but not integrated. That gap is closed.
+
+## Compound type layouts: struct, array, enum
+
+Three Phase 8 commits locked the remaining data type layouts for 0.1. With scalar layout already done yesterday, this closes every open layout question in the ABI doc.
+
+**Struct layout** uses declaration-order fields with natural alignment and padding. Seven confidence tests in `src/ir/types.rs` verify the layout. This is the first compound type to get layout locked, and the ABI doc now has struct layout rules.
+
+**Array layout** is fixed-size, contiguous, stride-based. Offset calculation is element stride times index. Five confidence tests added.
+
+**Enum layout** is deliberately minimal for 0.1: tag-only u8 representation, with declaration order determining tag values. No payload variants until post-0.1. This is a conscious scope decision. Payload enums add real complexity (discriminated unions, layout interactions with generics), and the 0.1 target doesn't need them.
+
+## Calling convention locked
+
+The fourth Phase 8 commit locked the calling convention: single return value, C ABI alignment, copy parameter semantics deferred to post-0.1. The ABI doc gained 30 lines of calling convention specification. This was the last major open design question from Phase 8 Round 1.
+
+With this commit, the ABI doc covers every data type and calling convention question that matters for 0.1. The backend can now lay out any value and call any function without open design questions blocking progress.
+
+## Wrapping arithmetic
+
+The runtime had an inconsistency where some arithmetic operations used `saturating_add`/`saturating_sub` instead of wrapping. This fix changed them to `wrapping_add`/`wrapping_sub` and added guards for `i128::MIN / -1` and `i128::MIN % -1`, which were latent panics.
+
+All arithmetic now wraps consistently at i128 range, with type-width truncation happening at assignment via `apply_numeric_cast`. This is a partial fix toward the overflow behavior hard blocker. Full per-type-width wrapping at arithmetic time (where a t8 would wrap at 255 during addition, not just when assigned) is still open. The current approach is correct for most programs but could produce surprising intermediate values in narrow-type expressions.
+
+## Phase 10: while loop lowering
+
+The biggest architectural step today: the backend can now represent loops. A 189-line addition to `src/ir/lower.rs` implements the header/body/exit CFG pattern for while loops, with loop-carried SSA via block parameters and backedge generation. Three tests validate the lowering.
+
+Before this, the backend could only handle straight-line code and conditionals. Loops are the missing piece for any non-trivial program. The jump from Phase 8 (data layout) to Phase 10 (control flow) in a single day is notable. With data layout locked and calling convention decided, the backend work shifts to control flow and codegen.
+
+## What's next
+
+Two new submain commits (wrapping arithmetic and while loop lowering) are ahead of main again, so another merge is likely soon. The natural next backend target is if/else lowering in the IR, which would make the backend feature-complete for basic 0.1 programs.
+
+The test runner and assert infrastructure is now four days predicted without movement. Same for the error model (Result\<T\>). Both remain hard blockers for 0.1. The backend has been getting the attention, but these items are still in the critical path.
+
+Matrix holds at 78/78.
