@@ -1,0 +1,9 @@
+fnc: Result<t32> maybe(x: t32) {
+    return Ok(x);
+}
+
+fnc: t32 not_result() {
+    let v;
+    v = maybe(5)?
+    return v;
+}

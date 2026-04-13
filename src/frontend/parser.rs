@@ -25,6 +25,9 @@ Expr::Bin(_, _, pos, _) => *pos,
         Expr::Index(_, _, pos) => *pos,
         Expr::MethodCall(_, _, _, pos) => *pos,
         Expr::When(_, _, pos) => *pos,
+        Expr::ResultOk(_, pos) => *pos,
+        Expr::ResultErr(_, pos) => *pos,
+        Expr::Try(_, pos) => *pos,
     }
 }
 
@@ -55,7 +58,13 @@ where
         .then_ignore(just(Token::PunctBracketClose))
         .map(|(size, elem_ty)| Type::Array(size, Box::new(elem_ty)));
 
-    array.or(scalar).or(named_type)
+    let result_type = just(Token::KeywordResult)
+        .ignore_then(just(Token::OpLessThan))
+        .ignore_then(scalar.clone().or(named_type.clone()))
+        .then_ignore(just(Token::OpGreaterThan))
+        .map(|inner| Type::Result(Box::new(inner)));
+
+    result_type.or(array).or(scalar).or(named_type)
 }
 
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
@@ -257,6 +266,20 @@ where
                 })
         };
 
+        let result_ok = just(Token::KeywordOk)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .map(|(pos, e)| Expr::ResultOk(Box::new(e), pos));
+
+        let result_err = just(Token::KeywordErr)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .map(|(pos, e)| Expr::ResultErr(Box::new(e), pos));
+
         let when_expr = just(Token::KeywordWhen)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(expr.clone())
@@ -267,6 +290,8 @@ where
             .boxed();
 
         let primary = literal
+            .or(result_ok)
+            .or(result_err)
             .or(enum_variant)
             .or(handle_new)
             .or(handle_drop)
@@ -291,6 +316,15 @@ where
             )
             .map(|(base, idx)| match idx {
                 Some((idx_expr, pos)) => Expr::Index(Box::new(base), Box::new(idx_expr), pos),
+                None => base,
+            })
+            .then(
+                just(Token::QuestionMark)
+                    .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+                    .or_not(),
+            )
+            .map(|(base, try_pos)| match try_pos {
+                Some(pos) => Expr::Try(Box::new(base), pos),
                 None => base,
             });
 

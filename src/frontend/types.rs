@@ -15,6 +15,8 @@ pub enum Value {
     Container(HashMap<String, Value>),
     Array(Vec<Value>),
     Struct(String, HashMap<String, Value>),
+    ResultOk(Box<Value>),
+    ResultErr(Box<Value>),
 }
 
 impl PartialEq for Value {
@@ -32,6 +34,8 @@ impl PartialEq for Value {
             (Value::Handle(a), Value::Handle(b)) => a == b,
             (Value::Container(a), Value::Container(b)) => a == b,
             (Value::Struct(n1, a), Value::Struct(n2, b)) => n1 == n2 && a == b,
+            (Value::ResultOk(a), Value::ResultOk(b)) => a == b,
+            (Value::ResultErr(a), Value::ResultErr(b)) => a == b,
             _ => false,
         }
     }

@@ -1,0 +1,7 @@
+fnc: Result<t32> compute(x: t32) {
+    return Ok(x + 10);
+}
+
+let result;
+result = compute(5)
+print(result)

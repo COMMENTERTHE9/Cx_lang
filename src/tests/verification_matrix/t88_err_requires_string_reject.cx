@@ -1,0 +1,3 @@
+fnc: Result<t32> bad() {
+    return Err(42);
+}

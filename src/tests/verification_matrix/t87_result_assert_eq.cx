@@ -1,0 +1,8 @@
+fnc: Result<t32> add_safe(a: t32, b: t32) {
+    return Ok(a + b);
+}
+
+let result;
+result = add_safe(2, 3)
+assert_eq(result, Ok(5))
+print("ok")

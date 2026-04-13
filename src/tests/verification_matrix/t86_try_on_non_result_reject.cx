@@ -1,0 +1,6 @@
+fnc: Result<t32> bad() {
+    x: t32 = 5
+    let v;
+    v = x?
+    return Ok(v);
+}

@@ -708,6 +708,22 @@ impl RunTime {
                     Err(RuntimeError::StaleHandle { pos: *pos })
                 }
             }
+            SemanticExprKind::ResultOk { expr } => {
+                let val = self.eval_semantic_expr(expr)?;
+                Ok(Value::ResultOk(Box::new(val)))
+            }
+            SemanticExprKind::ResultErr { expr } => {
+                let val = self.eval_semantic_expr(expr)?;
+                Ok(Value::ResultErr(Box::new(val)))
+            }
+            SemanticExprKind::Try { expr, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                match val {
+                    Value::ResultOk(v) => Ok(*v),
+                    Value::ResultErr(e) => Err(RuntimeError::EarlyReturn(Value::ResultErr(e))),
+                    _ => Ok(val),
+                }
+            }
             SemanticExprKind::Cast { expr, to, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
                 Ok(apply_numeric_cast(val, to))
@@ -1213,6 +1229,8 @@ SemanticStmt::Decl { name, ty, .. } => {
                 (Value::Str(ao, al), Value::Str(bo, bl)) => {
                     self.resolve_str(*ao, *al) == self.resolve_str(*bo, *bl)
                 }
+                (Value::ResultOk(a), Value::ResultOk(b)) => a == b,
+                (Value::ResultErr(a), Value::ResultErr(b)) => a == b,
                 _ => false,
             };
             if !equal {
@@ -1594,6 +1612,8 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
             let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(rt, v.clone()))).collect();
             format!("{} {{ {} }}", name, parts.join(", "))
         }
+        Value::ResultOk(v) => format!("Ok({})", value_to_string(rt, *v)),
+        Value::ResultErr(v) => format!("Err({})", value_to_string(rt, *v)),
     }
 }
 
@@ -1640,6 +1660,8 @@ fn type_of_value(v: &Value) -> Type {
         Value::Container(_) => Type::Container,
         Value::Array(_) => Type::Array(0, Box::new(Type::Unknown)),
         Value::Struct(name, _) => Type::Struct(name.clone()),
+        Value::ResultOk(_) => Type::Result(Box::new(Type::Unknown)),
+        Value::ResultErr(_) => Type::Result(Box::new(Type::Unknown)),
     }
 }
 
@@ -1667,6 +1689,8 @@ fn value_matches_type(v: &Value, t: &Type) -> bool {
         (Value::Array(_), Type::Array(_, _)) => true,
         (Value::Struct(name, _), Type::Struct(t)) if name == t => true,
         (Value::Unknown(_), _) => true,
+        (Value::ResultOk(_), Type::Result(_)) => true,
+        (Value::ResultErr(_), Type::Result(_)) => true,
         _ => false,
     }
 }
@@ -1759,6 +1783,7 @@ impl From<SemanticType> for Type {
             SemanticType::Struct(name) => Type::Struct(name),
             SemanticType::TypeParam(name) => Type::TypeParam(name),
             SemanticType::Array(size, elem_ty) => Type::Array(size, Box::new((*elem_ty).into())),
+            SemanticType::Result(inner) => Type::Result(Box::new((*inner).into())),
             SemanticType::Void => Type::Unknown,
         }
     }

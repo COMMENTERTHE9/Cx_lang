@@ -51,6 +51,7 @@ pub enum Type {
     Array(usize, Box<Type>),
     TypeParam(String),
     Struct(String),
+    Result(Box<Type>),
 }
 
 // AST-level value - owned, no arena lifetime
@@ -82,6 +83,9 @@ Unary(Op, Box<Expr>, usize),
     Index(Box<Expr>, Box<Expr>, usize),
     MethodCall(String, String, Vec<CallArg>, usize),
     When(Box<Expr>, Vec<WhenArm>, usize),
+    ResultOk(Box<Expr>, usize),
+    ResultErr(Box<Expr>, usize),
+    Try(Box<Expr>, usize),
 }
 
 #[derive(Debug, Clone)]
