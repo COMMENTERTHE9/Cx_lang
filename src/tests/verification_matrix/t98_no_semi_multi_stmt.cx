@@ -1,0 +1,6 @@
+fnc: t64 calc(a: t64, b: t64) {
+    sum: t64 = a + b
+    doubled: t64 = sum * 2
+    return doubled
+}
+print(calc(3, 4))

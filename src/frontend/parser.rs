@@ -479,7 +479,7 @@ where
         let ret = just(Token::KeywordReturn)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(expr.clone().or_not())
-            .then_ignore(semi.clone())
+            .then_ignore(semi.clone().or_not())
             .map(|(pos, expr)| Stmt::Return { expr, pos })
             .boxed();
 
@@ -493,15 +493,6 @@ where
         let expr_stmt = expr
             .clone()
             .then_ignore(semi.clone().or_not())
-            .map(|expr| Stmt::ExprStmt {
-                _pos: expr_pos(&expr),
-                expr,
-            })
-            .boxed();
-
-        let expr_stmt_with_semi = expr
-            .clone()
-            .then_ignore(semi.clone())
             .map(|expr| Stmt::ExprStmt {
                 _pos: expr_pos(&expr),
                 expr,
@@ -993,29 +984,63 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             .collect::<Vec<CxMacro>>();
 
         let func_def = recursive(|func_def| {
-            let func_body_stmt = choice((
-                decl.clone(),
-                func_def.clone(),
-                ret.clone(),
-                typed_assign.clone(),
-                compound_assign.clone(),
-                assign.clone(),
-                if_stmt.clone(),
-                while_in_stmt.clone(),
-                when_stmt.clone(),
-                block.clone(),
-                expr_stmt_with_semi.clone(),
+            // Tagged expression statement — tracks whether semicolon was present
+            let body_expr_stmt_tagged = expr
+                .clone()
+                .then(semi.clone().or_not().map(|s| s.is_some()))
+                .map(|(e, had_semi)| {
+                    let stmt = Stmt::ExprStmt {
+                        _pos: expr_pos(&e),
+                        expr: e,
+                    };
+                    (stmt, had_semi)
+                })
+                .boxed();
+
+            // All non-expr statements are always "terminated"
+            let body_stmt_tagged = choice((
+                decl.clone().map(|s| (s, true)),
+                func_def.clone().map(|s| (s, true)),
+                ret.clone().map(|s| (s, true)),
+                typed_assign.clone().map(|s| (s, true)),
+                compound_assign.clone().map(|s| (s, true)),
+                assign.clone().map(|s| (s, true)),
+                if_stmt.clone().map(|s| (s, true)),
+                while_in_stmt.clone().map(|s| (s, true)),
+                when_stmt.clone().map(|s| (s, true)),
+                block.clone().map(|s| (s, true)),
+                body_expr_stmt_tagged,
             ));
 
-            // Keep implicit return support: trailing expression with no semicolon.
+            // Implicit return: trailing expression WITHOUT semicolon becomes ret_expr.
+            // Trailing expression WITH semicolon is a statement — result discarded.
             let func_body = just(Token::PunctBraceOpen)
-                .ignore_then(
-                    func_body_stmt
-                        .repeated()
-                        .collect::<Vec<_>>()
-                        .then(expr.clone().or_not()),
-                )
-                .then_ignore(just(Token::PunctBraceClose));
+                .ignore_then(body_stmt_tagged.repeated().collect::<Vec<(Stmt, bool)>>())
+                .then_ignore(just(Token::PunctBraceClose))
+                .map(|tagged: Vec<(Stmt, bool)>| {
+                    let len = tagged.len();
+                    let mut stmts: Vec<Stmt> = Vec::with_capacity(len);
+                    let mut ret_expr: Option<Expr> = None;
+
+                    let last_is_implicit_return = matches!(
+                        tagged.last(),
+                        Some((Stmt::ExprStmt { .. }, false))
+                    );
+
+                    for (i, (stmt, _had_semi)) in tagged.into_iter().enumerate() {
+                        if i == len - 1 && last_is_implicit_return {
+                            if let Stmt::ExprStmt { expr, .. } = stmt {
+                                ret_expr = Some(expr);
+                            } else {
+                                stmts.push(stmt);
+                            }
+                        } else {
+                            stmts.push(stmt);
+                        }
+                    }
+
+                    (stmts, ret_expr)
+                });
 
             // Syntax: fnc: RetType? <T>? name(params) { body }
             // Generics parser reused in both branches
