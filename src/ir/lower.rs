@@ -3232,6 +3232,33 @@ mod tests {
     }
 
     #[test]
+    fn lowers_conditional_return_inside_while() {
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "looper",
+                vec![],
+                Some(SemanticType::I64),
+                vec![SemanticStmt::While {
+                    cond: bool_expr(true),
+                    body: vec![if_stmt(
+                        bool_expr(true),
+                        vec![SemanticStmt::Return {
+                            expr: Some(int_expr(7, SemanticType::I64)),
+                            pos: 0,
+                        }],
+                        vec![],
+                        None,
+                    )],
+                    pos: 0,
+                }],
+                Some(int_expr(0, SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
     fn rejects_unsupported_semantic_type_inside_if_branch() {
         let program = SemanticProgram {
             stmts: vec![if_stmt(
