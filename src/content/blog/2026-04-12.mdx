@@ -1,0 +1,52 @@
+---
+title: "Cx Dev Log — 2026-04-12"
+date: 2026-04-12
+description: "Phase 10 IR lowering grew to cover infinite loop, break, and continue, and a new agent operating doctrine doc landed on submain."
+---
+
+Three idle days in a row ended today. Two commits landed on `submain`: Phase 10 lowering extended to cover infinite `loop`, `break`, and `continue` in the IR, and a process document (`AGENT_OPERATING_DOCTRINE.md`) was added. Neither is on `main`. Matrix stays at 78/78.
+
+## Loop, break, continue in the IR
+
+The interesting change is `bcd49f2` on `origin/submain`: `src/ir/lower.rs`, +215/−16. It threads a `LoopContext` (header id, exit id, and the ordered set of loop-carried bindings) through statement lowering so that structured jumps have somewhere to go.
+
+Concretely:
+
+- `lower_loop` is new. It builds the CFG for an infinite loop: entry jumps unconditionally into the header, the header runs the body, and the exit block is constructed with block params matching the ordered binding set.
+- `lower_while` was updated in the same pass. The exit block now gets proper block params, and the header's `Branch` terminator passes real `else_args` into it instead of an empty vector. This is the bug fix that lets loop-carried SSA actually survive the while's early-exit edge. The previous version was emitting a terminator that referenced a block it had not wired up.
+- `SemanticStmt::Break` lowers by gathering the current SSA values for every ordered binding, emitting `IrTerminator::Jump { target: exit_id, args: exit_args }`, and sealing the block.
+- `SemanticStmt::Continue` does the same thing against `header_id` instead of `exit_id`.
+- `loop_ctx: Option<&LoopContext>` is now plumbed through `lower_stmt`, `lower_if_else`, and `lower_if_chain`. Previously `lower_if_chain` hardcoded `None` when lowering its inner sequence, which meant a `break` inside a nested `if` inside a loop would not resolve to the enclosing loop's exit. That is fixed.
+- `break`/`continue` outside a loop return `UnsupportedSemanticConstruct`. Missing bindings in the SSA env return `InternalInvariantViolation`.
+- The three existing "rejects_unsupported_statement" tests were retargeted from `SemanticStmt::Loop` to `SemanticStmt::For`, which is the next statement still rejected by the lowering pass.
+
+One incidental tell in the diff: `SemanticExprKind::ResultOk`, `ResultErr`, `Try`, and `SemanticType::Result(_)` each got an `unsupported!` arm so the match stays exhaustive. The semantic layer has already grown Result shapes on submain. Lowering has not implemented them yet. The arms are placeholder rejections, not real handling.
+
+This commits the backend to structured `break`/`continue` — no labeled breaks, no early-return tricks. That matches the roadmap, where "labeled breaks for nested loops" is a Post-0.1 item.
+
+## Agent operating doctrine
+
+The other commit is `03d2da6`: a new `docs/AGENT_OPERATING_DOCTRINE.md`, +283 lines. It defines a six-phase workflow (Recon, Design Lock, Predicted Fallout, Implementation, Validation, and one more phase later in the file) and the notion of "task packets" — one logical unit of work per prompt instead of one file per prompt. This is the first process doc of its kind in `docs/`, and its existence is the decision. Prior work had no written protocol.
+
+## The merge situation has not improved
+
+No merge activity today. `origin/main` has not taken a commit in the last 24 hours. `origin/submain` now sits seven commits ahead of `origin/main` — the five pre-existing ones, plus today's two. Sixteenth consecutive day unmerged.
+
+The daily-log branch backlog is also still there. Eleven branches through `daily-log-2026-04-10` remain unmerged on remote, and today's work will add another when this post's source log gets published. Both `daily_log/` and `docs/frontend/ROADMAP.md` are already in the submain-vs-main conflict surface, and more daily-log branches stacking on top of that will only widen it.
+
+## Roadmap edits
+
+`docs/frontend/ROADMAP.md` was updated on submain to reflect today's lowering work. Phase 10's Active entry now notes that `loop`, `break`, and `continue` landed on submain 2026-04-12 with `LoopContext` threading and exit block params, and that `for` is the remaining Phase 10 gap. A small Key Changes bullet was added for the Phase 10 landing and the doctrine doc. Version number was not bumped — v4.8 still matches the last formal roadmap-doc edit date of 2026-03-28.
+
+No hard blocker was checked off. The closest candidate is the error-model blocker, but today's Result-related change was just adding rejecting arms so the match compiles. That is not implementation.
+
+## What's next
+
+Four things, all grounded in what landed today and what is still missing:
+
+1. `for` loop lowering. The unsupported-statement tests were deliberately retargeted to `For` today, and the Active Phase 10 roadmap entry now calls it out explicitly as the remaining gap.
+2. Merge `submain` into `main`. Seven commits now, sixteen days unmerged. The daily-log branch backlog will eventually tangle with `daily_log/` and `docs/frontend/ROADMAP.md` in ways that make the merge worse the longer it waits.
+3. Real `Result<T>` lowering. The placeholder arms added today for `ResultOk`, `ResultErr`, `Try`, and `SemanticType::Result` need to be wired through to actual IR. The syntax is locked; the hard blocker still reads "syntax locked and implemented."
+4. Drain the daily-log branch backlog. Oldest first, to keep the conflict area on `daily_log/` contained.
+
+Phase 10 is close to done once `for` lowers. The error model is still untouched in the IR. The merge debt is still the biggest structural problem on the project, and today did not reduce it.
