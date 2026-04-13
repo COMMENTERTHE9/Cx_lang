@@ -634,14 +634,16 @@ impl RunTime {
             SemanticExprKind::VarRef { name, .. } => {
                 self.get_var(name, 0)
             }
-            SemanticExprKind::Unary { op, expr, pos } => {
-                let val = self.eval_semantic_expr(expr)?;
-                self.apply_unary(op, val, *pos)
+            SemanticExprKind::Unary { op, expr: inner, pos } => {
+                let val = self.eval_semantic_expr(inner)?;
+                let result = self.apply_unary(op, val, *pos)?;
+                Ok(apply_numeric_cast(result, &expr.ty))
             }
             SemanticExprKind::Binary { lhs, op, pos, rhs } => {
                 let l = self.eval_semantic_expr(lhs)?;
                 let r = self.eval_semantic_expr(rhs)?;
-                self.apply_op(l, op.clone(), *pos, r)
+                let result = self.apply_op(l, op.clone(), *pos, r)?;
+                Ok(apply_numeric_cast(result, &expr.ty))
             }
             SemanticExprKind::Call { callee, args, .. } => {
                 self.call_semantic_func(callee, args, 0)

@@ -1735,7 +1735,7 @@ fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<Stri
 
 fn semantic_type_from_value(value: &AstValue) -> SemanticType {
     match value {
-        AstValue::Num(_) => SemanticType::I128,
+        AstValue::Num(_) => SemanticType::Numeric,
         AstValue::Float(_) => SemanticType::F64,
         AstValue::Str(_) => SemanticType::Str,
         AstValue::Bool(_) => SemanticType::Bool,
@@ -1820,13 +1820,31 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
 }
 
 fn common_numeric_type(lhs: &SemanticType, rhs: &SemanticType) -> SemanticType {
-    if matches!(lhs, SemanticType::Numeric) || matches!(rhs, SemanticType::Numeric) {
-        SemanticType::Numeric
-    } else if matches!(lhs, SemanticType::F64) || matches!(rhs, SemanticType::F64) {
-        SemanticType::F64
-    } else {
-        SemanticType::I128
+    // Float wins
+    if matches!(lhs, SemanticType::F64) || matches!(rhs, SemanticType::F64) {
+        return SemanticType::F64;
     }
+    // Both literals — unchanged behavior
+    if matches!(lhs, SemanticType::Numeric) && matches!(rhs, SemanticType::Numeric) {
+        return SemanticType::I128;
+    }
+    // Numeric (literal) marker — adopt the other side's declared type
+    if matches!(lhs, SemanticType::Numeric) {
+        return rhs.clone();
+    }
+    if matches!(rhs, SemanticType::Numeric) {
+        return lhs.clone();
+    }
+    // Both declared integers — pick the wider
+    let rank = |t: &SemanticType| match t {
+        SemanticType::I8 => 1,
+        SemanticType::I16 => 2,
+        SemanticType::I32 => 3,
+        SemanticType::I64 => 4,
+        SemanticType::I128 => 5,
+        _ => 5,
+    };
+    if rank(lhs) >= rank(rhs) { lhs.clone() } else { rhs.clone() }
 }
 
 fn insert_cast_if_needed(expr: SemanticExpr, target: &SemanticType) -> SemanticExpr {
