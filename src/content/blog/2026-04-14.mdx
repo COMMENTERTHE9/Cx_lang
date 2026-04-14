@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-04-14"
+date: 2026-04-14
+description: "Six commits on submain closed the Result and per-width overflow hard blockers, made function-body semicolons optional, and grew the matrix from 78 to 110 green."
+---
+
+Big day on `submain`. Six non-merge commits landed in the last 24 hours and the matrix went from 78/78 to 110/110 with zero failures. Two of the remaining hard-blocker features (the minimal error model and per-width integer overflow) got real implementations, function bodies finally accept optional semicolons without giving up implicit return, diagnostics got a readability sweep, and Part 1 of a parser/semantic/interpreter audit turned up five real issues. None of this is on `main`. `origin/main` is still sitting at `87d68f6` from March 31, and the submain to main backlog is now 14 work commits across three weeks.
+
+## Result, Ok, Err, and ?
+
+`02178a2` is the minimal error model. New lexer keywords `KeywordResult`, `KeywordOk`, and `KeywordErr`. New AST nodes `Type::Result(Box<Type>)` and `Expr::ResultOk`/`ResultErr`/`Try`. The parser accepts `Result<T>` as a type and `Ok(expr)`/`Err(expr)` as expressions, and postfix `?` is now disambiguated from a standalone unknown `?`. Semantic enforces that `Err()` takes a string and that `?` only appears inside functions declared to return `Result<T>`. The runtime unwraps `Ok` and propagates `Err` via `EarlyReturn`. The value layer grew `Value::ResultOk` and `Value::ResultErr` with `value_to_string` and `PartialEq` support. Matrix tests t81 through t88 cover happy paths, propagation chains, and four rejection cases. That closes the "Minimal error model" hard blocker on the interpreter path.
+
+The IR side of Result is still placeholder rejections in `lower.rs`, inherited from `bcd49f2` two days ago. Today's commit does not touch lowering.
+
+## Integer overflow at declared width
+
+`dc564a7` moves truncation where it actually belongs. Binary and unary evaluations now call `apply_numeric_cast` against the expression's declared `SemanticType`, so `t8 + t8` wraps at 255 during arithmetic instead of only at assignment. Two supporting semantic changes went with it: `common_numeric_type` picks the wider declared integer type instead of defaulting to `I128`, and integer literals are typed `Numeric` so they adopt the surrounding declared width. Matrix tests t89 through t96 cover t8 add/mul/chain/compare, unary negation, t16 wrap, t128 pass-through, and mixed-width promotion.
+
+The roadmap has said "wrapping at declared width" since the v4.3 lock, but until today arithmetic actually wrapped at `i128` and only truncated at assignment. This is the spec catching up to itself, not a new design decision.
+
+"Integer overflow enforced" is not checked off yet, though. The audit turned up `audit_09`, where `c.value += 10` with `value: t8` produces `260` instead of `4`. Compound assignment on struct fields takes a different runtime path (the `CompoundAssign` arm in `run_semantic_stmt`) than the Binary path that `dc564a7` fixed, and that path does not apply width truncation. The fix is mechanical, but it has not been committed.
+
+## Semicolons optional, implicit return preserved
+
+`6c27da0` makes trailing `;` in `ret` optional and reworks `func_body` to tag each statement with whether it carried a semicolon. Only a trailing `ExprStmt` without `;` gets promoted to the function's return expression. A trailing expression with `;` becomes a discarded statement. The dead parser helper `expr_stmt_with_semi` got removed. Matrix tests t97 through t100 plus a deliberate rejection `t99_semi_suppresses_implicit_return.cx` pin the distinction.
+
+This commits the grammar to "trailing expression is meaningful syntax" rather than collapsing everything into statements. Bare expression statements elsewhere still require `;`. Full semicolon-free syntax remains a post-0.1 item per the Known Gaps entry, and the Hard Blockers semicolon line is still unchecked on the roadmap.
+
+## Diagnostics sweep
+
+`45f35c5` adds a `type_name` helper that maps `SemanticType` variants to Cx surface syntax (`I64` prints as `t64`, `Bool` as `bool`, `Result(inner)` as `Result<...>`). Twelve of thirteen `sem_err!` call sites were rewritten so user-facing errors stop leaking Rust debug formatting. Runtime polish too: `UndefinedVar` no longer references a nonexistent `let` keyword, `BadOperands` names operand kinds via a new `value_kind` helper, and the `EarlyReturn`/`BreakSignal`/`ContinueSignal` messages were rewritten as compiler-bug messages since those signals should never escape to diagnostics. Three matrix tests (t101 through t103) pin the new hint, mismatch, and operands messages.
+
+## Audit Part 1
+
+`eb65acf` is the discovery work: 12 tests under `examples/audit/` and a triage report at `examples/audit/AUDIT_REPORT.md`. Results were 7 pass, 1 parse fail, 2 semantic fails, 1 wrong output, 1 panic. Triage split them into must-fix, should-fix, known-limitation, and defer.
+
+- Must-fix for 0.1: `audit_09` as described above.
+- Should-fix for 0.1: `audit_02`, where `Result<Result<T>>` fails to parse because the `result_type` combinator's inner type parser does not accept `result_type` recursively. Same shape also blocks `Handle<Result<T>>` and any nested composition.
+- Known limitations: `audit_03`/`05` (untyped assignment requires prior declaration, by design). `audit_11` (`fib(10)` overflows the Rust call stack because the tree-walking interpreter uses native Rust recursion).
+
+The same commit also added five Phase 10 regression tests (t104 through t108) covering `for`, `while`, `loop`, `continue`, and nested loops inside functions, plus a small parser body fix.
+
+## Roadmap and integration debt
+
+`docs/frontend/ROADMAP.md` on `main` got "Basic test runner," "Minimal error model," and "All examples pass" checked off. "Integer overflow enforced" and "Semicolon rule" were left unchecked on purpose because the evidence does not support checking them off yet. The file now also carries a "Key Changes from v4.8 (working, submain)" section. On `submain` itself the roadmap sits at v4.7 from `25e26f0`, so the two versions have diverged.
+
+The integration picture is uglier. Fourteen work commits on `submain` are not on `main`. Thirteen daily-log branches through `daily-log-2026-04-12` are still unmerged. Yesterday's predicted "merge submain to main" did not happen, and that debt is compounding against the roadmap divergence and the `daily_log/` backlog that will all collide on the next integration pass.
+
+## What's next
+
+The cheapest remaining move is the `audit_09` fix, which closes out the overflow hard blocker for real. After that, `audit_02` unlocks nested generic composition. The bigger question is when `submain` merges back, because every day that waits makes the eventual resolution messier. Result in the IR lowering path is still open, and Part 2 of the audit is a natural follow-on to extend the discovery surface into arrays, imports with generics, and nested generics.
