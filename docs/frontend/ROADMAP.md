@@ -136,8 +136,8 @@ These are not features. These are conditions. A long gate list that never closes
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
-- [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
-- [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
+- [x] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, `--test` mode, `#[test]` macro. Landed on submain 2026-04-04, t77–t80 passing
+- [x] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator. Landed on submain 2026-04-13, t81–t88 passing
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
 - [x] UTF-8 decision locked — UTF-8 strict everywhere. str is valid UTF-8, invalid bytes are runtime error, char is Unicode scalar value. Decided 2026-03-29 on submain
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
@@ -145,7 +145,7 @@ These are not features. These are conditions. A long gate list that never closes
 - [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
 - [ ] Parser, semantic layer, and interpreter agree on all supported constructs
 - [ ] No known soundness holes in memory boundary model
-- [ ] All examples in `examples/` pass
+- [x] All examples in `examples/` pass — 8 examples, `examples/run_all.sh` reports 8/8 PASS on submain 2026-04-13
 - [ ] Diagnostics readable for common mistakes
 - [ ] Roadmap and spec match actual language behavior
 
@@ -251,7 +251,8 @@ These are not features. These are conditions. A long gate list that never closes
 - **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout (Round 1, 2026-03-27), TBool (1-byte three-state), struct layout (declaration order, natural alignment, padding), array layout (fixed-size, contiguous, stride-based), enum layout (tag-only u8), and calling convention (single return, C ABI) all locked in `cx_abi_v0.1.md` with Rust-level confidence tests. Remaining open: string layout, copy parameter convention (deferred post-0.1).
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 - **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
-- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. If/else lowering next.
+- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28 (header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests). `loop`/`break`/`continue` lowering landed on submain 2026-04-12 with `LoopContext` threading. `for` loop lowering landed on submain 2026-04-13 (ascending only, inclusive/exclusive, break/continue support, increment block, 4 tests). Conditional return inside while-loop verified lowering correctly 2026-04-13.
+- **Parser/semantic/interpreter agreement audit** — Part 1 landed on submain 2026-04-13: 12 discovery cases under `examples/audit/`, triaged into must-fix (audit_09 struct-field compound-assign overflow), should-fix (audit_02 `Result<Result<T>>` parser completeness), known-limitations (untyped assignment requires prior declaration; tree-recursive depth hits Rust stack), and defer-post-0.1. Audit cases live in `examples/audit/`, not in the regression matrix.
 
 ---
 
@@ -265,8 +266,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
-- **Integer overflow partially enforced** — wrapping arithmetic fix landed 2026-03-28 (saturating → wrapping, i128::MIN edge cases guarded). Arithmetic now wraps consistently at i128 range. Per-declared-width wrapping at arithmetic time (e.g., t8 wrapping at 255 during addition) not yet implemented — width truncation still at assignment only.
-- **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
+- **Integer overflow — per-width enforced at expressions, struct-field compound assign gap** — wrapping arithmetic at declared width landed on submain 2026-04-13 (`common_numeric_type` picks wider declared type, `apply_numeric_cast` truncates Binary/Unary results at the expression boundary). t89–t96 passing. Known residual gap from audit 2026-04-13: compound assignment on struct fields (`c.value += 10` where `value: t8`) goes through `CompoundAssign` in `run_semantic_stmt` and does NOT apply width truncation — audit_09 reproduces the bug.
+- **Semicolons — optional in function bodies, expression statements still require one** — 2026-04-13 on submain: `ret` statements and trailing expression statements in function bodies now accept optional semicolons, with implicit return preserved (a trailing expression without `;` becomes the return value, with `;` becomes a discarded statement). t97/t98/t99/t100 passing. Bare expression statements elsewhere still require `;` due to parser ambiguity — tracked as post-0.1.
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
 ---
@@ -508,6 +509,18 @@ These need active design work before any implementation can begin.
 - hashweb traversal API and query language design
 
 ---
+
+## Key Changes from v4.8 (working, submain)
+
+- Basic test runner marked done — landed on submain 2026-04-04, t77–t80 passing (matrix on submain 110/110 green 2026-04-14)
+- Minimal error model marked done — `Result<T>`, `Ok`, `Err`, `?` landed on submain 2026-04-13, t81–t88 passing
+- `examples/` hard-blocker gate marked done — 8/8 pass via `examples/run_all.sh` on submain
+- Integer overflow hard-blocker gate still open — per-width truncation on Binary/Unary landed on submain 2026-04-13 (t89–t96), but struct-field compound-assign truncation is a remaining bug surfaced by the 2026-04-13 audit (audit_09)
+- Semicolons Known-Gap entry updated — function-body `ret` and trailing expression statements now optional on submain 2026-04-13 (t97/t98/t99/t100); bare expression statements elsewhere still require `;`
+- Active section expanded for Phase 10 — `loop`/`break`/`continue` 2026-04-12 and `for` 2026-04-13
+- New Active entry: parser/semantic/interpreter agreement audit — Part 1 triage landed on submain 2026-04-13 with 12 discovery cases under `examples/audit/`
+- Matrix on submain at 110/110 green (up from 90/90 after Result, then 98/98 after overflow, then 105/105 before audit, then 110/110 after semicolon + diagnostics tests added)
+- main branch still at 78/78, unchanged — submain has not merged; integration debt continues to grow
 
 ## Key Changes from v4.7
 
