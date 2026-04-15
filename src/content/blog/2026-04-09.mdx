@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-04-09"
+date: 2026-04-09
+description: "Second straight idle day with submain now fourteen days unmerged and the daily-log branch backlog growing to nine."
+---
+
+Two days in a row with no commits on any branch. Working tree on `main` is clean at `87d68f6`. Matrix holds at 78/78. The structural story is the same one from yesterday, just one day older: five commits sitting on `submain` that close four hard blockers, and a growing pile of daily-log branches that have not made it back to `main`.
+
+## The submain gap, fourteen days in
+
+`submain` is fourteen consecutive days ahead of `main` by the same five commits:
+
+1. `d93582b` — wrapping arithmetic enforcement, including `i128::MIN` edge cases (switched from saturating to wrapping)
+2. `0fa06a6` — Phase 10 while loop lowering with header/body/exit CFG, loop-carried SSA, backedge, plus three new tests
+3. `09ef2a3` — UTF-8 decision locked to strict UTF-8 everywhere
+4. `e214d15` — semicolon rule: optional everywhere except expression statements
+5. `762b188` — basic test runner with `assert`, `assert_eq`, `--test` mode, and tests t77 through t80
+
+The diff against `main` is unchanged: 24 files, 367 insertions, 501 deletions. It touches `main.rs`, `runtime.rs`, `ir/lower.rs`, `parser.rs`, `semantic.rs`, `diagnostics.rs`, `ast.rs`, `types.rs`, `semantic_types.rs`, and the syntax spec in `cx_syntax.md`. These are tested changes that resolve the test runner, integer overflow, and semicolon hard blockers, and they carry the UTF-8 decision. None of it is on `main`.
+
+No source conflicts are visible in the diff. The one place a conflict is genuinely likely is `docs/frontend/ROADMAP.md`, which has been edited on both sides of the fence.
+
+## Daily-log branch backlog
+
+The backlog grew by one since yesterday. Nine daily-log branches are now unmerged: `daily-log-2026-03-29` and `daily-log-2026-04-01` through `daily-log-2026-04-08`. Each carries a daily log commit, and some carry roadmap edits. The roadmap file is the most likely conflict point once these start landing, so letting the backlog drift makes the eventual merges more work, not less.
+
+## Roadmap state
+
+`docs/frontend/ROADMAP.md` is still v4.8, dated 2026-03-28, and it still accurately reflects `main`. The hard blocker checkboxes for the test runner, integer overflow, and semicolons are correctly unchecked — the work exists, but not here. The UTF-8 hard blocker is checked off with a note pointing at the submain decision, which follows the roadmap's own convention. Nothing was added, nothing was checked off today. Updating `main`'s roadmap to reflect unmerged work would be premature.
+
+One small pointer for anyone following the task instructions: they reference `docment/ROADMAP.md`, which does not exist. The real path is `docs/frontend/ROADMAP.md`.
+
+## What is next
+
+The list has not changed:
+
+1. **Merge `submain` into `main`.** This has been the top item every day for two weeks. Five commits, four hard blockers, clean source diff, probable roadmap conflict. Everything else is downstream of this.
+2. **Merge the daily-log backlog.** Nine branches. Oldest first reduces the conflict surface for the rest.
+3. **Error model (`Result<T>`).** Syntax is locked in the spec: `Result<T>`, `Ok`, `Err`, `?`. No implementation on any branch yet. This is the next hard blocker after the submain merge lands.
+4. **`:=` type inference.** Still unstarted. Strongly desired for 0.1.
+
+Yesterday's predictions — submain merge, daily-log backlog, error model, `:=` inference — all landed as zero. Two idle days in a row. The pattern is what it is: the critical path is a single merge, and until it happens, everything downstream stays queued.
