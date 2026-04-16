@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-04-15"
+date: 2026-04-15
+description: "A documentation-only day: one back-filled blog post landed on site and yesterday's daily log was rewritten into its final form, with no work commits anywhere."
+---
+
+Narrow day. The 24 hour window closed with two commits, both documentation, and zero movement on anything that compiles. `main` is still at `87d68f6` from March 31. `submain` is still at `eb65acf` from April 13. The matrix on `main` is still 78/78. The only things that changed are a back-filled blog post on `site` and a rewritten daily log on its own branch.
+
+## What landed
+
+`5b59c58` on `origin/site` is "dev log 2026-04-09". It adds `src/content/blog/2026-04-09.mdx`, a 42-line MDX post back-filling the April 9 entry for the site. No code. After this commit `origin/site` carries 24 blog MDX files dated through 2026-04-14. The post itself describes a second idle day, the submain gap as it stood on April 9 (five commits at the time, fifteen now), and the growing daily-log backlog.
+
+`1d5b7de` on `origin/daily-log-2026-04-14` is "daily log 2026-04-14". It rewrites `daily_log/2026-04-14.md` in place, +144 / −64 on a single file, replacing the earlier 00:06 UTC draft with a structured final log. The rewrite covers the April 13 EDT sprint commits as integration context and separates committed-in-EDT from landed-in-UTC work. Again, no code.
+
+Both commits are by `Claude <noreply@anthropic.com>`. `COMMENTERTHE9` has no commits in this window. The most recent human commit is still `eb65acf` on `origin/submain` from April 13 23:45 UTC, which is outside the 24 hour window.
+
+No merges landed. `main` has not moved since `87d68f6`. `submain` has not moved since `eb65acf`.
+
+## In progress
+
+Nothing uncommitted. `git status --short --branch` is empty, both diffs are empty, and there are no untracked files. The only "in progress" state in this repo is integration debt that is already committed somewhere other than `main`:
+
+- `submain` is 15 work commits, 97 files, +1974 / −627 ahead of `main`. That set covers the Part 1 audit plus body-gap fix, the diagnostics readability pass, optional semicolons in function bodies, integer overflow at declared width, the examples/warning/roadmap sprint, the minimal error model, Phase 10 loop lowering, the Agent Operating Doctrine doc, the basic test runner, the UTF-8 decision lock, and wrapping arithmetic enforcement.
+- The daily-log branch backlog is now 13 unmerged branches: `2026-03-29`, `04-01` through `04-10` except `04-11`, `04-12`, and `04-14`. Each one carries a single daily-log commit against `main`, and together they are the likely conflict vector against `submain`'s roadmap edits.
+- `site` is 15 blog posts ahead of `main` in `src/content/blog/`, including the 2026-04-09 post that landed today. Site content is intentionally separate from `main`.
+
+## Roadmap and decisions
+
+`docs/frontend/ROADMAP.md` was not edited. The version on `main` is still v4.8 from 2026-03-28. No hard blocker closed, no quality-gate movement, no Known Gaps closed, nothing moved into Done. The four follow-ups already enumerated in yesterday's log (`audit_09` compound-assign truncation, `result_type` as `recursive()`, `Result` in IR lowering, the submain→main merge, and audit Part 2) are all still the right next moves, so no duplicate entries were added.
+
+One small correction worth repeating because the task template still has not caught up: this repo has no `docment/` directory. The roadmap lives at `docs/frontend/ROADMAP.md`. Both today's and yesterday's logs flag this.
+
+## What's next
+
+The critical path is unchanged from the last several logs, because no work has moved:
+
+1. Merge `submain` into `main`. Fifteen work commits, four hard-blocker closures (basic test runner, minimal error model, most of integer overflow, most of semicolons), one probable roadmap conflict to resolve. Oldest daily-log branches first.
+2. Fix `audit_09`, where compound assignment on struct fields skips width truncation. Add an `apply_numeric_cast` call in the `CompoundAssign` arm of `run_semantic_stmt` against the field's declared `SemanticType`, then promote to a matrix regression. Smallest remaining piece to actually close the integer-overflow hard blocker.
+3. Convert `result_type` to `recursive()` to unblock `Result<Result<T>>`, `Handle<Result<T>>`, and nested generic composition.
+4. Implement `Result<T>` in IR lowering. The interpreter path is done on `submain`; `lower.rs` still has `unsupported!` arms for `ResultOk` / `ResultErr` / `Try` and `SemanticType::Result(_)`.
+5. Audit Part 2: arrays, imports plus generics, nested generics, and `copy_into` under `Result`.
+
+Yesterday's log predicted exactly these five items. Zero of them happened today. Direction, integration debt, and the audit must-fix list are all unchanged. The only forward motion was documentation, and that is a thin week in review.
