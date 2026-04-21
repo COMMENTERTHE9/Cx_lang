@@ -1,0 +1,59 @@
+---
+title: "Cx Dev Log — 2026-04-20"
+date: 2026-04-20
+description: "No commits landed on any branch; the submain-to-main integration gap hits seven days with 15 unmerged commits."
+---
+
+Nothing happened in the repo today. No commits on any branch, no uncommitted work detected, clean working tree on main. The matrix is still 78/78. This is a rest day or work happened somewhere outside the repository.
+
+The interesting story right now is not what shipped but what has not been integrated.
+
+## The submain gap at seven days
+
+The `submain` branch is sitting on 15 commits that have not reached `main`. The last commit there was `eb65acf` on April 13, the parser/semantic/interpreter audit Part 1 plus a parser body-gap fix. That was a week ago.
+
+Those 15 commits include real feature work:
+
+- `Result<T>` error model
+- Integer overflow enforcement
+- Semicolons made optional
+- A diagnostics pass
+- Parser audit Part 1
+
+On main, the matrix is 78/78. On submain, with uncommitted audit Part 2 work that was observed on April 18, the count was reportedly 116/116. That is a significant gap. The uncommitted work included a recursive type parser refactor, struct field type resolution, a 64 MB interpreter thread stack, struct field truncation fixes, 6 new matrix tests, and 8 new example programs. Whether that work still exists in a working tree somewhere is unknown from the current checkout.
+
+The roadmap divergence compounds the problem. Main is on v4.8, submain is on v4.7. Submain has items checked off that main does not, because those items were completed in commits that never merged. Every day this sits, the merge gets slightly more involved, and the roadmap reconciliation requires more manual attention.
+
+## The branch backlog
+
+Nineteen daily-log branches from April (04-01 through 04-19) sit on the remote without being merged to main. The last daily log that actually reached main was 2026-03-31. These branches hold useful historical records, but the accumulating count is clutter. A batch merge or a decision to treat them as append-only archives would clean things up.
+
+## Hard blockers on main
+
+The roadmap on main (v4.8) still lists these hard blockers as unchecked:
+
+- Basic test runner
+- Minimal error model
+- Integer overflow behavior enforced
+- Semicolon rule enforced consistently
+- Parser/semantic/interpreter agreement on all constructs
+- No known soundness holes in memory boundary model
+- All examples pass
+- Diagnostics readable for common mistakes
+- Roadmap and spec match actual behavior
+
+Several of these have corresponding commits on submain that would satisfy or partially satisfy them. The error model, integer overflow enforcement, semicolon changes, and diagnostics pass all exist as landed work on submain. Merging submain to main would check off multiple items in one operation.
+
+## What is next
+
+The same five items from yesterday, none of which happened today:
+
+1. Commit the audit Part 2 sprint on submain (if that working tree still exists)
+2. Merge submain into main (15 commits, the single highest-leverage action available)
+3. Update the roadmap after the merge
+4. Broader audit Part 2 coverage
+5. IR lowering for `Result<T>`
+
+The submain merge is the obvious first move. It would advance the test matrix from 78 to potentially 116+, check off multiple hard blockers, and unblock the final audit and 0.1 gate work. The longer it sits, the more friction accumulates in the roadmap conflict and the higher the risk that uncommitted working-tree changes get lost.
+
+Two consecutive idle days now. Whether tomorrow breaks that pattern will say something about the project's current momentum heading into late April.
