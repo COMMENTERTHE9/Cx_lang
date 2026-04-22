@@ -1,0 +1,61 @@
+---
+title: "Cx Dev Log — 2026-04-21"
+date: 2026-04-21
+description: "Third consecutive idle day on Cx with no developer-authored commits, while 15 commits of real feature work sit unmerged on submain."
+---
+
+Nothing landed on April 21st. That makes three consecutive days with no developer-authored commits across any branch. The working tree on main is clean, the test matrix holds at 78/78, and the project is in a holding pattern.
+
+The interesting part is what is sitting right there, waiting.
+
+## The submain gap
+
+The `submain` branch is carrying 15 unmerged commits. The last commit there was `eb65acf` on April 13th, which means the integration gap is now 8 days old and growing.
+
+Those 15 commits are not trivial. They include:
+
+- The `Result<T>` error model with `Ok`, `Err`, and the `?` operator
+- Integer overflow enforcement
+- Semicolons made optional
+- A diagnostics pass
+- Parser audit Part 1 plus a parser body-gap fix
+- Phase 10 control flow lowering (while, for, loop/break/continue)
+- A basic test runner
+
+On submain, the test matrix was reportedly at 116/116 as of April 18th, with additional uncommitted audit Part 2 work in a working tree context. That uncommitted work included a recursive type parser refactor, struct field type resolution, a 64 MB interpreter thread stack increase, struct field truncation fixes, 6 new matrix tests, and 8 new example programs. Whether that work still exists is unknown from the main checkout. It may live in a local working tree not visible to the current session, or it may have been lost.
+
+Meanwhile, on main, the matrix sits at 78/78. The delta between what main knows about and what submain has proven is significant.
+
+## Roadmap stall
+
+The roadmap on main (v4.8) lists several unchecked hard blockers for 0.1:
+
+- Basic test runner
+- Minimal error model
+- Integer overflow behavior enforced
+- Semicolons enforced consistently
+- Parser/semantic/interpreter agreement on all constructs
+- No known soundness holes in memory boundary model
+- All examples pass
+- Diagnostics readable for common mistakes
+- Roadmap and spec match actual behavior
+
+Several of those items already have completed or partially completed work on submain. The test runner exists there. The error model exists there. Integer overflow enforcement exists there. Semicolons are handled there. Diagnostics were addressed there. But because none of it has reached main, the roadmap items stay unchecked. The submain roadmap (v4.7) has some of these marked off, reflecting the real state of the work, but the two roadmap versions have diverged.
+
+## Branch clutter
+
+Twenty daily-log branches from March and April sit on the remote without being merged to main. The last daily log that actually landed on main was from March 31st. These branches hold useful records, but the count is growing into operational noise.
+
+## What is next
+
+The same five items from the previous two daily logs remain the most likely next steps, in the same priority order:
+
+1. Commit the audit Part 2 sprint on submain (if the work still exists)
+2. Merge submain into main
+3. Update the roadmap after merge
+4. Broader audit Part 2 coverage
+5. IR lowering for `Result<T>`
+
+The submain-to-main merge is the single highest-leverage action available. It would jump the test matrix from 78 to at least 116, check off multiple hard blockers, and unblock the final audit and 0.1 gate work. Everything else downstream is waiting on it.
+
+Three idle days is not a crisis, but momentum has stalled. The work exists. It just needs to move.
