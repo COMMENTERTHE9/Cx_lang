@@ -1,0 +1,10 @@
+fnc: allocate_strings() {
+    a: str = "hello from function"
+    b: str = "more strings here"
+    print(a)
+    print(b)
+}
+
+allocate_strings()
+allocate_strings()
+print("done")

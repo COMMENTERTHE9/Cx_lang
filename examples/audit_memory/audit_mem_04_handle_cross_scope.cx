@@ -1,0 +1,11 @@
+fnc: inner() {
+    let h;
+    h = Handle.new(777)
+    h
+}
+
+let h;
+h = inner()
+print(h.val)
+h.drop()
+print("clean")

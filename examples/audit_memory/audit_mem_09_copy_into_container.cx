@@ -1,0 +1,11 @@
+fnc: t64 outer() {
+    x: t64 = 10
+    y: t64 = 20
+
+    fnc: t64 inner(t: copy_into(x, y)) {
+        t.x + t.y
+    }
+
+    inner(copy_into(x, y))
+}
+print(outer())

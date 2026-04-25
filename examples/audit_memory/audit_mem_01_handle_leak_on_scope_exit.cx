@@ -1,0 +1,9 @@
+fnc: make_handle() {
+    let h;
+    h = Handle.new(42)
+    h
+}
+
+let h;
+h = make_handle()
+print(h.val)

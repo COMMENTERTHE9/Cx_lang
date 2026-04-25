@@ -1,0 +1,5 @@
+fnc: take_ref(s: strref) {
+    print(s)
+}
+
+take_ref("hello")
