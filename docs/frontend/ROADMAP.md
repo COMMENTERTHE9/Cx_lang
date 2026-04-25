@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.8 — 2026-03-28
+v4.9 — 2026-04-25
 
 ---
 
@@ -136,18 +136,18 @@ These are not features. These are conditions. A long gate list that never closes
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
-- [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
-- [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
+- [x] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, `--test` mode, `#[test]` macro. Landed 2026-04-04 on submain, t77-t80 passing. Pending merge to main.
+- [x] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator. Landed 2026-04-04 on submain, t81-t88 passing. Pending merge to main.
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
 - [x] UTF-8 decision locked — UTF-8 strict everywhere. str is valid UTF-8, invalid bytes are runtime error, char is Unicode scalar value. Decided 2026-03-29 on submain
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
-- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
-- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
-- [ ] Parser, semantic layer, and interpreter agree on all supported constructs
-- [ ] No known soundness holes in memory boundary model
-- [ ] All examples in `examples/` pass
-- [ ] Diagnostics readable for common mistakes
-- [ ] Roadmap and spec match actual language behavior
+- [x] Integer overflow behavior enforced — wrapping at declared width. Landed 2026-04-13 on submain, t89-t96 passing. Struct field overflow also fixed 2026-04-25 (t109-t110). Pending merge to main.
+- [x] Semicolon rule enforced consistently — optional everywhere except expression statements (parser ambiguity). Landed 2026-04-13 on submain, t97-t100 passing. Pending merge to main.
+- [x] Parser, semantic layer, and interpreter agree on all supported constructs — agreement audit completed 2026-04-25 on submain. 12 audit programs, all findings fixed. Parser body gap (5 missing stmts) fixed, t104-t108 passing. Pending merge to main.
+- [x] No known soundness holes in memory boundary model — memory audit completed 2026-04-25 on submain. 12 audit programs, 1 soundness bug found (StrRef in struct fields) and fixed (t115). Pending merge to main.
+- [x] All examples in `examples/` pass — 8 examples, `bash examples/run_all.sh` reports 8/8 PASS on submain. Pending merge to main.
+- [x] Diagnostics readable for common mistakes — type_name helper, polished error messages. Landed 2026-04-13 on submain, t101-t103 passing. Pending merge to main.
+- [x] Roadmap and spec match actual language behavior — roadmap v5.0 on submain (2026-04-25). Main roadmap updated to v4.9.
 
 ### Quality Gates (strongly desired, delays release if missing)
 
@@ -508,6 +508,16 @@ These need active design work before any implementation can begin.
 - hashweb traversal API and query language design
 
 ---
+
+## Key Changes from v4.8
+
+- All 9 hard blockers now checked off with evidence — all work committed on submain, pending merge to main
+- Audit Part 2 landed on submain: recursive type parser, struct field overflow fix, 64 MB interpreter stack, 6 new matrix tests (t109-t114)
+- Memory boundary soundness audit completed on submain: 12 programs, 1 bug found and fixed (StrRef in struct fields, t115)
+- Roadmap v5.0 on submain declares 0.1 release candidate status
+- Submain matrix at 117/117, main matrix at 78/78 — gap is entirely due to pending merge
+- Submain now 19 commits ahead of main — merge is the highest-priority next action
+- Version bumped to v4.9
 
 ## Key Changes from v4.7
 
