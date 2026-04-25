@@ -409,6 +409,9 @@ impl Analyzer {
                         } else {
                             SemanticType::Unknown
                         };
+                        if semantic_expr.ty == SemanticType::StrRef {
+                            return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a struct field — use an owned str instead"));
+                        }
                         if field_ty != SemanticType::Unknown {
                             if !types_compatible(&field_ty, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(&field_ty, &semantic_expr.ty, *pos_eq));
@@ -1037,6 +1040,15 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
             Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs)) => {
+                // Check if the struct definition has any strref fields — reject at instantiation
+                if let Some(struct_fields) = self.structs.get(type_name) {
+                    for (fname, ftype) in struct_fields {
+                        let sem_ty = semantic_type_from_decl(ftype.clone(), &self.current_type_params);
+                        if sem_ty == SemanticType::StrRef {
+                            return Err(sem_err!(0, "struct '{}' has a strref field '{}' — StrRef cannot be stored in struct fields because it does not outlive the struct", type_name, fname));
+                        }
+                    }
+                }
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
                 for (fname, fexpr) in field_exprs {
                     let sem_expr = self.analyze_expr(fexpr)?;
