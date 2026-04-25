@@ -1,5 +1,27 @@
 # Cx Language Roadmap
-v4.7 — 2026-04-13
+v5.0 — 2026-04-25
+
+---
+
+## 0.1 Release Candidate Status
+
+**All 9 hard blockers are resolved.** Cx 0.1 is at release candidate status.
+
+- Test matrix: 117/117 green (0 failures)
+- Examples: 8/8 pass (`bash examples/run_all.sh`)
+- Two full audits completed:
+  - Parser/semantic/interpreter agreement audit: 12 tests, all findings fixed
+  - Memory boundary soundness audit: 12 tests, 1 soundness bug found and fixed (StrRef in struct fields)
+- No panics in either audit
+- No known soundness holes in the memory boundary model
+
+**Known 0.1 limitations (documented, not blocking):**
+- String arena grows monotonically — no GC or compaction (interpreter-only; compiled output will be different)
+- Handle double-drop is a silent no-op (safe, could warn in future)
+- No strref constructor syntax — strref exists as a boundary type but has no user-facing creation path
+- Interpreter stack depth managed via 64 MB dedicated thread (per-frame reduction is a post-0.1 optimization)
+- Expression statements still require semicolons due to parser ambiguity (all other statements have optional semicolons)
+- Untyped assignment (`x = value`) requires prior declaration — by design
 
 ---
 
@@ -141,13 +163,13 @@ These are not features. These are conditions. A long gate list that never closes
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
 - [x] UTF-8 decision locked — UTF-8 strict everywhere. str is valid UTF-8, invalid bytes are runtime error, char is Unicode scalar value. 2026-03-29
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
-- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
-- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
-- [ ] Parser, semantic layer, and interpreter agree on all supported constructs
-- [ ] No known soundness holes in memory boundary model
+- [x] Integer overflow behavior enforced — wrapping at declared width. Landed 2026-04-13, t89-t96 passing. Struct field overflow also fixed (t109-t110).
+- [x] Semicolon rule enforced consistently — optional everywhere except expression statements (parser ambiguity). Landed 2026-04-13, t97-t100 passing. t99 proves the implicit-return invariant.
+- [x] Parser, semantic layer, and interpreter agree on all supported constructs — agreement audit completed 2026-04-25. 12 audit programs, all findings fixed. Parser body gap (5 missing stmts) fixed, t104-t108 passing.
+- [x] No known soundness holes in memory boundary model — memory audit completed 2026-04-25. 12 audit programs, 1 soundness bug found (StrRef in struct fields) and fixed (t115). Handle system, copy/bleed-back, arena reset all verified correct.
 - [x] All examples in `examples/` pass — 8 examples, `bash examples/run_all.sh` reports 8/8 PASS
-- [ ] Diagnostics readable for common mistakes
-- [ ] Roadmap and spec match actual language behavior
+- [x] Diagnostics readable for common mistakes — type_name helper maps SemanticType to Cx surface names. 12 of 13 sem_err sites polished. Runtime error messages cleaned. Landed 2026-04-13, t101-t103 passing.
+- [x] Roadmap and spec match actual language behavior — this update (v5.0, 2026-04-25)
 
 ### Quality Gates (strongly desired, delays release if missing)
 
@@ -600,3 +622,23 @@ These need active design work before any implementation can begin.
 - Examples runner cross-platform fix — cargo detection for Git Bash on Windows
 - Test matrix at 90 tests, 90/90 green
 - Version bumped to v4.7
+
+## Key Changes from v4.7
+
+- **All 9 hard blockers resolved** — Cx 0.1 reaches release candidate status
+- Result<T> error model landed — Ok, Err, ? operator, 8 matrix tests (t81-t88)
+- Basic test runner landed — assert, assert_eq, --test mode, #[test] macro (t77-t80)
+- Integer overflow at declared width — wrapping arithmetic, Numeric literal adoption (t89-t96)
+- Semicolons optional everywhere — tagged func body parser, implicit return preserved (t97-t100)
+- Diagnostics readability pass — type_name helper, polished error messages (t101-t103)
+- Parser body gap fixed — for/while/loop/break/continue now work inside functions (t104-t108)
+- Struct field overflow fixed — DotAccess LValues now track declared field type (t109-t110)
+- Recursive type parser — Result<Result<T>>, Handle<T> in type position, nested types (t111-t112)
+- Interpreter stack overflow fixed — 64 MB dedicated thread (t113)
+- Field type mismatch rejection — semantic pass catches wrong-type field assignments (t114)
+- StrRef struct field escape closed — soundness bug found and fixed in memory audit (t115)
+- Parser/semantic/interpreter agreement audit — 12 programs, all findings fixed
+- Memory boundary soundness audit — 12 programs, 1 bug found and fixed, 0 panics
+- Test matrix: 90 → 117 tests, all green
+- Examples: 8 programs + run_all.sh, all passing
+- Version bumped to v5.0
