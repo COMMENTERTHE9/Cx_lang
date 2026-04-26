@@ -2088,6 +2088,33 @@ fn prefix_stmt_name(stmt: SemanticStmt, prefix: &str) -> SemanticStmt {
 mod tests {
     use super::*;
 
+    // Test-only wrapper: wraps a Program into a single-file ResolvedProgram
+    // and calls analyze_resolved_program (the real entry point since the old
+    // analyze_program was deleted in the warning cleanup sprint).
+    fn analyze_program(program: &Program) -> Result<SemanticProgram, Vec<SemanticError>> {
+        use crate::frontend::resolver::{ResolvedProgram, ResolvedFile, ModuleId};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let entry_id = ModuleId(0);
+        let mut files = HashMap::new();
+        files.insert(entry_id, ResolvedFile {
+            id: entry_id,
+            path: PathBuf::from("test.cx"),
+            program: program.clone(),
+            imports: vec![],
+        });
+
+        let resolved = ResolvedProgram {
+            entry: entry_id,
+            files,
+            edges: vec![],
+            topo_order: vec![entry_id],
+        };
+
+        analyze_resolved_program(&resolved)
+    }
+
     fn ident(name: &str) -> Expr {
         Expr::Ident(name.to_string(), 0)
     }
