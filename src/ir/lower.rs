@@ -1293,7 +1293,48 @@ fn lower_expr(
         SemanticExprKind::HandleVal { .. } => { unsupported!("HandleVal") },
         SemanticExprKind::HandleDrop { .. } => { unsupported!("HandleDrop") },
         SemanticExprKind::Range { .. } => { unsupported!("Range") },
-        SemanticExprKind::Unary { .. } => { unsupported!("Unary") },
+        SemanticExprKind::Unary { op, expr, .. } => {
+    let lowered = lower_expr(expr, ctx, active)?;
+    match op {
+        Op::Minus => {
+            let zero = ctx.fresh_value();
+            match &lowered.ty {
+                IrType::F64 => {
+                    active.emit(IrInst::ConstFloat { dst: zero, value: 0.0 })?;
+                }
+                ty => {
+                    active.emit(IrInst::ConstInt { dst: zero, ty: ty.clone(), value: 0 })?;
+                }
+            }
+            let dst = ctx.fresh_value();
+            active.emit(IrInst::Binary {
+                dst,
+                op: BinaryOp::Sub,
+                ty: lowered.ty.clone(),
+                lhs: zero,
+                rhs: lowered.value,
+            })?;
+            Ok(LoweredValue { value: dst, ty: lowered.ty })
+        }
+        Op::Not => {
+            let zero = ctx.fresh_value();
+            active.emit(IrInst::ConstInt { dst: zero, ty: IrType::Bool, value: 0 })?;
+            let dst = ctx.fresh_value();
+            active.emit(IrInst::Compare {
+                dst,
+                op: CompareOp::Eq,
+                lhs: lowered.value,
+                rhs: zero,
+            })?;
+            Ok(LoweredValue { value: dst, ty: IrType::Bool })
+        }
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!("unary operator {:?}", op),
+            });
+        }
+    }
+},
         SemanticExprKind::ArrayLit { .. } => { unsupported!("ArrayLit") },
         SemanticExprKind::Index { .. } => { unsupported!("Index") },
         SemanticExprKind::MethodCall { .. } => { unsupported!("MethodCall") },
@@ -3256,6 +3297,104 @@ mod tests {
             enums: vec![],
         };
         let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn lowers_unary_negate_int() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::TypedAssign {
+                binding: BindingId(0),
+                name: "x".to_string(),
+                ty: SemanticType::I64,
+                expr: SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::Unary {
+                        op: Op::Minus,
+                        expr: Box::new(int_expr(42, SemanticType::I64)),
+                        pos: 0,
+                    },
+                },
+                pos_type: 0,
+            }],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let has_sub = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::Binary { op: BinaryOp::Sub, .. })
+        });
+        assert!(has_sub, "negate should lower to 0 - value");
+    }
+
+    #[test]
+    fn lowers_unary_negate_float() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::TypedAssign {
+                binding: BindingId(0),
+                name: "x".to_string(),
+                ty: SemanticType::F64,
+                expr: SemanticExpr {
+                    ty: SemanticType::F64,
+                    kind: SemanticExprKind::Unary {
+                        op: Op::Minus,
+                        expr: Box::new(float_expr(3.14)),
+                        pos: 0,
+                    },
+                },
+                pos_type: 0,
+            }],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn lowers_unary_not_bool() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::TypedAssign {
+                binding: BindingId(0),
+                name: "x".to_string(),
+                ty: SemanticType::Bool,
+                expr: SemanticExpr {
+                    ty: SemanticType::Bool,
+                    kind: SemanticExprKind::Unary {
+                        op: Op::Not,
+                        expr: Box::new(bool_expr(true)),
+                        pos: 0,
+                    },
+                },
+                pos_type: 0,
+            }],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let has_cmp = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::Compare { op: CompareOp::Eq, .. })
+        });
+        assert!(has_cmp, "not should lower to value == 0");
+    }
+
+    #[test]
+    fn rejects_unsupported_unary_op() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::TypedAssign {
+                binding: BindingId(0),
+                name: "x".to_string(),
+                ty: SemanticType::I64,
+                expr: SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::Unary {
+                        op: Op::Mul,
+                        expr: Box::new(int_expr(5, SemanticType::I64)),
+                        pos: 0,
+                    },
+                },
+                pos_type: 0,
+            }],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
     }
 
     #[test]
