@@ -1,0 +1,58 @@
+---
+title: "Cx Dev Log — 2026-04-25"
+date: 2026-04-25
+description: "All 9 hard blockers resolved on submain after a memory boundary audit uncovered and fixed a real StrRef soundness bug, bringing Cx 0.1 to release candidate status."
+---
+
+After six idle days on submain, today broke the drought with four commits that moved the project from "almost there" to "release candidate." The audit Part 2 fixes landed, a 12-program memory boundary soundness audit turned up a real bug, that bug got fixed, and the roadmap was bumped to v5.0 with all 9 hard blockers checked off. Cx 0.1 is at RC status on submain. The main branch hasn't changed yet, so the merge gap is now the single biggest remaining task.
+
+## Audit Part 2 and the type parser refactor
+
+The audit Part 2 commit (`a576f20`) had been sitting in an uncertain state for nearly a week. It finally landed with changes across `parser.rs`, `semantic.rs`, `main.rs`, and `runtime.rs`, plus 6 new matrix tests (t109 through t114).
+
+The most interesting piece: the type parser was refactored from flat alternatives to `recursive()`, which unlocks nested types like `Result<Result<T>>` and `Handle<T>` in type position. This had been blocking proper type expression parsing for compound generics.
+
+Other fixes in the same commit: the semantic pass now resolves actual field types from struct definitions for `DotAccess` LValues and rejects type mismatches; the runtime applies `apply_numeric_cast` using the LValue's declared type for both `Assign` and `CompoundAssign`; and the interpreter now runs on a dedicated 64 MB stack thread to prevent stack overflow on recursive Cx programs. 17 files changed, +180/-61 lines total.
+
+## Memory boundary soundness audit
+
+The second commit (`41099fb`) created `examples/audit_memory/` with 12 targeted programs covering Handle lifecycle, copy/bleed-back semantics, and string arena behavior. The results:
+
+- 9 clean passes
+- 1 documented limitation (arena monotonic growth, known and accepted for 0.1)
+- 1 semantic rejection by design (no strref constructor)
+- 1 real soundness bug
+
+That real bug is the important one.
+
+## StrRef escape through struct fields
+
+The soundness bug (`b057340`): StrRef values could be stored in struct fields, bypassing the existing escape checks that already blocked StrRef in variable assignments and function returns. Struct fields were simply a gap in enforcement.
+
+The fix adds two checks in `semantic.rs`: rejection at struct field assignment (the `DotAccess` arm, around line 412) and rejection at struct instantiation when any field is declared as `strref` (around line 1040). Matrix test t115 was added as an expected-fail test to verify the rejection works.
+
+This is consistent with the broader StrRef policy: arena-backed string references cannot escape their scope. Variables, return values, and now struct fields are all covered. The audit didn't find any other escape paths.
+
+## Decisions that came out of this
+
+Three concrete decisions got locked in:
+
+**StrRef cannot live in struct fields.** This closes the last known escape path for arena-backed string references. It follows naturally from the existing policy, just patches the gap.
+
+**Handle double-drop stays as a silent no-op.** The audit confirmed that the generational index system makes double-drop safe (the second drop targets a slot whose generation has advanced). This is documented as a known 0.1 limitation. A warning diagnostic is a post-0.1 consideration.
+
+**64 MB interpreter stack thread rather than per-frame optimization.** Instead of reducing per-frame stack consumption (which would be a larger optimization), the interpreter now spawns a dedicated thread with a 64 MB stack. Good enough for any reasonable recursive Cx program at 0.1. Per-frame reduction is tracked for later.
+
+## Roadmap v5.0 and RC status
+
+The fourth commit (`587bd20`) updated the submain roadmap to v5.0 with all 9 hard blockers checked off with evidence: basic test runner, minimal error model, integer overflow enforcement, semicolon rule, parser/semantic/interpreter agreement, memory boundary soundness, all examples passing, diagnostics readability, and roadmap/spec parity.
+
+A new "0.1 Release Candidate Status" section was added at the top. Known limitations are explicitly documented rather than hidden. The main-branch roadmap was also updated to v4.9 to acknowledge the submain work, but notes the merge is still pending.
+
+## What's next
+
+The merge is the bottleneck now. Submain is 19 commits ahead of main, and main has roughly 15 merge/daily-log commits not on submain. This will be a non-trivial merge, but it would advance the main matrix from 78 to 117 tests and bring all the hard blocker resolutions to the primary branch.
+
+Beyond the merge, there's operational cleanup (24 daily-log branches sitting unmerged on the remote), quality gate work like `:=` type inference and pattern matching, and eventually IR lowering for the new constructs. None of those are hard blockers for 0.1, but they shape the developer experience.
+
+The project state is concrete: all known soundness holes are patched, all hard blockers are resolved on submain, and the remaining work is integration and polish. The gap between RC and release is now a merge, not missing features.
