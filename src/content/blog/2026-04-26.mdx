@@ -1,0 +1,48 @@
+---
+title: "Cx Dev Log — 2026-04-26"
+date: 2026-04-26
+description: "Phase 11 of the IR backend begins with unary expression lowering landing on submain, plus a cargo test fix and a roadmap update."
+---
+
+The IR backend entered Phase 11 today. Unary expression lowering landed on submain with support for negate (int and float) and boolean `not`, backed by four new tests. A cargo test fix also went in to restore the test suite after the previous sprint's warning cleanup broke it. Both commits are branch-local to submain. Main remains untouched.
+
+## Unary Expression Lowering
+
+The Phase 11 work adds a single new match arm in `src/ir/lower.rs` (+140/-1 lines) that handles two unary operators:
+
+`Op::Minus` lowers `-x` to `0 - x`. The implementation produces a `ConstFloat` zero for f64 or a `ConstInt` zero for integer types, then emits a `Binary::Sub` instruction. This is the standard compiler trick of reusing subtraction infrastructure rather than introducing a dedicated `Neg` IR instruction, and it keeps the instruction set smaller.
+
+`Op::Not` lowers boolean negation to `value == 0` via a `Compare::Eq` against a zero constant, producing a `Bool` result.
+
+Unsupported unary operators return a clean `LoweringError` rather than panicking.
+
+Four new Rust-level tests cover the lowering: `lowers_unary_negate_int`, `lowers_unary_negate_float`, `lowers_unary_not_bool`, and `rejects_unsupported_unary_op`. These validate the actual IR output structure, not just that the lowering call succeeds without error.
+
+This is a relatively small addition in terms of scope, but it marks the transition from statement-level control flow (which Phase 10 completed with while, for, loop, break, continue, if/else) into expression-level constructs. The remaining unsupported expression kinds in the lowering pass are ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, and Range.
+
+## Cargo Test Fix
+
+The previous sprint's warning cleanup deleted `analyze_program` from `semantic.rs`, but the `#[cfg(test)]` module still referenced it. Commit `db2ee08` adds a 27-line test-only wrapper that constructs a single-file `ResolvedProgram` and delegates to `analyze_resolved_program`.
+
+The same commit includes CRLF line ending fixes in six expected_output sidecar files that were causing test mismatches on Windows. After this fix, cargo test reports 123 passed, 1 failed. The single failure is a pre-existing IR backend test that has been tracked since Phase 10.
+
+## Roadmap v4.8 to v4.9
+
+The main-branch roadmap got a meaningful update:
+
+- Nine hard blockers checked off with evidence from submain: basic test runner, minimal error model, integer overflow enforcement, semicolons, parser/semantic/interpreter agreement, memory boundary soundness, all examples passing, diagnostics readability, and roadmap/spec parity. Each is annotated as "on submain, pending merge to main."
+- The Active section now reflects Phase 10 completion and Phase 11 start on submain.
+- Known Gaps updated to mark struct field type checking and integer overflow as resolved on submain.
+- A new note calls out the submain integration gap (19 commits ahead of main) as the top priority.
+
+## The Merge Gap
+
+This is the elephant in the room. Submain is 19 commits ahead of main. The main test matrix is stuck at 78/78 while submain sits at 117/117. That is a 39-test gap, entirely caused by the pending merge.
+
+The merge has been the stated top priority for multiple consecutive days and has not happened yet. Every day of new submain work without merging makes the eventual integration harder. The work landing on submain is real and valuable, but the divergence is the single biggest integration risk right now.
+
+## What's Next
+
+Of yesterday's predictions, only the IR lowering work actually happened. The submain-to-main merge, daily-log branch cleanup, and quality gate work all did not land.
+
+Ranked by leverage: the merge remains the highest priority. After that, continuing Phase 11 expression lowering through the remaining unsupported kinds (ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, Range) is the natural next target. Fixing the one remaining cargo test failure would bring the Rust test suite to fully green. And the 25 unmerged daily-log branches on the remote are accumulating operational noise that will need cleanup eventually.
