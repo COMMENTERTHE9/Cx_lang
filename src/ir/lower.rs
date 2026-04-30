@@ -520,9 +520,52 @@ fn lower_stmt(
                 }),
             }
         }
-        SemanticStmt::CompoundAssign { .. } => Err(LoweringError::UnresolvedSemanticArtifact {
-            artifact: "CompoundAssign".to_string(),
-        }),
+        SemanticStmt::CompoundAssign { target, op, operand, .. } => {
+    match target {
+        SemanticLValue::Binding { binding, ty, .. } => {
+            let target_ty = lower_type(ty)?;
+            let current_val = current.bindings.get(binding).ok_or_else(|| {
+                LoweringError::UnresolvedSemanticArtifact {
+                    artifact: format!("compound assign binding {:?}", binding),
+                }
+            })?.clone();
+            let rhs = lower_expr(operand, ctx, &mut current)?;
+            let bin_op = match op {
+                Op::Plus => BinaryOp::Add,
+                Op::Minus => BinaryOp::Sub,
+                Op::Mul => BinaryOp::Mul,
+                Op::Div => BinaryOp::Div,
+                Op::Mod => BinaryOp::Rem,
+                _ => {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!("compound assign operator {:?}", op),
+                    });
+                }
+            };
+            let result_dst = ctx.fresh_value();
+            current.emit(IrInst::Binary {
+                dst: result_dst,
+                op: bin_op,
+                ty: target_ty.clone(),
+                lhs: current_val.value,
+                rhs: rhs.value,
+            })?;
+            let bind_dst = ctx.fresh_value();
+            current.emit(IrInst::SsaBind {
+                dst: bind_dst,
+                ty: target_ty.clone(),
+                src: result_dst,
+            })?;
+            current.bindings.insert(*binding, LoweredValue { value: bind_dst, ty: target_ty });
+            Ok(Some(current))
+        }
+        SemanticLValue::DotAccess { .. } => {
+            Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "CompoundAssign::DotAccess".to_string(),
+            })
+        }
+    }
+},
         SemanticStmt::FuncDef(_) => Err(LoweringError::UnsupportedSemanticConstruct {
             construct: "nested FuncDef".to_string(),
         }),
@@ -1991,7 +2034,7 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnresolvedSemanticArtifact {
-                artifact: "CompoundAssign".to_string()
+                artifact: "compound assign binding BindingId(1)".to_string()
             }
         );
     }
@@ -3398,6 +3441,84 @@ mod tests {
     }
 
     #[test]
+    fn lowers_compound_assign_add() {
+        let program = SemanticProgram {
+            stmts: vec![
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(0),
+                    name: "x".to_string(),
+                    ty: SemanticType::I64,
+                    expr: int_expr(10, SemanticType::I64),
+                    pos_type: 0,
+                },
+                SemanticStmt::CompoundAssign {
+                    target: SemanticLValue::Binding {
+                        binding: BindingId(0),
+                        name: "x".to_string(),
+                        ty: SemanticType::I64,
+                    },
+                    op: Op::Plus,
+                    operand: int_expr(5, SemanticType::I64),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let has_add = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::Binary { op: BinaryOp::Add, .. })
+        });
+        assert!(has_add, "compound += should emit Binary::Add");
+    }
+
+    #[test]
+    fn lowers_compound_assign_sub() {
+        let program = SemanticProgram {
+            stmts: vec![
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(0),
+                    name: "x".to_string(),
+                    ty: SemanticType::I64,
+                    expr: int_expr(10, SemanticType::I64),
+                    pos_type: 0,
+                },
+                SemanticStmt::CompoundAssign {
+                    target: SemanticLValue::Binding {
+                        binding: BindingId(0),
+                        name: "x".to_string(),
+                        ty: SemanticType::I64,
+                    },
+                    op: Op::Minus,
+                    operand: int_expr(3, SemanticType::I64),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn rejects_compound_assign_dot_access() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::CompoundAssign {
+                target: SemanticLValue::DotAccess {
+                    binding: None,
+                    container: "obj".to_string(),
+                    field: "x".to_string(),
+                    ty: SemanticType::I64,
+                },
+                op: Op::Plus,
+                operand: int_expr(1, SemanticType::I64),
+                pos: 0,
+            }],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
+    }
+
+    #[test]
     fn rejects_unsupported_semantic_type_inside_if_branch() {
         let program = SemanticProgram {
             stmts: vec![if_stmt(
@@ -3449,7 +3570,7 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnresolvedSemanticArtifact {
-                artifact: "CompoundAssign".to_string()
+                artifact: "compound assign binding BindingId(98)".to_string()
             }
         );
     }
