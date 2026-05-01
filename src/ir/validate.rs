@@ -424,6 +424,49 @@ fn validate_inst(
                 errors,
             );
         }
+        IrInst::Alloca { dst, size, align } => {
+            if *size == 0 {
+                errors.push(IrValidationError::InvalidTypeUsage {
+                    function: function.name.clone(),
+                    block,
+                    detail: "Alloca size must be > 0".to_string(),
+                });
+            }
+            if *align == 0 || (align & (align - 1)) != 0 {
+                errors.push(IrValidationError::InvalidTypeUsage {
+                    function: function.name.clone(),
+                    block,
+                    detail: format!("Alloca align must be power of 2, got {}", align),
+                });
+            }
+            define_value(function, block, *dst, IrType::Ptr, "Alloca destination", defined_values, errors);
+        }
+        IrInst::Load { dst, ty, ptr } => {
+            require_value(function, block, *ptr, "Load ptr", defined_values, errors);
+            if let Some(ptr_ty) = defined_values.get(ptr) {
+                if *ptr_ty != IrType::Ptr {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!("Load ptr must be Ptr, got {:?}", ptr_ty),
+                    });
+                }
+            }
+            define_value(function, block, *dst, ty.clone(), "Load destination", defined_values, errors);
+        }
+        IrInst::Store { ptr, value } => {
+            require_value(function, block, *ptr, "Store ptr", defined_values, errors);
+            require_value(function, block, *value, "Store value", defined_values, errors);
+            if let Some(ptr_ty) = defined_values.get(ptr) {
+                if *ptr_ty != IrType::Ptr {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!("Store ptr must be Ptr, got {:?}", ptr_ty),
+                    });
+                }
+            }
+        }
     }
 }
 

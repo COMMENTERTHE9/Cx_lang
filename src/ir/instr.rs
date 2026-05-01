@@ -60,6 +60,20 @@ pub enum IrInst {
         to: IrType,
         value: ValueId,
     },
+    Alloca {
+        dst: ValueId,
+        size: usize,
+        align: usize,
+    },
+    Load {
+        dst: ValueId,
+        ty: IrType,
+        ptr: ValueId,
+    },
+    Store {
+        ptr: ValueId,
+        value: ValueId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
