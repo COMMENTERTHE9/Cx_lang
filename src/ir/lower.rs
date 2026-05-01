@@ -10,7 +10,10 @@ use crate::frontend::semantic_types::{
 };
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
-use crate::ir::types::{BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId};
+use crate::ir::types::{
+    compute_struct_layout, BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType,
+    StructLayout, ValueId,
+};
 
 macro_rules! unsupported {
     ($name:literal) => {
@@ -117,10 +120,49 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
     table
 }
 
+#[derive(Clone)]
+struct StructLayoutInfo {
+    fields: Vec<(String, IrType)>,
+    layout: StructLayout,
+}
+
+fn build_struct_table(program: &SemanticProgram) -> HashMap<String, StructLayoutInfo> {
+    let mut table = HashMap::new();
+    for stmt in &program.stmts {
+        if let SemanticStmt::StructDef { name, fields, .. } = stmt {
+            let mut ir_fields = Vec::new();
+            let mut field_types = Vec::new();
+            let mut all_ok = true;
+            for (fname, fty) in fields {
+                match lower_type(fty) {
+                    Ok(ir_ty) => {
+                        ir_fields.push((fname.clone(), ir_ty.clone()));
+                        field_types.push(ir_ty);
+                    }
+                    Err(_) => {
+                        all_ok = false;
+                        break;
+                    }
+                }
+            }
+            if !all_ok {
+                continue;
+            }
+            let layout = compute_struct_layout(&field_types);
+            table.insert(name.clone(), StructLayoutInfo {
+                fields: ir_fields,
+                layout,
+            });
+        }
+    }
+    table
+}
+
 struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
     signature_table: HashMap<String, FunctionSignature>,
+    struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
 }
 
@@ -146,11 +188,16 @@ struct FunctionLoweringSpec {
 }
 
 impl LoweringCtx {
-    fn new(signature_table: HashMap<String, FunctionSignature>, trace: bool) -> Self {
+    fn new(
+        signature_table: HashMap<String, FunctionSignature>,
+        struct_table: HashMap<String, StructLayoutInfo>,
+        trace: bool,
+    ) -> Self {
         Self {
             builder: IrBuilder::new(),
             finished_blocks: Vec::new(),
             signature_table,
+            struct_table,
             trace,
         }
     }
@@ -244,6 +291,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let mut top_level_stmts = Vec::new();
     let mut has_real_main = false;
     let signature_table = build_signature_table(program);
+    let struct_table = build_struct_table(program);
 
     for stmt in &program.stmts {
         match stmt {
@@ -251,7 +299,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, trace)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace)?);
             }
             other => top_level_stmts.push(other),
         }
@@ -265,19 +313,19 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, trace)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, trace)?);
     }
 
     Ok(module)
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, trace: bool) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, trace: bool) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
         allow_return_stmt: false,
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone(), trace);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace);
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
         stmts.iter().copied(),
@@ -301,6 +349,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
 fn lower_semantic_function(
     function: &crate::frontend::semantic_types::SemanticFunction,
     signature_table: &HashMap<String, FunctionSignature>,
+    struct_table: &HashMap<String, StructLayoutInfo>,
     trace: bool,
 ) -> Result<IrFunction, LoweringError> {
     let mut ir_params = Vec::with_capacity(function.params.len());
@@ -308,7 +357,7 @@ fn lower_semantic_function(
     let mut bindings = HashMap::new();
     let return_ty = function.return_ty.as_ref().map(lower_type).transpose()?;
 
-    let mut ctx = LoweringCtx::new(signature_table.clone(), trace);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace);
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -1538,7 +1587,7 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::Char => { unsupported_type!("Char") },
         SemanticType::Enum(_) => { unsupported_type!("Enum") },
         SemanticType::TypeParam(_) => { unsupported_type!("TypeParam") },
-        SemanticType::Struct(_) => { unsupported_type!("Struct") },
+        SemanticType::Struct(_) => Ok(IrType::Ptr),
         SemanticType::Array(_, _) => { unsupported_type!("Array") },
         SemanticType::Result(_) => { unsupported_type!("Result") },
         SemanticType::Void => { unsupported_type!("Void") },

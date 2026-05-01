@@ -43,6 +43,7 @@ impl IrType {
     }
 }
 
+#[derive(Clone)]
 pub struct StructLayout {
     pub field_offsets: Vec<usize>,
     pub total_size: usize,
