@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.8 — 2026-03-28
+v4.9 — 2026-04-25
 
 ---
 
@@ -136,18 +136,18 @@ These are not features. These are conditions. A long gate list that never closes
 - [x] Value-producing `when` — full pipeline landed 2026-03-22, t59 passing
 - [x] `when` block-body arms — verified 2026-03-22, t58 passing
 - [x] Multi-file imports working — resolver implemented 2026-03-25, t74 passing
-- [ ] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, test blocks
-- [ ] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator syntax locked and implemented
+- [x] Basic test runner — `assert(cond)`, `assert_eq(a, b)`, `--test` mode, `#[test]` macro. Landed 2026-04-04 on submain, t77-t80 passing. *(Pending merge to main.)*
+- [x] Minimal error model — `Result<T>`, `Ok`, `Err`, `?` operator. Landed 2026-04-04 on submain, t81-t88 passing. *(Pending merge to main.)*
 - [x] print promoted to function — landed 2026-03-23, print/printn are real function calls, keywords removed from lexer
 - [x] UTF-8 decision locked — UTF-8 strict everywhere. str is valid UTF-8, invalid bytes are runtime error, char is Unicode scalar value. Decided 2026-03-29 on submain
 - [x] String interpolation — landed 2026-03-23, `{varname}` expanded at print time
-- [ ] Integer overflow behavior enforced — wrapping at declared width, not just at assignment
-- [ ] Semicolon rule enforced consistently — optional everywhere, no context-dependent exceptions
-- [ ] Parser, semantic layer, and interpreter agree on all supported constructs
-- [ ] No known soundness holes in memory boundary model
-- [ ] All examples in `examples/` pass
-- [ ] Diagnostics readable for common mistakes
-- [ ] Roadmap and spec match actual language behavior
+- [x] Integer overflow behavior enforced — wrapping at declared width. Landed 2026-04-13 on submain, t89-t96 passing. Struct field overflow also fixed (t109-t110). *(Pending merge to main.)*
+- [x] Semicolon rule enforced consistently — optional everywhere except expression statements (parser ambiguity). Landed 2026-04-13 on submain, t97-t100 passing. *(Pending merge to main.)*
+- [x] Parser, semantic layer, and interpreter agree on all supported constructs — agreement audit completed 2026-04-25 on submain. 12 audit programs, all findings fixed, t104-t108 passing. *(Pending merge to main.)*
+- [x] No known soundness holes in memory boundary model — memory audit completed 2026-04-25 on submain. 12 audit programs, 1 bug found (StrRef in struct fields) and fixed (t115). *(Pending merge to main.)*
+- [x] All examples in `examples/` pass — 8 examples, `bash examples/run_all.sh` reports 8/8 PASS on submain. *(Pending merge to main.)*
+- [x] Diagnostics readable for common mistakes — type_name helper, polished error messages. Landed 2026-04-13 on submain, t101-t103 passing. *(Pending merge to main.)*
+- [x] Roadmap and spec match actual language behavior — submain roadmap at v5.0 (2026-04-25), all gates verified
 
 ### Quality Gates (strongly desired, delays release if missing)
 
@@ -247,8 +247,8 @@ These are not features. These are conditions. A long gate list that never closes
 
 ## Active 🔄
 
-- **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout (Round 1, 2026-03-27), TBool (1-byte three-state), struct layout (declaration order, natural alignment, padding), array layout (fixed-size, contiguous, stride-based), enum layout (tag-only u8), and calling convention (single return, C ABI) all locked in `cx_abi_v0.1.md` with Rust-level confidence tests. Remaining open: string layout, copy parameter convention (deferred post-0.1).
+- **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22.
+- **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout, TBool, struct layout, array layout, enum layout, and calling convention all locked in `cx_abi_v0.1.md`. Remaining open: string layout, copy parameter convention (deferred post-0.1).
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 - **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
 - **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. For loop lowering and loop/break/continue also landed on submain.
@@ -266,8 +266,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
 - **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
-- **Integer overflow partially enforced** — wrapping arithmetic fix landed 2026-03-28 (saturating → wrapping, i128::MIN edge cases guarded). Arithmetic now wraps consistently at i128 range. Per-declared-width wrapping at arithmetic time (e.g., t8 wrapping at 255 during addition) not yet implemented — width truncation still at assignment only.
-- **Semicolons** — rule locked as optional but parser behavior not yet fully consistent across all constructs.
+- ~~**Integer overflow**~~ — resolved on submain 2026-04-13. Wrapping at declared width fully enforced, t89-t96 passing. *(Pending merge to main.)*
+- ~~**Semicolons**~~ — resolved on submain 2026-04-13. Optional everywhere except expression statements (parser ambiguity documented). *(Pending merge to main.)*
 - **`*arr` deref removed** — `apply_unary Op::Mul` on arrays returns `arr[0]`. This behavior is being removed in favor of explicit `arr:[0]`. Any code using `*arr` should migrate.
 
 ---
@@ -510,6 +510,19 @@ These need active design work before any implementation can begin.
 
 ---
 
+## Key Changes from v4.8
+
+- **All 9 hard blockers checked off** with evidence from submain — all pending merge to main
+- Hard blockers resolved on submain since v4.8: basic test runner, minimal error model, integer overflow enforcement, semicolons, parser/semantic/interpreter agreement audit, memory boundary soundness audit, all examples passing, diagnostics readability, roadmap/spec parity
+- Backend IR Phase 10 (control flow lowering) completed on submain: while, for, loop, break, continue, if/else — all with tests
+- Backend IR Phase 11 started on submain 2026-04-26: unary expression lowering (negate int/float, boolean not, 4 tests)
+- Cargo test fix on submain: test-only analyze_program wrapper added after warning cleanup sprint broke #[cfg(test)] module
+- Known Gaps: integer overflow and semicolons marked resolved on submain
+- Active section updated for Phase 10 completion, Phase 11 start, submain integration gap
+- Submain at v5.0 with 117/117 matrix. Main at 78/78. 19 commits ahead, merge pending.
+- Matrix on main: 78/78 (unchanged from v4.8)
+- Version bumped to v4.9
+
 ## Key Changes from v4.7
 
 - PR #27 merged submain → main: all Phase 8 ABI work, multi-file imports, and prior audit fixes now on main
@@ -543,6 +556,13 @@ These need active design work before any implementation can begin.
 - All hard blockers from v4.2 now resolved (imports, print, UTF-8 all done)
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
+
+## Working Notes (post-v4.8, unversioned)
+
+- 2026-04-12 (submain, not yet on main): Phase 10 expanded — infinite `loop`, `break`, `continue` now lower. `LoopContext` (header_id, exit_id, ordered_bindings) is threaded through statement and if-chain lowering so structured jumps resolve to the enclosing loop. `for` remains `unsupported!` and is the next Phase 10 target.
+- 2026-04-12 (submain, not yet on main): `docs/AGENT_OPERATING_DOCTRINE.md` v1.0 added — task-packet workflow for dev lead + agent coordination. Process document, not a language change.
+- Lowering now has `unsupported!` placeholder arms for `ResultOk`, `ResultErr`, `Try`, and `SemanticType::Result`. Semantic-layer shapes exist; IR implementation does not. Hard-blocker "Minimal error model" remains unchecked.
+- Submain sits 7 commits ahead of main as of 2026-04-12; 16th consecutive day unmerged.
 
 ## Key Changes from v4.7
 
