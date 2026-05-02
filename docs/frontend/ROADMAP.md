@@ -1,5 +1,5 @@
 # Cx Language Roadmap
-v4.9 — 2026-04-26
+v4.9 — 2026-04-25
 
 ---
 
@@ -557,6 +557,13 @@ These need active design work before any implementation can begin.
 - All hard blockers from v4.2 now resolved (imports, print, UTF-8 all done)
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
+
+## Working Notes (post-v4.8, unversioned)
+
+- 2026-04-12 (submain, not yet on main): Phase 10 expanded — infinite `loop`, `break`, `continue` now lower. `LoopContext` (header_id, exit_id, ordered_bindings) is threaded through statement and if-chain lowering so structured jumps resolve to the enclosing loop. `for` remains `unsupported!` and is the next Phase 10 target.
+- 2026-04-12 (submain, not yet on main): `docs/AGENT_OPERATING_DOCTRINE.md` v1.0 added — task-packet workflow for dev lead + agent coordination. Process document, not a language change.
+- Lowering now has `unsupported!` placeholder arms for `ResultOk`, `ResultErr`, `Try`, and `SemanticType::Result`. Semantic-layer shapes exist; IR implementation does not. Hard-blocker "Minimal error model" remains unchecked.
+- Submain sits 7 commits ahead of main as of 2026-04-12; 16th consecutive day unmerged.
 
 ## Key Changes from v4.7
 
