@@ -251,8 +251,8 @@ These are not features. These are conditions. A long gate list that never closes
 - **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout, TBool, struct layout, array layout, enum layout, and calling convention all locked in `cx_abi_v0.1.md`. Remaining open: string layout, copy parameter convention (deferred post-0.1).
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 - **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
-- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. For loop lowering and loop/break/continue also landed on submain.
-- **Backend IR Phase 11 — Expression lowering** — Unary expression lowering (negate int/float, boolean not, 4 tests) landed on submain 2026-04-26. Compound assign lowering (+=, -=, *=, /=, %%= on bindings, 3 tests) landed on submain 2026-04-30. DotAccess compound assign not yet supported.
+- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. If/else lowering next.
+- **Backend IR Phase 11 — Expression/memory lowering** — Active on submain. Sub-packet 1 (2026-04-30): `IrType::Ptr`, `IrInst::Alloca/Load/Store` with validator and printer, ABI doc updated. Sub-packet 2 (2026-05-01): struct registry (`build_struct_table`) threaded into `LoweringCtx`, `lower_type` maps `SemanticType::Struct` to `IrType::Ptr`. Prior sub-packets: unary expression lowering (2026-04-26), compound assign lowering (2026-04-30).
 
 ---
 
