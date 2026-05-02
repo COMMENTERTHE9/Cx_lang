@@ -563,6 +563,8 @@ These need active design work before any implementation can begin.
 - 2026-04-12 (submain, not yet on main): `docs/AGENT_OPERATING_DOCTRINE.md` v1.0 added — task-packet workflow for dev lead + agent coordination. Process document, not a language change.
 - Lowering now has `unsupported!` placeholder arms for `ResultOk`, `ResultErr`, `Try`, and `SemanticType::Result`. Semantic-layer shapes exist; IR implementation does not. Hard-blocker "Minimal error model" remains unchecked.
 - Submain sits 7 commits ahead of main as of 2026-04-12; 16th consecutive day unmerged.
+- 2026-05-02: Daily-log PR backlog cleared — PRs #29 through #52 merged to main in a single batch. Covers daily logs from 2026-03-29 through 2026-05-01.
+- 2026-05-02: `stokowski/cx-6-document-unary-lowering` branch created with documentation-only commit (`2d665a4`) adding 25 lines of comments to `src/ir/lower.rs` explaining the unary lowering encoding choices (Op::Minus as 0-value, Op::Not as value==0). Branch-local, not merged.
 
 ## Key Changes from v4.7
 
