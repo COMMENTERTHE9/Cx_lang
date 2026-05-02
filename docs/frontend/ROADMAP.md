@@ -251,9 +251,8 @@ These are not features. These are conditions. A long gate list that never closes
 - **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout, TBool, struct layout, array layout, enum layout, and calling convention all locked in `cx_abi_v0.1.md`. Remaining open: string layout, copy parameter convention (deferred post-0.1).
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 - **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
-- **Backend IR Phase 10 — Control flow lowering** — Complete on submain. While loop (header/body/exit CFG, loop-carried SSA via block params, backedge), for loop (increment block, ascending, inclusive/exclusive, break/continue), infinite loop (loop/break/continue), and if/else lowering all landed with tests. *(Pending merge to main.)*
-- **Backend IR Phase 11 — Expression lowering** — Started on submain 2026-04-26. Unary expression lowering (negate int/float, boolean not) landed with 4 tests. Remaining unsupported: ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, Range.
-- **Submain integration gap** — submain is 19 commits ahead of main. All 9 hard blockers resolved on submain (v5.0), matrix at 117/117. Main matrix at 78/78. Merge is the single highest-priority integration task.
+- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. For loop lowering and loop/break/continue also landed on submain.
+- **Backend IR Phase 11 — Expression lowering** — Unary expression lowering (negate int/float, boolean not, 4 tests) landed on submain 2026-04-26. Compound assign lowering (+=, -=, *=, /=, %%= on bindings, 3 tests) landed on submain 2026-04-30. DotAccess compound assign not yet supported.
 
 ---
 
