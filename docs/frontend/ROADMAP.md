@@ -252,7 +252,7 @@ These are not features. These are conditions. A long gate list that never closes
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 - **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
 - **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. If/else lowering next.
-- **Backend IR Phase 11 — Expression/memory lowering** — Active on submain. Sub-packet 1 (2026-04-30): `IrType::Ptr`, `IrInst::Alloca/Load/Store` with validator and printer, ABI doc updated. Sub-packet 2 (2026-05-01): struct registry (`build_struct_table`) threaded into `LoweringCtx`, `lower_type` maps `SemanticType::Struct` to `IrType::Ptr`. Prior sub-packets: unary expression lowering (2026-04-26), compound assign lowering (2026-04-30).
+- **Backend IR Phase 11 — Expression/memory lowering** — Active on submain. Sub-packet 1 (2026-04-30): `IrType::Ptr`, `IrInst::Alloca/Load/Store` with validator and printer, ABI doc updated. Sub-packet 2 (2026-05-01): struct registry (`build_struct_table`) threaded into `LoweringCtx`, `lower_type` maps `SemanticType::Struct` to `IrType::Ptr`. Prior sub-packets: unary expression lowering (2026-04-26), compound assign lowering (2026-04-30). CX-6 documentation PR (#53) merged to submain 2026-05-03: block-level comments documenting unary lowering strategy in `lower.rs`.
 
 ---
 
