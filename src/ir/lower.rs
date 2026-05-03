@@ -1385,10 +1385,32 @@ fn lower_expr(
         SemanticExprKind::HandleVal { .. } => { unsupported!("HandleVal") },
         SemanticExprKind::HandleDrop { .. } => { unsupported!("HandleDrop") },
         SemanticExprKind::Range { .. } => { unsupported!("Range") },
+        // Unary expression lowering strategy
+        //
+        // The IR has no dedicated unary-negate or unary-not instructions.  Both
+        // operators are expressed as two-operand forms so that every code-gen
+        // backend only needs to handle a single instruction shape.
+        //
+        // Op::Minus  — arithmetic negation
+        //   Lower as `0 - value`.  A zero literal of the operand's type is
+        //   synthesised first; then a Binary/Sub instruction computes the
+        //   difference.  This works uniformly for i8/i16/i32/i64 and f64
+        //   because each type already has a matching ConstInt/ConstFloat form.
+        //
+        // Op::Not  — boolean complement
+        //   Lower as `value == 0` using Compare/Eq against a Bool-typed zero.
+        //   The semantic layer guarantees the operand is Bool, so "false" is
+        //   represented as 0 and "true" as 1; equality with zero is therefore
+        //   equivalent to logical negation.
+        //
+        // All other operator tokens are rejected at this stage; they either
+        // do not exist in the current grammar or have no unary meaning.
         SemanticExprKind::Unary { op, expr, .. } => {
     let lowered = lower_expr(expr, ctx, active)?;
     match op {
         Op::Minus => {
+            // Emit the zero operand in the correct type, then subtract:
+            //   dst = 0 - lowered
             let zero = ctx.fresh_value();
             match &lowered.ty {
                 IrType::F64 => {
@@ -1409,6 +1431,9 @@ fn lower_expr(
             Ok(LoweredValue { value: dst, ty: lowered.ty })
         }
         Op::Not => {
+            // Emit a Bool zero, then compare for equality:
+            //   dst = (lowered == 0)
+            // Because Bool is canonically 0/1, this flips the value.
             let zero = ctx.fresh_value();
             active.emit(IrInst::ConstInt { dst: zero, ty: IrType::Bool, value: 0 })?;
             let dst = ctx.fresh_value();
