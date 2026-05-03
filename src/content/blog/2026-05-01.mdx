@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-05-01"
+date: 2026-05-01
+description: "Phase 11 adds IR memory operations (Alloca, Load, Store with a new Ptr type) and a struct registry threaded through the lowering context, setting up struct-aware code generation on submain."
+---
+
+Two sub-packets landed on submain today, both aimed at the same goal: making the IR backend aware of structs. The first adds memory operations to the IR instruction set. The second builds a struct registry and wires it into the lowering pass. Together they mean the lowering pass now knows what structs look like in memory and has the instructions to manipulate them. Main remains untouched at 78/78 tests. Submain is 22 commits ahead, spanning roughly 34 days.
+
+## IR Memory Operations
+
+Commit `6252994` on submain adds a `Ptr` type to the IR type system (8 bytes, 8-byte alignment) and three new IR instructions:
+
+- `Alloca` allocates stack space with a given size and alignment.
+- `Load` performs a typed read from a pointer.
+- `Store` writes a value through a pointer.
+
+The IR validator picked up 43 lines of new checks. Alloca requires size > 0 and power-of-two alignment. Load and Store both require their pointer operand to actually be `IrType::Ptr`. The printer gained support for all three ops, and the ABI doc (`docs/backend/cx_abi_v0.1.md`) was updated with a Ptr row in the scalar layout table. One new layout test verifies the Ptr size and alignment. Total diff: +77 lines across five files.
+
+This is the standard infrastructure for a lowering pass targeting something like Cranelift or LLVM. Structs live in memory, not in registers. You allocate them on the stack with Alloca, read fields with Load, and write fields with Store. Without these three instructions, the backend had no way to represent anything that does not fit in a single register-width value.
+
+## Struct Registry and Struct-to-Ptr Lowering
+
+Commit `c95eea6` (the same day, a few hours later) introduces the struct registry. `build_struct_table()` walks all top-level `SemanticStmt::StructDef` entries, lowers each field type, and computes the struct layout using the existing `compute_struct_layout()` from Phase 8. This produces a `StructLayoutInfo` per struct, containing field offsets, sizes, and alignments.
+
+The struct table is then threaded through `LoweringCtx`, `lower_semantic_function`, `lower_top_level_main`, and `lower_program_inner`. Every lowering path now has access to struct metadata.
+
+The key behavioral change: `lower_type` now maps `SemanticType::Struct(_)` to `Ok(IrType::Ptr)` instead of returning `UnsupportedSemanticType`. Structs are pointers in the IR. This is the same decision that LLVM makes by default for aggregate types in many frontends.
+
+The pattern follows `build_signature_table`, which already does a single pre-pass over function signatures before any function body is lowered. Struct layouts are computed once and shared, not recomputed per-function.
+
+Total diff: +50 net lines, almost entirely in `src/ir/lower.rs`.
+
+## The Submain Divergence
+
+This is now a 22-commit, 34-day gap. Submain carries v5.0 with 117/117 tests, all 9 hard blockers resolved, the error model, integer overflow enforcement, optional semicolons, and the entire Phase 10-11 IR backend. Main is still at v4.8 with 78/78 tests and several hard blockers unchecked.
+
+Every day of continued submain-only work increases the eventual merge complexity. The merge has been the stated top priority for weeks and has not happened. The work is real and the code is solid, but the gap is the single biggest integration risk in the project.
+
+## What Landed vs. What Was Predicted
+
+Of yesterday's predictions: "Continue Phase 11 expression lowering" happened, though the work moved into memory and struct infrastructure rather than staying in expression-level constructs. "Merge submain to main" did not happen. "Fix the pre-existing IR backend test failure" did not happen. "Merge or close stale daily-log PRs" did not happen.
+
+## What's Next
+
+The struct registry and Ptr infrastructure are now in place. The natural next sub-packets are:
+
+- **Struct field access lowering.** `DotAccess` on struct fields can now use the field offsets from `StructLayoutInfo` to emit pointer arithmetic plus Load for reads and pointer arithmetic plus Store for writes.
+- **Struct literal lowering.** `SemanticExprKind::StructLit` can lower to an Alloca for the struct followed by Store instructions for each field, using the layout offsets.
+- **The merge.** Still the highest-leverage action. 22 commits and 39 tests sitting on submain, waiting.
