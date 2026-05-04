@@ -65,6 +65,11 @@ pub enum IrInst {
         size: usize,
         align: usize,
     },
+    PtrOffset {
+        dst: ValueId,
+        base: ValueId,
+        offset: usize,
+    },
     Load {
         dst: ValueId,
         ty: IrType,
