@@ -401,8 +401,13 @@ impl Analyzer {
                         let instance_ty = info.inferred.clone()
                             .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
                             .unwrap_or(SemanticType::Unknown);
-                        let field_ty = if let SemanticType::Struct(struct_name) = &instance_ty {
-                            self.structs.get(struct_name)
+                        let struct_name = if let SemanticType::Struct(sn) = &instance_ty {
+                            sn.clone()
+                        } else {
+                            String::new()
+                        };
+                        let field_ty = if !struct_name.is_empty() {
+                            self.structs.get(&struct_name)
                                 .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
                                 .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
                                 .unwrap_or(SemanticType::Unknown)
@@ -423,6 +428,7 @@ impl Analyzer {
                             container: container.clone(),
                             field: field.clone(),
                             ty: field_ty,
+                            struct_name,
                         }
                     }
                     _ => {
@@ -789,15 +795,20 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             .and_then(|info| info.inferred.clone()
                                 .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))))
                             .unwrap_or(SemanticType::Unknown);
-                        let field_ty = if let SemanticType::Struct(struct_name) = &instance_ty {
-                            self.structs.get(struct_name)
+                        let struct_name = if let SemanticType::Struct(sn) = &instance_ty {
+                            sn.clone()
+                        } else {
+                            String::new()
+                        };
+                        let field_ty = if !struct_name.is_empty() {
+                            self.structs.get(&struct_name)
                                 .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
                                 .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
                                 .unwrap_or(SemanticType::Unknown)
                         } else {
                             SemanticType::Unknown
                         };
-                        SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty }
+                        SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty, struct_name }
                     }
                 };
                 Ok(SemanticStmt::CompoundAssign {

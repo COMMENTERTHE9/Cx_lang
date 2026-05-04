@@ -514,10 +514,17 @@ fn lower_stmt(
                         .insert(*binding, LoweredValue { value: dst, ty: target_ty });
                     Ok(Some(current))
                 }
-                SemanticLValue::DotAccess { .. } => {
-                    Err(LoweringError::UnsupportedSemanticConstruct {
-                        construct: "Assign::DotAccess".to_string(),
-                    })
+                SemanticLValue::DotAccess { binding, container, field, ty, struct_name } => {
+                    let lowered = lower_expr(expr, ctx, &mut current)?;
+                    let (field_ptr, field_ir_ty) = resolve_field_ptr(
+                        binding, container, field, struct_name, ty, ctx, &mut current,
+                    )?;
+                    ensure_type_match("struct field assign", field_ir_ty, lowered.ty)?;
+                    current.emit(IrInst::Store {
+                        ptr: field_ptr,
+                        value: lowered.value,
+                    })?;
+                    Ok(Some(current))
                 }
             }
         }
@@ -625,10 +632,46 @@ fn lower_stmt(
             current.bindings.insert(*binding, LoweredValue { value: bind_dst, ty: target_ty });
             Ok(Some(current))
         }
-        SemanticLValue::DotAccess { .. } => {
-            Err(LoweringError::UnsupportedSemanticConstruct {
-                construct: "CompoundAssign::DotAccess".to_string(),
-            })
+        SemanticLValue::DotAccess { binding, container, field, ty, struct_name } => {
+            let (field_ptr, field_ir_ty) = resolve_field_ptr(
+                binding, container, field, struct_name, ty, ctx, &mut current,
+            )?;
+            // Read the current field value.
+            let current_dst = ctx.fresh_value();
+            current.emit(IrInst::Load {
+                dst: current_dst,
+                ty: field_ir_ty.clone(),
+                ptr: field_ptr,
+            })?;
+            // Lower the operand.
+            let rhs = lower_expr(operand, ctx, &mut current)?;
+            // Compute the binary result.
+            let bin_op = match op {
+                Op::Plus => BinaryOp::Add,
+                Op::Minus => BinaryOp::Sub,
+                Op::Mul => BinaryOp::Mul,
+                Op::Div => BinaryOp::Div,
+                Op::Mod => BinaryOp::Rem,
+                _ => {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!("compound assign operator {:?}", op),
+                    });
+                }
+            };
+            let result_dst = ctx.fresh_value();
+            current.emit(IrInst::Binary {
+                dst: result_dst,
+                op: bin_op,
+                ty: field_ir_ty.clone(),
+                lhs: current_dst,
+                rhs: rhs.value,
+            })?;
+            // Write back to the field.
+            current.emit(IrInst::Store {
+                ptr: field_ptr,
+                value: result_dst,
+            })?;
+            Ok(Some(current))
         }
     }
 },
@@ -1691,9 +1734,10 @@ fn lower_binary(
     }
 }
 
-// Struct field read lowering strategy
+// Struct field access lowering strategy
 //
-// A DotAccess expression `container.field` is lowered in three steps:
+// Both reads (DotAccess expressions) and writes (DotAccess l-values in Assign /
+// CompoundAssign) share the same pointer-resolution logic:
 //
 //   1. Resolve the container binding to its SSA value (a Ptr produced by a
 //      prior Alloca when the struct was created).
@@ -1707,12 +1751,20 @@ fn lower_binary(
 //      to the field's address.  If the offset is zero the base pointer itself
 //      already addresses the first field.
 //
-//   4. Emit IrInst::Load with the field's IR type to read the value.
+// `resolve_field_ptr` encapsulates steps 1–3 and returns the field pointer
+// ValueId together with the field's IR type.  Callers then emit either a
+// Load (for reads) or a Store (for writes).
 //
-// This produces at most two instructions per field read (PtrOffset + Load)
-// and reuses the existing memory instruction set without requiring a
-// dedicated GEP instruction.
-fn lower_dot_access(
+// Field reads produce at most two instructions (PtrOffset + Load).
+// Field writes produce at most two instructions (PtrOffset + Store).
+// CompoundAssign field writes produce at most four (PtrOffset + Load + Binary + Store).
+
+/// Resolve the address of a struct field, emitting `PtrOffset` when needed.
+///
+/// Returns `(field_ptr, field_ir_ty)` where `field_ptr` is the ValueId of the
+/// pointer to the field and `field_ir_ty` is its IR type.  The caller is
+/// responsible for emitting the Load or Store that actually accesses the field.
+fn resolve_field_ptr(
     binding: &Option<BindingId>,
     container: &str,
     field: &str,
@@ -1720,19 +1772,19 @@ fn lower_dot_access(
     field_sem_ty: &SemanticType,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
-) -> Result<LoweredValue, LoweringError> {
+) -> Result<(ValueId, IrType), LoweringError> {
     // 1. Resolve the container binding to get the struct pointer.
     let binding_id = binding.ok_or_else(|| LoweringError::InternalInvariantViolation {
         detail: format!(
-            "DotAccess on '{container}.{field}' has no binding; \
-             the semantic analyser must supply one for all lowerable field reads"
+            "field access on '{container}.{field}' has no binding; \
+             the semantic analyser must supply one for all lowerable field accesses"
         ),
     })?;
 
     let base = active.bindings.get(&binding_id).cloned().ok_or_else(|| {
         LoweringError::InternalInvariantViolation {
             detail: format!(
-                "binding for '{container}' (id {}) not found in scope for DotAccess '{container}.{field}'",
+                "binding for '{container}' (id {}) not found in scope for field access '{container}.{field}'",
                 binding_id.0
             ),
         }
@@ -1741,7 +1793,7 @@ fn lower_dot_access(
     if base.ty != IrType::Ptr {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!(
-                "DotAccess on '{container}': expected Ptr-typed binding, got {:?}",
+                "field access on '{container}': expected Ptr-typed binding, got {:?}",
                 base.ty
             ),
         });
@@ -1752,13 +1804,13 @@ fn lower_dot_access(
         return Err(LoweringError::UnresolvedSemanticArtifact {
             artifact: format!(
                 "struct type for '{container}' is unknown; \
-                 DotAccess '{container}.{field}' cannot be lowered"
+                 field access '{container}.{field}' cannot be lowered"
             ),
         });
     }
     let info = ctx.struct_table.get(struct_name).cloned().ok_or_else(|| {
         LoweringError::UnresolvedSemanticArtifact {
-            artifact: format!("struct '{struct_name}' in DotAccess '{container}.{field}'"),
+            artifact: format!("struct '{struct_name}' in field access '{container}.{field}'"),
         }
     })?;
 
@@ -1779,7 +1831,7 @@ fn lower_dot_access(
     if expected_ir_ty != field_ir_ty {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!(
-                "DotAccess '{container}.{field}': IR type mismatch — \
+                "field access '{container}.{field}': IR type mismatch — \
                  semantic layer says {expected_ir_ty:?}, struct layout says {field_ir_ty:?}"
             ),
         });
@@ -1798,7 +1850,21 @@ fn lower_dot_access(
         base.value
     };
 
-    // 5. Load the field value.
+    Ok((field_ptr, field_ir_ty))
+}
+
+fn lower_dot_access(
+    binding: &Option<BindingId>,
+    container: &str,
+    field: &str,
+    struct_name: &str,
+    field_sem_ty: &SemanticType,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    let (field_ptr, field_ir_ty) =
+        resolve_field_ptr(binding, container, field, struct_name, field_sem_ty, ctx, active)?;
+
     let dst = ctx.fresh_value();
     active.emit(IrInst::Load {
         dst,
@@ -3920,7 +3986,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_compound_assign_dot_access() {
+    fn rejects_compound_assign_dot_access_with_no_binding() {
+        // binding: None means the semantic analyser failed to resolve the container —
+        // lowering must reject this even though DotAccess is now otherwise supported.
         let program = SemanticProgram {
             stmts: vec![SemanticStmt::CompoundAssign {
                 target: SemanticLValue::DotAccess {
@@ -3928,6 +3996,7 @@ mod tests {
                     container: "obj".to_string(),
                     field: "x".to_string(),
                     ty: SemanticType::I64,
+                    struct_name: "Point".to_string(),
                 },
                 op: Op::Plus,
                 operand: int_expr(1, SemanticType::I64),
@@ -4228,5 +4297,157 @@ mod tests {
             enums: vec![],
         };
         assert!(lower_program(&program).is_err());
+    }
+
+    // ── struct field write tests ──────────────────────────────────────────────
+
+    // Writing to the first field (`x` at offset 0) must emit a single Store —
+    // no PtrOffset is needed because the base pointer already addresses the field.
+    #[test]
+    fn lowers_assign_dot_access_first_field_emits_store_only() {
+        // fn set_x(p: Point) { p.x = 42 }
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                semantic_function(
+                    "set_x",
+                    vec![typed_param(
+                        BindingId(0),
+                        "p",
+                        SemanticType::Struct("Point".to_string()),
+                    )],
+                    None,
+                    vec![SemanticStmt::Assign {
+                        target: SemanticLValue::DotAccess {
+                            binding: Some(BindingId(0)),
+                            container: "p".to_string(),
+                            field: "x".to_string(),
+                            ty: SemanticType::I64,
+                            struct_name: "Point".to_string(),
+                        },
+                        expr: int_expr(42, SemanticType::I64),
+                        pos_eq: 0,
+                    }],
+                    None,
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "set_x").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have a Store.
+        let has_store = insts.iter().any(|i| matches!(i, IrInst::Store { .. }));
+        assert!(has_store, "expected Store for first-field Assign::DotAccess");
+
+        // Must NOT have a PtrOffset — first field is at offset 0.
+        let has_ptr_offset = insts.iter().any(|i| matches!(i, IrInst::PtrOffset { .. }));
+        assert!(!has_ptr_offset, "unexpected PtrOffset for first field (offset 0)");
+    }
+
+    // Writing to the second field (`y` at offset 8) must emit PtrOffset(8) then Store.
+    #[test]
+    fn lowers_assign_dot_access_second_field_emits_ptr_offset_then_store() {
+        // fn set_y(p: Point) { p.y = 99 }
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                semantic_function(
+                    "set_y",
+                    vec![typed_param(
+                        BindingId(0),
+                        "p",
+                        SemanticType::Struct("Point".to_string()),
+                    )],
+                    None,
+                    vec![SemanticStmt::Assign {
+                        target: SemanticLValue::DotAccess {
+                            binding: Some(BindingId(0)),
+                            container: "p".to_string(),
+                            field: "y".to_string(),
+                            ty: SemanticType::I64,
+                            struct_name: "Point".to_string(),
+                        },
+                        expr: int_expr(99, SemanticType::I64),
+                        pos_eq: 0,
+                    }],
+                    None,
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "set_y").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have PtrOffset with offset 8.
+        let has_ptr_offset = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::PtrOffset { offset: 8, .. }));
+        assert!(has_ptr_offset, "expected PtrOffset(8) for second field of Point");
+
+        // Must have a Store.
+        let has_store = insts.iter().any(|i| matches!(i, IrInst::Store { .. }));
+        assert!(has_store, "expected Store after PtrOffset for second field");
+    }
+
+    // CompoundAssign `p.x += 10` must emit Load + Binary(Add) + Store.
+    // No PtrOffset is needed for the first field.
+    #[test]
+    fn lowers_compound_assign_dot_access_add_first_field() {
+        // fn add_to_x(p: Point) { p.x += 10 }
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                semantic_function(
+                    "add_to_x",
+                    vec![typed_param(
+                        BindingId(0),
+                        "p",
+                        SemanticType::Struct("Point".to_string()),
+                    )],
+                    None,
+                    vec![SemanticStmt::CompoundAssign {
+                        target: SemanticLValue::DotAccess {
+                            binding: Some(BindingId(0)),
+                            container: "p".to_string(),
+                            field: "x".to_string(),
+                            ty: SemanticType::I64,
+                            struct_name: "Point".to_string(),
+                        },
+                        op: Op::Plus,
+                        operand: int_expr(10, SemanticType::I64),
+                        pos: 0,
+                    }],
+                    None,
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "add_to_x").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have a Load (read current value).
+        let has_load = insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I64, .. }));
+        assert!(has_load, "expected Load i64 for compound-assign field read");
+
+        // Must have a Binary Add.
+        let has_add = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Add, .. }));
+        assert!(has_add, "expected Binary::Add for compound assign +=");
+
+        // Must have a Store (write back).
+        let has_store = insts.iter().any(|i| matches!(i, IrInst::Store { .. }));
+        assert!(has_store, "expected Store for compound assign write-back");
+
+        // Must NOT have a PtrOffset — first field is at offset 0.
+        let has_ptr_offset = insts.iter().any(|i| matches!(i, IrInst::PtrOffset { .. }));
+        assert!(!has_ptr_offset, "unexpected PtrOffset for first field (offset 0)");
     }
 }
