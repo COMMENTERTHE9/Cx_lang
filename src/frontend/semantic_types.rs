@@ -176,6 +176,10 @@ pub enum SemanticLValue {
         container: String,
         field: String,
         ty: SemanticType,
+        /// Name of the struct type that owns this field.
+        /// Populated by the semantic analyser when the container has a known
+        /// `Struct(name)` type; empty string when the type is Unknown.
+        struct_name: String,
     },
 }
 
