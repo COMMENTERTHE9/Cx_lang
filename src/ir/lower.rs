@@ -4657,4 +4657,185 @@ mod tests {
         };
         assert!(lower_program(&program).is_err());
     }
+
+    // ── array-of-structs lowering tests ──────────────────────────────────────
+    //
+    // An Array(N, Struct("S")) lowers to IrType::Ptr (pointer to the array
+    // storage block). Each struct element is itself stack-allocated via Alloca
+    // and represented as a Ptr. The array Alloca therefore holds N pointer-sized
+    // (8-byte) slots; each slot receives a Store of the corresponding struct
+    // pointer, with PtrOffset(i * 8) for slots at non-zero byte offsets.
+    //
+    // For Point { x: i64, y: i64 } (16-byte struct, align 8):
+    //   Struct element IR:
+    //     Alloca(size=16, align=8)
+    //     ConstInt + Store (x at offset 0)
+    //     ConstInt + PtrOffset(8) + Store (y at offset 8)
+    //
+    //   Array slot IR (stride = size_of(Ptr) = 8):
+    //     slot 0: Store(struct_ptr)          — no PtrOffset, offset 0
+    //     slot k: PtrOffset(k*8) + Store     — for k > 0
+
+    // lower_type must map Array(N, Struct("X")) → Ptr, regardless of element
+    // type — the outer array type always collapses to a pointer to its storage.
+    #[test]
+    fn lower_type_array_of_struct_is_ptr() {
+        let ty = SemanticType::Array(2, Box::new(SemanticType::Struct("Point".to_string())));
+        assert_eq!(lower_type(&ty), Ok(IrType::Ptr));
+    }
+
+    // Helper: build a `Point { x: x_val, y: y_val }` SemanticExpr.
+    fn point_instance(x_val: i128, y_val: i128) -> SemanticExpr {
+        SemanticExpr {
+            ty: SemanticType::Struct("Point".to_string()),
+            kind: SemanticExprKind::StructInstance {
+                type_name: "Point".to_string(),
+                fields: vec![
+                    ("x".to_string(), int_expr(x_val, SemanticType::I64)),
+                    ("y".to_string(), int_expr(y_val, SemanticType::I64)),
+                ],
+            },
+        }
+    }
+
+    // Single-element array of structs: `let arr: [Point; 1] = [Point { x: 1, y: 2 }]`
+    //
+    // Expected instruction counts:
+    //   Alloca ×2 — one for the struct, one for the array
+    //   Store  ×3 — two field stores (x, y) + one slot store (struct ptr → arr[0])
+    //   PtrOffset ×1 — y field at offset 8; arr[0] is at offset 0 so no PtrOffset there
+    #[test]
+    fn lowers_array_lit_of_one_struct_emits_two_allocas() {
+        let arr_ty = SemanticType::Array(1, Box::new(SemanticType::Struct("Point".to_string())));
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                typed_assign(
+                    BindingId(0),
+                    "arr",
+                    arr_ty.clone(),
+                    SemanticExpr {
+                        ty: arr_ty,
+                        kind: SemanticExprKind::ArrayLit {
+                            elements: vec![point_instance(1, 2)],
+                        },
+                    },
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        let alloca_count = insts.iter().filter(|i| matches!(i, IrInst::Alloca { .. })).count();
+        assert_eq!(alloca_count, 2, "expected one struct Alloca + one array Alloca");
+
+        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
+        assert_eq!(store_count, 3, "expected 2 field stores + 1 array slot store");
+
+        // Only the y-field offset emits PtrOffset; arr[0] is at byte offset 0.
+        let ptr_offset_count = insts.iter().filter(|i| matches!(i, IrInst::PtrOffset { .. })).count();
+        assert_eq!(ptr_offset_count, 1, "expected one PtrOffset (y field at offset 8)");
+    }
+
+    // Two-element array of structs: `[Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]`
+    //
+    // Expected instruction counts:
+    //   Alloca    ×3 — two struct Allocas + one array Alloca
+    //   Store     ×6 — four field stores (x,y per struct ×2) + two slot stores
+    //   PtrOffset ×3 — y-field offset per struct ×2 + slot-1 offset (stride=8)
+    #[test]
+    fn lowers_array_lit_of_two_structs_emit_shape() {
+        let arr_ty = SemanticType::Array(2, Box::new(SemanticType::Struct("Point".to_string())));
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                typed_assign(
+                    BindingId(0),
+                    "arr",
+                    arr_ty.clone(),
+                    SemanticExpr {
+                        ty: arr_ty,
+                        kind: SemanticExprKind::ArrayLit {
+                            elements: vec![point_instance(1, 2), point_instance(3, 4)],
+                        },
+                    },
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        let alloca_count = insts.iter().filter(|i| matches!(i, IrInst::Alloca { .. })).count();
+        assert_eq!(alloca_count, 3, "expected 2 struct Allocas + 1 array Alloca");
+
+        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
+        assert_eq!(store_count, 6, "expected 4 field stores + 2 slot stores");
+
+        // 2 PtrOffset(8) for y-fields + 1 PtrOffset(8) for array slot 1.
+        let ptr_offset_count = insts.iter().filter(|i| matches!(i, IrInst::PtrOffset { .. })).count();
+        assert_eq!(ptr_offset_count, 3, "expected 2 struct y-field offsets + 1 array slot-1 offset");
+    }
+
+    // Three-element array of structs verifies the array Alloca is sized for
+    // N pointer-width slots: 3 * size_of(Ptr) = 3 * 8 = 24 bytes, align 8.
+    // Because the struct Allocas are 16 bytes each, the 24-byte Alloca is
+    // unambiguously the array's own storage block.
+    #[test]
+    fn lowers_array_of_three_structs_array_alloca_is_24_bytes() {
+        let arr_ty = SemanticType::Array(3, Box::new(SemanticType::Struct("Point".to_string())));
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                typed_assign(
+                    BindingId(0),
+                    "arr",
+                    arr_ty.clone(),
+                    SemanticExpr {
+                        ty: arr_ty,
+                        kind: SemanticExprKind::ArrayLit {
+                            elements: vec![
+                                point_instance(1, 2),
+                                point_instance(3, 4),
+                                point_instance(5, 6),
+                            ],
+                        },
+                    },
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        // The array storage Alloca is 3 * 8 = 24 bytes; struct Allocas are 16.
+        let has_array_alloca = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Alloca { size: 24, align: 8, .. }));
+        assert!(has_array_alloca, "expected Alloca(size=24, align=8) for 3-element Ptr array");
+
+        // 4 Allocas total: 3 struct + 1 array.
+        let alloca_count = insts.iter().filter(|i| matches!(i, IrInst::Alloca { .. })).count();
+        assert_eq!(alloca_count, 4, "expected 3 struct Allocas + 1 array Alloca");
+
+        // 9 Stores: 6 field stores (x,y per struct ×3) + 3 slot stores.
+        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
+        assert_eq!(store_count, 9, "expected 6 field stores + 3 slot stores");
+    }
 }
