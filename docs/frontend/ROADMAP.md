@@ -269,10 +269,12 @@ These are not features. These are conditions. A long gate list that never closes
 
 ## Active 🔄
 
-- **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22. Loops, structs not yet lowered.
-- **Backend ABI / Data Layout** — Phase 8 Round 1 landed on submain 2026-03-27: scalar layout locked (size/align for all IrType variants), `cx_abi_v0.1.md` design doc, 7 Rust-level layout confidence tests. Open design questions: TBool representation, string layout, struct layout, copy parameter convention.
+- **Backend IR Phase 6** — function call lowering and validation. Stage 2b (direct call lowering with arity/type validation) and Stage 3 (cross-function call validation in IR validator) landed 2026-03-22.
+- **Backend ABI / Data Layout** — Phase 8 complete on submain as of 2026-03-28. Scalar layout, TBool, struct layout, array layout, enum layout, and calling convention all locked in `cx_abi_v0.1.md`. Remaining open: string layout, copy parameter convention (deferred post-0.1).
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
-- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) implemented on submain with t74/t64 passing — pending merge to main.
+- **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
+- **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. If/else lowering next.
+- **Backend IR Phase 11 — Expression/memory lowering** — Active on submain. Sub-packet 1 (2026-04-30): `IrType::Ptr`, `IrInst::Alloca/Load/Store` with validator and printer, ABI doc updated. Sub-packet 2 (2026-05-01): struct registry (`build_struct_table`) threaded into `LoweringCtx`, `lower_type` maps `SemanticType::Struct` to `IrType::Ptr`. Prior sub-packets: unary expression lowering (2026-04-26), compound assign lowering (2026-04-30).
 
 ---
 
@@ -283,8 +285,8 @@ These are known issues with expected_fail markers. They do not block CI but need
 - ~~**t42 — TypeParam vs Struct ambiguity**~~ — resolved 2026-03-23, expected_fail removed. Print-as-function refactor eliminated the ambiguity.
 - **t33 — Array index assign** — array index write (`arr:[i] = val`) not fully wired through semantic path. Arrays work for read, pass, and return but mutable index assign has gaps.
 - **t32 — StrRef escape reject** — strref boundary checker rejects some valid patterns. Expected_fail while boundary rules are refined.
-- **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught.
-- **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries.
+- **Struct field type checking** — `DotAccess` in semantic layer always returns `SemanticType::I128` regardless of actual field type. Non-existent fields not caught. *(Fixed on `submain` 2026-03-25 — DotAccess resolves actual field types.)*
+- **Method call return type** — `MethodCall` in semantic layer returns `SemanticType::Unknown`. Type information lost at method call boundaries. *(Fixed on `submain` 2026-03-25 — method_registry resolves return types.)*
 - ~~**`when` block-body arms**~~ — resolved 2026-03-22, t58 passing.
 - **Integer overflow not enforced in arithmetic** — wrapping is the locked decision but arithmetic still uses full i128 range. Enforcement not yet implemented.
 - **Expression statement semicolons** — bare expression statements (`x + 1`, `some_func()` used as a statement not assigned) still require a semicolon due to parser ambiguity. All other statements — declarations, assignments, compound assigns, returns, const — have optional semicolons. Full semicolon-free syntax requires a newline-aware parser redesign. Post-0.1.
@@ -531,6 +533,31 @@ These need active design work before any implementation can begin.
 
 ---
 
+## Key Changes from v4.8
+
+- **All 9 hard blockers checked off** with evidence from submain — all pending merge to main
+- Hard blockers resolved on submain since v4.8: basic test runner, minimal error model, integer overflow enforcement, semicolons, parser/semantic/interpreter agreement audit, memory boundary soundness audit, all examples passing, diagnostics readability, roadmap/spec parity
+- Backend IR Phase 10 (control flow lowering) completed on submain: while, for, loop, break, continue, if/else — all with tests
+- Backend IR Phase 11 started on submain 2026-04-26: unary expression lowering (negate int/float, boolean not, 4 tests)
+- Cargo test fix on submain: test-only analyze_program wrapper added after warning cleanup sprint broke #[cfg(test)] module
+- Known Gaps: integer overflow and semicolons marked resolved on submain
+- Active section updated for Phase 10 completion, Phase 11 start, submain integration gap
+- Submain at v5.0 with 117/117 matrix. Main at 78/78. 19 commits ahead, merge pending.
+- Matrix on main: 78/78 (unchanged from v4.8)
+- Version bumped to v4.9
+
+## Key Changes from v4.7
+
+- PR #27 merged submain → main: all Phase 8 ABI work, multi-file imports, and prior audit fixes now on main
+- Phase 8 ABI fully locked for 0.1: struct layout (declaration order, natural alignment, padding), array layout (fixed-size, contiguous, stride-based), enum layout (tag-only u8), calling convention (single return, C ABI, copy params post-0.1)
+- TBool backend representation resolved: 1-byte three-state, `IrType::TBool` added
+- Wrapping arithmetic fix on submain: saturating→wrapping, i128::MIN edge cases guarded (partial hard blocker progress)
+- Phase 10 started on submain: while loop lowering with header/body/exit CFG, loop-carried SSA, backedge
+- Active section updated for Phase 8 completion, Phase 10 start, multi-file imports integration
+- Known Gaps integer overflow entry updated to reflect partial fix
+- Matrix at 78/78 on main (up from 72/72 before PR #27 merge)
+- Version bumped to v4.8
+
 ## Key Changes from v4.0
 
 - Release gates split into two honest tiers — hard blockers and quality gates
@@ -552,6 +579,31 @@ These need active design work before any implementation can begin.
 - All hard blockers from v4.2 now resolved (imports, print, UTF-8 all done)
 - Test matrix at 78 tests, 78/78 green
 - Version bumped to v4.2
+
+## Working Notes (post-v4.8, unversioned)
+
+- 2026-04-12 (submain, not yet on main): Phase 10 expanded — infinite `loop`, `break`, `continue` now lower. `LoopContext` (header_id, exit_id, ordered_bindings) is threaded through statement and if-chain lowering so structured jumps resolve to the enclosing loop. `for` remains `unsupported!` and is the next Phase 10 target.
+- 2026-04-12 (submain, not yet on main): `docs/AGENT_OPERATING_DOCTRINE.md` v1.0 added — task-packet workflow for dev lead + agent coordination. Process document, not a language change.
+- Lowering now has `unsupported!` placeholder arms for `ResultOk`, `ResultErr`, `Try`, and `SemanticType::Result`. Semantic-layer shapes exist; IR implementation does not. Hard-blocker "Minimal error model" remains unchecked.
+- Submain sits 7 commits ahead of main as of 2026-04-12; 16th consecutive day unmerged.
+
+## Key Changes from v4.7
+
+- UTF-8 decision locked — hard blocker checked off, strict UTF-8 everywhere (decided on submain 2026-03-29)
+- Semicolon Known Gaps entry updated — declarations optional, expression statements still require semicolons due to parser ambiguity
+- UTF-8 Decision Locked in Must Ship marked done
+- Stale "3 hard blockers remain" note corrected
+- Matrix holds at 78/78 green
+- Version bumped to v4.8
+
+## Key Changes from v4.6
+
+- Backend IR Phase 7 debugging tools + Phase 0.5 backend trait refactor merged to main — IR is now the sole backend interface
+- Module resolver (`resolver.rs`) landed on submain — full dependency graph, topo-sort, circular import detection, `ExportTable` foundation
+- Site syntax docs updated to match frozen spec (site branch)
+- Active section updated for both backend IR and multi-file imports progress
+- Matrix holds at 72/72 green, no regressions
+- Version bumped to v4.7
 
 ## Key Changes from v4.5
 
