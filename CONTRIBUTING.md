@@ -5,17 +5,17 @@
 ### Rule 1 — One backend branch per task
 Backend branches are short-lived. Create a branch for one task, merge or abandon it, then delete it. Never keep a long-lived backend branch open while the frontend is evolving.
 
-### Rule 2 — Always start from fresh main
+### Rule 2 — Always start from fresh submain
 Every backend session starts with:
 ```bash
-git checkout main
+git checkout submain
 git pull
 git checkout -b backend/<task-name>
 ```
 Never resume an old backend branch from a previous session.
 
 ### Rule 3 — Stale base gate
-Any PR more than 20 commits behind main is blocked from merging until rebased. CI will label it `stale-base` automatically.
+Any PR more than 20 commits behind submain is blocked from merging until rebased. CI will label it `stale-base` automatically.
 
 ### Rule 4 — Backend recovery is file-scoped
 If backend work must be recovered from an old branch, carry over only the backend files needed. Never revive a stale branch as the working base. Never cherry-pick broad frontend commits into a backend branch.
