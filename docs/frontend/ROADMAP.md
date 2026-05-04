@@ -274,7 +274,7 @@ These are not features. These are conditions. A long gate list that never closes
 - **Generic structs follow-up** — Phase 1+2 landed. Remaining: type args in variable declarations (`p: Pair<t32>`), generic field type checking enforcement.
 - **Multi-file imports** — `#![imports]` block parsing and semantic validation landed 2026-03-24. Full resolution pipeline (resolver, semantic merge, runtime dispatch) merged to main via PR #27 on 2026-03-28, t74/t64 passing.
 - **Backend IR Phase 10 — Control flow lowering** — While loop lowering landed on submain 2026-03-28: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests. If/else lowering next.
-- **Backend IR Phase 11 — Expression/memory lowering** — Active on submain. Sub-packet 1 (2026-04-30): `IrType::Ptr`, `IrInst::Alloca/Load/Store` with validator and printer, ABI doc updated. Sub-packet 2 (2026-05-01): struct registry (`build_struct_table`) threaded into `LoweringCtx`, `lower_type` maps `SemanticType::Struct` to `IrType::Ptr`. Prior sub-packets: unary expression lowering (2026-04-26), compound assign lowering (2026-04-30). CX-6 documentation PR (#53) merged to submain 2026-05-03: block-level comments documenting unary lowering strategy in `lower.rs`.
+- **Backend IR Phase 11 — Expression/memory lowering** — Active on submain. Sub-packet 1 (2026-04-30): `IrType::Ptr`, `IrInst::Alloca/Load/Store` with validator and printer, ABI doc updated. Sub-packet 2 (2026-05-01): struct registry (`build_struct_table`) threaded into `LoweringCtx`, `lower_type` maps `SemanticType::Struct` to `IrType::Ptr`. Prior sub-packets: unary expression lowering (2026-04-26), compound assign lowering (2026-04-30). CX-6 documentation PR (#53) merged to submain 2026-05-03. Sub-packet 3 (2026-05-04, CX-9): struct literal lowering — `StructInstance` to Alloca+PtrOffset/Store. Sub-packet 4 (2026-05-04, CX-10): struct field reads — DotAccess via layout table lookup, PtrOffset+Load. CX-14 (2026-05-04): struct field writes — Assign/CompoundAssign for DotAccess LValues, `resolve_field_ptr` shared between reads and writes. CX-13 (2026-05-04): void function call lowering — Call with dst/return_ty None. CX-16 (2026-05-04): array type and literal lowering — Array(_, _) to IrType::Ptr, ArrayLit to Alloca+PtrOffset/Store. Sub-packet 7 (2026-05-04, CX-17): array element access — `IrInst::PtrAdd` for runtime pointer arithmetic, Index via stride*index+PtrAdd+Load.
 
 ---
 
@@ -588,6 +588,10 @@ These need active design work before any implementation can begin.
 - Submain sits 7 commits ahead of main as of 2026-04-12; 16th consecutive day unmerged.
 - 2026-05-02: Daily-log PR backlog cleared — PRs #29 through #52 merged to main in a single batch. Covers daily logs from 2026-03-29 through 2026-05-01.
 - 2026-05-02: `stokowski/cx-6-document-unary-lowering` branch created with documentation-only commit (`2d665a4`) adding 25 lines of comments to `src/ir/lower.rs` explaining the unary lowering encoding choices (Op::Minus as 0-value, Op::Not as value==0). Branch-local, not merged.
+- 2026-05-04: **PR #57 merged submain into main.** 37-day divergence resolved. Main jumps from 78/78 matrix to 117/117. All v5.0 release candidate work now on main.
+- 2026-05-04: CX-7 through CX-17 sprint on submain — direct function calls (Phase 6 completion), struct literals, struct field reads/writes, void function calls, array types/literals/element access. Submain is 20 commits ahead of main again after this burst.
+- 2026-05-04: Backend roadmap reconciled to v4.0 (CX-11) — Phase 6, Phase 10, Phase 8 Round 1 marked Done; Phase 11 Active.
+- 2026-05-04: CX-18 (array-of-structs tests) and CX-19 (named Range error) branch-local, not yet on submain.
 
 ## Key Changes from v4.7
 
