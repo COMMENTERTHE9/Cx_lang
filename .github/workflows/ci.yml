@@ -121,14 +121,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check how far behind main
+      - name: Check how far behind submain
         run: |
-          git fetch origin main
-          BEHIND=$(git rev-list --count HEAD..origin/main)
-          echo "Branch is $BEHIND commits behind main"
+          git fetch origin submain
+          BEHIND=$(git rev-list --count HEAD..origin/submain)
+          echo "Branch is $BEHIND commits behind submain"
           if [ "$BEHIND" -gt 20 ]; then
-            echo "STALE BASE: This branch is $BEHIND commits behind main."
-            echo "Rebase onto main before merging."
+            echo "STALE BASE: This branch is $BEHIND commits behind submain."
+            echo "Rebase onto submain before merging."
             exit 1
           fi
 
