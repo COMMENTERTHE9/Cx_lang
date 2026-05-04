@@ -40,3 +40,7 @@ Before every commit, agents must:
 1. Run `git branch --show-current` and confirm the branch is correct
 2. Never commit directly to `main` or `submain` without a PR
 3. Never cherry-pick frontend commits into backend branches
+
+## Stokowski Connector
+
+The Stokowski orchestration connector has been verified (CX-15).
