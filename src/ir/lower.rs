@@ -539,6 +539,18 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
+            // Void function calls cannot go through lower_expr because that function
+            // must return a LoweredValue, and void calls produce no value.
+            // Detect and lower void calls here before falling through to lower_expr.
+            if let SemanticExprKind::Call { callee, function: _, args } = &expr.kind {
+                let sig_info = ctx.signature_table.get(callee.as_str())
+                    .map(|s| (s.return_ty.clone(), s.param_types.clone()));
+                if let Some((None, param_types)) = sig_info {
+                    let callee = callee.clone();
+                    lower_void_call(&callee, args, &param_types, ctx, &mut current)?;
+                    return Ok(Some(current));
+                }
+            }
             let _ = lower_expr(expr, ctx, &mut current)?;
             Ok(Some(current))
         }
@@ -1341,7 +1353,10 @@ fn lower_expr(
 
             let return_ty = return_ty.ok_or_else(|| {
                 LoweringError::UnsupportedSemanticConstruct {
-                    construct: "void function call — IrType::Void pending".to_string(),
+                    construct: format!(
+                        "void function '{}' used in value position — void calls are only valid as statements",
+                        callee
+                    ),
                 }
             })?;
 
@@ -1832,6 +1847,58 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
             ),
         })
     }
+}
+
+/// Lower a void function call as a standalone statement.
+///
+/// Void calls cannot go through `lower_expr` because that function must return
+/// a `LoweredValue` and void calls produce no value.  This helper lowers the
+/// arguments, performs the usual arity and type checks, and emits
+/// `IrInst::Call { dst: None, return_ty: None }` directly into `active`.
+fn lower_void_call(
+    callee: &str,
+    args: &[SemanticCallArg],
+    param_types: &[IrType],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<(), LoweringError> {
+    if args.len() != param_types.len() {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "call to '{}': expected {} arguments, got {}",
+                callee,
+                param_types.len(),
+                args.len()
+            ),
+        });
+    }
+
+    let mut lowered_args = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        match arg {
+            SemanticCallArg::Expr(expr) => {
+                let lowered = lower_expr(expr, ctx, active)?;
+                ensure_type_match(
+                    &format!("argument {} of call to '{}'", i, callee),
+                    param_types[i].clone(),
+                    lowered.ty,
+                )?;
+                lowered_args.push(lowered.value);
+            }
+            _ => {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!("non-Expr call argument in call to '{}'", callee),
+                });
+            }
+        }
+    }
+
+    active.emit(IrInst::Call {
+        dst: None,
+        callee: callee.to_string(),
+        args: lowered_args,
+        return_ty: None,
+    })
 }
 
 #[cfg(test)]
@@ -2704,19 +2771,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_void_call() {
+    fn lowers_void_call_in_expr_stmt() {
+        // A void function called as a statement must produce
+        // IrInst::Call { dst: None, return_ty: None } and pass validation.
         let program = SemanticProgram {
             stmts: vec![
                 semantic_function(
                     "do_nothing",
                     vec![],
-                    None,
+                    None, // void return
                     vec![],
                     None,
                 ),
                 SemanticStmt::ExprStmt {
                     expr: SemanticExpr {
-                        ty: SemanticType::I64,
+                        ty: SemanticType::Void,
                         kind: SemanticExprKind::Call {
                             callee: "do_nothing".to_string(),
                             function: FunctionId(0),
@@ -2729,12 +2798,86 @@ mod tests {
             enums: vec![],
         };
 
-        assert_eq!(
-            lower_program(&program).expect_err("lowering should fail"),
-            LoweringError::UnsupportedSemanticConstruct {
-                construct: "void function call — IrType::Void pending".to_string(),
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let call_insts: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { .. }))
+            .collect();
+        assert_eq!(call_insts.len(), 1);
+        match &call_insts[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "void call must have no destination");
+                assert_eq!(callee, "do_nothing");
+                assert!(args.is_empty());
+                assert!(return_ty.is_none(), "void call must have no return type");
             }
-        );
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn lowers_void_call_with_args() {
+        // A void function that accepts arguments: args must be lowered and
+        // matched against the parameter types, then emitted with dst: None.
+        let binding = BindingId(1);
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "sink",
+                    vec![typed_param(BindingId(0), "x", SemanticType::I64)],
+                    None, // void return
+                    vec![],
+                    None,
+                ),
+                // x: t64 = 5
+                SemanticStmt::TypedAssign {
+                    binding,
+                    name: "x".to_string(),
+                    ty: SemanticType::I64,
+                    expr: int_expr(5, SemanticType::I64),
+                    pos_type: 0,
+                },
+                // sink(x)
+                SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::Void,
+                        kind: SemanticExprKind::Call {
+                            callee: "sink".to_string(),
+                            function: FunctionId(0),
+                            args: vec![SemanticCallArg::Expr(binding_ref(
+                                binding,
+                                "x",
+                                SemanticType::I64,
+                            ))],
+                        },
+                    },
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let call_insts: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { .. }))
+            .collect();
+        assert_eq!(call_insts.len(), 1);
+        match &call_insts[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "void call must have no destination");
+                assert_eq!(callee, "sink");
+                assert_eq!(args.len(), 1);
+                assert!(return_ty.is_none(), "void call must have no return type");
+            }
+            _ => panic!("expected Call instruction"),
+        }
     }
 
     #[test]
