@@ -1,0 +1,6 @@
+struct Counter {
+    value: t32,
+}
+
+c: Counter = Counter { value: 0 }
+c.value = true

@@ -1,0 +1,13 @@
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+pair_methods: impl (p: Pair) {
+    fnc: get_first() {
+        print(p.first)
+    }
+}
+
+p: Pair = Pair { first: 42, second: 99 }
+p.get_first()

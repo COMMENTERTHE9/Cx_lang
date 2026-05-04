@@ -1,0 +1,13 @@
+fnc: Result<t32> fail_if_zero(x: t32) {
+    if x == 0 {
+        return Err("cannot be zero");
+    }
+    return Ok(x);
+}
+
+let good;
+good = fail_if_zero(5)
+let bad;
+bad = fail_if_zero(0)
+print(good)
+print(bad)

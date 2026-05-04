@@ -1,0 +1,10 @@
+fnc: t32 inner(a: t32, b: t32) {
+    return a + b
+}
+
+fnc: t32 outer(a: t32, b: t32) {
+    x: t32 = a * 2
+    return inner(x, b)
+}
+
+print(outer(3, 4))

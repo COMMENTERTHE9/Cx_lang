@@ -1,0 +1,7 @@
+struct Counter {
+    value: t8,
+}
+
+c: Counter = Counter { value: 0 }
+c.value = 300
+print(c.value)

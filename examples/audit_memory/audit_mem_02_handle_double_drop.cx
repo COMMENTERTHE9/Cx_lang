@@ -1,0 +1,5 @@
+let h;
+h = Handle.new(99)
+h.drop()
+h.drop()
+print("survived")

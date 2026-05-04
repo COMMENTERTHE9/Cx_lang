@@ -1,0 +1,4 @@
+fnc: t8 f() {
+    return true
+}
+print(f())

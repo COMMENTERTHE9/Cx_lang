@@ -1,0 +1,21 @@
+fnc: Result<t32> step1(x: t32) {
+    if x == 0 {
+        return Err("zero at step1");
+    }
+    return Ok(x);
+}
+
+fnc: Result<t32> step2(x: t32) {
+    let v;
+    v = step1(x)?
+    return Ok(v + 1);
+}
+
+fnc: Result<t32> step3(x: t32) {
+    let v;
+    v = step2(x)?
+    return Ok(v + 1);
+}
+
+print(step3(5))
+print(step3(0))

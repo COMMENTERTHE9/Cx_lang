@@ -1,0 +1,9 @@
+fnc: drop_it(h: t64) {
+    print("drop_it called")
+}
+
+let h;
+h = Handle.new(42)
+print(h.val)
+h.drop()
+print("dropped")

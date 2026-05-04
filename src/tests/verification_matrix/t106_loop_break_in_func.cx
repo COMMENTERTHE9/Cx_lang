@@ -1,0 +1,11 @@
+fnc: t64 find_first_even(start: t64) {
+    i: t64 = start
+    loop {
+        if (i % 2) == 0 {
+            break
+        }
+        i += 1
+    }
+    return i
+}
+print(find_first_even(7))

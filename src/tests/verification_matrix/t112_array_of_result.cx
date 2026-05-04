@@ -1,0 +1,13 @@
+fnc: Result<t32> try_double(x: t32) {
+    if x < 0 {
+        return Err("negative")
+    }
+    return Ok(x * 2)
+}
+
+r1: Result<t32> = try_double(1)
+r2: Result<t32> = try_double(-1)
+r3: Result<t32> = try_double(5)
+print(r1)
+print(r2)
+print(r3)

@@ -115,6 +115,15 @@ pub enum Token {
     #[token("impl")]
     KeywordImpl,
 
+    #[token("Result")]
+    KeywordResult,
+
+    #[token("Ok")]
+    KeywordOk,
+
+    #[token("Err")]
+    KeywordErr,
+
     // ── Type Keywords ────────────────────────────
     #[token("t8")]
     TypeT8,

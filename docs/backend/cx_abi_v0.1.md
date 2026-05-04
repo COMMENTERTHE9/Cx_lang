@@ -23,6 +23,7 @@ All integers are signed two's complement. No unsigned types at 0.1. Cx type name
 | f64     | F64     | 8            | 8                 | IEEE 754 double | types::F64    |
 | bool    | Bool    | 1            | 1                 | 0=false, 1=true | types::I8 (0/1) |
 | tbool   | TBool   | 1            | 1                 | 0=false, 1=true, 2=unknown | types::I8 (0/1/2) |
+| ptr     | Ptr     | 8            | 8                 | platform-width pointer | types::I64 (Cranelift) |
 
 ### Notes
 

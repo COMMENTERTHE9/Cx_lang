@@ -1,0 +1,4 @@
+fnc: Result<Result<t32>> wrap(x: t32) {
+    return Ok(Ok(x))
+}
+print(wrap(5))

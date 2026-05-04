@@ -1,0 +1,3 @@
+x: str = "hello"
+y: str = "world"
+print(x + y)

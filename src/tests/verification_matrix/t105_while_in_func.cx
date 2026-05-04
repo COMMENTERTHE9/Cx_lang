@@ -1,0 +1,10 @@
+fnc: t64 sum_to(n: t64) {
+    total: t64 = 0
+    i: t64 = 0
+    while (i < n) {
+        total += i
+        i += 1
+    }
+    return total
+}
+print(sum_to(5))

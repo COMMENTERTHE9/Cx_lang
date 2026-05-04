@@ -33,6 +33,7 @@ pub enum SemanticType {
     Handle(Box<SemanticType>),
     Numeric,
     Array(usize, Box<SemanticType>),
+    Result(Box<SemanticType>),
     Void,
 }
 
@@ -131,6 +132,16 @@ pub enum SemanticExprKind {
     When {
         expr: Box<SemanticExpr>,
         arms: Vec<SemanticWhenArm>,
+        pos: usize,
+    },
+    ResultOk {
+        expr: Box<SemanticExpr>,
+    },
+    ResultErr {
+        expr: Box<SemanticExpr>,
+    },
+    Try {
+        expr: Box<SemanticExpr>,
         pos: usize,
     },
 }
@@ -232,6 +243,7 @@ pub struct SemanticFunction {
     pub return_ty: Option<SemanticType>,
     pub body: Vec<SemanticStmt>,
     pub ret_expr: Option<SemanticExpr>,
+    pub is_test: bool,
     pub pos: usize,
 }
 

@@ -13,13 +13,13 @@ use frontend::parser;
 use frontend::resolver;
 use frontend::semantic;
 use frontend::semantic_types::SemanticProgram;
+use frontend::types::RuntimeError;
 use runtime::runtime::*;
 
 use chumsky::input::{Input, Stream};
 use chumsky::prelude::SimpleSpan;
 use chumsky::Parser;
 use colored::Colorize;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::env;
 use std::fs;
@@ -71,10 +71,36 @@ impl PhaseTimer {
     }
 }
 
-// Simple driver that tokenizes, parses, and executes a .cx file.
+// The interpreter runs on a dedicated thread with a 64 MB stack to handle
+// deep recursion. The interpreter uses native Rust recursion for Cx-level
+// function calls (call_semantic_func -> run_semantic_stmt -> eval_semantic_expr),
+// which burns multiple KB of stack per call frame. The default thread stack
+// (1 MB on Windows) is too small for even fib(8). Reducing per-frame stack
+// consumption is a post-0.1 optimization tracked in the audit report.
 fn main() {
+    let result = std::thread::Builder::new()
+        .name("cx-interpreter".to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(run)
+        .expect("failed to spawn interpreter thread")
+        .join();
+
+    if let Err(e) = result {
+        if let Some(msg) = e.downcast_ref::<String>() {
+            eprintln!("interpreter panicked: {}", msg);
+        } else if let Some(msg) = e.downcast_ref::<&str>() {
+            eprintln!("interpreter panicked: {}", msg);
+        } else {
+            eprintln!("interpreter panicked (unknown error)");
+        }
+        std::process::exit(2);
+    }
+}
+
+fn run() {
     let args: Vec<String> = env::args().skip(1).collect();
     let flags = DebugFlags::from_args(&args);
+    let test_mode = args.contains(&"--test".to_string());
     let backend_kind = backend::parse_backend_flag(&args);
     let path = args
         .iter()
@@ -148,6 +174,52 @@ fn main() {
         t.finish("0 errors");
     }
 
+    // Test runner mode — collect and run #[test] functions
+    if test_mode {
+        use frontend::semantic_types::SemanticStmt;
+
+        let test_funcs: Vec<String> = semantic_program.stmts.iter()
+            .filter_map(|s| {
+                if let SemanticStmt::FuncDef(f) = s {
+                    if f.is_test { Some(f.name.clone()) } else { None }
+                } else { None }
+            })
+            .collect();
+
+        if test_funcs.is_empty() {
+            println!("no tests found");
+            std::process::exit(0);
+        }
+
+        // Set up runtime with all declarations registered
+        let mut rt = RunTime::new();
+        run_with_interpreter_setup(&mut rt, &semantic_program);
+
+        let mut passed = 0;
+        let mut failed = 0;
+
+        for name in &test_funcs {
+            match rt.call_semantic_func(name, &[], 0) {
+                Ok(_) => {
+                    println!("PASS: {}", name);
+                    passed += 1;
+                }
+                Err(RuntimeError::AssertionFailed { msg, .. }) => {
+                    println!("FAIL: {} — {}", name, msg);
+                    failed += 1;
+                }
+                Err(e) => {
+                    println!("ERROR: {} — {:?}", name, e);
+                    failed += 1;
+                }
+            }
+        }
+
+        println!("\n{} passed, {} failed", passed, failed);
+        if failed > 0 { std::process::exit(1); }
+        std::process::exit(0);
+    }
+
     match backend_kind {
         backend::BackendKind::Interpret => run_with_interpreter(semantic_program, &input, &flags),
         backend::BackendKind::Cranelift => {
@@ -202,14 +274,9 @@ fn main() {
     }
 }
 
-fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlags) {
+fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
     use frontend::semantic_types::{SemanticStmt, SemanticType};
 
-    let rt_timer = flags.phase.then(|| PhaseTimer::start("RUNTIME"));
-    let mut rt = RunTime::new();
-    rt.debug_scope = flags.scope;
-
-    // Single pre-pass — register structs, funcs, and impls from semantic program
     for stmt in &program.stmts {
         match stmt {
             SemanticStmt::StructDef { name, fields, .. } => {
@@ -236,6 +303,14 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
             _ => {}
         }
     }
+}
+
+fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlags) {
+    let rt_timer = flags.phase.then(|| PhaseTimer::start("RUNTIME"));
+    let mut rt = RunTime::new();
+    rt.debug_scope = flags.scope;
+
+    run_with_interpreter_setup(&mut rt, &program);
 
     // Main execution loop — runs off SemanticProgram
     let mut step_count = 0;

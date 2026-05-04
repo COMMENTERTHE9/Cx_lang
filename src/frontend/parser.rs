@@ -25,6 +25,9 @@ Expr::Bin(_, _, pos, _) => *pos,
         Expr::Index(_, _, pos) => *pos,
         Expr::MethodCall(_, _, _, pos) => *pos,
         Expr::When(_, _, pos) => *pos,
+        Expr::ResultOk(_, pos) => *pos,
+        Expr::ResultErr(_, pos) => *pos,
+        Expr::Try(_, pos) => *pos,
     }
 }
 
@@ -32,30 +35,43 @@ fn type_parser<'a, I>() -> impl Parser<'a, I, Type, ParserError<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
 {
-    let scalar = select! {
-        Token::TypeT8     => Type::T8,
-        Token::TypeT16    => Type::T16,
-        Token::TypeT32    => Type::T32,
-        Token::TypeT64    => Type::T64,
-        Token::TypeT128   => Type::T128,
-        Token::TypeF64    => Type::F64,
-        Token::TypeBool   => Type::Bool,
-        Token::TypeStr    => Type::Str,
-        Token::TypeStrRef => Type::StrRef,
-        Token::TypeChar   => Type::Char,
-    };
+    recursive(|ty| {
+        let scalar = select! {
+            Token::TypeT8     => Type::T8,
+            Token::TypeT16    => Type::T16,
+            Token::TypeT32    => Type::T32,
+            Token::TypeT64    => Type::T64,
+            Token::TypeT128   => Type::T128,
+            Token::TypeF64    => Type::F64,
+            Token::TypeBool   => Type::Bool,
+            Token::TypeStr    => Type::Str,
+            Token::TypeStrRef => Type::StrRef,
+            Token::TypeChar   => Type::Char,
+        };
 
-    let named_type = select! { Token::Identifier(s) => Type::Struct(s) };
-    let elem_ty = scalar.clone().or(named_type.clone());
+        let named_type = select! { Token::Identifier(s) => Type::Struct(s) };
 
-    let array = just(Token::PunctBracketOpen)
-        .ignore_then(select! { Token::LiteralInt(n) => n as usize })
-        .then_ignore(just(Token::PunctColon))
-        .then(elem_ty)
-        .then_ignore(just(Token::PunctBracketClose))
-        .map(|(size, elem_ty)| Type::Array(size, Box::new(elem_ty)));
+        let array = just(Token::PunctBracketOpen)
+            .ignore_then(select! { Token::LiteralInt(n) => n as usize })
+            .then_ignore(just(Token::PunctColon))
+            .then(ty.clone())
+            .then_ignore(just(Token::PunctBracketClose))
+            .map(|(size, elem)| Type::Array(size, Box::new(elem)));
 
-    array.or(scalar).or(named_type)
+        let result_type = just(Token::KeywordResult)
+            .ignore_then(just(Token::OpLessThan))
+            .ignore_then(ty.clone())
+            .then_ignore(just(Token::OpGreaterThan))
+            .map(|inner| Type::Result(Box::new(inner)));
+
+        let handle_type = just(Token::KeywordHandle)
+            .ignore_then(just(Token::OpLessThan))
+            .ignore_then(ty.clone())
+            .then_ignore(just(Token::OpGreaterThan))
+            .map(|inner| Type::Handle(Box::new(inner)));
+
+        result_type.or(handle_type).or(array).or(scalar).or(named_type)
+    })
 }
 
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
@@ -257,6 +273,20 @@ where
                 })
         };
 
+        let result_ok = just(Token::KeywordOk)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .map(|(pos, e)| Expr::ResultOk(Box::new(e), pos));
+
+        let result_err = just(Token::KeywordErr)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctParenClose))
+            .map(|(pos, e)| Expr::ResultErr(Box::new(e), pos));
+
         let when_expr = just(Token::KeywordWhen)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(expr.clone())
@@ -267,6 +297,8 @@ where
             .boxed();
 
         let primary = literal
+            .or(result_ok)
+            .or(result_err)
             .or(enum_variant)
             .or(handle_new)
             .or(handle_drop)
@@ -291,6 +323,15 @@ where
             )
             .map(|(base, idx)| match idx {
                 Some((idx_expr, pos)) => Expr::Index(Box::new(base), Box::new(idx_expr), pos),
+                None => base,
+            })
+            .then(
+                just(Token::QuestionMark)
+                    .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+                    .or_not(),
+            )
+            .map(|(base, try_pos)| match try_pos {
+                Some(pos) => Expr::Try(Box::new(base), pos),
                 None => base,
             });
 
@@ -374,7 +415,7 @@ where
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
             .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
-            .then_ignore(semi.clone())
+            .then_ignore(semi.clone().or_not())
             .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos })
             .boxed();
 
@@ -445,7 +486,7 @@ where
         let ret = just(Token::KeywordReturn)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(expr.clone().or_not())
-            .then_ignore(semi.clone())
+            .then_ignore(semi.clone().or_not())
             .map(|(pos, expr)| Stmt::Return { expr, pos })
             .boxed();
 
@@ -459,15 +500,6 @@ where
         let expr_stmt = expr
             .clone()
             .then_ignore(semi.clone().or_not())
-            .map(|expr| Stmt::ExprStmt {
-                _pos: expr_pos(&expr),
-                expr,
-            })
-            .boxed();
-
-        let expr_stmt_with_semi = expr
-            .clone()
-            .then_ignore(semi.clone())
             .map(|expr| Stmt::ExprStmt {
                 _pos: expr_pos(&expr),
                 expr,
@@ -959,29 +991,68 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             .collect::<Vec<CxMacro>>();
 
         let func_def = recursive(|func_def| {
-            let func_body_stmt = choice((
-                decl.clone(),
-                func_def.clone(),
-                ret.clone(),
-                typed_assign.clone(),
-                compound_assign.clone(),
-                assign.clone(),
-                if_stmt.clone(),
-                while_in_stmt.clone(),
-                when_stmt.clone(),
-                block.clone(),
-                expr_stmt_with_semi.clone(),
+            // Tagged expression statement — tracks whether semicolon was present
+            let body_expr_stmt_tagged = expr
+                .clone()
+                .then(semi.clone().or_not().map(|s| s.is_some()))
+                .map(|(e, had_semi)| {
+                    let stmt = Stmt::ExprStmt {
+                        _pos: expr_pos(&e),
+                        expr: e,
+                    };
+                    (stmt, had_semi)
+                })
+                .boxed();
+
+            // All non-expr statements are always "terminated"
+            let body_stmt_tagged = choice((
+                decl.clone().map(|s| (s, true)),
+                func_def.clone().map(|s| (s, true)),
+                ret.clone().map(|s| (s, true)),
+                typed_assign.clone().map(|s| (s, true)),
+                compound_assign.clone().map(|s| (s, true)),
+                assign.clone().map(|s| (s, true)),
+                if_stmt.clone().map(|s| (s, true)),
+                while_in_stmt.clone().map(|s| (s, true)),
+                while_stmt.clone().map(|s| (s, true)),
+                for_stmt.clone().map(|s| (s, true)),
+                loop_stmt.clone().map(|s| (s, true)),
+                break_stmt.clone().map(|s| (s, true)),
+                continue_stmt.clone().map(|s| (s, true)),
+                when_stmt.clone().map(|s| (s, true)),
+                block.clone().map(|s| (s, true)),
+                body_expr_stmt_tagged,
             ));
 
-            // Keep implicit return support: trailing expression with no semicolon.
+            // Implicit return: trailing expression WITHOUT semicolon becomes ret_expr.
+            // Trailing expression WITH semicolon is a statement — result discarded.
             let func_body = just(Token::PunctBraceOpen)
-                .ignore_then(
-                    func_body_stmt
-                        .repeated()
-                        .collect::<Vec<_>>()
-                        .then(expr.clone().or_not()),
-                )
-                .then_ignore(just(Token::PunctBraceClose));
+                .ignore_then(body_stmt_tagged.repeated().collect::<Vec<(Stmt, bool)>>())
+                .then_ignore(just(Token::PunctBraceClose))
+                .map(|tagged: Vec<(Stmt, bool)>| {
+                    let len = tagged.len();
+                    let mut stmts: Vec<Stmt> = Vec::with_capacity(len);
+                    let mut ret_expr: Option<Expr> = None;
+
+                    let last_is_implicit_return = matches!(
+                        tagged.last(),
+                        Some((Stmt::ExprStmt { .. }, false))
+                    );
+
+                    for (i, (stmt, _had_semi)) in tagged.into_iter().enumerate() {
+                        if i == len - 1 && last_is_implicit_return {
+                            if let Stmt::ExprStmt { expr, .. } = stmt {
+                                ret_expr = Some(expr);
+                            } else {
+                                stmts.push(stmt);
+                            }
+                        } else {
+                            stmts.push(stmt);
+                        }
+                    }
+
+                    (stmts, ret_expr)
+                });
 
             // Syntax: fnc: RetType? <T>? name(params) { body }
             // Generics parser reused in both branches

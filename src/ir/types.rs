@@ -10,6 +10,7 @@ pub enum IrType {
     F64,
     Bool,
     TBool,
+    Ptr,
 }
 
 impl IrType {
@@ -23,6 +24,7 @@ impl IrType {
             IrType::F64 => 8,
             IrType::Bool => 1,
             IrType::TBool => 1,
+            IrType::Ptr => 8,
         }
     }
 
@@ -36,10 +38,12 @@ impl IrType {
             IrType::F64 => 8,
             IrType::Bool => 1,
             IrType::TBool => 1,
+            IrType::Ptr => 8,
         }
     }
 }
 
+#[derive(Clone)]
 pub struct StructLayout {
     pub field_offsets: Vec<usize>,
     pub total_size: usize,
@@ -228,6 +232,12 @@ mod tests {
     fn scalar_layout_size_tbool() {
         assert_eq!(IrType::TBool.size_bytes(), 1);
         assert_eq!(IrType::TBool.align_bytes(), 1);
+    }
+
+    #[test]
+    fn scalar_layout_size_ptr() {
+        assert_eq!(IrType::Ptr.size_bytes(), 8);
+        assert_eq!(IrType::Ptr.align_bytes(), 8);
     }
 
     use super::compute_struct_layout;

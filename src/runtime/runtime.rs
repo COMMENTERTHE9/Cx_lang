@@ -422,7 +422,7 @@ impl RunTime {
 
         match op {
             Op::Plus => match (&left, &right) {
-                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a.saturating_add(*b))),
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a.wrapping_add(*b))),
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         Ok(Value::Float(a + b))
@@ -437,7 +437,7 @@ impl RunTime {
                 }
             },
             Op::Minus => match (&left, &right) {
-                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a.saturating_sub(*b))),
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a.wrapping_sub(*b))),
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         Ok(Value::Float(a - b))
@@ -470,7 +470,7 @@ impl RunTime {
             },
             Op::Div => match (&left, &right) {
                 (Value::Num(_), Value::Num(0)) => Err(RuntimeError::DivByZero { pos }),
-                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a / b)),
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(if *b == -1 { a.wrapping_neg() } else { a / b })),
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         if b == 0.0 {
@@ -490,7 +490,7 @@ impl RunTime {
             },
             Op::Mod => match (&left, &right) {
                 (Value::Num(_), Value::Num(0)) => Err(RuntimeError::DivByZero { pos }),
-                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a % b)),
+                (Value::Num(a), Value::Num(b)) => Ok(Value::Num(if *b == -1 { 0 } else { a % b })),
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         if b == 0.0 {
@@ -634,14 +634,16 @@ impl RunTime {
             SemanticExprKind::VarRef { name, .. } => {
                 self.get_var(name, 0)
             }
-            SemanticExprKind::Unary { op, expr, pos } => {
-                let val = self.eval_semantic_expr(expr)?;
-                self.apply_unary(op, val, *pos)
+            SemanticExprKind::Unary { op, expr: inner, pos } => {
+                let val = self.eval_semantic_expr(inner)?;
+                let result = self.apply_unary(op, val, *pos)?;
+                Ok(apply_numeric_cast(result, &expr.ty))
             }
             SemanticExprKind::Binary { lhs, op, pos, rhs } => {
                 let l = self.eval_semantic_expr(lhs)?;
                 let r = self.eval_semantic_expr(rhs)?;
-                self.apply_op(l, op.clone(), *pos, r)
+                let result = self.apply_op(l, op.clone(), *pos, r)?;
+                Ok(apply_numeric_cast(result, &expr.ty))
             }
             SemanticExprKind::Call { callee, args, .. } => {
                 self.call_semantic_func(callee, args, 0)
@@ -708,6 +710,22 @@ impl RunTime {
                     Err(RuntimeError::StaleHandle { pos: *pos })
                 }
             }
+            SemanticExprKind::ResultOk { expr } => {
+                let val = self.eval_semantic_expr(expr)?;
+                Ok(Value::ResultOk(Box::new(val)))
+            }
+            SemanticExprKind::ResultErr { expr } => {
+                let val = self.eval_semantic_expr(expr)?;
+                Ok(Value::ResultErr(Box::new(val)))
+            }
+            SemanticExprKind::Try { expr, .. } => {
+                let val = self.eval_semantic_expr(expr)?;
+                match val {
+                    Value::ResultOk(v) => Ok(*v),
+                    Value::ResultErr(e) => Err(RuntimeError::EarlyReturn(Value::ResultErr(e))),
+                    _ => Ok(val),
+                }
+            }
             SemanticExprKind::Cast { expr, to, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
                 Ok(apply_numeric_cast(val, to))
@@ -734,25 +752,31 @@ SemanticStmt::Decl { name, ty, .. } => {
             SemanticStmt::Assign { target, expr, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
                 match target {
-                    SemanticLValue::Binding { name, .. } => self.set_var(name.clone(), val, 0),
-                    SemanticLValue::DotAccess { container, field, .. } => {
-                        self.set_container_field(container, field, val, 0)
+                    SemanticLValue::Binding { name, ty, .. } => {
+                        let truncated = apply_numeric_cast(val, ty);
+                        self.set_var(name.clone(), truncated, 0)
+                    }
+                    SemanticLValue::DotAccess { container, field, ty, .. } => {
+                        let truncated = apply_numeric_cast(val, ty);
+                        self.set_container_field(container, field, truncated, 0)
                     }
                 }
             }
             SemanticStmt::CompoundAssign { target, op, operand, .. } => {
                 match target {
-                    SemanticLValue::Binding { name, .. } => {
+                    SemanticLValue::Binding { name, ty, .. } => {
                         let current = self.get_var(name, 0)?;
                         let rhs = self.eval_semantic_expr(operand)?;
                         let result = self.apply_op(current, op.clone(), 0, rhs)?;
-                        self.set_var(name.clone(), result, 0)
+                        let truncated = apply_numeric_cast(result, ty);
+                        self.set_var(name.clone(), truncated, 0)
                     }
-                    SemanticLValue::DotAccess { container, field, .. } => {
+                    SemanticLValue::DotAccess { container, field, ty, .. } => {
                         let current = self.get_field(container, field, 0)?;
                         let rhs = self.eval_semantic_expr(operand)?;
                         let result = self.apply_op(current, op.clone(), 0, rhs)?;
-                        self.set_container_field(container, field, result, 0)
+                        let truncated = apply_numeric_cast(result, ty);
+                        self.set_container_field(container, field, truncated, 0)
                     }
                 }
             }
@@ -1146,7 +1170,7 @@ SemanticStmt::Decl { name, ty, .. } => {
         }
     }
 
-    fn call_semantic_func(&mut self, callee: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
+    pub fn call_semantic_func(&mut self, callee: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
         // Built-in: is_known
         if callee == "is_known" {
             if let Some(SemanticCallArg::Expr(e)) = args.first() {
@@ -1174,6 +1198,56 @@ SemanticStmt::Decl { name, ty, .. } => {
                     let v = self.eval_semantic_expr(e)?;
                     self.print_value_inline(&v);
                 }
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: assert(cond) — runtime error if condition is false
+        if callee == "assert" {
+            if let Some(SemanticCallArg::Expr(e)) = args.first() {
+                let val = self.eval_semantic_expr(e)?;
+                let passed = match val {
+                    Value::Bool(b) => b,
+                    Value::Num(n) => n != 0,
+                    _ => false,
+                };
+                if !passed {
+                    return Err(RuntimeError::AssertionFailed {
+                        msg: "assertion failed".to_string(),
+                        pos,
+                    });
+                }
+            }
+            return Ok(Value::Num(0));
+        }
+
+        // Built-in: assert_eq(a, b) — runtime error if a != b
+        if callee == "assert_eq" {
+            let mut iter = args.iter();
+            let left = if let Some(SemanticCallArg::Expr(e)) = iter.next() {
+                self.eval_semantic_expr(e)?
+            } else { return Ok(Value::Num(0)); };
+            let right = if let Some(SemanticCallArg::Expr(e)) = iter.next() {
+                self.eval_semantic_expr(e)?
+            } else { return Ok(Value::Num(0)); };
+            let equal = match (&left, &right) {
+                (Value::Num(a), Value::Num(b)) => a == b,
+                (Value::Bool(a), Value::Bool(b)) => a == b,
+                (Value::Float(a), Value::Float(b)) => a == b,
+                (Value::Str(ao, al), Value::Str(bo, bl)) => {
+                    self.resolve_str(*ao, *al) == self.resolve_str(*bo, *bl)
+                }
+                (Value::ResultOk(a), Value::ResultOk(b)) => a == b,
+                (Value::ResultErr(a), Value::ResultErr(b)) => a == b,
+                _ => false,
+            };
+            if !equal {
+                return Err(RuntimeError::AssertionFailed {
+                    msg: format!("assert_eq failed: {} != {}",
+                        value_to_string(self, left),
+                        value_to_string(self, right)),
+                    pos,
+                });
             }
             return Ok(Value::Num(0));
         }
@@ -1546,6 +1620,8 @@ fn value_to_string(rt: &RunTime, v: Value) -> String {
             let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(rt, v.clone()))).collect();
             format!("{} {{ {} }}", name, parts.join(", "))
         }
+        Value::ResultOk(v) => format!("Ok({})", value_to_string(rt, *v)),
+        Value::ResultErr(v) => format!("Err({})", value_to_string(rt, *v)),
     }
 }
 
@@ -1592,6 +1668,8 @@ fn type_of_value(v: &Value) -> Type {
         Value::Container(_) => Type::Container,
         Value::Array(_) => Type::Array(0, Box::new(Type::Unknown)),
         Value::Struct(name, _) => Type::Struct(name.clone()),
+        Value::ResultOk(_) => Type::Result(Box::new(Type::Unknown)),
+        Value::ResultErr(_) => Type::Result(Box::new(Type::Unknown)),
     }
 }
 
@@ -1619,6 +1697,8 @@ fn value_matches_type(v: &Value, t: &Type) -> bool {
         (Value::Array(_), Type::Array(_, _)) => true,
         (Value::Struct(name, _), Type::Struct(t)) if name == t => true,
         (Value::Unknown(_), _) => true,
+        (Value::ResultOk(_), Type::Result(_)) => true,
+        (Value::ResultErr(_), Type::Result(_)) => true,
         _ => false,
     }
 }
@@ -1711,6 +1791,7 @@ impl From<SemanticType> for Type {
             SemanticType::Struct(name) => Type::Struct(name),
             SemanticType::TypeParam(name) => Type::TypeParam(name),
             SemanticType::Array(size, elem_ty) => Type::Array(size, Box::new((*elem_ty).into())),
+            SemanticType::Result(inner) => Type::Result(Box::new((*inner).into())),
             SemanticType::Void => Type::Unknown,
         }
     }

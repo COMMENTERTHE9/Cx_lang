@@ -108,6 +108,15 @@ pub fn print_inst(inst: &IrInst) -> String {
                 print_type(to)
             )
         }
+        IrInst::Alloca { dst, size, align } => {
+            format!("{} = alloca size {} align {}", print_value_id(*dst), size, align)
+        }
+        IrInst::Load { dst, ty, ptr } => {
+            format!("{} = load {} {}", print_value_id(*dst), print_type(ty), print_value_id(*ptr))
+        }
+        IrInst::Store { ptr, value } => {
+            format!("store {} {}", print_value_id(*ptr), print_value_id(*value))
+        }
     }
 }
 
@@ -166,6 +175,7 @@ fn print_type(ty: &IrType) -> &'static str {
         IrType::F64 => "f64",
         IrType::Bool => "bool",
         IrType::TBool => "tbool",
+        IrType::Ptr => "ptr",
     }
 }
 

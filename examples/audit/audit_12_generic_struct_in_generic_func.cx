@@ -1,0 +1,6 @@
+struct Box<T> {
+    value: T,
+}
+
+b: Box = Box { value: 99 }
+print(b.value)

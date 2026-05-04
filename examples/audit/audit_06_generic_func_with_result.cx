@@ -1,0 +1,6 @@
+fnc: Result<t32> safe_wrap(x: t32) {
+    return Ok(x)
+}
+
+print(safe_wrap(42))
+print(safe_wrap(99))

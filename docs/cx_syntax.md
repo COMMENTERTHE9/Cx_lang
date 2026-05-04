@@ -551,7 +551,17 @@ These are present in the type/runtime surface but not fully settled as end-user 
 - `strref` exists and is semantically enforced at boundaries, but the language surface around producing real `strref` values is still thin
 - `Container` is split from `str` in the type system, but is mostly an internal/runtime-facing concept right now
 
-## 25. Verified Source of Truth
+## 25. String Encoding
+
+Cx uses UTF-8 strictly throughout.
+
+- All source files must be UTF-8 encoded
+- `str` values are always valid UTF-8 — invalid bytes are a runtime error
+- `char` is a Unicode scalar value — any valid Unicode code point except surrogate pairs
+- Binary data belongs in byte buffers, not `str`
+- String literals in source are UTF-8 by definition
+
+## 26. Verified Source of Truth
 
 If you want the real current language surface, check:
 - `src/frontend/lexer.rs`

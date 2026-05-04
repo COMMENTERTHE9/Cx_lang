@@ -1,0 +1,6 @@
+fnc: count_to(n: t64) {
+    for i in 0..n {
+        print(i)
+    }
+}
+count_to(3)

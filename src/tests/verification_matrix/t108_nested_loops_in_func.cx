@@ -1,0 +1,10 @@
+fnc: t64 grid_sum(rows: t64, cols: t64) {
+    total: t64 = 0
+    for r in 0..rows {
+        for c in 0..cols {
+            total += (r * cols) + c
+        }
+    }
+    return total
+}
+print(grid_sum(3, 3))

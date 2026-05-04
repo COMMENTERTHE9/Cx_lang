@@ -1,0 +1,13 @@
+fnc: Result<t32> try_parse(x: t32) {
+    if x < 0 {
+        return Err("negative")
+    }
+    return Ok(x * 2)
+}
+
+r1 = try_parse(1)
+r2 = try_parse(-1)
+r3 = try_parse(5)
+print(r1)
+print(r2)
+print(r3)

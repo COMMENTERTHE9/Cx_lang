@@ -1,0 +1,6 @@
+i: t64 = 0
+while (i < 100) {
+    s: str = "iteration"
+    i += 1
+}
+print("done")

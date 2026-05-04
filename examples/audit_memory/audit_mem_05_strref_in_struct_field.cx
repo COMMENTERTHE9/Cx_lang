@@ -1,0 +1,6 @@
+struct Holder {
+    ref: strref,
+}
+
+h: Holder = Holder { ref: "hello" }
+print(h.ref)

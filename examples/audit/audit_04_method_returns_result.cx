@@ -1,0 +1,20 @@
+struct Counter {
+    value: t32,
+    max: t32,
+}
+
+counter_methods: impl (c: Counter) {
+    fnc: Result<t32> increment() {
+        if c.value >= c.max {
+            return Err("at max")
+        }
+        c.value += 1
+        return Ok(c.value)
+    }
+}
+
+c: Counter = Counter { value: 0, max: 3 }
+print(c.increment())
+print(c.increment())
+print(c.increment())
+print(c.increment())
