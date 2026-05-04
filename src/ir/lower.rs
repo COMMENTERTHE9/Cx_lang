@@ -11,8 +11,8 @@ use crate::frontend::semantic_types::{
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
 use crate::ir::types::{
-    compute_struct_layout, BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType,
-    StructLayout, ValueId,
+    compute_array_layout, compute_struct_layout, BlockId, BlockParam, IrBlock, IrFunction, IrModule,
+    IrParam, IrType, StructLayout, ValueId,
 };
 
 macro_rules! unsupported {
@@ -1476,8 +1476,12 @@ fn lower_expr(
         }
     }
 },
-        SemanticExprKind::ArrayLit { .. } => { unsupported!("ArrayLit") },
-        SemanticExprKind::Index { .. } => { unsupported!("Index") },
+        SemanticExprKind::ArrayLit { elements } => {
+            lower_array_lit(elements, &expr.ty, ctx, active)
+        }
+        SemanticExprKind::Index { target, index, .. } => {
+            lower_index(target, index, &expr.ty, ctx, active)
+        }
         SemanticExprKind::MethodCall { .. } => { unsupported!("MethodCall") },
         // Struct literal lowering strategy
         //
@@ -1812,6 +1816,209 @@ fn lower_dot_access(
     })
 }
 
+// Array literal lowering strategy
+//
+// An array literal `[e0, e1, e2, ...]` of type `Array(N, ElemTy)` is lowered
+// to a stack-allocated block in the same style as struct literals:
+//
+//   1. Alloca: reserve N * stride bytes at element alignment.
+//
+//   2. For each element at position i (in source order, which is also storage
+//      order):
+//      a. Lower the element expression to a scalar IR value.
+//      b. Compute the byte offset: i * stride.
+//      c. If offset > 0, emit PtrOffset to advance the base pointer.
+//      d. Emit Store to write the element value.
+//
+//   3. Return the base Alloca pointer as IrType::Ptr.
+//
+// All offsets are compile-time constants (element index is literal position),
+// so PtrOffset suffices here — PtrAdd is only needed for runtime index access.
+fn lower_array_lit(
+    elements: &[SemanticExpr],
+    array_ty: &SemanticType,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    let (count, elem_sem_ty) = match array_ty {
+        SemanticType::Array(count, elem_ty) => (*count, elem_ty.as_ref()),
+        _ => {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!("ArrayLit expression has non-Array type: {:?}", array_ty),
+            })
+        }
+    };
+
+    if count == 0 {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "ArrayLit with zero-length array".to_string(),
+        });
+    }
+
+    if elements.len() != count {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "ArrayLit: declared length {} but {} elements provided",
+                count,
+                elements.len()
+            ),
+        });
+    }
+
+    let elem_ir_ty = lower_type(elem_sem_ty)?;
+    let layout = compute_array_layout(&elem_ir_ty, count);
+
+    // 1. Alloca: reserve stack space for the entire array.
+    let ptr = ctx.fresh_value();
+    active.emit(IrInst::Alloca {
+        dst: ptr,
+        size: layout.total_size,
+        align: layout.alignment,
+    })?;
+
+    // 2. Store each element at its stride-aligned byte offset.
+    for (i, elem_expr) in elements.iter().enumerate() {
+        let lowered_elem = lower_expr(elem_expr, ctx, active)?;
+        let byte_offset = i * layout.stride;
+
+        let elem_ptr = if byte_offset == 0 {
+            ptr
+        } else {
+            let fp = ctx.fresh_value();
+            active.emit(IrInst::PtrOffset {
+                dst: fp,
+                base: ptr,
+                offset: byte_offset,
+            })?;
+            fp
+        };
+
+        active.emit(IrInst::Store {
+            ptr: elem_ptr,
+            value: lowered_elem.value,
+        })?;
+    }
+
+    Ok(LoweredValue {
+        value: ptr,
+        ty: IrType::Ptr,
+    })
+}
+
+// Array element read lowering strategy
+//
+// An index expression `arr[i]` where `arr: Array(N, ElemTy)` is lowered to:
+//
+//   1. Lower `arr` to a base Ptr (the Alloca produced when the array was created).
+//
+//   2. Lower `i` to an integer SSA value; cast to I64 if needed.
+//
+//   3. Emit ConstInt(stride) then Binary(Mul, I64, i_i64, stride) to compute
+//      the byte offset at runtime.
+//
+//   4. Emit PtrAdd(base, byte_offset) to advance the pointer.
+//
+//   5. Emit Load(ElemIrTy, elem_ptr) to read the element value.
+//
+// PtrAdd (not PtrOffset) is used here because the index is a runtime value.
+// The runtime-constant stride is folded into the multiply operand; a later
+// constant-folding pass may eliminate the ConstInt + Binary pair when the
+// index expression is itself a literal.
+fn lower_index(
+    target: &SemanticExpr,
+    index: &SemanticExpr,
+    elem_sem_ty: &SemanticType,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    // Derive element IR type and layout from the array target's type.
+    let (count, declared_elem_sem_ty) = match &target.ty {
+        SemanticType::Array(count, elem_ty) => (*count, elem_ty.as_ref()),
+        _ => {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "Index target has non-Array type: {:?}",
+                    target.ty
+                ),
+            })
+        }
+    };
+
+    let elem_ir_ty = lower_type(declared_elem_sem_ty)?;
+    let layout = compute_array_layout(&elem_ir_ty, count);
+
+    // Verify the outer expression type is consistent with the element type.
+    let outer_ir_ty = lower_type(elem_sem_ty)?;
+    if outer_ir_ty != elem_ir_ty {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "Index expression type {:?} does not match array element type {:?}",
+                outer_ir_ty, elem_ir_ty
+            ),
+        });
+    }
+
+    // 1. Lower the array target to get the base pointer.
+    let base = lower_expr(target, ctx, active)?;
+    if base.ty != IrType::Ptr {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("Index target must lower to Ptr, got {:?}", base.ty),
+        });
+    }
+
+    // 2. Lower the index expression; cast to I64 if it isn't already.
+    let idx = lower_expr(index, ctx, active)?;
+    let idx_i64 = if idx.ty == IrType::I64 {
+        idx.value
+    } else {
+        let cast_dst = ctx.fresh_value();
+        active.emit(IrInst::Cast {
+            dst: cast_dst,
+            from: idx.ty.clone(),
+            to: IrType::I64,
+            value: idx.value,
+        })?;
+        cast_dst
+    };
+
+    // 3. Compute byte_offset = idx_i64 * stride.
+    let stride_val = ctx.fresh_value();
+    active.emit(IrInst::ConstInt {
+        dst: stride_val,
+        ty: IrType::I64,
+        value: layout.stride as i128,
+    })?;
+    let byte_offset = ctx.fresh_value();
+    active.emit(IrInst::Binary {
+        dst: byte_offset,
+        op: BinaryOp::Mul,
+        ty: IrType::I64,
+        lhs: idx_i64,
+        rhs: stride_val,
+    })?;
+
+    // 4. elem_ptr = base + byte_offset  (runtime pointer arithmetic).
+    let elem_ptr = ctx.fresh_value();
+    active.emit(IrInst::PtrAdd {
+        dst: elem_ptr,
+        base: base.value,
+        offset: byte_offset,
+    })?;
+
+    // 5. Load the element value.
+    let dst = ctx.fresh_value();
+    active.emit(IrInst::Load {
+        dst,
+        ty: elem_ir_ty.clone(),
+        ptr: elem_ptr,
+    })?;
+
+    Ok(LoweredValue {
+        value: dst,
+        ty: elem_ir_ty,
+    })
+}
+
 fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
     match ty {
         SemanticType::I8 => Ok(IrType::I8),
@@ -1831,7 +2038,7 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::Enum(_) => { unsupported_type!("Enum") },
         SemanticType::TypeParam(_) => { unsupported_type!("TypeParam") },
         SemanticType::Struct(_) => Ok(IrType::Ptr),
-        SemanticType::Array(_, _) => { unsupported_type!("Array") },
+        SemanticType::Array(_, _) => Ok(IrType::Ptr),
         SemanticType::Result(_) => { unsupported_type!("Result") },
         SemanticType::Void => { unsupported_type!("Void") },
     }
@@ -4225,6 +4432,227 @@ mod tests {
                 },
                 pos: 0,
             }],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
+    }
+
+    // ── array literal and index lowering tests ────────────────────────────────
+
+    // Helper: build an ArrayLit SemanticExpr with N integer elements.
+    fn array_lit_i64(elements: Vec<i128>) -> SemanticExpr {
+        let count = elements.len();
+        SemanticExpr {
+            ty: SemanticType::Array(count, Box::new(SemanticType::I64)),
+            kind: SemanticExprKind::ArrayLit {
+                elements: elements
+                    .into_iter()
+                    .map(|v| int_expr(v, SemanticType::I64))
+                    .collect(),
+            },
+        }
+    }
+
+    // Helper: build an Index SemanticExpr.
+    fn index_expr(
+        target: SemanticExpr,
+        index: SemanticExpr,
+        elem_ty: SemanticType,
+    ) -> SemanticExpr {
+        SemanticExpr {
+            ty: elem_ty,
+            kind: SemanticExprKind::Index {
+                target: Box::new(target),
+                index: Box::new(index),
+                pos: 0,
+            },
+        }
+    }
+
+    // ArrayLit lowering: a three-element i64 array must emit exactly one Alloca
+    // (for the whole array), two PtrOffset instructions (elements 1 and 2 —
+    // element 0 is at offset 0 so no PtrOffset), and three Stores.
+    #[test]
+    fn lowers_array_lit_emits_alloca_ptr_offset_store() {
+        let arr = array_lit_i64(vec![10, 20, 30]);
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "arr",
+                SemanticType::Array(3, Box::new(SemanticType::I64)),
+                arr,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        // One Alloca for the array storage (3 * 8 = 24 bytes, align 8).
+        let alloca_count = insts
+            .iter()
+            .filter(|i| matches!(i, IrInst::Alloca { size: 24, align: 8, .. }))
+            .count();
+        assert_eq!(alloca_count, 1, "expected exactly one Alloca(24, 8)");
+
+        // Three Store instructions — one per element.
+        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
+        assert_eq!(store_count, 3, "expected three Store instructions");
+
+        // PtrOffset for elements at non-zero offsets: offsets 8 and 16.
+        let has_ptr_offset_8 = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::PtrOffset { offset: 8, .. }));
+        let has_ptr_offset_16 = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::PtrOffset { offset: 16, .. }));
+        assert!(has_ptr_offset_8, "expected PtrOffset(8) for second element");
+        assert!(has_ptr_offset_16, "expected PtrOffset(16) for third element");
+
+        // No PtrOffset for element 0 (offset 0).
+        let has_ptr_offset_0 = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::PtrOffset { offset: 0, .. }));
+        assert!(!has_ptr_offset_0, "unexpected PtrOffset(0) for first element");
+    }
+
+    // lower_type must map SemanticType::Array(_) to IrType::Ptr.
+    #[test]
+    fn lower_type_array_maps_to_ptr() {
+        let result = lower_type(&SemanticType::Array(4, Box::new(SemanticType::I64)));
+        assert_eq!(result, Ok(IrType::Ptr));
+    }
+
+    // Index lowering on an i64 array with an i64 literal index must emit:
+    // ConstInt (stride), Binary (Mul for byte_offset), PtrAdd, Load.
+    #[test]
+    fn lowers_index_emits_ptr_add_and_load() {
+        // fn read_elem(arr: [3: i64]) -> i64 { arr[1] }
+        let arr_binding = BindingId(0);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "read_elem",
+                vec![typed_param(
+                    arr_binding,
+                    "arr",
+                    SemanticType::Array(3, Box::new(SemanticType::I64)),
+                )],
+                Some(SemanticType::I64),
+                vec![],
+                Some(index_expr(
+                    binding_ref(
+                        arr_binding,
+                        "arr",
+                        SemanticType::Array(3, Box::new(SemanticType::I64)),
+                    ),
+                    int_expr(1, SemanticType::I64),
+                    SemanticType::I64,
+                )),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "read_elem").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have a PtrAdd (runtime pointer arithmetic for the index).
+        let has_ptr_add = insts.iter().any(|i| matches!(i, IrInst::PtrAdd { .. }));
+        assert!(has_ptr_add, "expected PtrAdd for indexed element access");
+
+        // Must have a Load for i64 (reading the element).
+        let has_load = insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I64, .. }));
+        assert!(has_load, "expected Load i64 for indexed element");
+
+        // Must have a Binary Mul for byte_offset computation.
+        let has_mul = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Mul, ty: IrType::I64, .. }));
+        assert!(has_mul, "expected Binary(Mul, I64) for byte offset computation");
+
+        // Must NOT have a PtrOffset (Index uses PtrAdd, not the static variant).
+        let has_ptr_offset = insts.iter().any(|i| matches!(i, IrInst::PtrOffset { .. }));
+        assert!(!has_ptr_offset, "unexpected PtrOffset in Index lowering");
+    }
+
+    // Index lowering on a single-element array (stride = element size, index 0)
+    // must still emit PtrAdd — stride computation is always emitted.
+    #[test]
+    fn lowers_index_zero_on_single_element_array() {
+        let arr_binding = BindingId(0);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "read_only",
+                vec![typed_param(
+                    arr_binding,
+                    "arr",
+                    SemanticType::Array(1, Box::new(SemanticType::I32)),
+                )],
+                Some(SemanticType::I32),
+                vec![],
+                Some(index_expr(
+                    binding_ref(
+                        arr_binding,
+                        "arr",
+                        SemanticType::Array(1, Box::new(SemanticType::I32)),
+                    ),
+                    int_expr(0, SemanticType::I64),
+                    SemanticType::I32,
+                )),
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "read_only").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::PtrAdd { .. })),
+            "expected PtrAdd even for index 0"
+        );
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I32, .. })),
+            "expected Load i32 for i32 array element"
+        );
+    }
+
+    // ArrayLit rejects a zero-length array.
+    #[test]
+    fn rejects_array_lit_zero_length() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "arr",
+                SemanticType::Array(0, Box::new(SemanticType::I64)),
+                SemanticExpr {
+                    ty: SemanticType::Array(0, Box::new(SemanticType::I64)),
+                    kind: SemanticExprKind::ArrayLit { elements: vec![] },
+                },
+            )],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
+    }
+
+    // Index lowering rejects a non-Array target type.
+    #[test]
+    fn rejects_index_on_non_array_target() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "v",
+                SemanticType::I64,
+                index_expr(
+                    int_expr(42, SemanticType::I64),
+                    int_expr(0, SemanticType::I64),
+                    SemanticType::I64,
+                ),
+            )],
             enums: vec![],
         };
         assert!(lower_program(&program).is_err());

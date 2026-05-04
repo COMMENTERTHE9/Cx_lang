@@ -77,6 +77,17 @@ pub enum IrInst {
         base: ValueId,
         offset: usize,
     },
+    /// Add a runtime byte offset to a pointer.
+    ///
+    /// `dst = ptr_add base + offset`
+    ///
+    /// Used to address array elements at runtime-computed byte offsets.
+    /// `offset` must be an I64 SSA value holding the precomputed byte count.
+    PtrAdd {
+        dst: ValueId,
+        base: ValueId,
+        offset: ValueId,
+    },
     Load {
         dst: ValueId,
         ty: IrType,

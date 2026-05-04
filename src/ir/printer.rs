@@ -119,6 +119,14 @@ pub fn print_inst(inst: &IrInst) -> String {
                 offset
             )
         }
+        IrInst::PtrAdd { dst, base, offset } => {
+            format!(
+                "{} = ptr_add {} + {}",
+                print_value_id(*dst),
+                print_value_id(*base),
+                print_value_id(*offset)
+            )
+        }
         IrInst::Load { dst, ty, ptr } => {
             format!("{} = load {} {}", print_value_id(*dst), print_type(ty), print_value_id(*ptr))
         }

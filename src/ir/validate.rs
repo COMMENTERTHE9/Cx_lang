@@ -454,6 +454,29 @@ fn validate_inst(
             }
             define_value(function, block, *dst, IrType::Ptr, "PtrOffset destination", defined_values, errors);
         }
+        IrInst::PtrAdd { dst, base, offset } => {
+            require_value(function, block, *base, "PtrAdd base", defined_values, errors);
+            require_value(function, block, *offset, "PtrAdd offset", defined_values, errors);
+            if let Some(base_ty) = defined_values.get(base) {
+                if *base_ty != IrType::Ptr {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!("PtrAdd base must be Ptr, got {:?}", base_ty),
+                    });
+                }
+            }
+            if let Some(offset_ty) = defined_values.get(offset) {
+                if *offset_ty != IrType::I64 {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!("PtrAdd offset must be I64, got {:?}", offset_ty),
+                    });
+                }
+            }
+            define_value(function, block, *dst, IrType::Ptr, "PtrAdd destination", defined_values, errors);
+        }
         IrInst::Load { dst, ty, ptr } => {
             require_value(function, block, *ptr, "Load ptr", defined_values, errors);
             if let Some(ptr_ty) = defined_values.get(ptr) {
