@@ -441,7 +441,7 @@ fn validate_inst(
             }
             define_value(function, block, *dst, IrType::Ptr, "Alloca destination", defined_values, errors);
         }
-        IrInst::PtrOffset { dst, base, offset: _ } => {
+        IrInst::PtrOffset { dst, base, .. } => {
             require_value(function, block, *base, "PtrOffset base", defined_values, errors);
             if let Some(base_ty) = defined_values.get(base) {
                 if *base_ty != IrType::Ptr {

@@ -112,7 +112,12 @@ pub fn print_inst(inst: &IrInst) -> String {
             format!("{} = alloca size {} align {}", print_value_id(*dst), size, align)
         }
         IrInst::PtrOffset { dst, base, offset } => {
-            format!("{} = ptr_offset {} + {}", print_value_id(*dst), print_value_id(*base), offset)
+            format!(
+                "{} = ptr_offset {} + {}",
+                print_value_id(*dst),
+                print_value_id(*base),
+                offset
+            )
         }
         IrInst::Load { dst, ty, ptr } => {
             format!("{} = load {} {}", print_value_id(*dst), print_type(ty), print_value_id(*ptr))
