@@ -1451,7 +1451,11 @@ fn lower_expr(
         SemanticExprKind::HandleNew { .. } => { unsupported!("HandleNew") },
         SemanticExprKind::HandleVal { .. } => { unsupported!("HandleVal") },
         SemanticExprKind::HandleDrop { .. } => { unsupported!("HandleDrop") },
-        SemanticExprKind::Range { .. } => { unsupported!("Range") },
+        SemanticExprKind::Range { .. } => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "range expression used as a value — ranges are only supported in for-loop bounds, not as standalone expressions".to_string(),
+            });
+        },
         // Unary expression lowering strategy
         //
         // The IR has no dedicated unary-negate or unary-not instructions.  Both
@@ -4449,5 +4453,34 @@ mod tests {
         // Must NOT have a PtrOffset — first field is at offset 0.
         let has_ptr_offset = insts.iter().any(|i| matches!(i, IrInst::PtrOffset { .. }));
         assert!(!has_ptr_offset, "unexpected PtrOffset for first field (offset 0)");
+    }
+
+    // Range expressions used as values are not supported in IR lowering.
+    // Ranges are only consumed by for-loop bounds at the semantic layer; a
+    // bare range value cannot be represented in the IR and must produce a
+    // named, descriptive error rather than a generic "Range" marker.
+    #[test]
+    fn rejects_range_expr_used_as_value() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::ExprStmt {
+                expr: SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::Range {
+                        start: Box::new(int_expr(0, SemanticType::I64)),
+                        end: Box::new(int_expr(10, SemanticType::I64)),
+                        inclusive: false,
+                    },
+                },
+                pos: 0,
+            }],
+            enums: vec![],
+        };
+
+        assert_eq!(
+            lower_program(&program).expect_err("lowering should reject range used as value"),
+            LoweringError::UnsupportedSemanticConstruct {
+                construct: "range expression used as a value — ranges are only supported in for-loop bounds, not as standalone expressions".to_string(),
+            }
+        );
     }
 }
