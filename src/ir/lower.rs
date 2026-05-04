@@ -696,7 +696,9 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
             spec,
             loop_ctx,
         ),
-        SemanticStmt::StructDef { .. } => { unsupported!("StructDef") },
+        // Struct definitions are pre-processed into the struct_table before
+        // lowering begins; there is no IR to emit for the definition itself.
+        SemanticStmt::StructDef { .. } => Ok(Some(current)),
         SemanticStmt::ImplBlock { .. } => { unsupported!("ImplBlock") },
         SemanticStmt::ConstDecl { .. } => { unsupported!("ConstDecl") },
     }
@@ -1455,7 +1457,80 @@ fn lower_expr(
         SemanticExprKind::ArrayLit { .. } => { unsupported!("ArrayLit") },
         SemanticExprKind::Index { .. } => { unsupported!("Index") },
         SemanticExprKind::MethodCall { .. } => { unsupported!("MethodCall") },
-        SemanticExprKind::StructInstance { .. } => { unsupported!("StructInstance") },
+        // Struct literal lowering strategy
+        //
+        // A struct literal `S { f1: e1, f2: e2, ... }` is lowered to a sequence
+        // of memory operations that produce a stack-allocated struct value:
+        //
+        // 1. Alloca: reserve stack space for the whole struct using the layout
+        //    computed by build_struct_table (total_size, alignment).
+        //
+        // 2. For each field in canonical (definition) order:
+        //    a. Lower the field expression to a scalar IR value.
+        //    b. If the field's byte offset within the struct is non-zero, emit a
+        //       PtrOffset instruction to advance the base pointer by that many bytes.
+        //    c. Emit Store to write the field value at the (possibly offset) pointer.
+        //
+        // 3. Return the base Alloca pointer as IrType::Ptr — the binding that holds
+        //    a struct variable holds a pointer to its stack storage.
+        //
+        // Field ordering in the literal need not match definition order; we look up
+        // each canonical field name in the literal's field list by name.
+        SemanticExprKind::StructInstance { type_name, fields } => {
+            let layout_info = ctx.struct_table.get(type_name).cloned().ok_or_else(|| {
+                LoweringError::UnresolvedSemanticArtifact {
+                    artifact: format!("struct type '{}'", type_name),
+                }
+            })?;
+
+            if layout_info.layout.total_size == 0 {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: "StructInstance with zero-size layout".to_string(),
+                });
+            }
+
+            let ptr = ctx.fresh_value();
+            active.emit(IrInst::Alloca {
+                dst: ptr,
+                size: layout_info.layout.total_size,
+                align: layout_info.layout.alignment,
+            })?;
+
+            for (field_idx, (canonical_name, _field_ty)) in layout_info.fields.iter().enumerate() {
+                let field_offset = layout_info.layout.field_offsets[field_idx];
+
+                let field_expr = fields
+                    .iter()
+                    .find(|(name, _)| name == canonical_name)
+                    .ok_or_else(|| LoweringError::InternalInvariantViolation {
+                        detail: format!(
+                            "struct '{}' field '{}' missing in literal",
+                            type_name, canonical_name
+                        ),
+                    })?;
+
+                let lowered_field = lower_expr(&field_expr.1, ctx, active)?;
+
+                let field_ptr = if field_offset == 0 {
+                    ptr
+                } else {
+                    let fp = ctx.fresh_value();
+                    active.emit(IrInst::PtrOffset {
+                        dst: fp,
+                        base: ptr,
+                        offset: field_offset,
+                    })?;
+                    fp
+                };
+
+                active.emit(IrInst::Store {
+                    ptr: field_ptr,
+                    value: lowered_field.value,
+                })?;
+            }
+
+            Ok(LoweredValue { value: ptr, ty: IrType::Ptr })
+        },
         SemanticExprKind::When { .. } => { unsupported!("WhenExpr") },
         SemanticExprKind::ResultOk { .. } => { unsupported!("ResultOk") },
         SemanticExprKind::ResultErr { .. } => { unsupported!("ResultErr") },
@@ -3647,5 +3722,145 @@ mod tests {
                 artifact: "compound assign binding BindingId(98)".to_string()
             }
         );
+    }
+
+    // ── struct literal tests ──────────────────────────────────────────────────
+
+    fn point_struct_def() -> SemanticStmt {
+        SemanticStmt::StructDef {
+            name: "Point".to_string(),
+            type_params: vec![],
+            fields: vec![
+                ("x".to_string(), SemanticType::I64),
+                ("y".to_string(), SemanticType::I64),
+            ],
+            pos: 0,
+        }
+    }
+
+    fn point_instance(x_val: i128, y_val: i128) -> SemanticExpr {
+        SemanticExpr {
+            ty: SemanticType::Struct("Point".to_string()),
+            kind: SemanticExprKind::StructInstance {
+                type_name: "Point".to_string(),
+                fields: vec![
+                    ("x".to_string(), int_expr(x_val, SemanticType::I64)),
+                    ("y".to_string(), int_expr(y_val, SemanticType::I64)),
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn lowers_struct_literal_emits_alloca_and_stores() {
+        // `p: Point = Point { x: 10, y: 20 }` — expects Alloca(16, 8) + 2 Stores
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(1),
+                    name: "p".to_string(),
+                    ty: SemanticType::Struct("Point".to_string()),
+                    expr: point_instance(10, 20),
+                    pos_type: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let insts: Vec<_> = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        let has_alloca = insts.iter().any(|i| {
+            matches!(i, IrInst::Alloca { size: 16, align: 8, .. })
+        });
+        assert!(has_alloca, "expected Alloca(size=16, align=8) for Point");
+
+        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
+        assert_eq!(store_count, 2, "expected one Store per field (2 total)");
+    }
+
+    #[test]
+    fn lowers_struct_literal_binding_has_ptr_type() {
+        // The variable bound to a struct literal must track as IrType::Ptr
+        let binding = BindingId(5);
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                SemanticStmt::TypedAssign {
+                    binding,
+                    name: "p".to_string(),
+                    ty: SemanticType::Struct("Point".to_string()),
+                    expr: point_instance(1, 2),
+                    pos_type: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let insts: Vec<_> = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // The SsaBind that records the binding must have ty Ptr
+        let has_ptr_bind = insts.iter().any(|i| {
+            matches!(i, IrInst::SsaBind { ty: IrType::Ptr, .. })
+        });
+        assert!(has_ptr_bind, "expected SsaBind with Ptr type for struct binding");
+    }
+
+    #[test]
+    fn lowers_struct_literal_second_field_uses_ptr_offset() {
+        // Point { x: i64, y: i64 } — y lives at offset 8, so a PtrOffset must be emitted
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                SemanticStmt::TypedAssign {
+                    binding: BindingId(2),
+                    name: "p".to_string(),
+                    ty: SemanticType::Struct("Point".to_string()),
+                    expr: point_instance(0, 0),
+                    pos_type: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let insts: Vec<_> = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        let has_ptr_offset = insts.iter().any(|i| {
+            matches!(i, IrInst::PtrOffset { offset: 8, .. })
+        });
+        assert!(has_ptr_offset, "expected PtrOffset(8) for second field of Point");
+    }
+
+    #[test]
+    fn lowers_struct_literal_unknown_struct_fails() {
+        // If the type_name is not in the struct table, lowering must fail gracefully.
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::TypedAssign {
+                binding: BindingId(3),
+                name: "p".to_string(),
+                ty: SemanticType::Struct("Ghost".to_string()),
+                expr: SemanticExpr {
+                    ty: SemanticType::Struct("Ghost".to_string()),
+                    kind: SemanticExprKind::StructInstance {
+                        type_name: "Ghost".to_string(),
+                        fields: vec![],
+                    },
+                },
+                pos_type: 0,
+            }],
+            enums: vec![],
+        };
+
+        assert!(matches!(
+            lower_program(&program).expect_err("should fail for unknown struct"),
+            LoweringError::UnresolvedSemanticArtifact { artifact }
+                if artifact.contains("Ghost")
+        ));
     }
 }
