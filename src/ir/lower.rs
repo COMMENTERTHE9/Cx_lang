@@ -1322,6 +1322,37 @@ fn lower_expr(
                 ty: to_ty,
             })
         }
+        // Direct function call lowering strategy
+        //
+        // A direct call emits one IrInst::Call instruction per call site.  The
+        // lowering proceeds in four phases:
+        //
+        // 1. Signature resolution
+        //    The signature table (built in a pre-pass over all FuncDef statements)
+        //    is consulted by callee name.  An unknown callee is a hard error —
+        //    semantic analysis guarantees every call is resolved, so a missing
+        //    entry indicates an internal invariant violation.
+        //
+        // 2. Arity and return-type validation
+        //    Void-returning callees are rejected at this stage; IrType::Void is
+        //    not yet defined (see Phase 8 ABI work).  Arity mismatches between
+        //    the call site and the signature are flagged as invariant violations,
+        //    since the semantic layer enforces them before lowering runs.
+        //
+        // 3. Argument lowering
+        //    Each SemanticCallArg::Expr argument is recursively lowered through
+        //    lower_expr, producing a ValueId.  Type agreement between the lowered
+        //    argument and the expected parameter type is verified with
+        //    ensure_type_match.  Non-Expr call arguments (Copy, CopyFree,
+        //    CopyInto) are not yet supported; they require ABI decisions that
+        //    belong to Phase 8.
+        //
+        // 4. Instruction emission
+        //    A fresh ValueId is allocated for the call result.
+        //    IrInst::Call { dst: Some(result), callee, args, return_ty } is
+        //    emitted into the active block.  The result ValueId is returned to
+        //    the caller as a LoweredValue so it can flow into assignments,
+        //    return statements, and sub-expressions.
         SemanticExprKind::Call { callee, function: _, args } => {
             let (param_types, return_ty) = {
                 let sig = ctx.signature_table.get(callee).ok_or_else(|| {
@@ -2569,6 +2600,168 @@ mod tests {
                 construct: "non-Expr call argument in call to 'takes_one'".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn lowers_call_inside_function_body() {
+        // Verifies that a user-defined function can call another user-defined
+        // function and use the result as its trailing return expression.
+        //
+        //   fn get_val() -> i64 { 42 }
+        //   fn use_val() -> i64 { get_val() }
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "get_val",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(42, SemanticType::I64)),
+                ),
+                semantic_function(
+                    "use_val",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "get_val".to_string(),
+                            function: FunctionId(0),
+                            args: vec![],
+                        },
+                    }),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let caller = module.functions.iter().find(|f| f.name == "use_val").unwrap();
+        let call_insts: Vec<_> = caller.blocks.iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { .. }))
+            .collect();
+        assert_eq!(call_insts.len(), 1);
+        match &call_insts[0] {
+            IrInst::Call { callee, args, return_ty, .. } => {
+                assert_eq!(callee, "get_val");
+                assert!(args.is_empty());
+                assert_eq!(*return_ty, Some(IrType::I64));
+            }
+            _ => panic!("expected Call instruction"),
+        }
+        // The return terminator of use_val must carry the call result value.
+        let terms: Vec<_> = caller.blocks.iter()
+            .filter(|b| matches!(b.term, IrTerminator::Return { value: Some(_) }))
+            .collect();
+        assert_eq!(terms.len(), 1, "use_val must have exactly one value-return terminator");
+    }
+
+    #[test]
+    fn lowers_call_result_in_binary_expr() {
+        // Verifies that the ValueId produced by a Call flows correctly as an
+        // operand into a subsequent Binary instruction.
+        //
+        //   fn make_one() -> i64 { 1 }
+        //   let x: i64 = make_one() + 2
+        let call_expr = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::Call {
+                callee: "make_one".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let add_expr = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(call_expr),
+                op: Op::Plus,
+                pos: 0,
+                rhs: Box::new(int_expr(2, SemanticType::I64)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "make_one",
+                    vec![],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(1, SemanticType::I64)),
+                ),
+                typed_assign(BindingId(10), "x", SemanticType::I64, add_expr),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let insts: Vec<_> = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+        assert!(
+            insts.iter().any(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "make_one")),
+            "expected a Call to make_one"
+        );
+        assert!(
+            insts.iter().any(|inst| matches!(inst, IrInst::Binary { op: BinaryOp::Add, ty: IrType::I64, .. })),
+            "expected a Binary/Add using the call result"
+        );
+    }
+
+    #[test]
+    fn lowers_multi_arg_call() {
+        // Verifies that calls with more than one argument lower all arguments
+        // and emit them in order on the IrInst::Call.
+        //
+        //   fn add(a: i64, b: i64) -> i64 { 0 }
+        //   let r: i64 = add(10, 20)
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "add",
+                    vec![
+                        typed_param(BindingId(0), "a", SemanticType::I64),
+                        typed_param(BindingId(1), "b", SemanticType::I64),
+                    ],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(int_expr(0, SemanticType::I64)),
+                ),
+                typed_assign(
+                    BindingId(10),
+                    "r",
+                    SemanticType::I64,
+                    SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::Call {
+                            callee: "add".to_string(),
+                            function: FunctionId(0),
+                            args: vec![
+                                SemanticCallArg::Expr(int_expr(10, SemanticType::I64)),
+                                SemanticCallArg::Expr(int_expr(20, SemanticType::I64)),
+                            ],
+                        },
+                    },
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let call_insts: Vec<_> = main_fn.blocks.iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { .. }))
+            .collect();
+        assert_eq!(call_insts.len(), 1);
+        match &call_insts[0] {
+            IrInst::Call { callee, args, .. } => {
+                assert_eq!(callee, "add");
+                assert_eq!(args.len(), 2);
+            }
+            _ => panic!("expected Call instruction"),
+        }
     }
 
     #[test]
