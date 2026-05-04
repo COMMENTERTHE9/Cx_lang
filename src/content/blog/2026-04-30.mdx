@@ -1,0 +1,46 @@
+---
+title: "Cx Dev Log — 2026-04-30"
+date: 2026-04-30
+description: "Phase 11 lands compound assign lowering on submain, bringing +=, -=, *=, /=, and %%= into the IR backend with full SSA handling."
+---
+
+After four quiet days, Phase 11 resumed today with compound assign lowering on submain. One commit, 126 new lines in `src/ir/lower.rs`, three new tests. The five compound operators (`+=`, `-=`, `*=`, `/=`, `%%=`) now lower through the IR backend for the first time. Main stays at 78/78 tests, untouched. Submain remains 22 commits ahead with a 33-day integration gap.
+
+## Compound Assign Lowering
+
+Commit `9015aff` on submain replaces the `CompoundAssign` stub (which previously returned `UnresolvedSemanticArtifact`) with real lowering logic. For `Binding` LValues, the implementation follows the same SSA pattern used for plain assignment:
+
+1. Read the current SSA value of the binding.
+2. Lower the right-hand operand.
+3. Emit a `Binary` instruction with the corresponding op (Add for `+=`, Sub for `-=`, etc.).
+4. Re-bind the result via `SsaBind` and update the binding map.
+
+`DotAccess` LValues (struct field compound assigns) are explicitly rejected with a typed error rather than silently falling through. This is consistent with how the lowering pass handles other unsupported constructs throughout the backend. The rejection is intentional: struct field access needs the pointer arithmetic infrastructure that has not landed yet.
+
+Three tests cover the new behavior:
+
+- `lowers_compound_assign_add` verifies that `+=` emits `Binary::Add`.
+- `lowers_compound_assign_sub` runs `-=` end-to-end through `lower_and_validate`.
+- `rejects_compound_assign_dot_access` confirms the DotAccess rejection returns the expected error.
+
+Two existing error-message assertions were updated to match the new, more specific error format (`"compound assign binding BindingId(N)"` instead of the generic `"CompoundAssign"`).
+
+Total diff: +126/-5 lines, all in `src/ir/lower.rs`.
+
+## The Pattern
+
+This follows the same incremental approach the backend has used throughout Phase 11. Each sub-packet takes one syntactic category, implements the lowering logic, adds targeted tests, and explicitly stubs what it cannot yet handle with clear error paths. Unary expression lowering landed on April 26. Compound assigns land today. The remaining unsupported expression kinds (ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, Range) and compound assign on DotAccess are all explicitly stubbed with typed errors rather than panics.
+
+The four-day gap between April 26 and today is notable mainly because it broke the daily cadence that Phase 11 had maintained. But the work itself is straightforward continuation of the expression lowering track.
+
+## Submain Divergence
+
+The structural situation is unchanged and still the biggest risk in the project. Submain carries 22 commits over 33 days: Phases 10 and 11 of the IR backend, the error model (`Result<T>`), integer overflow enforcement, optional semicolons, two full audits, diagnostics polish, and roadmap v5.0 with all 9 hard blockers resolved. Main is still at v4.8 with 78/78 tests and those same 9 hard blockers unchecked.
+
+The merge has been the stated top priority for weeks. It has not happened. Every day of continued submain-only work increases eventual merge complexity. The test gap alone is 39 tests (78 on main vs 117 on submain).
+
+## What's Next
+
+The natural next step for the backend is continuing expression lowering through the remaining unsupported kinds. Compound assign on DotAccess specifically depends on struct field access infrastructure (pointer arithmetic plus Load/Store), which has not landed yet.
+
+The merge remains the single highest-leverage action available. The daily-log PR backlog (roughly 30 unmerged branches from March 29 through April 29) continues to accumulate as housekeeping debt.
