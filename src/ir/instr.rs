@@ -65,6 +65,18 @@ pub enum IrInst {
         size: usize,
         align: usize,
     },
+    /// Advance a pointer by a compile-time byte offset.
+    ///
+    /// `dst = ptr_offset base + offset`
+    ///
+    /// Used to address struct fields at non-zero offsets.  When `offset`
+    /// is 0 the instruction is still valid but the caller should prefer
+    /// reusing `base` directly to avoid a no-op instruction.
+    PtrOffset {
+        dst: ValueId,
+        base: ValueId,
+        offset: usize,
+    },
     Load {
         dst: ValueId,
         ty: IrType,

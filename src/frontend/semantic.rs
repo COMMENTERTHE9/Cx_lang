@@ -1087,13 +1087,18 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let instance_ty = info.inferred.clone()
                     .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
                     .unwrap_or(SemanticType::Unknown);
-                let field_ty = if let SemanticType::Struct(struct_name) = &instance_ty {
-                    self.structs.get(struct_name)
+                let resolved_struct_name = if let SemanticType::Struct(sn) = &instance_ty {
+                    sn.clone()
+                } else {
+                    String::new()
+                };
+                let field_ty = if resolved_struct_name.is_empty() {
+                    SemanticType::Unknown
+                } else {
+                    self.structs.get(&resolved_struct_name)
                         .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
                         .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
                         .unwrap_or(SemanticType::Unknown)
-                } else {
-                    SemanticType::Unknown
                 };
                 Ok(SemanticExpr {
                     ty: field_ty,
@@ -1101,6 +1106,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         binding: Some(info.binding),
                         container: container.clone(),
                         field: field.clone(),
+                        struct_name: resolved_struct_name,
                     },
                 })
             }

@@ -301,6 +301,11 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 }
                 module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace)?);
             }
+            // Struct definitions are pre-processed into the struct_table before
+            // code lowering begins (see build_struct_table).  They carry no
+            // executable semantics and produce no IR, so skip them here rather
+            // than routing them into the synthetic-main statement sequence.
+            SemanticStmt::StructDef { .. } => {}
             other => top_level_stmts.push(other),
         }
     }
@@ -1380,7 +1385,9 @@ fn lower_expr(
                 ty: return_ty,
             })
         },
-        SemanticExprKind::DotAccess { .. } => { unsupported!("DotAccess") },
+        SemanticExprKind::DotAccess { binding, container, field, struct_name } => {
+            lower_dot_access(binding, container, field, struct_name, &expr.ty, ctx, active)
+        }
         SemanticExprKind::HandleNew { .. } => { unsupported!("HandleNew") },
         SemanticExprKind::HandleVal { .. } => { unsupported!("HandleVal") },
         SemanticExprKind::HandleDrop { .. } => { unsupported!("HandleDrop") },
@@ -1592,6 +1599,127 @@ fn lower_binary(
             construct: "Binary::Or".to_string(),
         }),
     }
+}
+
+// Struct field read lowering strategy
+//
+// A DotAccess expression `container.field` is lowered in three steps:
+//
+//   1. Resolve the container binding to its SSA value (a Ptr produced by a
+//      prior Alloca when the struct was created).
+//
+//   2. Look up the struct layout from the pre-built struct_table.  The struct
+//      type name is carried directly in `struct_name` (populated by the
+//      semantic analyser); no run-time type lookup is needed.
+//
+//   3. Compute the field's byte offset from the layout.  If the offset is
+//      greater than zero, emit IrInst::PtrOffset to advance the base pointer
+//      to the field's address.  If the offset is zero the base pointer itself
+//      already addresses the first field.
+//
+//   4. Emit IrInst::Load with the field's IR type to read the value.
+//
+// This produces at most two instructions per field read (PtrOffset + Load)
+// and reuses the existing memory instruction set without requiring a
+// dedicated GEP instruction.
+fn lower_dot_access(
+    binding: &Option<BindingId>,
+    container: &str,
+    field: &str,
+    struct_name: &str,
+    field_sem_ty: &SemanticType,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    // 1. Resolve the container binding to get the struct pointer.
+    let binding_id = binding.ok_or_else(|| LoweringError::InternalInvariantViolation {
+        detail: format!(
+            "DotAccess on '{container}.{field}' has no binding; \
+             the semantic analyser must supply one for all lowerable field reads"
+        ),
+    })?;
+
+    let base = active.bindings.get(&binding_id).cloned().ok_or_else(|| {
+        LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "binding for '{container}' (id {}) not found in scope for DotAccess '{container}.{field}'",
+                binding_id.0
+            ),
+        }
+    })?;
+
+    if base.ty != IrType::Ptr {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "DotAccess on '{container}': expected Ptr-typed binding, got {:?}",
+                base.ty
+            ),
+        });
+    }
+
+    // 2. Look up the struct layout.
+    if struct_name.is_empty() {
+        return Err(LoweringError::UnresolvedSemanticArtifact {
+            artifact: format!(
+                "struct type for '{container}' is unknown; \
+                 DotAccess '{container}.{field}' cannot be lowered"
+            ),
+        });
+    }
+    let info = ctx.struct_table.get(struct_name).cloned().ok_or_else(|| {
+        LoweringError::UnresolvedSemanticArtifact {
+            artifact: format!("struct '{struct_name}' in DotAccess '{container}.{field}'"),
+        }
+    })?;
+
+    // 3. Find the field index, offset, and IR type.
+    let field_idx = info
+        .fields
+        .iter()
+        .position(|(name, _)| name == field)
+        .ok_or_else(|| LoweringError::UnresolvedSemanticArtifact {
+            artifact: format!("field '{field}' on struct '{struct_name}'"),
+        })?;
+
+    let field_ir_ty = info.fields[field_idx].1.clone();
+    let field_offset = info.layout.field_offsets[field_idx];
+
+    // Verify that the semantic field type agrees with what the struct table says.
+    let expected_ir_ty = lower_type(field_sem_ty)?;
+    if expected_ir_ty != field_ir_ty {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "DotAccess '{container}.{field}': IR type mismatch — \
+                 semantic layer says {expected_ir_ty:?}, struct layout says {field_ir_ty:?}"
+            ),
+        });
+    }
+
+    // 4. Advance the pointer to the field's address (skip if offset is 0).
+    let field_ptr = if field_offset > 0 {
+        let fp = ctx.fresh_value();
+        active.emit(IrInst::PtrOffset {
+            dst: fp,
+            base: base.value,
+            offset: field_offset,
+        })?;
+        fp
+    } else {
+        base.value
+    };
+
+    // 5. Load the field value.
+    let dst = ctx.fresh_value();
+    active.emit(IrInst::Load {
+        dst,
+        ty: field_ir_ty.clone(),
+        ptr: field_ptr,
+    })?;
+
+    Ok(LoweredValue {
+        value: dst,
+        ty: field_ir_ty,
+    })
 }
 
 fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
@@ -3647,5 +3775,240 @@ mod tests {
                 artifact: "compound assign binding BindingId(98)".to_string()
             }
         );
+    }
+
+    // ── struct field read tests ───────────────────────────────────────────────
+
+    fn point_struct_def() -> SemanticStmt {
+        SemanticStmt::StructDef {
+            name: "Point".to_string(),
+            type_params: vec![],
+            fields: vec![
+                ("x".to_string(), SemanticType::I64),
+                ("y".to_string(), SemanticType::I64),
+            ],
+            pos: 0,
+        }
+    }
+
+    fn dot_access_expr(
+        binding: BindingId,
+        container: &str,
+        field: &str,
+        struct_name: &str,
+        field_ty: SemanticType,
+    ) -> SemanticExpr {
+        SemanticExpr {
+            ty: field_ty,
+            kind: SemanticExprKind::DotAccess {
+                binding: Some(binding),
+                container: container.to_string(),
+                field: field.to_string(),
+                struct_name: struct_name.to_string(),
+            },
+        }
+    }
+
+    // Reading the first field (`x` at offset 0) should emit a single Load —
+    // no PtrOffset is needed because the base pointer already addresses the field.
+    #[test]
+    fn lowers_dot_access_first_field_emits_load_only() {
+        // fn read_x(p: Point) -> i64 { p.x }
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                semantic_function(
+                    "read_x",
+                    vec![typed_param(
+                        BindingId(0),
+                        "p",
+                        SemanticType::Struct("Point".to_string()),
+                    )],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(dot_access_expr(
+                        BindingId(0),
+                        "p",
+                        "x",
+                        "Point",
+                        SemanticType::I64,
+                    )),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "read_x").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have a Load for i64
+        let has_load = insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I64, .. }));
+        assert!(has_load, "expected Load i64 for first-field DotAccess");
+
+        // Must NOT have a PtrOffset — first field is at offset 0
+        let has_ptr_offset = insts.iter().any(|i| matches!(i, IrInst::PtrOffset { .. }));
+        assert!(!has_ptr_offset, "unexpected PtrOffset for first field (offset 0)");
+    }
+
+    // Reading the second field (`y` at offset 8) must emit PtrOffset(8) then Load.
+    // Point { x: i64, y: i64 } — y is at byte offset 8 after alignment padding.
+    #[test]
+    fn lowers_dot_access_second_field_emits_ptr_offset_then_load() {
+        // fn read_y(p: Point) -> i64 { p.y }
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                semantic_function(
+                    "read_y",
+                    vec![typed_param(
+                        BindingId(0),
+                        "p",
+                        SemanticType::Struct("Point".to_string()),
+                    )],
+                    Some(SemanticType::I64),
+                    vec![],
+                    Some(dot_access_expr(
+                        BindingId(0),
+                        "p",
+                        "y",
+                        "Point",
+                        SemanticType::I64,
+                    )),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "read_y").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have PtrOffset with offset 8
+        let has_ptr_offset = insts
+            .iter()
+            .any(|i| matches!(i, IrInst::PtrOffset { offset: 8, .. }));
+        assert!(
+            has_ptr_offset,
+            "expected PtrOffset(8) for second field of Point"
+        );
+
+        // Must have a Load for i64
+        let has_load = insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I64, .. }));
+        assert!(has_load, "expected Load i64 after PtrOffset for second field");
+    }
+
+    // Reading a f64 field verifies correct IR type propagation.
+    #[test]
+    fn lowers_dot_access_f64_field_produces_f64_load() {
+        // struct Vec2 { dx: f64, dy: f64 }
+        // fn get_dx(v: Vec2) -> f64 { v.dx }
+        let program = SemanticProgram {
+            stmts: vec![
+                SemanticStmt::StructDef {
+                    name: "Vec2".to_string(),
+                    type_params: vec![],
+                    fields: vec![
+                        ("dx".to_string(), SemanticType::F64),
+                        ("dy".to_string(), SemanticType::F64),
+                    ],
+                    pos: 0,
+                },
+                semantic_function(
+                    "get_dx",
+                    vec![typed_param(
+                        BindingId(0),
+                        "v",
+                        SemanticType::Struct("Vec2".to_string()),
+                    )],
+                    Some(SemanticType::F64),
+                    vec![],
+                    Some(dot_access_expr(
+                        BindingId(0),
+                        "v",
+                        "dx",
+                        "Vec2",
+                        SemanticType::F64,
+                    )),
+                ),
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "get_dx").unwrap();
+        let has_f64_load = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .any(|i| matches!(i, IrInst::Load { ty: IrType::F64, .. }));
+        assert!(has_f64_load, "expected Load f64 for f64 DotAccess");
+    }
+
+    // Reject DotAccess when the binding is missing (None) — lowering cannot
+    // resolve the base pointer without a BindingId.
+    #[test]
+    fn rejects_dot_access_with_no_binding() {
+        let program = SemanticProgram {
+            stmts: vec![
+                point_struct_def(),
+                SemanticStmt::ExprStmt {
+                    expr: SemanticExpr {
+                        ty: SemanticType::I64,
+                        kind: SemanticExprKind::DotAccess {
+                            binding: None,
+                            container: "p".to_string(),
+                            field: "x".to_string(),
+                            struct_name: "Point".to_string(),
+                        },
+                    },
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
+    }
+
+    // Reject DotAccess when struct_name is empty (unknown container type).
+    #[test]
+    fn rejects_dot_access_with_unknown_struct_name() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::ExprStmt {
+                expr: SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::DotAccess {
+                        binding: Some(BindingId(0)),
+                        container: "x".to_string(),
+                        field: "val".to_string(),
+                        struct_name: String::new(),
+                    },
+                },
+                pos: 0,
+            }],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
+    }
+
+    // Reject DotAccess when the named struct does not exist in the program.
+    #[test]
+    fn rejects_dot_access_with_missing_struct_def() {
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::ExprStmt {
+                expr: SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::DotAccess {
+                        binding: Some(BindingId(0)),
+                        container: "p".to_string(),
+                        field: "x".to_string(),
+                        struct_name: "Ghost".to_string(),
+                    },
+                },
+                pos: 0,
+            }],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
     }
 }
