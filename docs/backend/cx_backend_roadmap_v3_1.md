@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v3.1 — 2026-03-17
+v4.0 — 2026-05-03
 
 ---
 
@@ -189,9 +189,9 @@ Backend trait signature changed to take `&IrModule`. `main.rs` passes lowered IR
 
 ## Active 🔄
 
-**Phase 6 — Function Call Lowering** *(next up)*
+**Phase 11 — Surface Area Reduction** *(in progress)*
 
-Goal: let already-lowered functions call each other.
+Compound assign, unary, memory ops, struct registry, and struct literal lowering have landed. Remaining open: range expressions, DotAccess (field reads/writes), array indexing, method calls, and void-return calls.
 
 See Up Next section for details.
 
@@ -199,25 +199,15 @@ See Up Next section for details.
 
 ## Up Next — Core Compiler Work 🔲
 
-**Phase 6 — Function Call Lowering**
+**Phase 6 — Function Call Lowering** *(DONE — 2026-03-22)*
 
-Goal: let already-lowered functions call each other.
+Stage 2b: direct call lowering — `IrInst::Call` emitted; arity and arg-type validated against `signature_table` at lowering time. Call result flows into assignments, returns, and expressions.
 
-- Direct call lowering
-- Argument lowering with arity validation
-- Type-checked call signatures at IR boundary
-- Call result lowering
-- Direct vs intrinsic call distinction established
-- Call validation in validator
-- Tests for call-containing IR
+Stage 3: cross-function call validation in IR validator — callee resolution, arity check, arg type check against the module function list.
 
-Implementation note: `build_signature_table` in `lower.rs` builds a `HashMap<String, FunctionSignature>` from all function definitions. This must be wired into `LoweringCtx` on construction so call sites can resolve callee signatures for arity and type validation.
+Tests cover: unresolved callee, arity mismatch, type mismatch, call-with-assignment, and call-in-expr-stmt cases.
 
-Done when:
-- Simple direct calls lower successfully
-- Call results flow into assignments, returns, and expressions
-- Validator accepts call-containing IR
-- Arity and type mismatches produce structured errors
+Known limitation: void-return calls produce `UnsupportedSemanticConstruct("void function call — IrType::Void pending")`. `IrType::Void` is not yet defined; tracked as a Phase 11 open item.
 
 ---
 
@@ -227,34 +217,29 @@ IR pretty printer, `--backend=validate` mode, and `--debug-trace` verbose flag a
 
 ---
 
-**Phase 8 — ABI and Data Layout**
+**Phase 8 — ABI and Data Layout** *(Round 1 DONE 2026-03-27 — open items remain)*
 
 Goal: freeze backend-visible representation of all core runtime types. For a game engine language where predictable memory layout is a core selling point, correct machine output is not fully defined until layout rules are documented, implemented, and tested.
 
 Without this phase, parity testing is incomplete — the backend could produce output that matches the interpreter by accident rather than by design.
 
-- Scalar layout rules — t8, t16, t32, t64, t128, f64, bool
-- bool representation — 0 for false, 1 for true, backend-visible
-- Enum layout — tag representation, variant layout
-- Struct field layout — ordering, alignment, padding rules
-- Array element layout — stride, alignment
+**Landed in Round 1 (2026-03-27):**
+- Scalar layout locked — t8/t16/t32/t64/t128/f64/bool: `size_bytes()` and `align_bytes()` on `IrType`, 7 confidence tests; spec in `docs/backend/cx_abi_v0.1.md` ✅
+- bool representation locked — 0 for false, 1 for true ✅
+- Struct field layout locked — declaration order, natural alignment, padding, total size rounded to largest field alignment; `compute_struct_layout()`, 7 confidence tests ✅
+- Array element layout locked — fixed-size, contiguous, stride-based; `compute_array_layout()`, 5 confidence tests ✅
+- Enum layout locked — tag-only u8, declaration order, 0–255 ✅
+- `IrType::TBool` added — 1-byte three-state type (0/1/2), layout locked; awaiting frontend `SemanticType::TBool` wiring into the lowering path ✅
+- Calling convention locked — C ABI, single return register; copy param bleed-back deferred to post-0.1 ✅
+- Target platform matrix explicit — Windows x64 and Linux x64 ✅
+
+**Still open:**
 - str and strref layout at backend boundary
   - Arena ownership question: the tree-walk interpreter's arena is a Vec<u8> in RunTime. In JIT mode, does the JIT call into the same RunTime arena via intrinsic calls, maintain its own separate arena, or treat strings as heap-allocated (arena as interpreter-only optimization)? This decision affects strref escape rules since strref is an arena view that cannot outlive the arena. Must be answered before any string layout is defined.
 - Handle<T> runtime representation
-- TBool representation — 0/1/2 wire format preserved through backend
-  - Runtime representation decision needed: u8, enum, or tagged union
-  - IR type question: does IrType need a TBool variant or is it lowered as IrType::I8 with convention?
-  - Unknown propagation strategy: does unknown checking happen in IR instructions or as runtime intrinsic calls?
-  - Arithmetic on unknown-infected values: propagation cost and mechanism must be defined
-  - TBool function parameters: calling convention implications — a TBool param is not a bool param
-  - This is one of the most distinctive parts of the language and needs a full design pass before Phase 8 closes
-- Function calling convention — how arguments are passed and returned
-- Parameter passing rules — by value, by reference, for each type
-- Copy parameter bleed-back convention — (x.copy) requires the modified parameter value to be written back to the caller's variable on return. This is non-standard. Options: pass by pointer and let callee write through it, return a struct containing return value plus all modified copy params, or use a secondary return slot. This decision affects every function call involving .copy parameters and must be resolved before Phase 8 closes.
-- Return value rules — small values, large values, void
-- Synthetic main vs real main conventions documented
-- Layout tests — struct sizes, field offsets, array strides match documented rules
-- Target platform matrix explicit — Windows x64 and Linux x64 for 0.1
+- TBool calling convention — a TBool param is not a bool param; function parameter passing convention for TBool needs explicit decision
+- Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? Arithmetic on unknown-infected values: propagation cost and mechanism must be defined
+- Return value rules for large values and void — IrType::Void still pending
 
 Done when:
 - Every core Cx type has a documented backend representation
@@ -289,44 +274,49 @@ Done when:
 
 ---
 
-**Phase 10 — Loop Lowering**
+**Phase 10 — Loop Lowering** *(DONE — 2026-03-22)*
 
-Goal: lower loop constructs after branch lowering is stable.
+while loop: header/body/exit CFG, loop-carried SSA via block params, backedge, 3 tests.
 
-- while loop lowering — header, body, exit blocks
-- for loop lowering — **depends on Phase 11 range expression lowering**; the `for i in 0..5` construct requires the range expression to be lowered first, which is currently rejected by unsupported! in lower_expr. For loops will not work until range lowering ships. Either range lowering must be pulled into Phase 10 or Phase 11 range work must complete before Phase 10 for-loops are attempted.
-- Loop-carried values through block params
-- Backedge handling
-- break lowering — exits to loop exit block
-- continue lowering — jumps to loop header
-- Returns inside loop body handled correctly
-- Loop-aware SSA — values defined inside loop not visible outside
-- Validator support for loop CFG — backedges, dominance-like invariants
-- Loop variable read-only invariant — the runtime enforces RuntimeError::ReadOnlyLoopVar (for loop variable is read-only inside body). The IR validator must enforce this too: a binding that is a loop variable must never appear as the destination of an assignment instruction inside the loop body. This is a correctness guarantee the backend inherits from the runtime.
+for loop: inline range (explicit `start`/`end`/`inclusive` from semantic layer, not `SemanticExprKind::Range`), increment block, ascending only, inclusive/exclusive bounds, break/continue support, 4 tests.
 
-Done when:
-- while and for loops lower into valid CFG
-- break and continue lower correctly
-- Returns inside loops are handled
-- Validator accepts loop-containing IR
+infinite loop (`loop` keyword): header/body CFG with break as exit.
+
+break: unconditional branch to loop exit block.
+
+continue: unconditional branch to loop header.
+
+Returns inside loop body handled correctly — conditional return inside while verified.
+
+Implementation note: the for-loop range dependency on Phase 11 was resolved by implementing for-loop lowering using explicit `start`/`end`/`inclusive` params that the semantic layer extracts. `SemanticExprKind::Range` as a standalone expression remains unsupported in `lower_expr`.
+
+Known gap: loop variable read-only invariant (`ReadOnlyLoopVar`) is not yet enforced in the IR validator. The runtime enforces it; the IR validator should also reject assignments to a loop variable inside the loop body. Tracked as follow-on work.
 
 ---
 
-**Phase 11 — Surface Area Reduction for Supported 0.1 Subset**
+**Phase 11 — Surface Area Reduction for Supported 0.1 Subset** *(ACTIVE)*
 
 Goal: shrink the unsupported surface area intentionally. Every construct in this phase either gets supported or gets a documented, structured rejection. Nothing is silently unsupported.
 
-- CompoundAssign — += style forms — **cross-roadmap dependency:** the Cx compound assign syntax is `i += 1` (standard infix, frozen). The IR representation of compound assign follows this form.
-- Unary expressions
-- Range expressions
-- Dot access and field indexing forms
-- Array indexing forms
-- Non-typed param kinds
-- Method call lowering semantics
-- Assignment semantics with field and index writes
-- Side-effect ordering — evaluation order documented and stable
-- Temporary evaluation order — consistent with semantic layer
-- when block lowering or structured rejection — when blocks are Cx's primary branching form and must appear explicitly in Phase 11. Either lower to nested branch chains or produce a documented UnsupportedSemanticConstruct error. Design note: basic enum variant when compiles to tag comparisons, range when compiles to bounds checks, TBool when requires a three-way branch (true/false/unknown) which the current two-way Branch IR cannot express without two nested Branch instructions.
+**Landed:**
+- CompoundAssign — `+=`, `-=`, `*=`, `/=`, `%=` on binding targets — DONE, 3 tests ✅; DotAccess target still produces structured `UnsupportedSemanticConstruct`
+- Unary expressions — negate (int/float) and boolean not — DONE, 4 tests ✅
+- `IrType::Ptr`; `IrInst::Alloca`/`Load`/`Store` with validator and printer support — DONE ✅
+- Struct registry threaded into `LoweringCtx`; `lower_type` maps `Struct` → `IrType::Ptr` — DONE ✅
+- `IrInst::PtrOffset { dst, base, offset }` — compile-time byte offset on a Ptr, for field addressing — DONE ✅
+- `SemanticExprKind::StructInstance` lowering — Alloca(total_size, align) + PtrOffset + Store per field, returns base Ptr; 4 tests — DONE ✅
+- `SemanticStmt::StructDef` in `lower_stmt` is a no-op (registry pre-built) — DONE ✅
+- `when` statement and `when` expression — both produce structured `UnsupportedSemanticConstruct` errors ✅
+- Unary lowering strategy documented in `lower.rs` comments (CX-6) ✅
+
+**Still open:**
+- Range expressions — `SemanticExprKind::Range` unsupported in `lower_expr`; needed for standalone range use
+- `DotAccess` in expressions — `SemanticExprKind::DotAccess` unsupported; struct field reads require this
+- `DotAccess` in assignment targets — `SemanticLValue::DotAccess` unsupported; struct field writes require this
+- Array indexing (`Index`) and array literals (`ArrayLit`) — unsupported
+- `Array` type in `lower_type` — unsupported_type
+- `MethodCall` — unsupported
+- Void-return function calls — `IrType::Void` not yet defined; tracked from Phase 6
 
 Done when:
 - Every construct either lowers or produces a named, structured error
@@ -600,27 +590,29 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 ## Progress Board
 
 **Done**
-- Semantic boundary
-- IR data model
-- Straight-line lowering
-- IR validator
-- Function lowering
-- if / else lowering
+- Semantic boundary (Phase 0)
+- IR data model (Phase 1)
+- Straight-line lowering (Phase 2)
+- IR validator (Phase 3)
+- Function lowering (Phase 4)
+- if / else lowering (Phase 5)
 - Backend trait interface change (Phase 0.5) — backend takes &IrModule
 - IR pretty printer and diagnostics foundation (Phase 7) — --backend=validate, --debug-trace
+- Function call lowering (Phase 6) — direct calls, arity/type validation, validator support; void calls pending
+- Loop lowering (Phase 10) — while, for, loop, break, continue, returns inside loops; loop-var read-only validator gap noted
+- ABI and data layout Round 1 (Phase 8) — scalars, structs, arrays, enums, calling convention, IrType::TBool locked
 
 **Active**
-- Function call lowering
+- Surface area reduction (Phase 11) — compound assign, unary, memory ops, struct registry, struct literal lowering done; range, DotAccess, array indexing, method calls, void calls still open
+- ABI and data layout Round 2 (Phase 8) — str/strref layout, Handle<T>, TBool calling convention, unknown propagation still open
 
 **Next — 0.1 Path**
-- ABI and data layout
-- Runtime intrinsics boundary
-- Loop lowering
-- Surface area reduction
-- Differential backend harness
-- Cranelift skeleton
-- First executable backend slice
-- Cranelift JIT — 0.1 target
+- Runtime intrinsics boundary (Phase 9)
+- Differential backend harness (Phase 12)
+- Cranelift lowering skeleton (Phase 13)
+- JIT runtime host boundary
+- First executable backend slice (Phase 14)
+- Cranelift JIT — 0.1 target (Phase 15)
 
 **Post-0.1**
 - Cranelift AOT
@@ -635,6 +627,19 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.0 (2026-05-03)
+
+Roadmap reconciled with actually-shipped work. No design changes; this update records what landed since v3.1.
+
+- Phase 6 (function call lowering) marked Done — Stage 2b (lowering) and Stage 3 (validator) landed 2026-03-22; void calls produce a structured error, `IrType::Void` tracked in Phase 11
+- Phase 8 Round 1 marked Done — scalar, struct, array, and enum layouts locked; calling convention locked (C ABI, copy params post-0.1); `IrType::TBool` added; str/strref layout and unknown propagation remain open
+- Phase 10 (loop lowering) marked Done — while, for, loop, break, continue, returns inside loops working; for-loop range dependency resolved inline; loop-var read-only validator enforcement noted as a gap
+- Phase 11 (surface area reduction) marked Active — compound assign, unary, `IrType::Ptr`, `IrInst::Alloca`/`Load`/`Store`/`PtrOffset`, struct registry, and struct literal lowering all landed; range, DotAccess, array indexing, method calls, and void calls still open
+- Active phase updated from Phase 6 to Phase 11
+- Progress board updated to reflect current state
 
 ---
 
