@@ -1,0 +1,53 @@
+---
+title: "Cx Dev Log - 2026-05-04"
+date: 2026-05-04
+description: "PR #57 merged submain into main after 37 days of divergence, jumping the test matrix from 78 to 117, and an 11-commit IR lowering sprint landed struct and array support."
+---
+
+The submain branch finally merged into main today. 37 days of divergence, 25+ commits, and the test matrix jumped from 78 to 117 in a single PR. On top of that, an 11-commit IR lowering sprint landed on submain covering structs and arrays end-to-end. This was the single biggest day of forward progress in weeks.
+
+## The submain merge (PR #57)
+
+This was the most overdue action in the project. Main had been frozen at v4.9 / 78 tests since late March while all the real work accumulated on submain. PR #57 brought everything home: all 9 hard blockers resolved, 117/117 test matrix, 8/8 examples passing, the error model, integer overflow enforcement, semicolon rules, parser body fixes, struct field overflow handling, recursive types, and the memory soundness fix.
+
+Every daily log since mid-March flagged this as the highest-leverage action available. It's done.
+
+## IR lowering sprint: CX-7 through CX-17
+
+Eleven commits landed on submain in a single day, building out composite type support in the lowering pass:
+
+**CX-7** - Direct function call lowering. Three new tests covering calls inside function bodies, call results in binary expressions, and multi-arg calls. +193 lines to lower.rs.
+
+**CX-9** - Struct literal lowering. `StructInstance` now lowers to Alloca + per-field PtrOffset/Store. Introduced `IrInst::PtrOffset` for compile-time pointer arithmetic. 4 new tests.
+
+**CX-10** - Struct field reads via `DotAccess`. Layout table lookup, binding resolution, PtrOffset for non-zero offsets, then Load. Required adding `struct_name` to the semantic layer's `DotAccess` variant. 6 new tests, +411 lines across 6 files.
+
+**CX-13** - Void function call lowering. Void calls now emit `IrInst::Call { dst: None, return_ty: None }`. The fix intercepts void calls at the statement level in `lower_stmt` before they reach `lower_expr`, which expects a return value. Void calls in value position remain a semantic error with a descriptive message.
+
+**CX-14** - Struct field writes. Both Assign and CompoundAssign for `DotAccess` LValues. Extracted `resolve_field_ptr` from the read path so reads and writes share the pointer resolution logic. 3 new tests, +266 lines.
+
+**CX-16** - Array type and array literal lowering. `SemanticType::Array(_, _)` maps to `IrType::Ptr`. Array literals lower to Alloca + per-element PtrOffset/Store, the same pattern established by struct literals in CX-9.
+
+**CX-17** - Array element access. New `IrInst::PtrAdd { dst, base, offset: ValueId }` for runtime pointer arithmetic (as opposed to PtrOffset which is compile-time). Index lowering follows: ConstInt(stride) + Binary(Mul) + PtrAdd + Load. 6 new tests, +475 lines.
+
+Also landed: CX-11 (backend roadmap reconciliation to v4.0), CX-12 (CI fix for stale base check), and CX-15 (process documentation in CONTRIBUTING.md).
+
+## Design decisions that matter
+
+**One memory model for composites.** Both structs and arrays are `IrType::Ptr` pointing to stack-allocated storage. Field access uses compile-time PtrOffset (known offset at compile time). Array element access uses runtime PtrAdd (index computed at runtime). This is intentional: one addressing pattern, one memory model, backends only need to handle pointer arithmetic.
+
+**Void calls are statement-level, not expression-level.** `lower_expr` returns a value, but void calls produce nothing. Rather than threading Option types through the entire expression lowering path, void calls get intercepted in `lower_stmt` before reaching `lower_expr`. Clean separation.
+
+## Branch-local work (not yet merged)
+
+CX-18 adds four tests for array-of-structs lowering, verifying that `Array(N, Struct)` produces correct instruction sequences. CX-19 replaces the generic `unsupported!("Range")` panic with a named structured error (`LoweringError::UnsupportedSemanticConstruct`) that explains why range expressions cannot be used as values. Both are committed on local branches, ready to merge.
+
+## What's next
+
+The immediate actions are merging CX-18 and CX-19 into submain (both low-risk, already committed), then tackling method call lowering. Method calls are the most common remaining expression kind that still hits `unsupported!` in the lowering pass, and struct methods via `impl` blocks are heavily used in the existing frontend tests.
+
+After that, merging submain to main again before it drifts. It's already 20 commits ahead after today's sprint. The 37-day gap that just closed should not repeat.
+
+Further out, `when` block lowering is the most complex remaining control-flow construct, with an open design question around TBool three-way branching.
+
+Matrix status: 117 PASS / 0 FAIL on main.
