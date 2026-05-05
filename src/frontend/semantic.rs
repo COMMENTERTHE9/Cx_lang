@@ -431,6 +431,26 @@ impl Analyzer {
                             struct_name,
                         }
                     }
+                    Expr::Index(target_expr, index_expr, _) => {
+                        let sem_target = self.analyze_expr(target_expr)?;
+                        let elem_ty = match &sem_target.ty {
+                            SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
+                            SemanticType::Unknown => SemanticType::Unknown,
+                            _ => return Err(sem_err!(*pos_eq, "index assignment target must be an array")),
+                        };
+                        if elem_ty != SemanticType::Unknown {
+                            if !types_compatible(&elem_ty, &semantic_expr.ty) {
+                                return Err(type_mismatch_error(&elem_ty, &semantic_expr.ty, *pos_eq));
+                            }
+                            semantic_expr = insert_cast_if_needed(semantic_expr, &elem_ty);
+                        }
+                        let sem_index = self.analyze_expr(index_expr)?;
+                        SemanticLValue::Index {
+                            target: Box::new(sem_target),
+                            index: Box::new(sem_index),
+                            elem_ty,
+                        }
+                    }
                     _ => {
                         return Err(sem_err!(*pos_eq, "bad assignment target"));
                     }

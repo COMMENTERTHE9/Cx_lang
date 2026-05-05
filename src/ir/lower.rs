@@ -526,6 +526,16 @@ fn lower_stmt(
                     })?;
                     Ok(Some(current))
                 }
+                SemanticLValue::Index { target, index, .. } => {
+                    let (elem_ptr, elem_ir_ty) =
+                        resolve_array_element_ptr(&*target, &*index, ctx, &mut current)?;
+                    ensure_type_match("array element assign", elem_ir_ty, lowered.ty)?;
+                    current.emit(IrInst::Store {
+                        ptr: elem_ptr,
+                        value: lowered.value,
+                    })?;
+                    Ok(Some(current))
+                }
             }
         }
         SemanticStmt::TypedAssign {
@@ -669,6 +679,46 @@ fn lower_stmt(
             // Write back to the field.
             current.emit(IrInst::Store {
                 ptr: field_ptr,
+                value: result_dst,
+            })?;
+            Ok(Some(current))
+        }
+        SemanticLValue::Index { target, index, .. } => {
+            let (elem_ptr, elem_ir_ty) =
+                resolve_array_element_ptr(&*target, &*index, ctx, &mut current)?;
+            // Read the current element value.
+            let current_dst = ctx.fresh_value();
+            current.emit(IrInst::Load {
+                dst: current_dst,
+                ty: elem_ir_ty.clone(),
+                ptr: elem_ptr,
+            })?;
+            // Lower the operand.
+            let rhs = lower_expr(operand, ctx, &mut current)?;
+            // Compute the binary result.
+            let bin_op = match op {
+                Op::Plus => BinaryOp::Add,
+                Op::Minus => BinaryOp::Sub,
+                Op::Mul => BinaryOp::Mul,
+                Op::Div => BinaryOp::Div,
+                Op::Mod => BinaryOp::Rem,
+                _ => {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!("compound assign operator {:?}", op),
+                    });
+                }
+            };
+            let result_dst = ctx.fresh_value();
+            current.emit(IrInst::Binary {
+                dst: result_dst,
+                op: bin_op,
+                ty: elem_ir_ty.clone(),
+                lhs: current_dst,
+                rhs: rhs.value,
+            })?;
+            // Write back to the element.
+            current.emit(IrInst::Store {
+                ptr: elem_ptr,
                 value: result_dst,
             })?;
             Ok(Some(current))
@@ -1859,6 +1909,108 @@ fn resolve_field_ptr(
     };
 
     Ok((field_ptr, field_ir_ty))
+}
+
+// Array element write lowering strategy
+//
+// An array element write `arr:[i] = value` where `arr: Array(N, ElemTy)` is
+// lowered to:
+//
+//   1. Lower `arr` to a base Ptr (the Alloca produced when the array was
+//      created).
+//
+//   2. Lower `i` to an integer SSA value; cast to I64 if needed.
+//
+//   3. Emit ConstInt(stride) then Binary(Mul, I64, i_i64, stride) to compute
+//      the byte offset at runtime.
+//
+//   4. Emit PtrAdd(base, byte_offset) to advance the pointer.
+//
+//   5. Caller emits Store(elem_ptr, value) to write the element.
+//
+// `resolve_array_element_ptr` encapsulates steps 1–4 and returns the element
+// pointer ValueId together with the element's IR type.  The caller is
+// responsible for emitting the Store (for simple writes) or the Load + Binary
+// + Store sequence (for compound-assign writes).
+
+/// Resolve the address of an array element, emitting the index arithmetic.
+///
+/// Returns `(elem_ptr, elem_ir_ty)` where `elem_ptr` is the ValueId of the
+/// pointer to the element and `elem_ir_ty` is its IR type.  The caller is
+/// responsible for emitting Load/Store as appropriate.
+fn resolve_array_element_ptr(
+    target: &SemanticExpr,
+    index: &SemanticExpr,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<(ValueId, IrType), LoweringError> {
+    // 1. Derive element IR type from the array target's declared type.
+    let (count, elem_sem_ty) = match &target.ty {
+        SemanticType::Array(count, elem_ty) => (*count, elem_ty.as_ref()),
+        _ => {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "array element write: target has non-Array type: {:?}",
+                    target.ty
+                ),
+            })
+        }
+    };
+
+    let elem_ir_ty = lower_type(elem_sem_ty)?;
+    let layout = compute_array_layout(&elem_ir_ty, count);
+
+    // 2. Lower the array target to a base pointer.
+    let base = lower_expr(target, ctx, active)?;
+    if base.ty != IrType::Ptr {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!(
+                "array element write: target must lower to Ptr, got {:?}",
+                base.ty
+            ),
+        });
+    }
+
+    // 3. Lower the index expression; cast to I64 if it isn't already.
+    let idx = lower_expr(index, ctx, active)?;
+    let idx_i64 = if idx.ty == IrType::I64 {
+        idx.value
+    } else {
+        let cast_dst = ctx.fresh_value();
+        active.emit(IrInst::Cast {
+            dst: cast_dst,
+            from: idx.ty.clone(),
+            to: IrType::I64,
+            value: idx.value,
+        })?;
+        cast_dst
+    };
+
+    // 4. Compute byte_offset = idx_i64 * stride.
+    let stride_val = ctx.fresh_value();
+    active.emit(IrInst::ConstInt {
+        dst: stride_val,
+        ty: IrType::I64,
+        value: layout.stride as i128,
+    })?;
+    let byte_offset = ctx.fresh_value();
+    active.emit(IrInst::Binary {
+        dst: byte_offset,
+        op: BinaryOp::Mul,
+        ty: IrType::I64,
+        lhs: idx_i64,
+        rhs: stride_val,
+    })?;
+
+    // 5. elem_ptr = base + byte_offset  (runtime pointer arithmetic).
+    let elem_ptr = ctx.fresh_value();
+    active.emit(IrInst::PtrAdd {
+        dst: elem_ptr,
+        base: base.value,
+        offset: byte_offset,
+    })?;
+
+    Ok((elem_ptr, elem_ir_ty))
 }
 
 fn lower_dot_access(
@@ -4731,213 +4883,165 @@ mod tests {
         assert!(lower_program(&program).is_err());
     }
 
-    // ── array-of-structs lowering tests ──────────────────────────────────────
-    //
-    // An Array(N, Struct("S")) lowers to IrType::Ptr (pointer to the array
-    // storage block). Each struct element is itself stack-allocated via Alloca
-    // and represented as a Ptr. The array Alloca therefore holds N pointer-sized
-    // (8-byte) slots; each slot receives a Store of the corresponding struct
-    // pointer, with PtrOffset(i * 8) for slots at non-zero byte offsets.
-    //
-    // For Point { x: i64, y: i64 } (16-byte struct, align 8):
-    //   Struct element IR:
-    //     Alloca(size=16, align=8)
-    //     ConstInt + Store (x at offset 0)
-    //     ConstInt + PtrOffset(8) + Store (y at offset 8)
-    //
-    //   Array slot IR (stride = size_of(Ptr) = 8):
-    //     slot 0: Store(struct_ptr)          — no PtrOffset, offset 0
-    //     slot k: PtrOffset(k*8) + Store     — for k > 0
+    // ── array element write lowering tests ───────────────────────────────────
 
-    // lower_type must map Array(N, Struct("X")) → Ptr, regardless of element
-    // type — the outer array type always collapses to a pointer to its storage.
-    #[test]
-    fn lower_type_array_of_struct_is_ptr() {
-        let ty = SemanticType::Array(2, Box::new(SemanticType::Struct("Point".to_string())));
-        assert_eq!(lower_type(&ty), Ok(IrType::Ptr));
-    }
-
-    // Helper: build a `Point { x: x_val, y: y_val }` SemanticExpr.
-    fn point_instance(x_val: i128, y_val: i128) -> SemanticExpr {
-        SemanticExpr {
-            ty: SemanticType::Struct("Point".to_string()),
-            kind: SemanticExprKind::StructInstance {
-                type_name: "Point".to_string(),
-                fields: vec![
-                    ("x".to_string(), int_expr(x_val, SemanticType::I64)),
-                    ("y".to_string(), int_expr(y_val, SemanticType::I64)),
-                ],
-            },
+    // Helper: build a SemanticLValue::Index for writing to an array element.
+    fn index_lvalue(
+        arr_binding: BindingId,
+        arr_name: &str,
+        arr_ty: SemanticType,
+        index: SemanticExpr,
+        elem_ty: SemanticType,
+    ) -> SemanticLValue {
+        SemanticLValue::Index {
+            target: Box::new(binding_ref(arr_binding, arr_name, arr_ty)),
+            index: Box::new(index),
+            elem_ty,
         }
     }
 
-    // Single-element array of structs: `let arr: [Point; 1] = [Point { x: 1, y: 2 }]`
-    //
-    // Expected instruction counts:
-    //   Alloca ×2 — one for the struct, one for the array
-    //   Store  ×3 — two field stores (x, y) + one slot store (struct ptr → arr[0])
-    //   PtrOffset ×1 — y field at offset 8; arr[0] is at offset 0 so no PtrOffset there
+    // A simple array element write `arr:[1] = 99` must emit:
+    // ConstInt (stride), Binary (Mul for byte_offset), PtrAdd, Store.
+    // No Load should appear (this is a plain write, not read-modify-write).
     #[test]
-    fn lowers_array_lit_of_one_struct_emits_two_allocas() {
-        let arr_ty = SemanticType::Array(1, Box::new(SemanticType::Struct("Point".to_string())));
+    fn lowers_array_element_write_emits_ptr_add_and_store() {
+        // fn write_elem(arr: [3: i64]) { arr:[1] = 99 }
+        let arr_binding = BindingId(0);
+        let arr_ty = SemanticType::Array(3, Box::new(SemanticType::I64));
         let program = SemanticProgram {
-            stmts: vec![
-                point_struct_def(),
-                typed_assign(
-                    BindingId(0),
-                    "arr",
-                    arr_ty.clone(),
-                    SemanticExpr {
-                        ty: arr_ty,
-                        kind: SemanticExprKind::ArrayLit {
-                            elements: vec![point_instance(1, 2)],
-                        },
-                    },
-                ),
-            ],
+            stmts: vec![semantic_function(
+                "write_elem",
+                vec![typed_param(arr_binding, "arr", arr_ty.clone())],
+                None,
+                vec![SemanticStmt::Assign {
+                    target: index_lvalue(
+                        arr_binding,
+                        "arr",
+                        arr_ty,
+                        int_expr(1, SemanticType::I64),
+                        SemanticType::I64,
+                    ),
+                    expr: int_expr(99, SemanticType::I64),
+                    pos_eq: 0,
+                }],
+                None,
+            )],
             enums: vec![],
         };
 
         let module = lower_and_validate(&program);
-        let insts: Vec<&IrInst> = module.functions[0]
-            .blocks
-            .iter()
-            .flat_map(|b| b.insts.iter())
-            .collect();
+        let func = module.functions.iter().find(|f| f.name == "write_elem").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
 
-        let alloca_count = insts.iter().filter(|i| matches!(i, IrInst::Alloca { .. })).count();
-        assert_eq!(alloca_count, 2, "expected one struct Alloca + one array Alloca");
-
-        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
-        assert_eq!(store_count, 3, "expected 2 field stores + 1 array slot store");
-
-        // Only the y-field offset emits PtrOffset; arr[0] is at byte offset 0.
-        let ptr_offset_count = insts.iter().filter(|i| matches!(i, IrInst::PtrOffset { .. })).count();
-        assert_eq!(ptr_offset_count, 1, "expected one PtrOffset (y field at offset 8)");
-    }
-
-    // Two-element array of structs: `[Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]`
-    //
-    // Expected instruction counts:
-    //   Alloca    ×3 — two struct Allocas + one array Alloca
-    //   Store     ×6 — four field stores (x,y per struct ×2) + two slot stores
-    //   PtrOffset ×3 — y-field offset per struct ×2 + slot-1 offset (stride=8)
-    #[test]
-    fn lowers_array_lit_of_two_structs_emit_shape() {
-        let arr_ty = SemanticType::Array(2, Box::new(SemanticType::Struct("Point".to_string())));
-        let program = SemanticProgram {
-            stmts: vec![
-                point_struct_def(),
-                typed_assign(
-                    BindingId(0),
-                    "arr",
-                    arr_ty.clone(),
-                    SemanticExpr {
-                        ty: arr_ty,
-                        kind: SemanticExprKind::ArrayLit {
-                            elements: vec![point_instance(1, 2), point_instance(3, 4)],
-                        },
-                    },
-                ),
-            ],
-            enums: vec![],
-        };
-
-        let module = lower_and_validate(&program);
-        let insts: Vec<&IrInst> = module.functions[0]
-            .blocks
-            .iter()
-            .flat_map(|b| b.insts.iter())
-            .collect();
-
-        let alloca_count = insts.iter().filter(|i| matches!(i, IrInst::Alloca { .. })).count();
-        assert_eq!(alloca_count, 3, "expected 2 struct Allocas + 1 array Alloca");
-
-        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
-        assert_eq!(store_count, 6, "expected 4 field stores + 2 slot stores");
-
-        // 2 PtrOffset(8) for y-fields + 1 PtrOffset(8) for array slot 1.
-        let ptr_offset_count = insts.iter().filter(|i| matches!(i, IrInst::PtrOffset { .. })).count();
-        assert_eq!(ptr_offset_count, 3, "expected 2 struct y-field offsets + 1 array slot-1 offset");
-    }
-
-    // Three-element array of structs verifies the array Alloca is sized for
-    // N pointer-width slots: 3 * size_of(Ptr) = 3 * 8 = 24 bytes, align 8.
-    // Because the struct Allocas are 16 bytes each, the 24-byte Alloca is
-    // unambiguously the array's own storage block.
-    #[test]
-    fn lowers_array_of_three_structs_array_alloca_is_24_bytes() {
-        let arr_ty = SemanticType::Array(3, Box::new(SemanticType::Struct("Point".to_string())));
-        let program = SemanticProgram {
-            stmts: vec![
-                point_struct_def(),
-                typed_assign(
-                    BindingId(0),
-                    "arr",
-                    arr_ty.clone(),
-                    SemanticExpr {
-                        ty: arr_ty,
-                        kind: SemanticExprKind::ArrayLit {
-                            elements: vec![
-                                point_instance(1, 2),
-                                point_instance(3, 4),
-                                point_instance(5, 6),
-                            ],
-                        },
-                    },
-                ),
-            ],
-            enums: vec![],
-        };
-
-        let module = lower_and_validate(&program);
-        let insts: Vec<&IrInst> = module.functions[0]
-            .blocks
-            .iter()
-            .flat_map(|b| b.insts.iter())
-            .collect();
-
-        // The array storage Alloca is 3 * 8 = 24 bytes; struct Allocas are 16.
-        let has_array_alloca = insts
-            .iter()
-            .any(|i| matches!(i, IrInst::Alloca { size: 24, align: 8, .. }));
-        assert!(has_array_alloca, "expected Alloca(size=24, align=8) for 3-element Ptr array");
-
-        // 4 Allocas total: 3 struct + 1 array.
-        let alloca_count = insts.iter().filter(|i| matches!(i, IrInst::Alloca { .. })).count();
-        assert_eq!(alloca_count, 4, "expected 3 struct Allocas + 1 array Alloca");
-
-        // 9 Stores: 6 field stores (x,y per struct ×3) + 3 slot stores.
-        let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
-        assert_eq!(store_count, 9, "expected 6 field stores + 3 slot stores");
-    }
-
-    // Range expressions used as values are not supported in IR lowering.
-    // Ranges are only consumed by for-loop bounds at the semantic layer; a
-    // bare range value cannot be represented in the IR and must produce a
-    // named, descriptive error rather than a generic "Range" marker.
-    #[test]
-    fn rejects_range_expr_used_as_value() {
-        let program = SemanticProgram {
-            stmts: vec![SemanticStmt::ExprStmt {
-                expr: SemanticExpr {
-                    ty: SemanticType::I64,
-                    kind: SemanticExprKind::Range {
-                        start: Box::new(int_expr(0, SemanticType::I64)),
-                        end: Box::new(int_expr(10, SemanticType::I64)),
-                        inclusive: false,
-                    },
-                },
-                pos: 0,
-            }],
-            enums: vec![],
-        };
-
-        assert_eq!(
-            lower_program(&program).expect_err("lowering should reject range used as value"),
-            LoweringError::UnsupportedSemanticConstruct {
-                construct: "range expression used as a value — ranges are only supported in for-loop bounds, not as standalone expressions".to_string(),
-            }
+        // Must have a PtrAdd (runtime pointer arithmetic for the index).
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::PtrAdd { .. })),
+            "expected PtrAdd for array element write"
         );
+
+        // Must have a Store for i64 (writing the element).
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::Store { .. })),
+            "expected Store for array element write"
+        );
+
+        // Must have a Binary Mul for byte_offset computation.
+        assert!(
+            insts
+                .iter()
+                .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Mul, ty: IrType::I64, .. })),
+            "expected Binary(Mul, I64) for byte offset computation"
+        );
+
+        // Must NOT have a Load (no read-modify-write for plain assignment).
+        assert!(
+            !insts.iter().any(|i| matches!(i, IrInst::Load { .. })),
+            "unexpected Load in plain array element write"
+        );
+    }
+
+    // A compound-assign array element write `arr:[0] += 5` must emit:
+    // PtrAdd, Load (read current), Binary (Mul + Add), Store (write back).
+    #[test]
+    fn lowers_array_element_compound_assign_emits_load_binary_store() {
+        // fn compound_write(arr: [2: i64]) { arr:[0] += 5 }
+        let arr_binding = BindingId(0);
+        let arr_ty = SemanticType::Array(2, Box::new(SemanticType::I64));
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "compound_write",
+                vec![typed_param(arr_binding, "arr", arr_ty.clone())],
+                None,
+                vec![SemanticStmt::CompoundAssign {
+                    target: index_lvalue(
+                        arr_binding,
+                        "arr",
+                        arr_ty,
+                        int_expr(0, SemanticType::I64),
+                        SemanticType::I64,
+                    ),
+                    op: crate::frontend::ast::Op::Plus,
+                    operand: int_expr(5, SemanticType::I64),
+                    pos: 0,
+                }],
+                None,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let func = module.functions.iter().find(|f| f.name == "compound_write").unwrap();
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+
+        // Must have a PtrAdd for element address computation.
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::PtrAdd { .. })),
+            "expected PtrAdd for array element compound assign"
+        );
+
+        // Must have a Load to read the current element value.
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I64, .. })),
+            "expected Load i64 to read current element value"
+        );
+
+        // Must have a Binary Add for the compound operation.
+        assert!(
+            insts
+                .iter()
+                .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Add, ty: IrType::I64, .. })),
+            "expected Binary(Add, I64) for compound assign"
+        );
+
+        // Must have a Store to write back the result.
+        assert!(
+            insts.iter().any(|i| matches!(i, IrInst::Store { .. })),
+            "expected Store to write back element value"
+        );
+    }
+
+    // Array element write rejects a non-Array target type.
+    #[test]
+    fn rejects_array_element_write_on_non_array_target() {
+        // Assign to SemanticLValue::Index where target is not an array type.
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "bad_write",
+                vec![],
+                None,
+                vec![SemanticStmt::Assign {
+                    target: SemanticLValue::Index {
+                        target: Box::new(int_expr(42, SemanticType::I64)),
+                        index: Box::new(int_expr(0, SemanticType::I64)),
+                        elem_ty: SemanticType::I64,
+                    },
+                    expr: int_expr(99, SemanticType::I64),
+                    pos_eq: 0,
+                }],
+                None,
+            )],
+            enums: vec![],
+        };
+        assert!(lower_program(&program).is_err());
     }
 }

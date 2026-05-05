@@ -181,6 +181,16 @@ pub enum SemanticLValue {
         /// `Struct(name)` type; empty string when the type is Unknown.
         struct_name: String,
     },
+    /// Array element write: `arr:[i] = value`.
+    ///
+    /// `target` is the analysed array expression (typically a VarRef);
+    /// `index` is the analysed index expression; `elem_ty` is the element
+    /// type derived from the array's declared type.
+    Index {
+        target: Box<SemanticExpr>,
+        index: Box<SemanticExpr>,
+        elem_ty: SemanticType,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
