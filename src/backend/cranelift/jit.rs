@@ -1,7 +1,12 @@
 #![allow(dead_code)]
 #![cfg(feature = "jit")]
 
-pub fn run_jit(_ir: &crate::ir::IrModule) -> Result<(), String> {
-    // TODO: Implement Cranelift JIT execution using lowered IR.
-    Err("Cranelift JIT backend not implemented yet".into())
+pub use super::host_boundary::{HostBoundary, JitExecutionError, JitOutcome};
+
+/// Run the Cx IR module through the Cranelift JIT backend.
+///
+/// Delegates to [`HostBoundary::execute`], which owns the JIT lifecycle.
+/// See [`host_boundary`](super::host_boundary) for the full execution contract.
+pub fn run_jit(ir: &crate::ir::IrModule) -> Result<JitOutcome, JitExecutionError> {
+    HostBoundary::new().execute(ir)
 }
