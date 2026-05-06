@@ -198,7 +198,7 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1 and 2)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
 /// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
@@ -206,10 +206,16 @@ impl std::fmt::Display for JitExecutionError {
 /// - `Alloca` — stack slot allocation; `dst` receives an I64 pointer to the slot
 /// - `Load` — typed memory load from an Alloca-produced pointer
 /// - `Store` — typed memory store through an Alloca-produced pointer
+/// - `Compare` (Eq, Ne, Lt, Le, Gt, Ge — signed integer comparisons; result is I8)
 /// - `Return` (with or without a value)
 ///
-/// All other IR instructions and terminators return [`JitExecutionError::UnsupportedConstruct`].
-/// Multi-block functions with `Jump`/`Branch` terminators are not yet supported.
+/// - `Jump` (unconditional block transfer with optional block-param arguments)
+/// - `Branch` (two-way conditional branch using `brif`, with block-param arguments on both edges)
+///
+/// Multi-block functions are supported for forward-only control flow (no back-edges).
+/// Loop back-edges are deferred to a later sub-packet.
+///
+/// All other IR instructions return [`JitExecutionError::UnsupportedConstruct`].
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -363,22 +369,30 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1 and 2):
+/// Supported instructions (Phase 14 sub-packets 1, 2, and 3):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
 /// - [`IrInst::Load`] — typed memory load from a pointer
 /// - [`IrInst::Store`] — typed memory store through a pointer
+/// - [`IrInst::Compare`] — signed integer comparisons (Eq/Ne/Lt/Le/Gt/Ge); result is I8
 /// - [`IrTerminator::Return`] — return with or without a value
+/// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
+/// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
 ///
-/// All other instructions and terminators yield [`JitExecutionError::UnsupportedConstruct`].
+/// Block sealing strategy: each block is sealed immediately after `switch_to_block` because
+/// IR blocks are emitted in topological order for forward-only CFGs.  All predecessor edges
+/// (from `jump` / `brif`) are registered before the successor block is visited.
+///
+/// All other instructions yield [`JitExecutionError::UnsupportedConstruct`].
 #[cfg(feature = "jit")]
 fn compile_ir_function(
     builder: &mut cranelift_frontend::FunctionBuilder,
     ir_func: &crate::ir::types::IrFunction,
 ) -> Result<(), JitExecutionError> {
+    use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::InstBuilder;
-    use crate::ir::instr::{BinaryOp, IrInst, IrTerminator};
+    use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
     use crate::ir::types::{BlockId, IrType, ValueId};
     use super::ir_type_to_cranelift;
     use std::collections::HashMap;
@@ -408,8 +422,11 @@ fn compile_ir_function(
     for ir_block in &ir_func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
-        // Safe to seal immediately: only Return terminators are supported in this
-        // sub-packet, so no block has a back-edge predecessor.
+        // Blocks are processed in IR order, which is topological for forward-only CFGs.
+        // Each block is sealed immediately after switch_to_block: by the time we visit
+        // block N, all predecessor terminators (jump / brif) referencing block N have
+        // already been emitted in earlier iterations, so all predecessor edges are
+        // registered in Cranelift's internal tracking before the seal call.
         builder.seal_block(cl_block);
 
         for inst in &ir_block.insts {
@@ -419,7 +436,7 @@ fn compile_ir_function(
                     // emulates it as two i64s). Deferred to a future sub-packet.
                     if *ty == IrType::I128 {
                         return Err(JitExecutionError::UnsupportedConstruct {
-                            construct: "ConstInt I128 (not supported in Phase 14 sub-packet 1)"
+                            construct: "ConstInt I128 (not supported)"
                                 .to_string(),
                         });
                     }
@@ -502,6 +519,33 @@ fn compile_ir_function(
                         }
                     })?;
                     builder.ins().store(MemFlags::new(), stored_val, ptr_val, 0);
+                }
+
+                IrInst::Compare { dst, op, lhs, rhs } => {
+                    let lhs_val = *val_map.get(lhs).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as compare lhs", lhs),
+                        }
+                    })?;
+                    let rhs_val = *val_map.get(rhs).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as compare rhs", rhs),
+                        }
+                    })?;
+                    // Map Cx compare ops to Cranelift signed-integer condition codes.
+                    // Unsigned variants are deferred until unsigned integer types are added.
+                    let cc = match op {
+                        CompareOp::Eq => IntCC::Equal,
+                        CompareOp::Ne => IntCC::NotEqual,
+                        CompareOp::Lt => IntCC::SignedLessThan,
+                        CompareOp::Le => IntCC::SignedLessThanOrEqual,
+                        CompareOp::Gt => IntCC::SignedGreaterThan,
+                        CompareOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                    };
+                    // icmp produces an I8 value (0 = false, 1 = true).
+                    // This is used directly as the `brif` condition in Branch terminators.
+                    let result = builder.ins().icmp(cc, lhs_val, rhs_val);
+                    val_map.insert(*dst, result);
                 }
 
                 other => {
@@ -1061,5 +1105,320 @@ mod jit_tests {
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42); // 10 + 32
+    }
+
+    // ── Jump tests ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_jump_passes_value_via_block_param() {
+        // main() -> I32 {
+        //   block0:
+        //     v0 = const 42 : I32
+        //     jump block1(v0)
+        //   block1(v1: I32):
+        //     return v1
+        // }
+        // Expected: 42
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_jump".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return {
+                            value: Some(ValueId(1)),
+                        },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_jump_no_args() {
+        // main() -> I32 {
+        //   block0:
+        //     jump block1
+        //   block1:
+        //     v0 = const 7 : I32
+        //     return v0
+        // }
+        // Expected: 7
+        let module = IrModule {
+            debug_name: "test_jump_noarg".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 7,
+                        }],
+                        term: IrTerminator::Return {
+                            value: Some(ValueId(0)),
+                        },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 7);
+    }
+
+    // ── Compare + Branch tests ───────────────────────────────────────────────
+
+    /// Helper: build a two-block if/else module that compares two I32 constants.
+    ///
+    /// ```text
+    /// main() -> I32 {
+    ///   block0:
+    ///     v0 = const lhs : I32
+    ///     v1 = const rhs : I32
+    ///     v2 = compare op(v0, v1)   // I8
+    ///     branch v2, block1[], block2[]
+    ///   block1:          // true path
+    ///     v3 = const true_val : I32
+    ///     return v3
+    ///   block2:          // false path
+    ///     v4 = const false_val : I32
+    ///     return v4
+    /// }
+    /// ```
+    fn compare_branch_module(
+        lhs: i128,
+        rhs: i128,
+        op: crate::ir::instr::CompareOp,
+        true_val: i128,
+        false_val: i128,
+    ) -> IrModule {
+        IrModule {
+            debug_name: "test_compare_branch".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: lhs },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: rhs },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: true_val,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: false_val,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn jit_branch_compare_eq_takes_true_path() {
+        // 5 == 5 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(5, 5, CompareOp::Eq, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_branch_compare_eq_takes_false_path() {
+        // 5 == 6 → false → return 0
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(5, 6, CompareOp::Eq, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_branch_compare_ne_true() {
+        // 5 != 10 → true → return 42
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(5, 10, CompareOp::Ne, 42, 99);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_branch_compare_lt_true() {
+        // 3 < 7 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(3, 7, CompareOp::Lt, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_branch_compare_lt_false() {
+        // 7 < 3 → false → return 0
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(7, 3, CompareOp::Lt, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_branch_compare_le_equal_is_true() {
+        // 5 <= 5 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(5, 5, CompareOp::Le, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_branch_compare_gt_true() {
+        // 10 > 3 → true → return 42
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(10, 3, CompareOp::Gt, 42, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_branch_compare_ge_true() {
+        // 10 >= 10 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = compare_branch_module(10, 10, CompareOp::Ge, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_branch_with_block_args_on_both_edges() {
+        // main() -> I32 {
+        //   block0:
+        //     v0 = const 1 : I32    // condition value (nonzero → true)
+        //     v1 = const 42 : I32
+        //     v2 = const 99 : I32
+        //     branch v0, block1(v1), block2(v2)
+        //   block1(v3: I32):
+        //     return v3        // taken: returns 42
+        //   block2(v4: I32):
+        //     return v4        // not taken
+        // }
+        // Expected: 42
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_branch_args".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 1 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 42 },
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 99 },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![ValueId(1)],
+                            else_block: BlockId(2),
+                            else_args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
     }
 }
