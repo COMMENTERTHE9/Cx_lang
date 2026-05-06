@@ -198,11 +198,13 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 sub-packet 3)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
 /// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
-/// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations)
+/// - `ConstFloat` (type: F64)
+/// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer; Add, Sub, Mul, Div — F64 float)
+///   - F64 Rem is not supported (no native Cranelift frem; deferred to a future phase)
 /// - `Alloca` — stack slot allocation; `dst` receives an I64 pointer to the slot
 /// - `Load` — typed memory load from an Alloca-produced pointer
 /// - `Store` — typed memory store through an Alloca-produced pointer
@@ -369,12 +371,14 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1, 2, and 3):
+/// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 sub-packet 3):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
-/// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
+/// - [`IrInst::ConstFloat`] — F64 float constants
+/// - [`IrInst::Binary`] — signed integer arithmetic (Add, Sub, Mul, Div, Rem) and
+///   F64 float arithmetic (Add, Sub, Mul, Div); F64 Rem is not supported
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
-/// - [`IrInst::Load`] — typed memory load from a pointer
-/// - [`IrInst::Store`] — typed memory store through a pointer
+/// - [`IrInst::Load`] — typed memory load from a pointer (supports F64)
+/// - [`IrInst::Store`] — typed memory store through a pointer (supports F64)
 /// - [`IrInst::Compare`] — signed integer comparisons (Eq/Ne/Lt/Le/Gt/Ge); result is I8
 /// - [`IrTerminator::Return`] — return with or without a value
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
@@ -450,7 +454,12 @@ fn compile_ir_function(
                     val_map.insert(*dst, cl_val);
                 }
 
-                IrInst::Binary { dst, op, ty: _, lhs, rhs } => {
+                IrInst::ConstFloat { dst, value } => {
+                    let cl_val = builder.ins().f64const(*value);
+                    val_map.insert(*dst, cl_val);
+                }
+
+                IrInst::Binary { dst, op, ty, lhs, rhs } => {
                     let lhs_val = *val_map.get(lhs).ok_or_else(|| {
                         JitExecutionError::CodegenFailure {
                             detail: format!("undefined value {:?} used as binary lhs", lhs),
@@ -461,12 +470,25 @@ fn compile_ir_function(
                             detail: format!("undefined value {:?} used as binary rhs", rhs),
                         }
                     })?;
-                    let result = match op {
-                        BinaryOp::Add => builder.ins().iadd(lhs_val, rhs_val),
-                        BinaryOp::Sub => builder.ins().isub(lhs_val, rhs_val),
-                        BinaryOp::Mul => builder.ins().imul(lhs_val, rhs_val),
-                        BinaryOp::Div => builder.ins().sdiv(lhs_val, rhs_val),
-                        BinaryOp::Rem => builder.ins().srem(lhs_val, rhs_val),
+                    let result = match ty {
+                        IrType::F64 => match op {
+                            BinaryOp::Add => builder.ins().fadd(lhs_val, rhs_val),
+                            BinaryOp::Sub => builder.ins().fsub(lhs_val, rhs_val),
+                            BinaryOp::Mul => builder.ins().fmul(lhs_val, rhs_val),
+                            BinaryOp::Div => builder.ins().fdiv(lhs_val, rhs_val),
+                            BinaryOp::Rem => {
+                                return Err(JitExecutionError::UnsupportedConstruct {
+                                    construct: "f64 remainder (no native Cranelift frem; use libm::fmod in a future phase)".to_string(),
+                                })
+                            }
+                        },
+                        _ => match op {
+                            BinaryOp::Add => builder.ins().iadd(lhs_val, rhs_val),
+                            BinaryOp::Sub => builder.ins().isub(lhs_val, rhs_val),
+                            BinaryOp::Mul => builder.ins().imul(lhs_val, rhs_val),
+                            BinaryOp::Div => builder.ins().sdiv(lhs_val, rhs_val),
+                            BinaryOp::Rem => builder.ins().srem(lhs_val, rhs_val),
+                        },
                     };
                     val_map.insert(*dst, result);
                 }
@@ -1202,6 +1224,7 @@ mod jit_tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I32,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return {
@@ -1461,13 +1484,13 @@ mod jit_tests {
                     },
                     IrBlock {
                         id: BlockId(1),
-                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(3)) },
                     },
                     IrBlock {
                         id: BlockId(2),
-                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(4)) },
                     },
@@ -1477,5 +1500,240 @@ mod jit_tests {
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    // ── Sub-packet 3: Float arithmetic dispatch ──────────────────────────────
+
+    #[test]
+    fn jit_float_const_executes() {
+        // main(): i32 { v0 = const f64 3.14; v1 = const i32 0; return v1 }
+        // Verifies that ConstFloat compiles and the function runs to completion.
+        let module = IrModule {
+            debug_name: "test_float_const".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 3.14 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_float_add_executes() {
+        // main(): i32 { v0 = 10.5f64; v1 = 31.5f64; v2 = fadd v0, v1; v3 = 42i32; return v3 }
+        // Verifies fadd compiles and executes without error.
+        let module = IrModule {
+            debug_name: "test_float_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 10.5 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 31.5 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 42 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_float_sub_executes() {
+        // main(): i32 { v0 = 52.5f64; v1 = 10.5f64; v2 = fsub v0, v1; v3 = 42i32; return v3 }
+        // Verifies fsub compiles and executes without error.
+        let module = IrModule {
+            debug_name: "test_float_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 52.5 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 10.5 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 42 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_float_mul_executes() {
+        // main(): i32 { v0 = 6.0f64; v1 = 7.0f64; v2 = fmul v0, v1; v3 = 42i32; return v3 }
+        // Verifies fmul compiles and executes without error.
+        let module = IrModule {
+            debug_name: "test_float_mul".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 6.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 7.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Mul,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 42 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_float_div_executes() {
+        // main(): i32 { v0 = 84.0f64; v1 = 2.0f64; v2 = fdiv v0, v1; v3 = 42i32; return v3 }
+        // Verifies fdiv compiles and executes without error.
+        let module = IrModule {
+            debug_name: "test_float_div".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 84.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 2.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Div,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 42 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_float_rem_unsupported() {
+        // F64 Rem has no native Cranelift instruction; must produce UnsupportedConstruct.
+        let module = IrModule {
+            debug_name: "test_float_rem_unsupported".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 10.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 3.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Rem,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(
+            matches!(result, Err(JitExecutionError::UnsupportedConstruct { .. })),
+            "expected UnsupportedConstruct for f64 rem, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn jit_float_alloca_store_load() {
+        // Verify that Alloca/Store/Load work correctly with F64 values.
+        // main(): i32 {
+        //   slot = alloca(8, 8)        // 8-byte F64 slot, 8-byte aligned
+        //   v1   = const f64 2.718281828
+        //   store(slot, v1)
+        //   v2   = load(f64, slot)     // round-trip through memory
+        //   v3   = const i32 0
+        //   return v3                   // → 0 (proves execution reached return)
+        // }
+        let module = IrModule {
+            debug_name: "test_float_alloca_store_load".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 8 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 2.718_281_828 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::F64, ptr: ValueId(0) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
     }
 }
