@@ -408,6 +408,7 @@ fn lower_semantic_function(
                 block_params.push(BlockParam {
                     value,
                     ty: ty.clone(),
+                    read_only: false,
                 });
                 bindings.insert(param.binding, LoweredValue { value, ty });
             }
@@ -1018,6 +1019,7 @@ fn merge_fallthroughs(
             let block_param = BlockParam {
                 value: param_value,
                 ty: incoming_value.ty.clone(),
+                read_only: false,
             };
             merge_param_bindings.push(binding);
             merge_block_params.push(block_param.clone());
@@ -1084,6 +1086,7 @@ fn lower_while(
         header_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         header_bindings.insert(
             *binding,
@@ -1118,6 +1121,7 @@ fn lower_while(
         exit_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         exit_bindings.insert(
             *binding,
@@ -1196,6 +1200,7 @@ fn lower_loop(
         header_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         header_bindings.insert(
             *binding,
@@ -1227,6 +1232,7 @@ fn lower_loop(
         exit_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         exit_bindings.insert(
             *binding,
@@ -1304,13 +1310,16 @@ fn lower_for(
     let mut entry_args = Vec::new();
 
     let counter_param = ctx.fresh_value();
-    header_params.push(BlockParam { value: counter_param, ty: start_val.ty.clone() });
+    // The header's counter param is the loop variable — mark read_only so the
+    // validator can reject any backedge that passes an SsaBind-produced value
+    // here (which would indicate the loop variable was reassigned in the body).
+    header_params.push(BlockParam { value: counter_param, ty: start_val.ty.clone(), read_only: true });
     entry_args.push(start_val.value);
 
     for b in &ordered_bindings {
         let val = incoming.get(b).unwrap();
         let pv = ctx.fresh_value();
-        header_params.push(BlockParam { value: pv, ty: val.ty.clone() });
+        header_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
         header_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
         entry_args.push(val.value);
     }
@@ -1323,12 +1332,15 @@ fn lower_for(
 
     // Increment block: counter + bindings as params, increments counter, jumps to header
     let inc_counter_param = ctx.fresh_value();
-    let mut inc_params = vec![BlockParam { value: inc_counter_param, ty: start_val.ty.clone() }];
+    // The increment block's counter param receives the loop variable from the
+    // body's backedge — also marked read_only so that a body-modified counter
+    // value (an SsaBind result) is caught here before it reaches the Add.
+    let mut inc_params = vec![BlockParam { value: inc_counter_param, ty: start_val.ty.clone(), read_only: true }];
     let mut inc_bindings = HashMap::new();
     for b in &ordered_bindings {
         let val = incoming.get(b).unwrap();
         let pv = ctx.fresh_value();
-        inc_params.push(BlockParam { value: pv, ty: val.ty.clone() });
+        inc_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
         inc_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
     }
     let mut inc_block = ctx.start_block(inc_params, inc_bindings);
@@ -1372,7 +1384,7 @@ fn lower_for(
     for b in &ordered_bindings {
         let val = incoming.get(b).unwrap();
         let pv = ctx.fresh_value();
-        exit_params.push(BlockParam { value: pv, ty: val.ty.clone() });
+        exit_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
         exit_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
     }
     let exit_block = ctx.start_block(exit_params, exit_bindings);

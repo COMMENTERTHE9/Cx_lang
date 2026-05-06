@@ -135,6 +135,7 @@ mod tests {
         let block_param = BlockParam {
             value: builder.fresh_value(),
             ty: IrType::I64,
+            read_only: false,
         };
         let mut block = builder.block(vec![block_param.clone()]);
         let dst = builder.fresh_value();

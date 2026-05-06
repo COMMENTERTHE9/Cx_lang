@@ -50,6 +50,12 @@ pub enum IrValidationError {
         block: BlockId,
         detail: String,
     },
+    LoopVariableReassignment {
+        function: String,
+        block: BlockId,
+        value: ValueId,
+        context: String,
+    },
 }
 
 struct ValidatorFunctionSig {
@@ -118,6 +124,20 @@ fn validate_function(
 
     let mut defined_values = HashMap::<ValueId, IrType>::new();
 
+    // Collect all values produced by SsaBind instructions across the whole
+    // function.  These represent user-level assignments.  The terminator
+    // validator uses this set to reject any Jump/Branch that forwards an
+    // SsaBind-produced value into a `read_only` block parameter (which would
+    // mean a for-loop variable was overwritten inside the loop body).
+    let mut ssa_bind_values: HashSet<ValueId> = HashSet::new();
+    for block in &function.blocks {
+        for inst in &block.insts {
+            if let IrInst::SsaBind { dst, .. } = inst {
+                ssa_bind_values.insert(*dst);
+            }
+        }
+    }
+
     for block in &function.blocks {
         let mut block_params = HashSet::new();
         for param in &block.params {
@@ -149,6 +169,7 @@ fn validate_function(
             &block.term,
             &defined_values,
             &blocks_by_id,
+            &ssa_bind_values,
             errors,
         );
     }
@@ -512,6 +533,7 @@ fn validate_terminator(
     term: &IrTerminator,
     defined_values: &HashMap<ValueId, IrType>,
     blocks_by_id: &HashMap<BlockId, &IrBlock>,
+    ssa_bind_values: &HashSet<ValueId>,
     errors: &mut Vec<IrValidationError>,
 ) {
     match term {
@@ -528,6 +550,7 @@ fn validate_terminator(
                 args,
                 defined_values,
                 blocks_by_id,
+                ssa_bind_values,
                 errors,
             );
         }
@@ -585,6 +608,7 @@ fn validate_terminator(
                 then_args,
                 defined_values,
                 blocks_by_id,
+                ssa_bind_values,
                 errors,
             );
             validate_target_args(
@@ -595,6 +619,7 @@ fn validate_terminator(
                 else_args,
                 defined_values,
                 blocks_by_id,
+                ssa_bind_values,
                 errors,
             );
         }
@@ -675,6 +700,7 @@ fn validate_target_args(
     args: &[ValueId],
     defined_values: &HashMap<ValueId, IrType>,
     blocks_by_id: &HashMap<BlockId, &IrBlock>,
+    ssa_bind_values: &HashSet<ValueId>,
     errors: &mut Vec<IrValidationError>,
 ) {
     let Some(target_block) = blocks_by_id.get(&target) else {
@@ -707,6 +733,23 @@ fn validate_target_args(
                     ),
                 });
             }
+        }
+
+        // Loop variable read-only invariant: a `read_only` block parameter
+        // may only receive values that were NOT produced by an SsaBind
+        // instruction.  An SsaBind destination represents a user-level
+        // assignment; if one reaches a read_only param it means the loop
+        // variable was overwritten inside the body.
+        if param.read_only && ssa_bind_values.contains(arg) {
+            errors.push(IrValidationError::LoopVariableReassignment {
+                function: function.name.clone(),
+                block,
+                value: *arg,
+                context: format!(
+                    "{context} passes SsaBind value {:?} into read-only loop counter param {:?} of block {:?}",
+                    arg, param.value, target
+                ),
+            });
         }
     }
 }
@@ -956,6 +999,7 @@ mod tests {
                         params: vec![BlockParam {
                             value: ValueId(2),
                             ty: IrType::I64,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return { value: None },
@@ -981,10 +1025,12 @@ mod tests {
                         BlockParam {
                             value: ValueId(0),
                             ty: IrType::I64,
+                            read_only: false,
                         },
                         BlockParam {
                             value: ValueId(0),
                             ty: IrType::I64,
+                            read_only: false,
                         },
                     ],
                     insts: vec![],
@@ -1069,6 +1115,7 @@ mod tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I64,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return { value: None },
@@ -1132,6 +1179,7 @@ mod tests {
                     params: vec![BlockParam {
                         value: ValueId(0),
                         ty: IrType::I64,
+                        read_only: false,
                     }],
                     insts: vec![
                         IrInst::ConstInt {
@@ -1173,6 +1221,7 @@ mod tests {
                     params: vec![BlockParam {
                         value: ValueId(0),
                         ty: IrType::I64,
+                        read_only: false,
                     }],
                     insts: vec![],
                     term: IrTerminator::Return {
@@ -1183,5 +1232,158 @@ mod tests {
         };
 
         assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Loop variable read-only invariant tests
+    // ---------------------------------------------------------------------------
+
+    /// Builds a minimal for-loop IR that is CORRECT:
+    ///
+    ///   B0 (entry): v0=0, v1=9 → Jump B1[v0]
+    ///   B1 [v2: I64 read_only] (header): cmp v2 < v1 → Branch(cmp, B2, B3)
+    ///   B2 (body): Jump B4[v2]          ← passes original counter, no SsaBind
+    ///   B3 (exit): Return
+    ///   B4 [v3: I64 read_only] (inc): v4=1, v5=Add(v3,v4) → Jump B1[v5]
+    fn valid_for_loop_module() -> IrModule {
+        IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![
+                    // B0: entry
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 9 },
+                        ],
+                        term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(0)] },
+                    },
+                    // B1: header — counter param is read_only
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam { value: ValueId(2), ty: IrType::I64, read_only: true }],
+                        insts: vec![IrInst::Compare {
+                            dst: ValueId(10),
+                            op: CompareOp::Lt,
+                            lhs: ValueId(2),
+                            rhs: ValueId(1),
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(10),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![],
+                        },
+                    },
+                    // B2: body — correctly forwards the original counter (v2) to increment
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Jump { target: BlockId(4), args: vec![ValueId(2)] },
+                    },
+                    // B3: exit
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    },
+                    // B4: increment — counter param is also read_only
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I64, read_only: true }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I64, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I64,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(5)] },
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn accepts_for_loop_without_counter_reassignment() {
+        assert_eq!(validate_module(&valid_for_loop_module()), Ok(()));
+    }
+
+    #[test]
+    fn rejects_for_loop_body_that_reassigns_counter_via_ssabind() {
+        // Body block assigns a new value via SsaBind and forwards that to the
+        // increment block's read_only counter param — must be rejected.
+        //
+        //   B2 (body):
+        //     v6 = ConstInt(5)
+        //     v7 = SsaBind(I64, v6)   ← user assignment: i = 5
+        //     Jump B4 [v7]            ← passes SsaBind result to read_only param
+        let mut module = valid_for_loop_module();
+        let body = &mut module.functions[0].blocks[2]; // B2
+        body.insts = vec![
+            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I64, value: 5 },
+            IrInst::SsaBind { dst: ValueId(7), ty: IrType::I64, src: ValueId(6) },
+        ];
+        body.term = IrTerminator::Jump { target: BlockId(4), args: vec![ValueId(7)] };
+
+        let errors = validate_module(&module)
+            .expect_err("validator must reject loop body that overwrites the counter");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::LoopVariableReassignment { .. }
+            )),
+            "expected LoopVariableReassignment error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn rejects_compound_assign_equivalent_ssabind_reaching_read_only_param() {
+        // Simulates:  i += 1  in the body — a compound assignment also
+        // produces an SsaBind destination that reaches the read_only counter.
+        //
+        //   B2 (body):
+        //     v6 = ConstInt(1)
+        //     v7 = Binary Add (v2, v6)
+        //     v8 = SsaBind(I64, v7)   ← compound assign result stored via SsaBind
+        //     Jump B4 [v8]
+        let mut module = valid_for_loop_module();
+        let body = &mut module.functions[0].blocks[2];
+        body.insts = vec![
+            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I64, value: 1 },
+            IrInst::Binary {
+                dst: ValueId(7),
+                op: BinaryOp::Add,
+                ty: IrType::I64,
+                lhs: ValueId(2),
+                rhs: ValueId(6),
+            },
+            IrInst::SsaBind { dst: ValueId(8), ty: IrType::I64, src: ValueId(7) },
+        ];
+        body.term = IrTerminator::Jump { target: BlockId(4), args: vec![ValueId(8)] };
+
+        let errors = validate_module(&module)
+            .expect_err("validator must reject compound-assign to loop counter");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::LoopVariableReassignment { .. }
+            )),
+            "expected LoopVariableReassignment error, got: {:?}",
+            errors
+        );
     }
 }

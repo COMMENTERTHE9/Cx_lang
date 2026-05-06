@@ -141,6 +141,11 @@ pub struct IrBlock {
 pub struct BlockParam {
     pub value: ValueId,
     pub ty: IrType,
+    /// True for `for`-loop counter block parameters. The IR validator rejects
+    /// any Jump/Branch that passes an `SsaBind`-produced value into a
+    /// `read_only` position, because that would mean user code overwrote the
+    /// loop variable.
+    pub read_only: bool,
 }
 
 #[cfg(test)]
@@ -176,6 +181,7 @@ mod tests {
             params: vec![BlockParam {
                 value: ValueId(3),
                 ty: IrType::I64,
+                read_only: false,
             }],
             insts: vec![],
             term: IrTerminator::Return { value: None },
