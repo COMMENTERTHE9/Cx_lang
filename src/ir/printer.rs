@@ -332,8 +332,8 @@ mod tests {
         let block = IrBlock {
             id: BlockId(3),
             params: vec![
-                BlockParam { value: ValueId(5), ty: IrType::I64 },
-                BlockParam { value: ValueId(6), ty: IrType::Bool },
+                BlockParam { value: ValueId(5), ty: IrType::I64, read_only: false },
+                BlockParam { value: ValueId(6), ty: IrType::Bool, read_only: false },
             ],
             insts: vec![],
             term: IrTerminator::Return { value: None },
