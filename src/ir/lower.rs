@@ -1579,7 +1579,11 @@ fn lower_expr(
         SemanticExprKind::Index { target, index, .. } => {
             lower_index(target, index, &expr.ty, ctx, active)
         }
-        SemanticExprKind::MethodCall { .. } => { unsupported!("MethodCall") },
+        SemanticExprKind::MethodCall { instance, method, .. } => {
+            Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!("MethodCall '{}.{}'", instance, method),
+            })
+        }
         // Struct literal lowering strategy
         //
         // A struct literal `S { f1: e1, f2: e2, ... }` is lowered to a sequence
@@ -5043,5 +5047,39 @@ mod tests {
             enums: vec![],
         };
         assert!(lower_program(&program).is_err());
+    }
+
+    // MethodCall produces a named structured error that includes both the
+    // instance name and the method name, rather than the generic "MethodCall"
+    // placeholder produced by the unsupported! macro.
+    #[test]
+    fn method_call_produces_named_structured_error() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "v",
+                SemanticType::I64,
+                SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::MethodCall {
+                        instance: "obj".to_string(),
+                        method: "foo".to_string(),
+                        args: vec![],
+                        pos: 0,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("obj") && construct.contains("foo")
+            ),
+            "expected named error mentioning instance and method, got: {:?}",
+            err
+        );
     }
 }

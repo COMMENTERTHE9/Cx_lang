@@ -2,6 +2,8 @@ mod backend;
 mod frontend;
 mod ir;
 mod runtime;
+#[cfg(test)]
+mod diff_harness;
 
 pub use runtime::arena::Arena;
 
