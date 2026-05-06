@@ -253,18 +253,36 @@ Done when:
 
 Goal: define exactly what the backend lowers as pure IR versus what becomes a runtime call. Without this the backend has ad hoc hooks scattered through the lowering code instead of a clean, testable boundary.
 
-- Define backend-visible runtime entry points
-- Categorize every builtin — pure IR, runtime call, or intrinsic
-- print — classified and lowered correctly once it is promoted to a function
-  - **Cross-roadmap dependency:** print has not been promoted to a function yet in the frontend. Phase 9 cannot close until the frontend ships print as a real function with a proper call signature. If the frontend changes print behavior (e.g., newline parameter, name change), Phase 9's intrinsic definition changes too.
-- Allocation operations — arena, handle registry interactions
-- Handle registry operations — insert, get, remove, stale detection
-- String boundary operations — str copy-on-boundary, strref validity
-- Error and panic paths — how they surface through the backend
-- Define calling signatures for all runtime entry points
-- Document ownership and lifetime expectations at each boundary
-- Lower all builtins through structured intrinsics, not ad hoc hooks
-- Tests confirm each intrinsic lowers and executes correctly
+**Sub-packet 1 — Audit + structured errors** *(DONE — 2026-05-06)*
+
+- Audited all ad-hoc builtin hooks: `print`, `println`, `printn`, `read`, `input`, `assert`, `assert_eq`
+- All were previously reaching the lowering layer and failing with the generic `UnresolvedSemanticArtifact` error (a signature_table miss), which was misleading
+- Added `is_cx_builtin()` guard in `src/ir/lower.rs` — builtins now produce `UnsupportedSemanticConstruct` with an explicit "codegen pending (Phase 9)" message
+- Classified every builtin: I/O stdout, I/O stdin, debug assertion
+- Created `docs/backend/cx_runtime_intrinsics_v0.1.md` — full boundary specification including classification table, planned implementation path, draft runtime entry point registry, and non-goals
+- 7 tests added — one per builtin — verifying correct error family and that the builtin name appears in the message
+
+**Sub-packet 2 — print family lowering** *(BLOCKED — pending frontend)*
+
+- `print`, `println`, `printn` cannot be lowered until the frontend promotes them to real functions with a fixed call signature
+- Cross-roadmap dependency: frontend must ship these as real functions before Phase 9 sub-packet 2 can proceed
+- If the frontend changes print behavior (e.g., newline parameter, name change), the intrinsic definition changes too
+
+**Sub-packet 3 — assert / assert_eq lowering** *(DESIGN NEEDED)*
+
+- Abort-vs-panic semantics decision needed before implementation
+- For 0.1 the expected answer is abort — confirmed before sub-packet 3 starts
+
+**Sub-packet 4 — read / input lowering** *(BLOCKED — pending str layout)*
+
+- Blocked on str/strref layout decision from Phase 8
+
+**Remaining Phase 9 items (not yet sub-packet assigned):**
+
+- Allocation operations — arena, handle registry interactions (post-0.1)
+- Handle registry operations — insert, get, remove, stale detection (post-0.1)
+- String boundary operations — str copy-on-boundary, strref validity (blocked on Phase 8)
+- Error and panic paths — how they surface through the backend (post-0.1)
 
 Done when:
 - Every builtin has a documented classification
@@ -607,7 +625,7 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 - ABI and data layout Round 2 (Phase 8) — str/strref layout, Handle<T>, TBool calling convention, unknown propagation still open
 
 **Next — 0.1 Path**
-- Runtime intrinsics boundary (Phase 9)
+- Runtime intrinsics boundary (Phase 9) — sub-packet 1 done; sub-packets 2–4 blocked on frontend/design
 - Differential backend harness (Phase 12)
 - Cranelift lowering skeleton (Phase 13)
 - JIT runtime host boundary
@@ -627,6 +645,14 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.1 (2026-05-06)
+
+- Phase 9 sub-packet 1 done — audit complete, `is_cx_builtin()` guard added in `lower.rs`, 7 tests, `docs/backend/cx_runtime_intrinsics_v0.1.md` created
+- Phase 9 sub-packets 2–4 defined with explicit blocking conditions
+- Progress board updated to reflect Phase 9 partial progress
 
 ---
 
