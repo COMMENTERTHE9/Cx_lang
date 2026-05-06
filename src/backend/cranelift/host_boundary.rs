@@ -198,7 +198,7 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, 3, and 4)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
 /// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
@@ -208,6 +208,7 @@ impl std::fmt::Display for JitExecutionError {
 /// - `Store` — typed memory store through an Alloca-produced pointer
 /// - `Compare` (Eq, Ne, Lt, Le, Gt, Ge — signed integer comparisons; result is I8)
 /// - `Return` (with or without a value)
+/// - `Call` — direct function calls to other functions within the same module
 ///
 /// - `Jump` (unconditional block transfer with optional block-param arguments)
 /// - `Branch` (two-way conditional branch using `brif`, with block-param arguments on both edges)
@@ -216,6 +217,15 @@ impl std::fmt::Display for JitExecutionError {
 /// Loop back-edges are deferred to a later sub-packet.
 ///
 /// All other IR instructions return [`JitExecutionError::UnsupportedConstruct`].
+///
+/// ## Call Semantics
+///
+/// `IrInst::Call` performs a direct call to a named function in the same IR module.
+/// The callee must be defined in `IrModule::functions`; calls to external symbols are
+/// deferred to a future sub-packet. Both value-returning and void callees are supported.
+/// Return values are captured in `dst` when `return_ty` is `Some`; `dst` must be `None`
+/// for void callees. A two-pass compilation strategy is used: all functions are declared
+/// first (pass 1) so that any call ordering within the module is valid (pass 2).
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -233,7 +243,8 @@ impl HostBoundary {
     pub fn execute(&self, ir: &crate::ir::IrModule) -> Result<JitOutcome, JitExecutionError> {
         use cranelift_codegen::settings::{self, Configurable};
         use cranelift_jit::{JITBuilder, JITModule};
-        use cranelift_module::{Linkage, Module};
+        use cranelift_module::{FuncId, Linkage, Module};
+        use std::collections::HashMap;
 
         // Build the native ISA.
         let mut flag_builder = settings::builder();
@@ -261,15 +272,24 @@ impl HostBoundary {
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         let mut module = JITModule::new(jit_builder);
 
-        let mut main_id = None;
-
-        for (func_idx, ir_func) in ir.functions.iter().enumerate() {
+        // Pass 1: declare every function so that callee references can be resolved
+        // during compilation of any function body — regardless of definition order.
+        let mut func_id_map: HashMap<String, FuncId> = HashMap::new();
+        for ir_func in &ir.functions {
             let sig = build_cl_signature(&module, ir_func)?;
             let func_id = module
                 .declare_function(&ir_func.name, Linkage::Export, &sig)
                 .map_err(|e| JitExecutionError::CodegenFailure {
                     detail: e.to_string(),
                 })?;
+            func_id_map.insert(ir_func.name.clone(), func_id);
+        }
+
+        // Pass 2: compile and define each function body.
+        let mut main_id = None;
+        for (func_idx, ir_func) in ir.functions.iter().enumerate() {
+            let func_id = func_id_map[&ir_func.name];
+            let sig = build_cl_signature(&module, ir_func)?;
 
             // Build the Cranelift IR for this function.
             let mut cl_func = cranelift_codegen::ir::Function::with_name_signature(
@@ -280,7 +300,7 @@ impl HostBoundary {
                 let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
                 let mut builder =
                     cranelift_frontend::FunctionBuilder::new(&mut cl_func, &mut fbc);
-                compile_ir_function(&mut builder, ir_func)?;
+                compile_ir_function(&mut builder, ir_func, &mut module, &func_id_map)?;
                 builder.finalize();
             }
 
@@ -369,13 +389,14 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1, 2, and 3):
+/// Supported instructions (Phase 14 sub-packets 1, 2, 3, and 4):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
 /// - [`IrInst::Load`] — typed memory load from a pointer
 /// - [`IrInst::Store`] — typed memory store through a pointer
 /// - [`IrInst::Compare`] — signed integer comparisons (Eq/Ne/Lt/Le/Gt/Ge); result is I8
+/// - [`IrInst::Call`] — direct call to a named function declared in the same module
 /// - [`IrTerminator::Return`] — return with or without a value
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
 /// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
@@ -384,14 +405,21 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// IR blocks are emitted in topological order for forward-only CFGs.  All predecessor edges
 /// (from `jump` / `brif`) are registered before the successor block is visited.
 ///
-/// All other instructions yield [`JitExecutionError::UnsupportedConstruct`].
+/// For `Call`, `func_id_map` must contain an entry for the callee name.  The callee
+/// is imported into this function via [`cranelift_module::Module::declare_func_in_func`]
+/// before the call instruction is emitted.
+///
+/// All other instructions and terminators yield [`JitExecutionError::UnsupportedConstruct`].
 #[cfg(feature = "jit")]
 fn compile_ir_function(
     builder: &mut cranelift_frontend::FunctionBuilder,
     ir_func: &crate::ir::types::IrFunction,
+    module: &mut cranelift_jit::JITModule,
+    func_id_map: &std::collections::HashMap<String, cranelift_module::FuncId>,
 ) -> Result<(), JitExecutionError> {
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::InstBuilder;
+    use cranelift_module::Module;
     use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
     use crate::ir::types::{BlockId, IrType, ValueId};
     use super::ir_type_to_cranelift;
@@ -546,6 +574,44 @@ fn compile_ir_function(
                     // This is used directly as the `brif` condition in Branch terminators.
                     let result = builder.ins().icmp(cc, lhs_val, rhs_val);
                     val_map.insert(*dst, result);
+                }
+
+                IrInst::Call { dst, callee, args, return_ty: _ } => {
+                    // Resolve callee — must be declared in the same module.
+                    let callee_id = func_id_map.get(callee.as_str()).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("call to undefined function '{}'", callee),
+                        }
+                    })?;
+
+                    // Import the callee reference into this function's scope.
+                    // `declare_func_in_func` is idempotent per (func_id, in_func) pair.
+                    let callee_ref = module.declare_func_in_func(*callee_id, builder.func);
+
+                    // Collect argument Cranelift values.
+                    let arg_vals: Vec<cranelift_codegen::ir::Value> = args
+                        .iter()
+                        .map(|vid| {
+                            val_map.get(vid).copied().ok_or_else(|| {
+                                JitExecutionError::CodegenFailure {
+                                    detail: format!(
+                                        "undefined value {:?} used as call argument",
+                                        vid
+                                    ),
+                                }
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
+
+                    // Emit the direct call.
+                    let call_inst = builder.ins().call(callee_ref, &arg_vals);
+
+                    // Capture the return value when the callee is non-void.
+                    if let Some(dst_vid) = dst {
+                        let results = builder.inst_results(call_inst);
+                        // There is exactly one result for non-void functions.
+                        val_map.insert(*dst_vid, results[0]);
+                    }
                 }
 
                 other => {
@@ -1006,6 +1072,214 @@ mod jit_tests {
         );
     }
 
+    // ── IrInst::Call tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_direct_call_returns_value() {
+        // add(a: I32, b: I32) -> I32 { return a + b }
+        // main() -> I32 { v0 = 10; v1 = 32; v2 = call add(v0, v1); return v2 }
+        // Expected: 42
+        use crate::ir::types::{BlockParam, IrParam};
+        let module = IrModule {
+            debug_name: "test_call_returns_value".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "add".to_string(),
+                    params: vec![
+                        IrParam { name: "a".to_string(), ty: IrType::I32 },
+                        IrParam { name: "b".to_string(), ty: IrType::I32 },
+                    ],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![
+                            BlockParam { value: ValueId(0), ty: IrType::I32, read_only: false },
+                            BlockParam { value: ValueId(1), ty: IrType::I32, read_only: false },
+                        ],
+                        insts: vec![IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(2)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 32 },
+                            IrInst::Call {
+                                dst: Some(ValueId(2)),
+                                callee: "add".to_string(),
+                                args: vec![ValueId(0), ValueId(1)],
+                                return_ty: Some(IrType::I32),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(2)) },
+                    }],
+                },
+            ],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_direct_call_void_callee() {
+        // noop() -> void { return }
+        // main() -> I32 { call noop(); v0 = 42; return v0 }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "test_call_void".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "noop".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Call {
+                                dst: None,
+                                callee: "noop".to_string(),
+                                args: vec![],
+                                return_ty: None,
+                            },
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+            ],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_direct_call_result_used_in_arithmetic() {
+        // double(x: I32) -> I32 { return x + x }
+        // main() -> I32 { v0 = 21; v1 = call double(v0); return v1 }
+        // Expected: 42
+        use crate::ir::types::{BlockParam, IrParam};
+        let module = IrModule {
+            debug_name: "test_call_arith".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "double".to_string(),
+                    params: vec![IrParam { name: "x".to_string(), ty: IrType::I32 }],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![BlockParam { value: ValueId(0), ty: IrType::I32, read_only: false }],
+                        insts: vec![IrInst::Binary {
+                            dst: ValueId(1),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(0),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 21 },
+                            IrInst::Call {
+                                dst: Some(ValueId(1)),
+                                callee: "double".to_string(),
+                                args: vec![ValueId(0)],
+                                return_ty: Some(IrType::I32),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    }],
+                },
+            ],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_direct_call_callee_defined_after_caller() {
+        // Functions defined in reverse order: main first, helper second.
+        // Tests that the two-pass declaration strategy handles any ordering.
+        //
+        // helper() -> I32 { return 42 }
+        // main() -> I32 { v0 = call helper(); return v0 }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "test_call_forward_ref".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::Call {
+                            dst: Some(ValueId(0)),
+                            callee: "helper".to_string(),
+                            args: vec![],
+                            return_ty: Some(IrType::I32),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+                IrFunction {
+                    name: "helper".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+            ],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
     // ── Sub-packet 2: Alloca + Load + Store ──────────────────────────────────
 
     #[test]
@@ -1164,6 +1438,37 @@ mod jit_tests {
         assert_eq!(result.unwrap().exit_code.raw(), 42); // 10 + 32
     }
 
+    #[test]
+    fn jit_call_undefined_callee_returns_codegen_error() {
+        // main() calls a function that doesn't exist in the module.
+        // Expected: JitExecutionError::CodegenFailure
+        let module = IrModule {
+            debug_name: "test_call_undefined".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::Call {
+                        dst: Some(ValueId(0)),
+                        callee: "no_such_function".to_string(),
+                        args: vec![],
+                        return_ty: Some(IrType::I32),
+                    }],
+                    term: IrTerminator::Return { value: Some(ValueId(0)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(
+            matches!(result, Err(JitExecutionError::CodegenFailure { .. })),
+            "expected CodegenFailure for undefined callee, got {:?}",
+            result
+        );
+    }
+
     // ── Jump tests ───────────────────────────────────────────────────────────
 
     #[test]
@@ -1202,6 +1507,7 @@ mod jit_tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I32,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return {
@@ -1461,13 +1767,13 @@ mod jit_tests {
                     },
                     IrBlock {
                         id: BlockId(1),
-                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(3)) },
                     },
                     IrBlock {
                         id: BlockId(2),
-                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(4)) },
                     },
