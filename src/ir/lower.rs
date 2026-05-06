@@ -1462,6 +1462,9 @@ fn lower_expr(
                 });
             }
 
+            // Arguments are lowered left-to-right (args.iter() order), matching
+            // the interpreter's left-to-right argument evaluation in
+            // call_semantic_func.  See docs/backend/cx_eval_order.md.
             let mut lowered_args = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 match arg {
@@ -1724,6 +1727,17 @@ fn lower_value(
     }
 }
 
+// Binary expression lowering — evaluation order guarantee
+//
+// Operands are lowered strictly left-to-right: `lhs` is fully lowered
+// (all instructions emitted) before `rhs` lowering begins.  This mirrors
+// the interpreter's `eval_semantic_expr` which evaluates `lhs` before `rhs`
+// at runtime.  Any side effects embedded in either operand (e.g. function
+// calls) occur in left-to-right order in both the interpreter path and the
+// compiled path.
+//
+// This ordering is a language guarantee for Cx 0.1 and must not be changed
+// by optimisation passes.  See docs/backend/cx_eval_order.md.
 fn lower_binary(
     lhs: &SemanticExpr,
     op: Op,
@@ -1732,7 +1746,9 @@ fn lower_binary(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    // Left operand lowered first — preserves left-to-right evaluation order.
     let lhs = lower_expr(lhs, ctx, active)?;
+    // Right operand lowered second — all lhs side effects are already emitted.
     let rhs = lower_expr(rhs, ctx, active)?;
     let dst = ctx.fresh_value();
 
