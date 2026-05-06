@@ -66,6 +66,39 @@ impl fmt::Display for LoweringError {
 
 impl std::error::Error for LoweringError {}
 
+// ---------------------------------------------------------------------------
+// Runtime intrinsics boundary — Phase 9 audit
+// ---------------------------------------------------------------------------
+//
+// These names are Cx language builtins. They are recognized at the semantic
+// layer (semantic.rs `analyze_call`) and assigned `FunctionId(u32::MAX)` to
+// flag them as non-user-defined. They do NOT appear in the `signature_table`,
+// which only holds user-defined functions.
+//
+// Classification (see docs/backend/cx_runtime_intrinsics_v0.1.md for the
+// full boundary specification):
+//
+//   Category          | Builtins
+//   ──────────────────┼────────────────────────────────
+//   I/O (stdout)      | print, println, printn
+//   I/O (stdin)       | read, input
+//   Debug / assertion | assert, assert_eq
+//
+// None of these have codegen support yet. Lowering them through the normal
+// `signature_table` path would produce a misleading `UnresolvedSemanticArtifact`
+// error. Instead, `is_cx_builtin` gates the call paths so they produce a
+// structured `UnsupportedSemanticConstruct` with an explicit Phase 9 note.
+//
+// When Phase 9 sub-packet 2 lands, each builtin here will be replaced by a
+// concrete `IrIntrinsic` opcode or a runtime-call ABI signature — at which
+// point this function will shrink until it is empty.
+fn is_cx_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "print" | "println" | "printn" | "read" | "input" | "assert" | "assert_eq"
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LoweredValue {
     value: ValueId,
@@ -556,6 +589,19 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
+            // Builtin intrinsics (print, assert, etc.) are not in the signature_table.
+            // Intercept them here so they produce a structured UnsupportedSemanticConstruct
+            // rather than falling through to a misleading UnresolvedSemanticArtifact.
+            if let SemanticExprKind::Call { callee, .. } = &expr.kind {
+                if is_cx_builtin(callee) {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "builtin '{}' is not yet lowerable to IR — codegen pending (Phase 9)",
+                            callee
+                        ),
+                    });
+                }
+            }
             // Void function calls cannot go through lower_expr because that function
             // must return a LoweredValue, and void calls produce no value.
             // Detect and lower void calls here before falling through to lower_expr.
@@ -1435,6 +1481,17 @@ fn lower_expr(
             })
         }
         SemanticExprKind::Call { callee, function: _, args } => {
+            // Builtin intrinsics (print, assert, etc.) are not in the signature_table.
+            // Intercept them before the lookup so the error is structured and actionable
+            // rather than the generic UnresolvedSemanticArtifact produced by a table miss.
+            if is_cx_builtin(callee) {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "builtin '{}' is not yet lowerable to IR — codegen pending (Phase 9)",
+                        callee
+                    ),
+                });
+            }
             let (param_types, return_ty) = {
                 let sig = ctx.signature_table.get(callee).ok_or_else(|| {
                     LoweringError::UnresolvedSemanticArtifact {
@@ -5081,5 +5138,80 @@ mod tests {
             "expected named error mentioning instance and method, got: {:?}",
             err
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 9 — Runtime intrinsics boundary audit (CX-35)
+    //
+    // Each builtin must produce UnsupportedSemanticConstruct (not the
+    // generic UnresolvedSemanticArtifact that a signature_table miss gives).
+    // -----------------------------------------------------------------------
+
+    // Helper: build a top-level ExprStmt that calls a builtin with the given
+    // args. `FunctionId(u32::MAX)` is the semantic-layer sentinel for builtins.
+    fn builtin_stmt(name: &str, args: Vec<SemanticCallArg>) -> SemanticStmt {
+        SemanticStmt::ExprStmt {
+            expr: SemanticExpr {
+                ty: SemanticType::Void,
+                kind: SemanticExprKind::Call {
+                    callee: name.to_string(),
+                    function: FunctionId(u32::MAX),
+                    args,
+                },
+            },
+            pos: 0,
+        }
+    }
+
+    fn assert_builtin_structured_error(name: &str) {
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(name, vec![])],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains(name)
+            ),
+            "builtin '{}' should produce UnsupportedSemanticConstruct mentioning its name, got: {:?}",
+            name, err
+        );
+    }
+
+    #[test]
+    fn builtin_print_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("print");
+    }
+
+    #[test]
+    fn builtin_println_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("println");
+    }
+
+    #[test]
+    fn builtin_printn_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("printn");
+    }
+
+    #[test]
+    fn builtin_assert_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("assert");
+    }
+
+    #[test]
+    fn builtin_assert_eq_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("assert_eq");
+    }
+
+    #[test]
+    fn builtin_read_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("read");
+    }
+
+    #[test]
+    fn builtin_input_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("input");
     }
 }
