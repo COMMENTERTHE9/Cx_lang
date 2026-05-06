@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-05-03"
+date: 2026-05-03
+description: "A documentation-only day: PR #53 merged block-level comments explaining the unary lowering strategy in lower.rs, and submain divergence from main hit day 36."
+---
+
+Quiet day. The only code-touching commit was a documentation PR that landed on submain, explaining why the IR lowering pass handles unary operations the way it does. No features, no tests, no movement on the submain-to-main merge.
+
+## PR #53: Documenting unary lowering
+
+Commit `2d665a4` added 25 lines of block-level comments to `src/ir/lower.rs` explaining the encoding choice for unary operations. The short version: the IR has no dedicated unary instructions. `Op::Minus` lowers to `0 - value` (subtraction from zero), and `Op::Not` lowers to `value == 0` (equality check against zero).
+
+This is a deliberate design decision. By representing all operations as two-operand forms, every backend only needs to handle one instruction shape. No special cases for negation or boolean inversion. The tradeoff is a slightly less obvious IR for anyone reading raw output, but the backend simplification is worth it for a language at this stage.
+
+PR #53 was created yesterday and merged into submain today. No behavioral change, just recording the reasoning in-code where future contributors will find it.
+
+## The divergence problem: day 36
+
+Submain is now 25 commits ahead of main and has been diverging for 36 days. Main sits at v4.9 with 78 tests. Submain is at v5.0 with 117 tests and all hard blockers resolved. Every daily log since mid-March has flagged "merge submain to main" as the highest-leverage available action, and it still hasn't happened.
+
+This isn't a technical blocker. The code is ready. The tests pass. It's purely a project-management gap that keeps accumulating risk the longer it sits.
+
+## Site branch update
+
+A blog-format dev log for 2026-05-01 was published to `src/content/blog/2026-05-01.mdx` on the site branch, covering the Phase 11 sub-packets (IR memory ops and struct registry) that landed on submain that day.
+
+## What's next
+
+The priorities remain unchanged from yesterday:
+
+1. Merge submain to main. 25 commits, 39-test gap, all blockers resolved. This is overdue.
+2. Struct field access lowering (`DotAccess` via field offsets from `StructLayoutInfo`).
+3. Struct literal lowering (`StructLit` to Alloca + per-field Store).
+
+Matrix status: 78 PASS / 0 FAIL on main. Unchanged.
