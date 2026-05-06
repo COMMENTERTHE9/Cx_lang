@@ -66,39 +66,6 @@ impl fmt::Display for LoweringError {
 
 impl std::error::Error for LoweringError {}
 
-// ---------------------------------------------------------------------------
-// Runtime intrinsics boundary — Phase 9 audit
-// ---------------------------------------------------------------------------
-//
-// These names are Cx language builtins. They are recognized at the semantic
-// layer (semantic.rs `analyze_call`) and assigned `FunctionId(u32::MAX)` to
-// flag them as non-user-defined. They do NOT appear in the `signature_table`,
-// which only holds user-defined functions.
-//
-// Classification (see docs/backend/cx_runtime_intrinsics_v0.1.md for the
-// full boundary specification):
-//
-//   Category          | Builtins
-//   ──────────────────┼────────────────────────────────
-//   I/O (stdout)      | print, println, printn
-//   I/O (stdin)       | read, input
-//   Debug / assertion | assert, assert_eq
-//
-// None of these have codegen support yet. Lowering them through the normal
-// `signature_table` path would produce a misleading `UnresolvedSemanticArtifact`
-// error. Instead, `is_cx_builtin` gates the call paths so they produce a
-// structured `UnsupportedSemanticConstruct` with an explicit Phase 9 note.
-//
-// When Phase 9 sub-packet 2 lands, each builtin here will be replaced by a
-// concrete `IrIntrinsic` opcode or a runtime-call ABI signature — at which
-// point this function will shrink until it is empty.
-fn is_cx_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "print" | "println" | "printn" | "read" | "input" | "assert" | "assert_eq"
-    )
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LoweredValue {
     value: ValueId,
@@ -590,23 +557,19 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
-            // Builtin intrinsics (print, assert, etc.) are not in the signature_table.
-            // Intercept them here so they produce a structured UnsupportedSemanticConstruct
-            // rather than falling through to a misleading UnresolvedSemanticArtifact.
-            if let SemanticExprKind::Call { callee, .. } = &expr.kind {
-                if is_cx_builtin(callee) {
-                    return Err(LoweringError::UnsupportedSemanticConstruct {
-                        construct: format!(
-                            "builtin '{}' is not yet lowerable to IR — codegen pending (Phase 9)",
-                            callee
-                        ),
-                    });
-                }
-            }
             // Void function calls cannot go through lower_expr because that function
             // must return a LoweredValue, and void calls produce no value.
-            // Detect and lower void calls here before falling through to lower_expr.
+            // Check builtins first (FunctionId(u32::MAX)), then the signature table.
             if let SemanticExprKind::Call { callee, function: _, args } = &expr.kind {
+                // Cx builtins are not in the signature table — dispatch them directly
+                // through the runtime intrinsics boundary.
+                if is_cx_builtin(callee.as_str()) {
+                    let callee = callee.clone();
+                    let args = args.clone();
+                    lower_builtin_stmt(&callee, &args, ctx, &mut current)?;
+                    return Ok(Some(current));
+                }
+
                 let sig_info = ctx.signature_table.get(callee.as_str())
                     .map(|s| (s.return_ty.clone(), s.param_types.clone()));
                 if let Some((None, param_types)) = sig_info {
@@ -1493,15 +1456,19 @@ fn lower_expr(
             })
         }
         SemanticExprKind::Call { callee, function: _, args } => {
-            // Builtin intrinsics (print, assert, etc.) are not in the signature_table.
-            // Intercept them before the lookup so the error is structured and actionable
-            // rather than the generic UnresolvedSemanticArtifact produced by a table miss.
-            if is_cx_builtin(callee) {
+            // Builtins are void (except read/input which return Str, also unsupported).
+            // Neither kind can appear in a value-producing expression position.
+            if is_cx_builtin(callee.as_str()) {
                 return Err(LoweringError::UnsupportedSemanticConstruct {
-                    construct: format!(
-                        "builtin '{}' is not yet lowerable to IR — codegen pending (Phase 9)",
-                        callee
-                    ),
+                    construct: match callee.as_str() {
+                        "read" | "input" => format!(
+                            "builtin '{callee}' returns Str — \
+                             string builtins are not yet supported in the backend"
+                        ),
+                        _ => format!(
+                            "builtin '{callee}' is void and cannot be used in value position"
+                        ),
+                    },
                 });
             }
             let (param_types, return_ty) = {
@@ -2364,6 +2331,106 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
                 "{context} type mismatch after semantic analysis: expected {expected:?}, got {got:?}"
             ),
         })
+    }
+}
+
+// ── Runtime intrinsics dispatch ───────────────────────────────────────────────
+
+/// Returns `true` if `name` is a Cx builtin that bypasses the user function
+/// signature table.
+///
+/// Builtins are recognized in semantic analysis with `FunctionId(u32::MAX)`
+/// and require special lowering to runtime intrinsic calls.  They are not
+/// present in the signature table because the frontend promotes them before
+/// any user-defined function lookup.
+fn is_cx_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "print" | "println" | "printn" | "read" | "input" | "assert" | "assert_eq"
+    )
+}
+
+/// Lower a Cx builtin call as a void statement.
+///
+/// Builtins that map to a supported runtime intrinsic emit `IrInst::Call`
+/// directly with the intrinsic's stable name (e.g. `cx_printn`).  Builtins
+/// that depend on unsupported types or are not yet implemented return a
+/// structured `UnsupportedSemanticConstruct` error.
+///
+/// ## Currently supported builtins
+///
+/// | Cx builtin | IR intrinsic | Notes                              |
+/// |------------|--------------|------------------------------------|
+/// | `printn`   | `cx_printn`  | Accepts any integer type (I8–I64). |
+///
+/// ## Currently unsupported builtins
+///
+/// | Cx builtin   | Reason                                                        |
+/// |--------------|---------------------------------------------------------------|
+/// | `print`      | String arguments require str/strref layout (unresolved).      |
+/// | `println`    | Same as `print`.                                              |
+/// | `assert`     | Not yet implemented in the backend.                           |
+/// | `assert_eq`  | Not yet implemented in the backend.                           |
+/// | `read`       | Returns Str — string builtins unsupported.                    |
+/// | `input`      | Returns Str — string builtins unsupported.                    |
+fn lower_builtin_stmt(
+    callee: &str,
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<(), LoweringError> {
+    match callee {
+        "printn" => {
+            // printn(n: integer) → cx_printn(n)
+            // The runtime shim cx_printn has the C signature `void cx_printn(i64)`.
+            // Any integer argument type (I8/I16/I32/I64) is accepted here;
+            // the JIT backend is responsible for matching the shim's i64 parameter.
+            if args.len() != 1 {
+                return Err(LoweringError::InternalInvariantViolation {
+                    detail: format!(
+                        "printn expects 1 argument, got {}",
+                        args.len()
+                    ),
+                });
+            }
+            let arg = match &args[0] {
+                SemanticCallArg::Expr(e) => lower_expr(e, ctx, active)?,
+                _ => {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: "non-expression argument to printn".to_string(),
+                    })
+                }
+            };
+            active.emit(IrInst::Call {
+                dst: None,
+                callee: "cx_printn".to_string(),
+                args: vec![arg.value],
+                return_ty: None,
+            })
+        }
+
+        "print" | "println" => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "builtin '{callee}' requires string arguments — \
+                 str/strref layout is not yet resolved in the backend"
+            ),
+        }),
+
+        "assert" | "assert_eq" => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "builtin '{callee}' is not yet implemented in the backend"
+            ),
+        }),
+
+        "read" | "input" => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "builtin '{callee}' returns Str — string builtins are not yet supported in the backend"
+            ),
+        }),
+
+        other => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("unknown builtin '{other}'"),
+        }),
     }
 }
 
@@ -5168,15 +5235,141 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Phase 9 — Runtime intrinsics boundary audit (CX-35)
-    //
-    // Each builtin must produce UnsupportedSemanticConstruct (not the
-    // generic UnresolvedSemanticArtifact that a signature_table miss gives).
-    // -----------------------------------------------------------------------
+    // ── Runtime intrinsics dispatch (Phase 9 sub-packet 2) ──────────────────
 
-    // Helper: build a top-level ExprStmt that calls a builtin with the given
-    // args. `FunctionId(u32::MAX)` is the semantic-layer sentinel for builtins.
+    /// Helper: build a one-statement program whose only statement is an
+    /// expression-statement that calls `callee` with a single I64 argument.
+    fn builtin_call_stmt(callee: &str, arg: SemanticExpr) -> SemanticProgram {
+        SemanticProgram {
+            stmts: vec![SemanticStmt::ExprStmt {
+                expr: SemanticExpr {
+                    ty: SemanticType::Void,
+                    kind: SemanticExprKind::Call {
+                        callee: callee.to_string(),
+                        function: crate::frontend::semantic_types::FunctionId(u32::MAX),
+                        args: vec![SemanticCallArg::Expr(arg)],
+                    },
+                },
+                pos: 0,
+            }],
+            enums: vec![],
+        }
+    }
+
+    #[test]
+    fn builtin_printn_lowers_to_cx_printn_call() {
+        // `printn(42_i64)` as a statement should lower to
+        // `IrInst::Call { callee: "cx_printn", args: [v0], return_ty: None }`.
+        let program = builtin_call_stmt("printn", int_expr(42, SemanticType::I64));
+        let module = lower_and_validate(&program);
+
+        let insts = &module.functions[0].blocks[0].insts;
+        // Expect: ConstInt(42) + Call(cx_printn)
+        assert_eq!(insts.len(), 2, "expected ConstInt + Call, got: {:?}", insts);
+        match &insts[1] {
+            IrInst::Call { callee, args, dst, return_ty } => {
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1);
+                assert!(dst.is_none(), "cx_printn is void — dst must be None");
+                assert!(return_ty.is_none(), "cx_printn is void — return_ty must be None");
+            }
+            other => panic!("expected Call instruction, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn builtin_print_produces_unsupported_error() {
+        let program = builtin_call_stmt(
+            "print",
+            SemanticExpr {
+                ty: SemanticType::Str,
+                kind: SemanticExprKind::Value(SemanticValue::Str("hi".to_string())),
+            },
+        );
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("print") && construct.contains("string")
+            ),
+            "expected structured error mentioning 'print' and 'string', got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn builtin_println_produces_unsupported_error() {
+        let program = builtin_call_stmt(
+            "println",
+            SemanticExpr {
+                ty: SemanticType::Str,
+                kind: SemanticExprKind::Value(SemanticValue::Str("hi".to_string())),
+            },
+        );
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("println") && construct.contains("string")
+            ),
+            "expected structured error mentioning 'println' and 'string', got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn builtin_assert_produces_unsupported_error() {
+        let program = builtin_call_stmt("assert", bool_expr(true));
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("assert")
+            ),
+            "expected structured error mentioning 'assert', got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn builtin_in_value_position_produces_structured_error() {
+        // Using `printn` in an expression (value) position should give a
+        // structured UnsupportedSemanticConstruct, not UnresolvedSemanticArtifact.
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(99),
+                "x",
+                SemanticType::I64,
+                SemanticExpr {
+                    ty: SemanticType::Void,
+                    kind: SemanticExprKind::Call {
+                        callee: "printn".to_string(),
+                        function: crate::frontend::semantic_types::FunctionId(u32::MAX),
+                        args: vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I64))],
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("printn")
+            ),
+            "expected UnsupportedSemanticConstruct mentioning 'printn', got: {:?}",
+            err
+        );
+    }
+
+    // ── Phase 9 audit tests (CX-35) ──────────────────────────────────────────
+    // These helpers verify that unsupported builtins produce structured errors,
+    // not the generic UnresolvedSemanticArtifact from a signature_table miss.
+
     fn builtin_stmt(name: &str, args: Vec<SemanticCallArg>) -> SemanticStmt {
         SemanticStmt::ExprStmt {
             expr: SemanticExpr {
@@ -5218,10 +5411,7 @@ mod tests {
         assert_builtin_structured_error("println");
     }
 
-    #[test]
-    fn builtin_printn_produces_unsupported_construct_not_unresolved_artifact() {
-        assert_builtin_structured_error("printn");
-    }
+    // printn is dispatched as of Phase 9 sub-packet 2 — no longer unsupported.
 
     #[test]
     fn builtin_assert_produces_unsupported_construct_not_unresolved_artifact() {

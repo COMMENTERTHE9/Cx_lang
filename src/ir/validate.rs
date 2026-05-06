@@ -64,10 +64,41 @@ struct ValidatorFunctionSig {
     has_return: bool,
 }
 
+/// Signatures for Cx runtime intrinsics that the validator recognises as valid
+/// callees without requiring them to be defined in the IR module.
+///
+/// Each intrinsic is linked by the JIT backend at execution time (registered as
+/// a Cranelift `Import` and resolved via `JITBuilder::symbol`).  The validator
+/// must accept them here so that IR containing intrinsic calls passes validation
+/// before reaching the backend.
+///
+/// Keep this table in sync with `declare_intrinsics` in
+/// `src/backend/cranelift/host_boundary.rs`.
+fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
+    let mut map = HashMap::new();
+
+    // cx_printn: (i64) -> void
+    // Cx builtin: printn(n)
+    map.insert(
+        "cx_printn".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::I64],
+            has_return: false,
+        },
+    );
+
+    map
+}
+
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
 
-    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = HashMap::new();
+    // Seed the signature table with known runtime intrinsics so that calls to
+    // them are accepted without requiring a matching function definition in the
+    // IR module.
+    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
+
     for function in &module.functions {
         function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
             param_count: function.params.len(),
