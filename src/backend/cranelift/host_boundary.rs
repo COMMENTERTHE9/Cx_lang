@@ -1,8 +1,6 @@
 //! JIT Runtime Host Boundary
 //!
 //! This module defines the execution boundary between the Cx JIT backend and the host process.
-//! It is a scaffold: the types and contract are defined here; Cranelift compilation is wired in
-//! Phase 14 (First Executable Cranelift Slice).
 //!
 //! # Process Ownership
 //!
@@ -44,9 +42,6 @@
 //! The differential harness captures JIT output by running the Cx compiler binary as a
 //! subprocess with `--backend=cranelift <source_file>`, exactly as it does for the interpreter
 //! baseline. This approach requires no in-process hooking and is consistent across both paths.
-//!
-//! In-process capture (e.g. redirecting stdout via `dup2` before calling into JIT code) is a
-//! post-scaffold enhancement. It is not required for the differential harness to work.
 //!
 //! # Runtime Failure Surfacing
 //!
@@ -105,7 +100,7 @@ impl std::fmt::Display for JitExitCode {
 ///
 /// ## Stdout and Stderr
 ///
-/// In the current scaffold `stdout` and `stderr` are always empty strings.
+/// In the current subprocess-capture model `stdout` and `stderr` are always empty strings.
 /// JIT-compiled code writes directly to the host process streams; the differential harness
 /// captures them by running the Cx binary as a subprocess. In-process capture is post-scaffold.
 #[derive(Debug, Clone)]
@@ -187,7 +182,7 @@ impl std::fmt::Display for JitExecutionError {
 /// ## Ownership and Lifecycle
 ///
 /// - Created once per JIT execution, before `execute` is called.
-/// - Will hold a Cranelift `JITModule` in Phase 14 (First Executable Cranelift Slice).
+/// - Holds a Cranelift `JITModule` for the duration of execution (when the `jit` feature is on).
 /// - Dropped after `execute` returns; Cranelift frees JIT memory on drop.
 /// - Does **not** call `std::process::exit`; callers decide what to do with [`JitOutcome`].
 ///
@@ -202,6 +197,16 @@ impl std::fmt::Display for JitExecutionError {
 /// JIT-compiled code writes to the host process stdout/stderr via C runtime intrinsics.
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
+///
+/// ## Phase 14 Sub-Packet 1 Scope
+///
+/// The JIT implementation (enabled with the `jit` feature) supports:
+/// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
+/// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations)
+/// - `Return` (with or without a value)
+///
+/// All other IR instructions and terminators return [`JitExecutionError::UnsupportedConstruct`].
+/// Multi-block functions with `Jump`/`Branch` terminators are not yet supported.
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -215,10 +220,96 @@ impl HostBoundary {
     /// Returns [`JitOutcome`] when `main` returns (including non-zero exit codes).
     /// Returns [`JitExecutionError`] only for JIT-level failures: codegen errors,
     /// missing symbols, or runtime panics inside JIT-compiled code.
-    ///
-    /// In the current scaffold this always returns
-    /// `Err(JitExecutionError::UnsupportedConstruct)` indicating Phase 14 is pending.
-    /// Phase 14 will replace this stub with real Cranelift JIT compilation.
+    #[cfg(feature = "jit")]
+    pub fn execute(&self, ir: &crate::ir::IrModule) -> Result<JitOutcome, JitExecutionError> {
+        use cranelift_codegen::settings::{self, Configurable};
+        use cranelift_jit::{JITBuilder, JITModule};
+        use cranelift_module::{Linkage, Module};
+
+        // Build the native ISA.
+        let mut flag_builder = settings::builder();
+        flag_builder
+            .set("use_colocated_libcalls", "false")
+            .map_err(|e| JitExecutionError::CodegenFailure {
+                detail: e.to_string(),
+            })?;
+        flag_builder
+            .set("is_pic", "false")
+            .map_err(|e| JitExecutionError::CodegenFailure {
+                detail: e.to_string(),
+            })?;
+        let flags = settings::Flags::new(flag_builder);
+        let isa = cranelift_native::builder()
+            .map_err(|s| JitExecutionError::CodegenFailure {
+                detail: s.to_string(),
+            })?
+            .finish(flags)
+            .map_err(|e| JitExecutionError::CodegenFailure {
+                detail: e.to_string(),
+            })?;
+
+        let jit_builder =
+            JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        let mut module = JITModule::new(jit_builder);
+
+        let mut main_id = None;
+
+        for (func_idx, ir_func) in ir.functions.iter().enumerate() {
+            let sig = build_cl_signature(&module, ir_func)?;
+            let func_id = module
+                .declare_function(&ir_func.name, Linkage::Export, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+
+            // Build the Cranelift IR for this function.
+            let mut cl_func = cranelift_codegen::ir::Function::with_name_signature(
+                cranelift_codegen::ir::UserFuncName::user(0, func_idx as u32),
+                sig,
+            );
+            {
+                let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
+                let mut builder =
+                    cranelift_frontend::FunctionBuilder::new(&mut cl_func, &mut fbc);
+                compile_ir_function(&mut builder, ir_func)?;
+                builder.finalize();
+            }
+
+            // Define the function in the JIT module.
+            let mut ctx = module.make_context();
+            ctx.func = cl_func;
+            module
+                .define_function(func_id, &mut ctx)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            module.clear_context(&mut ctx);
+
+            if ir_func.name == "main" {
+                main_id = Some(func_id);
+            }
+        }
+
+        module
+            .finalize_definitions()
+            .map_err(|e| JitExecutionError::CodegenFailure {
+                detail: e.to_string(),
+            })?;
+
+        let main_id = main_id.ok_or(JitExecutionError::MainNotFound)?;
+        let main_ptr = module.get_finalized_function(main_id);
+
+        // SAFETY: `module` is still alive here, keeping the JIT code mapped.
+        // The function signature () -> i32 matches the IR declaration of `main`.
+        let main_fn: unsafe extern "C" fn() -> i32 =
+            unsafe { std::mem::transmute(main_ptr) };
+        let ret = unsafe { main_fn() };
+
+        Ok(JitOutcome::from_main_return(ret))
+    }
+
+    /// Stub used when the `jit` feature is not enabled.
+    #[cfg(not(feature = "jit"))]
     pub fn execute(&self, _ir: &crate::ir::IrModule) -> Result<JitOutcome, JitExecutionError> {
         Err(JitExecutionError::UnsupportedConstruct {
             construct: "JIT codegen not yet implemented — Phase 14 (First Executable Cranelift Slice) pending".to_string(),
@@ -232,10 +323,167 @@ impl Default for HostBoundary {
     }
 }
 
+// ── JIT helpers (only compiled when the `jit` feature is active) ─────────────
+
+/// Build a Cranelift [`Signature`] from an [`IrFunction`]'s parameter and return-type list.
+#[cfg(feature = "jit")]
+fn build_cl_signature<M: cranelift_module::Module>(
+    module: &M,
+    ir_func: &crate::ir::types::IrFunction,
+) -> Result<cranelift_codegen::ir::Signature, JitExecutionError> {
+    use cranelift_codegen::ir::AbiParam;
+    use super::ir_type_to_cranelift;
+
+    let call_conv = module.target_config().default_call_conv;
+    let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+
+    for param in &ir_func.params {
+        let cl_ty = ir_type_to_cranelift(&param.ty).map_err(|e| {
+            JitExecutionError::UnsupportedConstruct {
+                construct: e.to_string(),
+            }
+        })?;
+        sig.params.push(AbiParam::new(cl_ty));
+    }
+
+    if let Some(ret_ty) = &ir_func.return_ty {
+        let cl_ty = ir_type_to_cranelift(ret_ty).map_err(|e| {
+            JitExecutionError::UnsupportedConstruct {
+                construct: e.to_string(),
+            }
+        })?;
+        sig.returns.push(AbiParam::new(cl_ty));
+    }
+
+    Ok(sig)
+}
+
+/// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
+///
+/// Supported instructions (Phase 14 sub-packet 1):
+/// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
+/// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
+/// - [`IrTerminator::Return`] — return with or without a value
+///
+/// All other instructions and terminators yield [`JitExecutionError::UnsupportedConstruct`].
+#[cfg(feature = "jit")]
+fn compile_ir_function(
+    builder: &mut cranelift_frontend::FunctionBuilder,
+    ir_func: &crate::ir::types::IrFunction,
+) -> Result<(), JitExecutionError> {
+    use cranelift_codegen::ir::InstBuilder;
+    use crate::ir::instr::{BinaryOp, IrInst, IrTerminator};
+    use crate::ir::types::{BlockId, IrType, ValueId};
+    use super::ir_type_to_cranelift;
+    use std::collections::HashMap;
+
+    // Phase 1: create all Cranelift blocks and set up their block parameters.
+    // We do this before switching into any block so that append_block_param is
+    // always called on a block that has not yet had instructions emitted.
+    let mut block_map: HashMap<BlockId, cranelift_codegen::ir::Block> = HashMap::new();
+    let mut val_map: HashMap<ValueId, cranelift_codegen::ir::Value> = HashMap::new();
+
+    for ir_block in &ir_func.blocks {
+        let cl_block = builder.create_block();
+        block_map.insert(ir_block.id, cl_block);
+
+        for bp in &ir_block.params {
+            let cl_ty = ir_type_to_cranelift(&bp.ty).map_err(|e| {
+                JitExecutionError::UnsupportedConstruct {
+                    construct: e.to_string(),
+                }
+            })?;
+            let val = builder.append_block_param(cl_block, cl_ty);
+            val_map.insert(bp.value, val);
+        }
+    }
+
+    // Phase 2: emit each block's body.
+    for ir_block in &ir_func.blocks {
+        let cl_block = block_map[&ir_block.id];
+        builder.switch_to_block(cl_block);
+        // Safe to seal immediately: only Return terminators are supported in this
+        // sub-packet, so no block has a back-edge predecessor.
+        builder.seal_block(cl_block);
+
+        for inst in &ir_block.insts {
+            match inst {
+                IrInst::ConstInt { dst, ty, value } => {
+                    // I128 cannot be represented as a single iconst (Cranelift
+                    // emulates it as two i64s). Deferred to a future sub-packet.
+                    if *ty == IrType::I128 {
+                        return Err(JitExecutionError::UnsupportedConstruct {
+                            construct: "ConstInt I128 (not supported in Phase 14 sub-packet 1)"
+                                .to_string(),
+                        });
+                    }
+                    let cl_ty = ir_type_to_cranelift(ty).map_err(|e| {
+                        JitExecutionError::UnsupportedConstruct {
+                            construct: e.to_string(),
+                        }
+                    })?;
+                    // The value fits in i64 for all supported integer types (I8/I16/I32/I64).
+                    let cl_val = builder.ins().iconst(cl_ty, *value as i64);
+                    val_map.insert(*dst, cl_val);
+                }
+
+                IrInst::Binary { dst, op, ty: _, lhs, rhs } => {
+                    let lhs_val = *val_map.get(lhs).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as binary lhs", lhs),
+                        }
+                    })?;
+                    let rhs_val = *val_map.get(rhs).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as binary rhs", rhs),
+                        }
+                    })?;
+                    let result = match op {
+                        BinaryOp::Add => builder.ins().iadd(lhs_val, rhs_val),
+                        BinaryOp::Sub => builder.ins().isub(lhs_val, rhs_val),
+                        BinaryOp::Mul => builder.ins().imul(lhs_val, rhs_val),
+                        BinaryOp::Div => builder.ins().sdiv(lhs_val, rhs_val),
+                        BinaryOp::Rem => builder.ins().srem(lhs_val, rhs_val),
+                    };
+                    val_map.insert(*dst, result);
+                }
+
+                other => {
+                    return Err(JitExecutionError::UnsupportedConstruct {
+                        construct: format!("{:?}", other),
+                    });
+                }
+            }
+        }
+
+        match &ir_block.term {
+            IrTerminator::Return { value: Some(vid) } => {
+                let ret_val = *val_map.get(vid).ok_or_else(|| {
+                    JitExecutionError::CodegenFailure {
+                        detail: format!("undefined return value {:?}", vid),
+                    }
+                })?;
+                builder.ins().return_(&[ret_val]);
+            }
+            IrTerminator::Return { value: None } => {
+                builder.ins().return_(&[]);
+            }
+            other => {
+                return Err(JitExecutionError::UnsupportedConstruct {
+                    construct: format!("{:?}", other),
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::types::IrModule;
 
     #[test]
     fn jit_exit_code_success_is_zero() {
@@ -313,8 +561,12 @@ mod tests {
         assert!(s.contains("stack overflow"), "got: {}", s);
     }
 
+    // The stub test only makes sense without the JIT feature, where execute()
+    // still returns the Phase 14-pending placeholder error.
+    #[cfg(not(feature = "jit"))]
     #[test]
     fn host_boundary_stub_returns_structured_error() {
+        use crate::ir::types::IrModule;
         let boundary = HostBoundary::new();
         let ir = IrModule {
             debug_name: "test_module".to_string(),
@@ -332,5 +584,268 @@ mod tests {
             }
             other => panic!("expected UnsupportedConstruct, got {:?}", other),
         }
+    }
+}
+
+// ── JIT integration tests (require the `jit` feature) ────────────────────────
+
+#[cfg(all(test, feature = "jit"))]
+mod jit_tests {
+    use super::*;
+    use crate::ir::instr::{BinaryOp, IrInst, IrTerminator};
+    use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
+
+    /// Build a minimal `main() -> i32` module that returns a single constant.
+    fn const_return_module(value: i128) -> IrModule {
+        IrModule {
+            debug_name: "test_const".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::ConstInt {
+                        dst: ValueId(0),
+                        ty: IrType::I32,
+                        value,
+                    }],
+                    term: IrTerminator::Return {
+                        value: Some(ValueId(0)),
+                    },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn jit_const_return_zero() {
+        let module = const_return_module(0);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_const_return_42() {
+        let module = const_return_module(42);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_const_return_1() {
+        let module = const_return_module(1);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_arithmetic_add() {
+        // main(): i32 { v0 = 10; v1 = 32; v2 = v0 + v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "test_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 32 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42); // 10 + 32
+    }
+
+    #[test]
+    fn jit_arithmetic_sub() {
+        // main(): i32 { v0 = 50; v1 = 8; v2 = v0 - v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "test_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 50 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 8 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42); // 50 - 8
+    }
+
+    #[test]
+    fn jit_arithmetic_mul() {
+        // main(): i32 { v0 = 6; v1 = 7; v2 = v0 * v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "test_mul".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 6 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 7 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Mul,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42); // 6 * 7
+    }
+
+    #[test]
+    fn jit_arithmetic_div() {
+        // main(): i32 { v0 = 84; v1 = 2; v2 = v0 / v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "test_div".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 84 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 2 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Div,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42); // 84 / 2
+    }
+
+    #[test]
+    fn jit_arithmetic_rem() {
+        // main(): i32 { v0 = 142; v1 = 100; v2 = v0 % v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "test_rem".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 142 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 100 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Rem,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42); // 142 % 100
+    }
+
+    #[test]
+    fn jit_no_main_returns_main_not_found() {
+        let module = IrModule {
+            debug_name: "no_main".to_string(),
+            functions: vec![],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(
+            matches!(result, Err(JitExecutionError::MainNotFound)),
+            "expected MainNotFound, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn jit_unsupported_inst_returns_error() {
+        // SsaBind is not supported in sub-packet 1.
+        let module = IrModule {
+            debug_name: "test_unsupported".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
+                        IrInst::SsaBind {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            src: ValueId(0),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(
+            matches!(result, Err(JitExecutionError::UnsupportedConstruct { .. })),
+            "expected UnsupportedConstruct, got {:?}",
+            result
+        );
     }
 }
