@@ -1927,9 +1927,11 @@ fn common_numeric_type(lhs: &SemanticType, rhs: &SemanticType) -> SemanticType {
     if matches!(lhs, SemanticType::F64) || matches!(rhs, SemanticType::F64) {
         return SemanticType::F64;
     }
-    // Both literals — unchanged behavior
+    // Both untyped literals — default to I64 so the IR stays in a width that
+    // the Cranelift JIT backend supports without legalization.  I64 is wide
+    // enough for all integer literals that the Cx parser accepts.
     if matches!(lhs, SemanticType::Numeric) && matches!(rhs, SemanticType::Numeric) {
-        return SemanticType::I128;
+        return SemanticType::I64;
     }
     // Numeric (literal) marker — adopt the other side's declared type
     if matches!(lhs, SemanticType::Numeric) {

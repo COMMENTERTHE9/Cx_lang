@@ -229,13 +229,14 @@ fn run() {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("{}", err);
-                    return;
+                    std::process::exit(1);
                 }
             };
             println!("{}", crate::ir::printer::print_module(&ir));
             let b = backend::cranelift::CraneliftBackend;
             if let Err(msg) = b.execute(&ir) {
                 eprintln!("{}", msg);
+                std::process::exit(1);
             }
         }
         backend::BackendKind::Llvm => {

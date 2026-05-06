@@ -1,11 +1,12 @@
-//! CX-23 — Differential harness: interpreter baseline capture and fixture format.
+//! CX-23 / CX-31 — Differential harness: interpreter baseline and JIT comparison.
 //!
-//! Phase 12, sub-packet 1.
+//! Phase 12, sub-packet 1 (interpreter baseline) + CX-31 (JIT differential).
 //!
-//! This module is the shell of the differential testing harness. It defines
-//! the data types, fixture format, and collection logic for running every
-//! matrix test through the interpreter and comparing output against stored
-//! expectations.
+//! This module defines the data types, fixture format, and collection logic for
+//! running every matrix test through the interpreter and comparing output against
+//! stored expectations.  CX-31 extends this with a JIT execution path that runs
+//! the same binary with `--backend=cranelift` and compares the process exit code
+//! against the interpreter baseline for the arithmetic subset.
 //!
 //! # Fixture format
 //!
@@ -19,6 +20,14 @@
 //!
 //! A `.cx` file with neither companion file is a "pass-any" test: the interpreter
 //! must exit 0, but its stdout is not verified.
+//!
+//! # Arithmetic subset (JIT differential fixtures)
+//!
+//! Fixtures whose names begin with `jit_arith_` are dedicated to the JIT
+//! differential gate.  They contain only top-level arithmetic expression
+//! statements with no function calls or I/O, so the JIT can compile and execute
+//! them end-to-end.  The interpreter processes them in the same way (no output,
+//! exit 0), making the comparison unambiguous: both backends must exit 0.
 //!
 //! # Comparison semantics
 //!
@@ -35,8 +44,10 @@
 //! - `InterpOutcome` — result of a single interpreter run
 //! - `collect_matrix_tests()` — enumerate all fixtures from the matrix directory
 //! - `run_interpreter()` — capture one interpreter run via subprocess
+//! - `run_jit_subprocess()` — capture one JIT run via subprocess (`--backend=cranelift`)
 //! - `cx_binary_path()` — locate the compiled Cx binary
-//! - `#[test] interpreter_baseline_all` — baseline gate
+//! - `#[test] interpreter_baseline_all` — interpreter baseline gate
+//! - `#[test] jit_differential_arithmetic` — JIT vs interpreter gate for arithmetic subset
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -183,6 +194,39 @@ pub fn run_interpreter(binary: &Path, fixture: &TestFixture) -> InterpOutcome {
         .unwrap_or_else(|e| {
             panic!(
                 "failed to spawn interpreter binary {:?} for fixture {:?}: {}",
+                binary, fixture.path, e
+            )
+        });
+
+    InterpOutcome {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// Run the Cranelift JIT backend on `fixture` and return the captured outcome.
+///
+/// Invokes the compiled `Cx_0V` binary with `--backend=cranelift <fixture_path>`.
+/// The binary prints the lowered IR module to stdout (a debugging aid) and then
+/// executes it through the JIT.  On success the process exits 0; on any JIT or
+/// lowering failure it exits 1 (see `main.rs`).
+///
+/// Because the IR text is printed to stdout unconditionally, callers should
+/// **not** compare stdout when using JIT fixtures — compare exit codes only.
+///
+/// # Panics
+///
+/// Panics if the subprocess cannot be spawned.
+pub fn run_jit_subprocess(binary: &Path, fixture: &TestFixture) -> InterpOutcome {
+    let output = Command::new(binary)
+        .arg("--backend=cranelift")
+        .arg(&fixture.path)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn JIT binary {:?} for fixture {:?}: {}",
                 binary, fixture.path, e
             )
         });
@@ -382,6 +426,97 @@ mod tests {
 
         eprintln!(
             "interpreter_baseline_all: {}/{} fixtures passed",
+            fixtures.len(),
+            fixtures.len()
+        );
+    }
+
+    // ── JIT differential gate ─────────────────────────────────────────────────
+
+    /// JIT differential gate for the arithmetic subset.
+    ///
+    /// Collects all fixtures whose names begin with `jit_arith_` and runs each
+    /// through **both** the interpreter and the Cranelift JIT backend (via
+    /// `--backend=cranelift`).  Both must exit 0 for the test to pass.
+    ///
+    /// The arithmetic-subset fixtures contain only top-level expression statements
+    /// (no function calls, no I/O), so both the interpreter and JIT can execute
+    /// them without producing output — making the comparison unambiguous.
+    ///
+    /// The test is skipped (with a diagnostic message) if the `Cx_0V` binary is
+    /// not present.  Build it first:
+    ///
+    /// ```text
+    /// cargo build --features jit && cargo test --features jit
+    /// ```
+    ///
+    /// If the JIT exits non-zero for a fixture, the test fails and reports
+    /// the fixture name and any stderr output from the JIT process.
+    #[test]
+    fn jit_differential_arithmetic() {
+        let binary = cx_binary_path();
+
+        if !binary.exists() {
+            eprintln!(
+                "SKIP jit_differential_arithmetic — binary not found at {:?}.\n\
+                 Build with `cargo build --features jit` then re-run tests.",
+                binary
+            );
+            return;
+        }
+
+        // Only exercise the dedicated arithmetic-subset fixtures.
+        let fixtures: Vec<TestFixture> = collect_matrix_tests()
+            .into_iter()
+            .filter(|f| f.name.starts_with("jit_arith_"))
+            .collect();
+
+        if fixtures.is_empty() {
+            panic!(
+                "jit_differential_arithmetic: no jit_arith_* fixtures found in \
+                 verification_matrix/ — add at least one jit_arith_*.cx fixture"
+            );
+        }
+
+        let mut failures: Vec<String> = Vec::new();
+
+        for fixture in &fixtures {
+            // Step 1: interpreter must accept the program.
+            let interp = run_interpreter(&binary, fixture);
+            if !interp.passed() {
+                failures.push(format!(
+                    "FAIL [interpreter rejected fixture, exit {}]: {}\n  stderr: {}",
+                    interp.exit_code,
+                    fixture.name,
+                    interp.stderr.lines().next().unwrap_or("(no stderr)")
+                ));
+                // Don't bother running JIT if interpreter already failed.
+                continue;
+            }
+
+            // Step 2: JIT must also accept the program (exit 0).
+            let jit = run_jit_subprocess(&binary, fixture);
+            if !jit.passed() {
+                failures.push(format!(
+                    "FAIL [JIT rejected fixture, exit {}]: {}\n  stderr: {}",
+                    jit.exit_code,
+                    fixture.name,
+                    jit.stderr.lines().next().unwrap_or("(no stderr)")
+                ));
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!(
+                "\n{} JIT differential failure(s) out of {} arithmetic fixture(s):\n\n{}\n",
+                failures.len(),
+                fixtures.len(),
+                failures.join("\n\n")
+            );
+        }
+
+        eprintln!(
+            "jit_differential_arithmetic: {}/{} fixtures passed (interpreter + JIT)",
             fixtures.len(),
             fixtures.len()
         );

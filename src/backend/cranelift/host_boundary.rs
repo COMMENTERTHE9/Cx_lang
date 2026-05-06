@@ -198,15 +198,19 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1 and 2)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and CX-31)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
-/// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
+/// - `ConstInt` (types: I8, I16, I32, I64, I128 — value must fit in i64)
+/// - `SsaBind` — compile-time SSA rename; no instruction emitted, aliases src value
 /// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations)
 /// - `Alloca` — stack slot allocation; `dst` receives an I64 pointer to the slot
 /// - `Load` — typed memory load from an Alloca-produced pointer
 /// - `Store` — typed memory store through an Alloca-produced pointer
 /// - `Return` (with or without a value)
+///
+/// Void-returning `main` functions (return_ty: None) are called with no-return-value
+/// ABI and always produce exit code 0, avoiding UB from reading an unset return register.
 ///
 /// All other IR instructions and terminators return [`JitExecutionError::UnsupportedConstruct`].
 /// Multi-block functions with `Jump`/`Branch` terminators are not yet supported.
@@ -256,6 +260,9 @@ impl HostBoundary {
         let mut module = JITModule::new(jit_builder);
 
         let mut main_id = None;
+        // Track whether the IR main function has a return value, so we can call it
+        // with the correct ABI (void vs i32).
+        let mut main_has_return = false;
 
         for (func_idx, ir_func) in ir.functions.iter().enumerate() {
             let sig = build_cl_signature(&module, ir_func)?;
@@ -290,6 +297,7 @@ impl HostBoundary {
 
             if ir_func.name == "main" {
                 main_id = Some(func_id);
+                main_has_return = ir_func.return_ty.is_some();
             }
         }
 
@@ -303,10 +311,23 @@ impl HostBoundary {
         let main_ptr = module.get_finalized_function(main_id);
 
         // SAFETY: `module` is still alive here, keeping the JIT code mapped.
-        // The function signature () -> i32 matches the IR declaration of `main`.
-        let main_fn: unsafe extern "C" fn() -> i32 =
-            unsafe { std::mem::transmute(main_ptr) };
-        let ret = unsafe { main_fn() };
+        // The call convention must exactly match the IR signature of `main`:
+        //   - return_ty: Some(_) → fn() -> i32   (program exit code)
+        //   - return_ty: None    → fn()           (void; exit code is always 0)
+        //
+        // Using the wrong transmute type here is UB.  We pick the branch based
+        // on the IR return type recorded above so we never read a garbage return
+        // register from a void-returning function.
+        let ret = if main_has_return {
+            let main_fn: unsafe extern "C" fn() -> i32 =
+                unsafe { std::mem::transmute(main_ptr) };
+            unsafe { main_fn() }
+        } else {
+            let main_fn: unsafe extern "C" fn() =
+                unsafe { std::mem::transmute(main_ptr) };
+            unsafe { main_fn() };
+            0
+        };
 
         Ok(JitOutcome::from_main_return(ret))
     }
@@ -363,8 +384,9 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1 and 2):
-/// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
+/// Supported instructions (Phase 14 sub-packets 1, 2, and CX-31):
+/// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64/I128 (value fits i64)
+/// - [`IrInst::SsaBind`] — compile-time SSA rename; aliases src, no instruction emitted
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
 /// - [`IrInst::Load`] — typed memory load from a pointer
@@ -379,7 +401,7 @@ fn compile_ir_function(
 ) -> Result<(), JitExecutionError> {
     use cranelift_codegen::ir::InstBuilder;
     use crate::ir::instr::{BinaryOp, IrInst, IrTerminator};
-    use crate::ir::types::{BlockId, IrType, ValueId};
+    use crate::ir::types::{BlockId, ValueId};
     use super::ir_type_to_cranelift;
     use std::collections::HashMap;
 
@@ -415,22 +437,31 @@ fn compile_ir_function(
         for inst in &ir_block.insts {
             match inst {
                 IrInst::ConstInt { dst, ty, value } => {
-                    // I128 cannot be represented as a single iconst (Cranelift
-                    // emulates it as two i64s). Deferred to a future sub-packet.
-                    if *ty == IrType::I128 {
-                        return Err(JitExecutionError::UnsupportedConstruct {
-                            construct: "ConstInt I128 (not supported in Phase 14 sub-packet 1)"
-                                .to_string(),
-                        });
-                    }
                     let cl_ty = ir_type_to_cranelift(ty).map_err(|e| {
                         JitExecutionError::UnsupportedConstruct {
                             construct: e.to_string(),
                         }
                     })?;
-                    // The value fits in i64 for all supported integer types (I8/I16/I32/I64).
+                    // Cranelift's iconst takes a signed 64-bit immediate that is
+                    // sign-extended to the target type width.  For I128, the JIT
+                    // legalises the iconst into a pair of I64 operations; this works
+                    // for all values that fit in a sign-extended i64 (i.e. any value
+                    // in the range [i64::MIN, i64::MAX]).  Cx integer literals are
+                    // always in that range after parsing, so no truncation occurs.
                     let cl_val = builder.ins().iconst(cl_ty, *value as i64);
                     val_map.insert(*dst, cl_val);
+                }
+
+                IrInst::SsaBind { dst, ty: _, src } => {
+                    // SsaBind is a compile-time SSA rename with no runtime cost.
+                    // The destination simply aliases the same Cranelift value as the
+                    // source; no instruction is emitted.
+                    let src_val = *val_map.get(src).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as SsaBind src", src),
+                        }
+                    })?;
+                    val_map.insert(*dst, src_val);
                 }
 
                 IrInst::Binary { dst, op, ty: _, lhs, rhs } => {
@@ -875,7 +906,8 @@ mod jit_tests {
 
     #[test]
     fn jit_unsupported_inst_returns_error() {
-        // SsaBind is not supported in sub-packet 1.
+        // Cast is not yet supported by the JIT backend.
+        // (SsaBind is now supported and no longer a valid choice for this test.)
         let module = IrModule {
             debug_name: "test_unsupported".to_string(),
             functions: vec![IrFunction {
@@ -886,11 +918,12 @@ mod jit_tests {
                     id: BlockId(0),
                     params: vec![],
                     insts: vec![
-                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
-                        IrInst::SsaBind {
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 0 },
+                        IrInst::Cast {
                             dst: ValueId(1),
-                            ty: IrType::I32,
-                            src: ValueId(0),
+                            from: IrType::I64,
+                            to: IrType::I32,
+                            value: ValueId(0),
                         },
                     ],
                     term: IrTerminator::Return { value: Some(ValueId(1)) },

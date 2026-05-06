@@ -1465,9 +1465,27 @@ fn lower_expr(
         }
         SemanticExprKind::Cast { expr, from, to } => {
             let lowered = lower_expr(expr, ctx, active)?;
-            let from_ty = lower_type(from)?;
             let to_ty = lower_type(to)?;
+            // When the source type is `Numeric` (unresolved integer literal), the
+            // inner expression has already been lowered to I64 by `lower_value`.
+            // Using `lowered.ty` as the effective source type avoids calling
+            // `lower_type(Numeric)`, which is intentionally unsupported.
+            // For a `Numeric → I64` cast the result is a no-op: both sides land
+            // on I64, and no Cast instruction is emitted.
+            let from_ty = if *from == SemanticType::Numeric {
+                lowered.ty.clone()
+            } else {
+                lower_type(from)?
+            };
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
+            // If the resolved source and destination types are identical, the
+            // cast is a no-op — return the input value without emitting IrInst::Cast.
+            if from_ty == to_ty {
+                return Ok(LoweredValue {
+                    value: lowered.value,
+                    ty: to_ty,
+                });
+            }
             let dst = ctx.fresh_value();
             active.emit(IrInst::Cast {
                 dst,
@@ -1731,7 +1749,18 @@ fn lower_value(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
-    let ty = lower_type(semantic_ty)?;
+    // SemanticType::Numeric is the internal marker for an integer literal that has
+    // not been forced to a concrete width by context (e.g. `5 + 3;` where both
+    // sides are bare literals).  The semantic analysis defaults such expressions
+    // to I64 (common_numeric_type(Numeric, Numeric) = I64); mirror that here so
+    // the IR emitter sees a concrete type and can emit a valid ConstInt instruction.
+    // I64 is supported by the Cranelift JIT backend without legalization; it is
+    // wide enough for all integer literals the Cx parser accepts.
+    let ty = if *semantic_ty == SemanticType::Numeric {
+        IrType::I64
+    } else {
+        lower_type(semantic_ty)?
+    };
     let dst = ctx.fresh_value();
 
     match value {
