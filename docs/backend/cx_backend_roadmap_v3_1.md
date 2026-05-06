@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.0 — 2026-05-03
+v4.2 — 2026-05-06
 
 ---
 
@@ -187,13 +187,73 @@ Backend trait signature changed to take `&IrModule`. `main.rs` passes lowered IR
 
 ---
 
+**Phase 11 — Surface Area Reduction** *(DONE — 2026-05-06)*
+
+All 0.1-scope constructs either lower correctly or produce a named, structured rejection. See Phase 11 entry in Up Next for the full landed list. No construct is silently unsupported.
+
+---
+
+**Phase 13 — Cranelift Lowering Skeleton** *(DONE — 2026-05-06)*
+
+IrType → Cranelift type mapping, module/function/block traversal, instruction and terminator dispatch with named `CraneliftLoweringError` variants. Every unsupported construct produces a specific named error. `src/backend/cranelift/mod.rs`.
+
+---
+
+**JIT Runtime Host Boundary** *(DONE — 2026-05-06)*
+
+`HostBoundary`, `JitExitCode`, `JitOutcome`, `JitExecutionError` types. Process ownership, exit-code extraction, output scaffolding. `src/backend/cranelift/host_boundary.rs`.
+
+---
+
+**Phase 12 sub-packet 1 — Differential harness shell** *(DONE — 2026-05-06)*
+
+`TestFixture`, `collect_matrix_tests()`, `run_interpreter()`, `cx_binary_path()` in `src/diff_harness.rs`. Interpreter baseline capture working. 4 harness tests.
+
+---
+
+**Phase 14 sub-packets 1–2 — First JIT execution** *(DONE — 2026-05-06)*
+
+Sub-packet 1: ConstInt (I8/I16/I32/I64), Binary (Add/Sub/Mul/Div/Rem), Return — 8 tests.
+Sub-packet 2: Alloca, Load, Store — 4 tests.
+First real Cranelift execution confirmed working.
+
+---
+
+**Phase 9 sub-packet 1 — Runtime intrinsics audit + structured errors** *(DONE — 2026-05-06)*
+
+`is_cx_builtin()` guard in `lower.rs`. All 7 builtins produce `UnsupportedSemanticConstruct` with Phase 9 note. `docs/backend/cx_runtime_intrinsics_v0.1.md` created. 7 tests.
+
+---
+
+**Evaluation order specification** *(DONE — 2026-05-06)*
+
+Left-to-right expression evaluation order documented in `docs/backend/cx_eval_order.md` (CX-37). Tests verify that binary expression operands, call arguments, and assignment RHS all evaluate left-to-right in `lower.rs`. This closes the 0.1 hard blocker for evaluation order stability.
+
+---
+
+**IR validator loop variable read-only enforcement** *(DONE — 2026-05-06)*
+
+`ReadOnlyLoopVar` enforcement added to the IR validator (CX-40). Loop variable bindings are now rejected by the validator if assigned inside the loop body, matching the runtime enforcement.
+
+---
+
 ## Active 🔄
 
-**Phase 11 — Surface Area Reduction** *(in progress)*
+**Phase 8 Round 2 — ABI and Data Layout (open items)** *(in progress)*
 
-Compound assign, unary, memory ops, struct registry, and struct literal lowering have landed. Remaining open: range expressions, DotAccess (field reads/writes), array indexing, method calls, and void-return calls.
+str/strref layout at the backend boundary, Handle<T> runtime representation, TBool calling convention, and unknown propagation strategy are all still open. See Phase 8 entry in Up Next for details.
 
-See Up Next section for details.
+---
+
+**Phase 9 sub-packets 2–4** *(in progress / blocked)*
+
+Sub-packet 2 (print family lowering) is in Human Review (CX-38). Sub-packets 3–4 are blocked on design/frontend decisions. See Phase 9 entry in Up Next for details.
+
+---
+
+**Phase 14 sub-packets 3–4 + Phase 15 sub-packets 1–3** *(in Human Review)*
+
+CX-27/CX-41 (Compare + Jump + Branch), CX-30 (direct calls), CX-32 (PtrOffset + PtrAdd), CX-33 (SsaBind + ConstFloat + Cast), CX-36 (float arithmetic) — all in Human Review.
 
 ---
 
@@ -207,7 +267,7 @@ Stage 3: cross-function call validation in IR validator — callee resolution, a
 
 Tests cover: unresolved callee, arity mismatch, type mismatch, call-with-assignment, and call-in-expr-stmt cases.
 
-Known limitation: void-return calls produce `UnsupportedSemanticConstruct("void function call — IrType::Void pending")`. `IrType::Void` is not yet defined; tracked as a Phase 11 open item.
+Void-return calls resolved: `lower_void_call()` added in Phase 11 work; void calls now emit `IrInst::Call { dst: None, return_ty: None }` and lower correctly as standalone statements. `IrType::Void` remains absent from the IR type system by design — void is a calling-convention property, not a stored type.
 
 ---
 
@@ -262,11 +322,10 @@ Goal: define exactly what the backend lowers as pure IR versus what becomes a ru
 - Created `docs/backend/cx_runtime_intrinsics_v0.1.md` — full boundary specification including classification table, planned implementation path, draft runtime entry point registry, and non-goals
 - 7 tests added — one per builtin — verifying correct error family and that the builtin name appears in the message
 
-**Sub-packet 2 — print family lowering** *(BLOCKED — pending frontend)*
+**Sub-packet 2 — runtime intrinsics dispatch mechanism** *(in Human Review — CX-38)*
 
-- `print`, `println`, `printn` cannot be lowered until the frontend promotes them to real functions with a fixed call signature
-- Cross-roadmap dependency: frontend must ship these as real functions before Phase 9 sub-packet 2 can proceed
-- If the frontend changes print behavior (e.g., newline parameter, name change), the intrinsic definition changes too
+- Implements the runtime dispatch layer that sub-packets 2–4 will route through
+- Note: `print`/`println`/`printn` require the frontend to promote them to real functions with a fixed call signature — cross-roadmap dependency that must resolve before print intrinsic lowering can proceed
 
 **Sub-packet 3 — assert / assert_eq lowering** *(DESIGN NEEDED)*
 
@@ -308,57 +367,74 @@ Returns inside loop body handled correctly — conditional return inside while v
 
 Implementation note: the for-loop range dependency on Phase 11 was resolved by implementing for-loop lowering using explicit `start`/`end`/`inclusive` params that the semantic layer extracts. `SemanticExprKind::Range` as a standalone expression remains unsupported in `lower_expr`.
 
-Known gap: loop variable read-only invariant (`ReadOnlyLoopVar`) is not yet enforced in the IR validator. The runtime enforces it; the IR validator should also reject assignments to a loop variable inside the loop body. Tracked as follow-on work.
+Loop variable read-only invariant resolved: `ReadOnlyLoopVar` enforcement added to the IR validator (CX-40, 2026-05-06). The validator now rejects assignments to loop variable bindings inside loop bodies.
 
 ---
 
-**Phase 11 — Surface Area Reduction for Supported 0.1 Subset** *(ACTIVE)*
+**Phase 11 — Surface Area Reduction for Supported 0.1 Subset** *(DONE — 2026-05-06)*
 
 Goal: shrink the unsupported surface area intentionally. Every construct in this phase either gets supported or gets a documented, structured rejection. Nothing is silently unsupported.
 
-**Landed:**
-- CompoundAssign — `+=`, `-=`, `*=`, `/=`, `%=` on binding targets — DONE, 3 tests ✅; DotAccess target still produces structured `UnsupportedSemanticConstruct`
-- Unary expressions — negate (int/float) and boolean not — DONE, 4 tests ✅
-- `IrType::Ptr`; `IrInst::Alloca`/`Load`/`Store` with validator and printer support — DONE ✅
-- Struct registry threaded into `LoweringCtx`; `lower_type` maps `Struct` → `IrType::Ptr` — DONE ✅
-- `IrInst::PtrOffset { dst, base, offset }` — compile-time byte offset on a Ptr, for field addressing — DONE ✅
-- `SemanticExprKind::StructInstance` lowering — Alloca(total_size, align) + PtrOffset + Store per field, returns base Ptr; 4 tests — DONE ✅
-- `SemanticStmt::StructDef` in `lower_stmt` is a no-op (registry pre-built) — DONE ✅
+**All landed:**
+- CompoundAssign — `+=`, `-=`, `*=`, `/=`, `%=` on binding targets — 3 tests ✅
+- Unary expressions — negate (int/float) and boolean not — 4 tests ✅; strategy documented in `lower.rs` comments (CX-6) ✅
+- `IrType::Ptr`; `IrInst::Alloca`/`Load`/`Store` with validator and printer support ✅
+- Struct registry threaded into `LoweringCtx`; `lower_type` maps `Struct` → `IrType::Ptr` ✅
+- `IrInst::PtrOffset { dst, base, offset }` — compile-time byte offset on a Ptr, for field addressing ✅
+- `IrInst::PtrAdd { dst, base, offset }` — runtime pointer arithmetic with a ValueId offset ✅
+- `SemanticExprKind::StructInstance` lowering — Alloca(total_size, align) + PtrOffset + Store per field, returns base Ptr; 4 tests ✅
+- `SemanticStmt::StructDef` in `lower_stmt` is a no-op (registry pre-built) ✅
 - `when` statement and `when` expression — both produce structured `UnsupportedSemanticConstruct` errors ✅
-- Unary lowering strategy documented in `lower.rs` comments (CX-6) ✅
+- `SemanticExprKind::DotAccess` — struct field reads via `lower_dot_access()`: Load from PtrOffset ✅
+- `SemanticLValue::DotAccess` in `Assign` — struct field writes via `resolve_field_ptr()` + Store ✅
+- `SemanticLValue::DotAccess` in `CompoundAssign` — read-modify-write through field pointer ✅
+- Void-return function calls — `lower_void_call()` emits `Call { dst: None, return_ty: None }` ✅
+- `SemanticType::Array` in `lower_type` — maps to `IrType::Ptr` ✅
+- `SemanticExprKind::ArrayLit` — Alloca + Store per element via `lower_array_lit()` ✅
+- `SemanticExprKind::Index` — array element access via `lower_index()`, load from element pointer ✅
+- `SemanticLValue::Index` in `Assign` and `CompoundAssign` — array element writes via `resolve_array_element_ptr()` + Store ✅
+- Array-of-structs lowering tests added (CX-18) ✅
+- `SemanticExprKind::Range` — named `UnsupportedSemanticConstruct` with clear message (standalone range not supported) ✅
+- `SemanticExprKind::MethodCall` — named `UnsupportedSemanticConstruct("MethodCall '...'")` ✅
 
-**Still open:**
-- Range expressions — `SemanticExprKind::Range` unsupported in `lower_expr`; needed for standalone range use
-- `DotAccess` in expressions — `SemanticExprKind::DotAccess` unsupported; struct field reads require this
-- `DotAccess` in assignment targets — `SemanticLValue::DotAccess` unsupported; struct field writes require this
-- Array indexing (`Index`) and array literals (`ArrayLit`) — unsupported
-- `Array` type in `lower_type` — unsupported_type
-- `MethodCall` — unsupported
-- Void-return function calls — `IrType::Void` not yet defined; tracked from Phase 6
-
-Done when:
-- Every construct either lowers or produces a named, structured error
-- The supported and unsupported lists in this document are accurate
-- No construct silently produces wrong output
+**Remaining unsupported (0.1 non-goals, all produce named structured errors):**
+- `EnumDef`, `Enum` types
+- `WhileIn`
+- `ImplBlock`
+- `ConstDecl`
+- `Handle` types (`HandleNew`, `HandleVal`, `HandleDrop`)
+- `WhenExpr`
+- `ResultOk`, `ResultErr`, `Try`
+- `StrRef`, `Str`, `Char` types
 
 ---
 
 **Phase 12 — Differential Backend Harness**
 
-Goal: make parity a real tracked system, not a vague aspiration. The frontend has a 74-test matrix. This phase builds the infrastructure to run that same matrix through the backend and compare results automatically.
+Goal: make parity a real tracked system, not a vague aspiration. The frontend has a 117-test matrix. This phase builds the infrastructure to run that same matrix through the backend and compare results automatically.
 
 This phase should be treated as a mini-system in its own right — not just a phase.
 
-- Run every frontend matrix test through the interpreter, capture stdout, exit code, and errors
-- Run the same test through the Cranelift backend
-- Compare stdout — must match exactly
-- Compare exit code — must match exactly
-- Compare structured error family for expected-failure tests
-- Report divergences automatically with IR dump on mismatch
-- Fixture-based test format — each test has known-good interpreter output as golden reference
-- Negative tests — unsupported constructs must return structured error, not crash
-- Per-feature parity checklist — track which language features have backend coverage
-- Determinism check — same IR plus same target always produces same output
+**Sub-packet 1 — Harness shell + interpreter baseline** *(DONE — 2026-05-06)*
+
+- `TestFixture` format defined — expected pass/fail, expected output sidecar
+- `collect_matrix_tests()` enumerates all matrix tests from `src/tests/verification_matrix/`
+- `run_interpreter()` runs a fixture through the `cx` binary and captures stdout + exit code
+- `cx_binary_path()` resolves the correct binary for the current build
+- `InterpOutcome` captures stdout, exit code, and success/failure flag
+- 4 harness-level tests: non-empty collection, pass/fail split, output expectations coverage, interpreter baseline sweep
+- `src/diff_harness.rs` module wired into the test suite under `--features jit`
+
+**Sub-packet 2 — JIT execution and arithmetic comparison** *(in Human Review — CX-31)*
+
+- Runs a fixture through the JIT path alongside the interpreter
+- Compares stdout and exit code
+- Arithmetic subset (t01–t05) confirmed matching
+
+**Sub-packet 3 — Full supported construct comparison** *(in Human Review — CX-34)*
+
+- Expanded fixture coverage for all 0.1-supported constructs
+- Divergences surfaced automatically with IR dump on mismatch
 
 Done when:
 - Harness runs automatically in CI
@@ -369,46 +445,35 @@ Done when:
 
 ---
 
-**Phase 13 — Cranelift Lowering Skeleton**
+**Phase 13 — Cranelift Lowering Skeleton** *(DONE — 2026-05-06)*
 
 Goal: teach Cranelift to consume IR shape safely before any execution is attempted.
 
-- IrType to Cranelift type mapping — complete for all supported types
-- Module traversal
-- Function lowering skeleton
-- Block lowering skeleton
-- Instruction dispatch skeleton
-- Structured error type and error code family for backend failures
-- Structured not-implemented errors for every unsupported construct
-- Explicit separation between valid-but-unsupported IR and invalid IR
-- No AST or semantic leakage into the backend — IR is the only input
-- Backend error messages include phase and context — validate, lower, codegen, runtime boundary
-
-Done when:
-- Cranelift backend can walk any valid IR safely
-- Every unsupported instruction produces a structured named error
-- No panics on valid IR under any condition
+- `ir_type_to_cranelift()` — complete mapping for all 9 `IrType` variants to Cranelift types ✅
+- `lower_module()` / `lower_function()` / `lower_block()` — module traversal skeleton ✅
+- `lower_instruction()` — instruction dispatch; every `IrInst` variant returns a named `UnsupportedInstruction` error ✅
+- `lower_terminator()` — terminator dispatch; every `IrTerminator` variant returns a named `UnsupportedTerminator` error ✅
+- `CraneliftLoweringError` structured error type: `InvalidIrType`, `UnsupportedInstruction`, `UnsupportedTerminator`, `FunctionLoweringFailed` ✅
+- Explicit separation between valid-but-unsupported IR and invalid IR ✅
+- No AST or semantic leakage into the backend — IR is the only input ✅
+- `src/backend/cranelift/mod.rs` — all skeleton code in place, actual emit in `host_boundary.rs` ✅
 
 ---
 
 
 ---
 
-**JIT Runtime Host Boundary**
+**JIT Runtime Host Boundary** *(DONE — 2026-05-06)*
 
 Before any JIT execution, these must be explicitly defined and documented.
 
-- Who owns process startup and shutdown in JIT mode
-- How the main function result becomes an exit code — what values map to what codes
-- How stdout and stderr are surfaced during JIT execution — where they go, how the harness captures them
-- How runtime failures surface — arena violations, handle stale access, boundary errors, panics
-- How the differential harness hooks into JIT execution — what it captures and compares
-- How unsupported construct errors reach the test harness
-
-Done when:
-- Every execution boundary is documented
-- The differential harness can reliably capture and compare program output
-- Runtime failures produce readable structured output, not silent corruption
+- `HostBoundary::execute()` owns the JIT lifecycle — create module, compile, execute ✅
+- `JitExitCode` type — `SUCCESS` (0), sentinel for runtime failure, sentinel for unsupported construct, arbitrary i32 from `main` ✅
+- `JitOutcome` — wraps exit code; `success()` and `from_main_return()` constructors ✅
+- `JitExecutionError` — `UnsupportedConstruct`, `CodegenFailure`, `MainNotFound`, `RuntimePanic` variants with Display ✅
+- `run_jit()` thin public wrapper in `src/backend/cranelift/jit.rs` ✅
+- `HostBoundary` struct in `src/backend/cranelift/host_boundary.rs` — full execution contract documented ✅
+- Tests cover all error variant Display strings, exit code sentinels, and the stub placeholder behavior ✅
 
 ---
 
@@ -416,12 +481,30 @@ Done when:
 
 Goal: first real backend execution. The simplest possible program runs through the full JIT pipeline and produces correct output.
 
-First supported subset:
-- Constants
-- Arithmetic
-- Returns
-- Synthetic main
-- One direct function call
+**Sub-packet 1 — ConstInt + arithmetic + Return** *(DONE — 2026-05-06)*
+
+- I8/I16/I32/I64 `ConstInt` emit via `builder.ins().iconst()` ✅
+- `Binary` (Add, Sub, Mul, Div, Rem) for signed integers ✅
+- `Return` terminator: `builder.ins().return_()` ✅
+- Synthetic `__cx_main` function compiles and executes ✅
+- 8 tests: const zero/42/1, arithmetic for all 5 ops, no-main error case, unsupported-inst error case ✅
+
+**Sub-packet 2 — Alloca + Load + Store** *(DONE — 2026-05-06)*
+
+- `Alloca` emits a Cranelift `stack_slot` + `stack_addr` instruction; `dst` receives an I64 pointer ✅
+- `Load` emits typed `load()` from a stack pointer ✅
+- `Store` emits `store()` to a stack pointer ✅
+- 4 tests: load/store I32, load/store I8, overwrite, two independent slots ✅
+
+**Sub-packet 3 — Compare + Jump + Branch** *(in Human Review — CX-27, CX-41)*
+
+- `Compare` instruction; `Jump` and `Branch` terminators
+- Multi-block functions with conditional control flow
+
+**Sub-packet 4 — Direct function calls** *(in Human Review — CX-30)*
+
+- `IrInst::Call` with a callee name, args, and return value
+- Multi-function programs execute correctly through JIT
 
 Done when:
 - A pure-computation .cx program executes through the backend path
@@ -429,7 +512,6 @@ Done when:
 - At least one multi-function program works
 - Test harness automates execution and comparison
 - Performance is not the gate — correctness is
-- **Early parity opportunity:** after this phase, a minimal differential harness can compare interpreter vs JIT output on the arithmetic subset (t01–t05). This does not require layout to be frozen. Starting parity checks here — before the full Phase 12 harness — catches divergence early. Consider splitting: "minimal harness for arithmetic subset" after Phase 14, "full parity harness" as Phase 12.
 
 ---
 
@@ -439,6 +521,22 @@ Goal: full JIT execution for all constructs in the supported 0.1 subset. This is
 
 JIT is enough for 0.1. Nobody evaluating Cx at 0.1 is benchmarking release build performance. They are checking if the language works, if the semantics are correct, and if the developer experience is good. JIT answers all of those questions without the complexity of object emission, linker flow, and platform handling.
 
+**Sub-packet 1 — PtrOffset + PtrAdd** *(in Human Review — CX-32)*
+
+- `IrInst::PtrOffset` and `IrInst::PtrAdd` emit in the JIT path
+- Enables struct field access and array element access through JIT
+
+**Sub-packet 2 — SsaBind + ConstFloat + Cast** *(in Human Review — CX-33)*
+
+- `IrInst::SsaBind` — SSA register binding
+- `IrInst::ConstFloat` — f64 constants
+- `IrInst::Cast` — numeric type widening/narrowing
+
+**Sub-packet 3 — Float arithmetic dispatch** *(in Human Review — CX-36)*
+
+- `Binary` for F64 operands: `fadd`, `fsub`, `fmul`, `fdiv`
+
+**Remaining work:**
 - Cranelift JIT pipeline wired end to end for all supported constructs
 - All supported frontend matrix tests pass through JIT
 - Backend output matches interpreter on every supported test
@@ -611,26 +709,32 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 - Semantic boundary (Phase 0)
 - IR data model (Phase 1)
 - Straight-line lowering (Phase 2)
-- IR validator (Phase 3)
+- IR validator (Phase 3) + loop-var read-only enforcement (CX-40)
 - Function lowering (Phase 4)
 - if / else lowering (Phase 5)
 - Backend trait interface change (Phase 0.5) — backend takes &IrModule
 - IR pretty printer and diagnostics foundation (Phase 7) — --backend=validate, --debug-trace
-- Function call lowering (Phase 6) — direct calls, arity/type validation, validator support; void calls pending
-- Loop lowering (Phase 10) — while, for, loop, break, continue, returns inside loops; loop-var read-only validator gap noted
+- Function call lowering (Phase 6) — direct calls, arity/type validation, void calls resolved
+- Loop lowering (Phase 10) — while, for, loop, break, continue, returns inside loops
 - ABI and data layout Round 1 (Phase 8) — scalars, structs, arrays, enums, calling convention, IrType::TBool locked
+- Surface area reduction (Phase 11) — all 0.1-scope constructs lower or produce named errors
+- Phase 9 sub-packet 1 — is_cx_builtin guard, 7 tests, cx_runtime_intrinsics_v0.1.md
+- Phase 13 — Cranelift lowering skeleton — IrType mapping, dispatch skeleton, CraneliftLoweringError
+- JIT runtime host boundary — HostBoundary, JitExitCode, JitOutcome, JitExecutionError
+- Phase 12 sub-packet 1 — differential harness shell, interpreter baseline, 4 tests
+- Phase 14 sub-packets 1–2 — first JIT execution: arithmetic + memory ops, 12 tests
+- Evaluation order specification — cx_eval_order.md, left-to-right verified in tests (CX-37)
 
 **Active**
-- Surface area reduction (Phase 11) — compound assign, unary, memory ops, struct registry, struct literal lowering done; range, DotAccess, array indexing, method calls, void calls still open
 - ABI and data layout Round 2 (Phase 8) — str/strref layout, Handle<T>, TBool calling convention, unknown propagation still open
+- Phase 9 sub-packet 2 — runtime intrinsics dispatch (CX-38, in Human Review)
+- Phase 14 sub-packets 3–4 — Compare/Jump/Branch (CX-27/CX-41), direct calls (CX-30), in Human Review
+- Phase 15 sub-packets 1–3 — PtrOffset/PtrAdd (CX-32), SsaBind/ConstFloat/Cast (CX-33), float arith (CX-36), in Human Review
+- Phase 12 sub-packets 2–3 — JIT comparison (CX-31), full harness (CX-34), in Human Review
 
 **Next — 0.1 Path**
-- Runtime intrinsics boundary (Phase 9) — sub-packet 1 done; sub-packets 2–4 blocked on frontend/design
-- Differential backend harness (Phase 12)
-- Cranelift lowering skeleton (Phase 13)
-- JIT runtime host boundary
-- First executable backend slice (Phase 14)
-- Cranelift JIT — 0.1 target (Phase 15)
+- Runtime intrinsics boundary (Phase 9) — sub-packets 3–4 blocked on design/frontend
+- Cranelift JIT — 0.1 target (Phase 15) — depends on Phase 14 sub-packets 3–4 and Phase 15 sub-packets 1–3 landing
 
 **Post-0.1**
 - Cranelift AOT
@@ -645,6 +749,25 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.2 (2026-05-06)
+
+Roadmap reconciled with all shipped work since v4.0. This update covers the substantial execution pipeline progress that landed between v4.0 and now.
+
+- **Phase 11 complete** — all 0.1-scope constructs in the IR lowering layer either lower correctly or produce a named structured error; DotAccess (field reads/writes), array indexing, array literals, array element writes, void function calls, Range named error, MethodCall named error, PtrAdd instruction all resolved
+- **Phase 13 done** — Cranelift lowering skeleton: IrType→Cranelift type mapping, module/function/block traversal, named CraneliftLoweringError for every unsupported construct (`src/backend/cranelift/mod.rs`)
+- **JIT runtime host boundary done** — HostBoundary, JitExitCode, JitOutcome, JitExecutionError types; execution contract documented (`src/backend/cranelift/host_boundary.rs`)
+- **Phase 12 sub-packet 1 done** — differential harness shell: TestFixture format, collect_matrix_tests, run_interpreter, interpreter baseline sweep (`src/diff_harness.rs`)
+- **Phase 14 sub-packets 1–2 done** — first real Cranelift JIT execution: arithmetic (add/sub/mul/div/rem), ConstInt, Return, Alloca, Load, Store; 12 tests passing
+- **Evaluation order spec done** — `docs/backend/cx_eval_order.md` created; left-to-right evaluation order tested in `lower.rs` (CX-37); closes the 0.1 hard blocker for evaluation order stability
+- **IR validator loop-var read-only done** — ReadOnlyLoopVar enforcement added to validator (CX-40); closes the known gap noted in Phase 10
+- **Phase 6 void-call limitation resolved** — `lower_void_call()` in Phase 11; Phase 6 entry updated
+- **Phase 10 loop-var gap resolved** — noted in Phase 10 entry; validator now enforces it
+- **Human Review pipeline** — Phase 14 sub-packets 3–4, Phase 15 sub-packets 1–3, Phase 12 sub-packets 2–3, Phase 9 sub-packet 2 all in Human Review; Active section and Progress Board updated
+- Active section updated — Phase 11 removed (done); Phase 8 Round 2 + in-flight Human Review work remains active
+- Progress Board updated to reflect current state
 
 ---
 
