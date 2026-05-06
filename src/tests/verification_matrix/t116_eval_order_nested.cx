@@ -1,0 +1,21 @@
+// CX-37: evaluation order — nested binary expression
+// Expression: (x() + y()) + z()
+// Outer lhs = (x() + y()), outer rhs = z().
+// x() is evaluated first, then y(), then z().
+// Total: 2 + 4 + 6 = 12.
+fnc: t64 x() {
+    print(1);
+    return 2
+}
+
+fnc: t64 y() {
+    print(3);
+    return 4
+}
+
+fnc: t64 z() {
+    print(5);
+    return 6
+}
+
+print((x() + y()) + z())

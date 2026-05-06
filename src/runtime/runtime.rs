@@ -682,6 +682,11 @@ impl RunTime {
                 Ok(apply_numeric_cast(result, &expr.ty))
             }
             SemanticExprKind::Binary { lhs, op, pos, rhs } => {
+                // Evaluation order guarantee: lhs is fully evaluated before rhs.
+                // Any side effects in lhs (e.g. function calls with print) occur
+                // before any side effects in rhs.  The IR lowering (lower_binary
+                // in ir/lower.rs) mirrors this order exactly.  This is a Cx 0.1
+                // language guarantee.  See docs/backend/cx_eval_order.md.
                 let l = self.eval_semantic_expr(lhs)?;
                 let r = self.eval_semantic_expr(rhs)?;
                 let result = self.apply_op(l, op.clone(), *pos, r)?;

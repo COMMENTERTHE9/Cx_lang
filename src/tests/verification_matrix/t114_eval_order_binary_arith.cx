@@ -1,0 +1,15 @@
+// CX-37: evaluation order — binary arithmetic
+// f() is the left operand, g() is the right operand.
+// Left-to-right evaluation means f() prints before g() prints,
+// and the sum is printed last.
+fnc: t64 f() {
+    print(1);
+    return 100
+}
+
+fnc: t64 g() {
+    print(2);
+    return 200
+}
+
+print(f() + g())

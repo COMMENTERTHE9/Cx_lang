@@ -1,0 +1,14 @@
+// CX-37: evaluation order — comparison operator
+// a() is the left operand, b() is the right operand.
+// Left-to-right evaluation means a() prints before b() prints.
+fnc: t64 a() {
+    print(10);
+    return 5
+}
+
+fnc: t64 b() {
+    print(20);
+    return 3
+}
+
+print(a() > b())
