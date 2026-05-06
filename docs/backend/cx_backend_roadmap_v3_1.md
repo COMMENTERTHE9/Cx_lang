@@ -648,6 +648,14 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 
 ---
 
+## Key Changes — v4.2 (2026-05-06)
+
+- CX-39 rebase audit complete — all 8 rebased branches (cx-27, cx-30, cx-31, cx-32, cx-33, cx-34, cx-36, cx-38) verified to contain real diffs; no empty rebases found
+- Audit recorded in `docs/backend/cx39_rebase_audit.md`
+- CX-39 branch itself carries an intentional no-op administrative commit (expected)
+
+---
+
 ## Key Changes — v4.1 (2026-05-06)
 
 - Phase 9 sub-packet 1 done — audit complete, `is_cx_builtin()` guard added in `lower.rs`, 7 tests, `docs/backend/cx_runtime_intrinsics_v0.1.md` created
