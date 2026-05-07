@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-05-05"
+date: 2026-05-05
+description: "Four branch-local commits jumped ahead to Phase 12 (differential harness), Phase 13 (Cranelift skeleton), and the JIT host boundary, while CX-18, CX-19, and CX-20 merged into submain."
+---
+
+Seven commits in one session, and the most interesting ones aren't the merges. CX-22, CX-23, and CX-24 jumped ahead in the backend roadmap to start the execution infrastructure: the differential harness, the Cranelift lowering skeleton, and the JIT host boundary contract. These are the pieces that have to exist before a Cx program can run through the JIT path. Meanwhile, CX-18, CX-19, and CX-20 merged into submain, closing out the array lowering sub-sequence from Phase 11.
+
+## What merged
+
+**CX-20 (PR #70)** landed array element writes through IR. The new `SemanticLValue::Index` variant wires through semantic analysis, the interpreter, and IR lowering so that `arr:[i] = value` and compound assignment forms like `arr:[i] += value` work correctly. +428 lines across 5 files. This was committed on May 4th but merged into submain today.
+
+**CX-18 (PR #67)** added four tests verifying that `Array(N, Struct)` lowers correctly, covering type mapping plus one-, two-, and three-element cases. This closes a test gap from CX-16's array literal lowering work.
+
+**CX-19 (PR #68)** replaced the generic `unsupported!("Range")` panic with `LoweringError::UnsupportedSemanticConstruct`, a named structured error carrying a descriptive message. One new test. Small diff, but it continues the pattern of turning panics into actionable error values.
+
+## Jumping ahead: execution infrastructure
+
+The bigger story is the three branch-local commits that skip ahead in the backend roadmap. Phase 12 (differential harness) and Phase 13 (Cranelift skeleton) were listed as "Next" items that follow Phase 11's surface area reduction. Starting them now is a pragmatic call: neither depends on Phase 11 being complete, and both need to exist before any JIT execution can be attempted.
+
+**CX-23: Differential harness shell (Phase 12, sub-packet 1).** A new `src/diff_harness.rs` with the `TestExpectation` enum, `TestFixture` struct, `InterpOutcome` struct, `collect_matrix_tests()` that enumerates all 116 fixtures, `run_interpreter()` for subprocess capture, a `cx_binary_path()` locator, and a `normalise()` function for CRLF/LF handling. Four tests, all passing. +391 lines. The harness captures interpreter baselines by running the Cx binary as a subprocess, which means the same capture mechanism will work for both interpreter and JIT paths without in-process hooking.
+
+**CX-22: Cranelift lowering skeleton (Phase 13).** Adds `ir_type_to_cranelift` mappings for all nine `IrType` variants, module traversal scaffolding, function/block/instruction dispatch stubs, and a `CraneliftLoweringError` type with four variants: `InvalidIrType`, `UnsupportedInstruction`, `UnsupportedTerminator`, `FunctionLoweringFailed`. +460 lines. This is the frame that actual Cranelift codegen will fill in.
+
+**CX-24: JIT runtime host boundary.** A new `src/backend/cranelift/host_boundary.rs` defining the contract between the JIT backend and the host process. Key decisions baked in: JIT mode executes inside the host process (no subprocess fork), main's return value becomes the exit code, output capture uses the same subprocess strategy as the differential harness. Types include `JitExitCode` with `SUCCESS`/`FAILURE`/`UNSUPPORTED_CONSTRUCT` constants, `JitOutcome`, and `JitExecutionError`. +336 lines.
+
+**CX-21: MethodCall structured error.** Replaces `unsupported!("MethodCall")` with an error that includes both instance and method name (e.g., `"MethodCall 'p.take_damage'"`). Same pattern as CX-19. Small but makes the error output significantly more useful during development.
+
+All four of these are committed on feature branches but not yet merged to submain.
+
+## Decisions worth noting
+
+The phase ordering jump is the most notable decision. The backend roadmap had Phases 12 and 13 sequenced after Phase 11, but there's no hard dependency. The harness and the Cranelift skeleton are structural prerequisites for execution, and starting them while Phase 11 sub-packets continue to land in parallel saves calendar time.
+
+The host boundary design in CX-24 locks in an important architectural choice: JIT runs in-process, not as a forked subprocess. The differential harness, by contrast, captures output via subprocess execution of the Cx binary. This means both the interpreter baseline and the JIT output get captured through the same mechanism, keeping the comparison logic clean.
+
+## What's next
+
+Submain is now 26+ commits ahead of main. That gap keeps growing. The most recent main merge (PR #57) closed a 37-day divergence, and the daily logs keep flagging submain-to-main merges as the highest-leverage action available. It still hasn't happened.
+
+Immediate priorities: merge CX-21 through CX-24 into submain (four commits ready for integration), then merge submain to main before the gap gets worse. On the feature side, actual method call lowering is the next Phase 11 sub-packet. CX-21 improved the error for method calls, but the lowering arm still returns an error rather than generating IR. Lowering `obj.method(args)` to call instructions is where the real work is.
+
+Phase 12 sub-packet 2 would add Cranelift baseline capture to the differential harness so interpreter and JIT output can be compared side by side.
+
+Matrix status: 117 PASS / 0 FAIL / 117 total. Unchanged.
