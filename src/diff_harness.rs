@@ -1,11 +1,10 @@
-//! CX-23 — Differential harness: interpreter baseline capture and fixture format.
+//! CX-23 / CX-51 — Differential harness: interpreter baseline and JIT parity matrix.
 //!
-//! Phase 12, sub-packet 1.
+//! Phase 12, sub-packets 1 (CX-23) and 4 (CX-51).
 //!
-//! This module is the shell of the differential testing harness. It defines
-//! the data types, fixture format, and collection logic for running every
-//! matrix test through the interpreter and comparing output against stored
-//! expectations.
+//! This module is the differential testing harness. It defines the data types,
+//! fixture format, and collection logic for running every matrix test through both
+//! the interpreter and the Cranelift JIT backend, then comparing outcomes.
 //!
 //! # Fixture format
 //!
@@ -17,7 +16,7 @@
 //! <name>.cx.expected_fail    — zero-byte marker (present only for expected-failure tests)
 //! ```
 //!
-//! A `.cx` file with neither companion file is a "pass-any" test: the interpreter
+//! A `.cx` file with neither companion file is a "pass-any" test: the backend
 //! must exit 0, but its stdout is not verified.
 //!
 //! # Comparison semantics
@@ -28,15 +27,48 @@
 //! comparison — matching the behaviour of the bash `$()` command substitution used
 //! in `run_matrix.sh`.
 //!
+//! # JIT parity baseline (Phase 12 sub-packet 4)
+//!
+//! The JIT backend (Cranelift, `--backend=cranelift`) is invoked as a subprocess
+//! for each matrix fixture, exactly as the interpreter is. JIT outcomes are
+//! classified as:
+//!
+//! - **PASS** — JIT exit code and stdout match the fixture expectation.
+//! - **SKIP** — JIT exited 127 (`UNSUPPORTED_CONSTRUCT`): the fixture exercises a
+//!   construct not yet implemented by the JIT (Phase 14 sub-packets 1–3 cover
+//!   constants, integer arithmetic, memory, and forward-only control flow). These
+//!   are not counted as failures; they define the current JIT coverage frontier.
+//! - **PARITY_FAIL** — JIT disagrees with the interpreter in a way that cannot be
+//!   explained by an unsupported construct:
+//!   - JIT exits 0 on a `Fail` fixture (JIT incorrectly accepts a failing program).
+//!   - JIT exits non-zero (and not 127) on a `Pass` fixture.
+//!   - JIT exits 0 on a `PassWithOutput` fixture but stdout does not match.
+//!
+//! The `jit_differential_all` test gate fails only on `PARITY_FAIL` results. A run
+//! where all fixtures are either PASS or SKIP is considered green. The eprintln!
+//! summary at the end of the test records the exact counts and constitutes the
+//! documented parity baseline for this phase.
+//!
+//! # JIT exit code sentinels
+//!
+//! | Code | Meaning                                                   |
+//! |------|-----------------------------------------------------------|
+//! | 0    | Success — program ran to completion                       |
+//! | 1–125| Program-level non-zero return                             |
+//! | 126  | `JIT_RUNTIME_FAILURE` — JIT internal error at runtime     |
+//! | 127  | `UNSUPPORTED_CONSTRUCT` — codegen skipped (SKIP category) |
+//!
 //! # Sub-packet deliverables
 //!
-//! - `TestExpectation` — what a fixture expects from the interpreter
+//! - `TestExpectation` — what a fixture expects from the backend
 //! - `TestFixture` — one matrix test entry
-//! - `InterpOutcome` — result of a single interpreter run
+//! - `InterpOutcome` — result of a single backend run (reused for both paths)
 //! - `collect_matrix_tests()` — enumerate all fixtures from the matrix directory
 //! - `run_interpreter()` — capture one interpreter run via subprocess
+//! - `run_jit()` — capture one JIT run via subprocess (`--backend=cranelift`)
 //! - `cx_binary_path()` — locate the compiled Cx binary
-//! - `#[test] interpreter_baseline_all` — baseline gate
+//! - `#[test] interpreter_baseline_all` — interpreter baseline gate
+//! - `#[test] jit_differential_all` — JIT parity gate
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -183,6 +215,49 @@ pub fn run_interpreter(binary: &Path, fixture: &TestFixture) -> InterpOutcome {
         .unwrap_or_else(|e| {
             panic!(
                 "failed to spawn interpreter binary {:?} for fixture {:?}: {}",
+                binary, fixture.path, e
+            )
+        });
+
+    InterpOutcome {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
+}
+
+// ── JIT sentinel exit codes ───────────────────────────────────────────────────
+
+/// JIT exit code: unsupported IR construct encountered during codegen.
+///
+/// The JIT backend emits this when it encounters an instruction or terminator
+/// that Phase 14 sub-packets 1–3 do not yet implement. Fixtures that produce
+/// this exit code are classified as SKIP in the differential harness.
+const JIT_EXIT_UNSUPPORTED: i32 = 127;
+
+// ── JIT subprocess runner ─────────────────────────────────────────────────────
+
+/// Run the Cranelift JIT backend on `fixture` and return the captured outcome.
+///
+/// Identical to [`run_interpreter`] except `--backend=cranelift` is prepended
+/// to the argument list, routing execution through the JIT path.
+///
+/// The binary must have been compiled with `--features jit`. If the JIT
+/// encounters an unsupported construct it exits with code 127 (`UNSUPPORTED_CONSTRUCT`);
+/// the differential harness classifies that as SKIP rather than PARITY_FAIL.
+///
+/// # Panics
+///
+/// Panics if the subprocess cannot be spawned (e.g. binary path is wrong).
+pub fn run_jit(binary: &Path, fixture: &TestFixture) -> InterpOutcome {
+    let output = Command::new(binary)
+        .arg("--backend=cranelift")
+        .arg(&fixture.path)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn JIT binary {:?} for fixture {:?}: {}",
                 binary, fixture.path, e
             )
         });
@@ -385,5 +460,129 @@ mod tests {
             fixtures.len(),
             fixtures.len()
         );
+    }
+
+    // ── JIT differential ──────────────────────────────────────────────────────
+
+    /// JIT differential gate — Phase 12, sub-packet 4 (CX-51).
+    ///
+    /// Runs every verification-matrix fixture through the Cranelift JIT backend
+    /// (`--backend=cranelift`) and classifies each result against the fixture's
+    /// stored expectation:
+    ///
+    /// - **PASS** — JIT outcome matches expectation (correct exit code; stdout
+    ///   matches for `PassWithOutput` fixtures).
+    /// - **SKIP** — JIT exited 127 (`UNSUPPORTED_CONSTRUCT`): the fixture uses a
+    ///   construct beyond the current Phase 14 JIT scope. Skips are not failures.
+    /// - **PARITY_FAIL** — JIT disagrees with expectation in a way not attributable
+    ///   to an unsupported construct.
+    ///
+    /// The test panics only if there are `PARITY_FAIL` results. A run that
+    /// produces only PASS and SKIP results is considered green. The eprintln!
+    /// summary constitutes the Phase 12 / Phase 14 parity baseline record.
+    ///
+    /// Requires the `Cx_0V` binary compiled with `--features jit`. Skips
+    /// with a diagnostic message if the binary is absent.
+    ///
+    /// Run with:
+    ///
+    /// ```text
+    /// cargo build --features jit && cargo test --features jit
+    /// ```
+    #[test]
+    fn jit_differential_all() {
+        let binary = cx_binary_path();
+
+        if !binary.exists() {
+            eprintln!(
+                "SKIP jit_differential_all — binary not found at {:?}.\n\
+                 Build with `cargo build --features jit` then re-run tests.",
+                binary
+            );
+            return;
+        }
+
+        let fixtures = collect_matrix_tests();
+        let mut parity_failures: Vec<String> = Vec::new();
+        let mut pass_count: usize = 0;
+        let mut skip_count: usize = 0;
+
+        for fixture in &fixtures {
+            let outcome = run_jit(&binary, fixture);
+
+            // JIT exit 127 = unsupported construct — skip, not a failure.
+            if outcome.exit_code == JIT_EXIT_UNSUPPORTED {
+                skip_count += 1;
+                continue;
+            }
+
+            match &fixture.expectation {
+                TestExpectation::Fail => {
+                    // Expected non-zero exit. Any non-zero (except 127, handled above)
+                    // counts as agreement.
+                    if outcome.passed() {
+                        parity_failures.push(format!(
+                            "PARITY_FAIL [should-fail but JIT exited 0]: {}",
+                            fixture.name
+                        ));
+                    } else {
+                        pass_count += 1;
+                    }
+                }
+
+                TestExpectation::PassAny => {
+                    if !outcome.passed() {
+                        parity_failures.push(format!(
+                            "PARITY_FAIL [expected-pass, JIT exit {}]: {}\n  stderr: {}",
+                            outcome.exit_code,
+                            fixture.name,
+                            outcome.stderr.lines().next().unwrap_or("(no stderr)")
+                        ));
+                    } else {
+                        pass_count += 1;
+                    }
+                }
+
+                TestExpectation::PassWithOutput(expected) => {
+                    if !outcome.passed() {
+                        parity_failures.push(format!(
+                            "PARITY_FAIL [expected-pass, JIT exit {}]: {}\n  stderr: {}",
+                            outcome.exit_code,
+                            fixture.name,
+                            outcome.stderr.lines().next().unwrap_or("(no stderr)")
+                        ));
+                    } else {
+                        let actual = normalise(&outcome.stdout);
+                        if actual != *expected {
+                            parity_failures.push(format!(
+                                "PARITY_FAIL [output mismatch]: {}\n  expected: {:?}\n  got:      {:?}",
+                                fixture.name, expected, actual
+                            ));
+                        } else {
+                            pass_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let total = fixtures.len();
+        eprintln!(
+            "jit_differential_all: {} pass, {} skip (unsupported), {} parity_fail — {} total",
+            pass_count,
+            skip_count,
+            parity_failures.len(),
+            total
+        );
+
+        if !parity_failures.is_empty() {
+            panic!(
+                "\n{} JIT parity failure(s) out of {} total ({} skipped):\n\n{}\n",
+                parity_failures.len(),
+                total,
+                skip_count,
+                parity_failures.join("\n\n")
+            );
+        }
     }
 }

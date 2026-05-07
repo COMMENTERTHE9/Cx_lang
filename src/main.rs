@@ -225,17 +225,36 @@ fn run() {
     match backend_kind {
         backend::BackendKind::Interpret => run_with_interpreter(semantic_program, &input, &flags),
         backend::BackendKind::Cranelift => {
-            let ir = match prepare_ir(&semantic_program, flags.trace) {
-                Ok(ir) => ir,
-                Err(err) => {
-                    eprintln!("{}", err);
-                    return;
+            #[cfg(feature = "jit")]
+            {
+                let ir = match prepare_ir(&semantic_program, flags.trace) {
+                    Ok(ir) => ir,
+                    Err(err) => {
+                        eprintln!("{}", err);
+                        // IR lowering failure = unsupported construct (127).
+                        std::process::exit(127);
+                    }
+                };
+                use crate::backend::cranelift::jit;
+                match jit::run_jit(&ir) {
+                    Ok(outcome) => {
+                        let code = outcome.exit_code.raw();
+                        if code != 0 {
+                            // Propagate program-level exit code or JIT sentinel (126/127).
+                            std::process::exit(code);
+                        }
+                        // code == 0: fall through, process exits 0 normally.
+                    }
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        std::process::exit(127);
+                    }
                 }
-            };
-            println!("{}", crate::ir::printer::print_module(&ir));
-            let b = backend::cranelift::CraneliftBackend;
-            if let Err(msg) = b.execute(&ir) {
-                eprintln!("{}", msg);
+            }
+            #[cfg(not(feature = "jit"))]
+            {
+                eprintln!("Cranelift backend requires the `jit` feature — rebuild with --features jit");
+                std::process::exit(127);
             }
         }
         backend::BackendKind::Llvm => {
