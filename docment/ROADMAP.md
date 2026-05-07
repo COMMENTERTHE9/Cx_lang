@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-05
+Last updated: 2026-05-07
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -56,15 +56,40 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
-### Started (branch-local, not merged)
-- [ ] Phase 12 — Differential harness (CX-23: sub-packet 1 done — fixture format, interpreter baseline)
-- [ ] Phase 13 — Cranelift lowering skeleton (CX-22: IrType mapping, module traversal, error types)
-- [ ] JIT Host Boundary (CX-24: process ownership, exit codes, output capture scaffold)
+### Done (merged to submain, May 6–7)
+- [x] Phase 13 — Cranelift lowering skeleton (CX-22: IrType mapping, module traversal, error types)
+- [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture scaffold)
+- [x] Phase 9 sub-packet 1 — Builtin audit and intrinsics boundary spec (CX-35)
+- [x] Phase 14 sub-packets 1–2 — First JIT execution: ConstInt, Binary, Return, Alloca, Load, Store (CX-25, CX-26)
+- [x] Phase 14 sub-packet 3 — Compare + Jump + Branch terminators (CX-27, CX-41)
+- [x] Evaluation order spec — left-to-right verified and tested (CX-37)
+- [x] IR validator loop-variable read-only enforcement (CX-40)
+- [x] Phase 15 — No-panic guarantee for JIT on valid IR (CX-50)
+
+### Active — In Human Review or Branch-Local
+- [ ] Phase 12 — Differential harness
+  - [x] Sub-packet 1 — fixture format, interpreter baseline (CX-23, merged)
+  - [ ] Sub-packet 2 — JIT execution and comparison (CX-31, in review)
+  - [ ] Sub-packet 3 — Full 0.1 construct set coverage (CX-34, in review)
+  - [ ] Sub-packet 4 — JIT parity matrix and baseline (CX-51, branch-local)
+- [ ] Phase 14 — First executable Cranelift slice
+  - [x] Sub-packet 1 — ConstInt + arithmetic + Return (CX-25, merged)
+  - [x] Sub-packet 2 — Alloca + Load + Store (CX-26, merged)
+  - [x] Sub-packet 3 — Compare + Jump + Branch (CX-27+CX-41, merged)
+  - [ ] Sub-packet 4 — Direct function calls (CX-30, in review)
+- [ ] Phase 15 — Cranelift JIT 0.1 target
+  - [x] No-panic guarantee on valid IR (CX-50, merged)
+  - [ ] Sub-packet 1 — PtrOffset + PtrAdd (CX-32, in review)
+  - [ ] Sub-packet 2 — SsaBind, ConstFloat, Cast (CX-33, in review)
+  - [ ] Sub-packet 3 — Float arithmetic dispatch (CX-36, in review)
+- [ ] Phase 9 — Runtime intrinsics boundary
+  - [x] Sub-packet 1 — Builtin audit and boundary spec (CX-35, merged)
+  - [ ] Sub-packet 2 — Runtime intrinsics dispatch (CX-38, in review)
+  - [ ] Sub-packet 3 — Assert/assert_eq lowering via Trap (CX-48, branch-local)
 
 ### Next — 0.1 Path
-- [ ] Phase 9 — Runtime intrinsics boundary
-- [ ] Phase 14 — First executable Cranelift slice
-- [ ] Phase 15 — Cranelift JIT 0.1 target
+- [ ] Merge 6 Human Review branches into submain
+- [ ] Merge submain → main (gap 16+ commits)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -90,6 +115,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-07:** CX-50 merged to submain (no-panic guarantee, PR #101). CX-47/48/49/51 committed branch-local (loop back-edge fix, assert lowering, determinism tests, parity matrix). CX-44/45 rebased and verified 6 Human Review PRs. JIT tests: 197 on submain, 207 on branch tips. JIT parity: 23/120 pass, 97 skip, 0 fail. Matrix 117/117 stable.
+
+**2026-05-06:** Massive backend sprint. CX-21–24 merged to submain. CX-25/26 (Phase 14 sub-packets 1–2), CX-35 (Phase 9.1), CX-37 (eval order), CX-40 (loop-var read-only), CX-41 (Jump/Branch fix) all merged to submain. 8 branches in Human Review. JIT tests grew from ~169 to ~191. Matrix 117/117 stable.
 
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
