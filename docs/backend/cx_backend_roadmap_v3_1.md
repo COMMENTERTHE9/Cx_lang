@@ -648,6 +648,13 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 
 ---
 
+## Key Changes — v4.2 (2026-05-06)
+
+- CX-45: rebased 6 Human Review PRs (cx-30, cx-32, cx-33, cx-34, cx-36, cx-38) onto submain tip `abb71a5` (post CX-40 + CX-41); 47 merge conflicts resolved across 5 branches; cx-34 clean rebase; no empty rebases; audit in `docs/backend/cx45_rebase_audit.md`
+- Fixed broken `cargo test` on submain: CX-41 introduced 3 `BlockParam` struct initializers without the `read_only` field added by CX-40; all 3 fixed with `read_only: false`
+
+---
+
 ## Key Changes — v4.1 (2026-05-06)
 
 - Phase 9 sub-packet 1 done — audit complete, `is_cx_builtin()` guard added in `lower.rs`, 7 tests, `docs/backend/cx_runtime_intrinsics_v0.1.md` created
