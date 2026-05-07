@@ -92,10 +92,13 @@ impl std::error::Error for LoweringError {}
 // When Phase 9 sub-packet 2 lands, each builtin here will be replaced by a
 // concrete `IrIntrinsic` opcode or a runtime-call ABI signature — at which
 // point this function will shrink until it is empty.
+//
+// Note: `assert` and `assert_eq` are NOT listed here — they are now fully
+// lowerable to IR (Phase 9 sub-packet 3) and are handled before this gate.
 fn is_cx_builtin(name: &str) -> bool {
     matches!(
         name,
-        "print" | "println" | "printn" | "read" | "input" | "assert" | "assert_eq"
+        "print" | "println" | "printn" | "read" | "input"
     )
 }
 
@@ -590,7 +593,17 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
-            // Builtin intrinsics (print, assert, etc.) are not in the signature_table.
+            // Phase 9 sub-packet 3: assert and assert_eq are now fully lowerable.
+            // Intercept them before the is_cx_builtin gate so they are routed to
+            // the dedicated lowering functions rather than returning a structured error.
+            if let SemanticExprKind::Call { callee, args, .. } = &expr.kind {
+                match callee.as_str() {
+                    "assert" => return lower_assert_stmt(args, ctx, current),
+                    "assert_eq" => return lower_assert_eq_stmt(args, ctx, current),
+                    _ => {}
+                }
+            }
+            // Builtin intrinsics (print, etc.) are not in the signature_table.
             // Intercept them here so they produce a structured UnsupportedSemanticConstruct
             // rather than falling through to a misleading UnresolvedSemanticArtifact.
             if let SemanticExprKind::Call { callee, .. } = &expr.kind {
@@ -1493,9 +1506,12 @@ fn lower_expr(
             })
         }
         SemanticExprKind::Call { callee, function: _, args } => {
-            // Builtin intrinsics (print, assert, etc.) are not in the signature_table.
-            // Intercept them before the lookup so the error is structured and actionable
-            // rather than the generic UnresolvedSemanticArtifact produced by a table miss.
+            // Remaining builtin intrinsics (print, println, printn, read, input) are not
+            // in the signature_table.  Intercept them before the lookup so the error is
+            // structured and actionable rather than the generic UnresolvedSemanticArtifact
+            // produced by a table miss.
+            // Note: assert/assert_eq are handled at statement level and should not reach
+            // lower_expr in well-formed programs.
             if is_cx_builtin(callee) {
                 return Err(LoweringError::UnsupportedSemanticConstruct {
                     construct: format!(
@@ -2365,6 +2381,210 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
             ),
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 sub-packet 3 — assert / assert_eq lowering
+// ---------------------------------------------------------------------------
+//
+// Both builtins are lowered to a two-branch CFG pattern:
+//
+//   [current block]
+//     ... condition computation ...
+//     Branch { cond, then: pass_block, else: trap_block }
+//
+//   [pass_block]          ← execution continues here after a passing assertion
+//     (empty — caller receives this as the new current block)
+//
+//   [trap_block]
+//     Trap                ← abort; maps to Cranelift `trap` in the JIT backend
+//
+// Supported condition types:
+//   - Bool    → used directly as the branch condition
+//   - I8/I16/I32/I64 → compared != 0 to produce Bool (truthy-integer assert)
+//   - Bool/I8/I16/I32/I64 for assert_eq → compared with Eq to produce Bool
+//
+// Unsupported types (e.g. Ptr, F64, StrRef) produce a structured
+// UnsupportedSemanticConstruct error so the caller gets a clear diagnostic.
+
+/// Lower `assert(cond)` as a void statement.
+///
+/// Emits a two-way branch: the pass branch continues execution; the fail
+/// branch terminates with [`IrTerminator::Trap`].  Returns the pass block
+/// as the new active block so lowering of subsequent statements continues
+/// in the correct CFG position.
+fn lower_assert_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("assert expects 1 argument, got {}", args.len()),
+        });
+    }
+
+    let cond_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr argument to assert".to_string(),
+            });
+        }
+    };
+
+    let cond = lower_expr(cond_expr, ctx, &mut current)?;
+
+    // Coerce the condition to Bool (IrType::Bool is the required Branch type).
+    let bool_val = coerce_to_bool(cond, ctx, &mut current)?;
+
+    emit_assert_branch(bool_val, ctx, current)
+}
+
+/// Lower `assert_eq(lhs, rhs)` as a void statement.
+///
+/// Emits a Compare(Eq) followed by the same two-way branch pattern as
+/// [`lower_assert_stmt`].  Both operands must have the same IR type and that
+/// type must be equality-comparable (Bool or integer).
+fn lower_assert_eq_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 2 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("assert_eq expects 2 arguments, got {}", args.len()),
+        });
+    }
+
+    let lhs_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr first argument to assert_eq".to_string(),
+            });
+        }
+    };
+    let rhs_expr = match &args[1] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr second argument to assert_eq".to_string(),
+            });
+        }
+    };
+
+    let lhs = lower_expr(lhs_expr, ctx, &mut current)?;
+    let rhs = lower_expr(rhs_expr, ctx, &mut current)?;
+
+    if lhs.ty != rhs.ty {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "assert_eq: lhs has type {:?}, rhs has type {:?} — operand types must match",
+                lhs.ty, rhs.ty
+            ),
+        });
+    }
+
+    // Validate that the type supports equality comparison.
+    match &lhs.ty {
+        IrType::Bool
+        | IrType::I8
+        | IrType::I16
+        | IrType::I32
+        | IrType::I64 => {}
+        other => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "assert_eq: type {:?} is not supported for equality comparison in the IR backend",
+                    other
+                ),
+            });
+        }
+    }
+
+    let cmp_dst = ctx.fresh_value();
+    current.emit(IrInst::Compare {
+        dst: cmp_dst,
+        op: CompareOp::Eq,
+        lhs: lhs.value,
+        rhs: rhs.value,
+    })?;
+
+    emit_assert_branch(cmp_dst, ctx, current)
+}
+
+/// Coerce a [`LoweredValue`] to `IrType::Bool` for use as a branch condition.
+///
+/// - If the value is already `Bool`, it is returned unchanged.
+/// - If the value is an integer type (`I8`/`I16`/`I32`/`I64`), a
+///   `Compare { Ne, value, 0 }` is emitted to produce a `Bool` result
+///   (truthy semantics: any non-zero integer is true).
+/// - All other types produce an `UnsupportedSemanticConstruct` error.
+fn coerce_to_bool(
+    val: LoweredValue,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<ValueId, LoweringError> {
+    match &val.ty {
+        IrType::Bool => Ok(val.value),
+        IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
+            let zero = ctx.fresh_value();
+            active.emit(IrInst::ConstInt {
+                dst: zero,
+                ty: val.ty.clone(),
+                value: 0,
+            })?;
+            let cmp_dst = ctx.fresh_value();
+            active.emit(IrInst::Compare {
+                dst: cmp_dst,
+                op: CompareOp::Ne,
+                lhs: val.value,
+                rhs: zero,
+            })?;
+            Ok(cmp_dst)
+        }
+        other => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "assert condition of type {:?} is not supported in the IR backend",
+                other
+            ),
+        }),
+    }
+}
+
+/// Emit the common Branch + Trap pattern for assertions.
+///
+/// Terminates `current` with a [`IrTerminator::Branch`] on `bool_val`:
+/// - true  → `pass_block` (continues execution; returned as new current)
+/// - false → `trap_block` (terminated with [`IrTerminator::Trap`])
+fn emit_assert_branch(
+    bool_val: ValueId,
+    ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let incoming = current.bindings.clone();
+
+    let pass_active = ctx.start_block(vec![], incoming.clone());
+    let pass_block_id = pass_active.id();
+
+    let mut trap_active = ctx.start_block(vec![], incoming);
+    let trap_block_id = trap_active.id();
+
+    let mut current = current;
+    current.terminate(IrTerminator::Branch {
+        cond: bool_val,
+        then_block: pass_block_id,
+        then_args: vec![],
+        else_block: trap_block_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(current)?;
+
+    trap_active.terminate(IrTerminator::Trap)?;
+    ctx.seal_block(trap_active)?;
+
+    Ok(Some(pass_active))
 }
 
 /// Lower a void function call as a standalone statement.
@@ -5223,14 +5443,133 @@ mod tests {
         assert_builtin_structured_error("printn");
     }
 
+    // assert and assert_eq are now lowerable (Phase 9 sub-packet 3) so they no
+    // longer trigger the is_cx_builtin gate.  The tests below verify that they
+    // lower correctly to multi-block CFGs with a Trap terminator.
+
     #[test]
-    fn builtin_assert_produces_unsupported_construct_not_unresolved_artifact() {
-        assert_builtin_structured_error("assert");
+    fn assert_true_lowers_to_validated_multi_block_cfg() {
+        // assert(true) → Branch on Bool 1 (pass) / Trap (fail, never taken)
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt("assert", vec![SemanticCallArg::Expr(bool_expr(true))])],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        // Synthetic main must have at least 3 blocks: decision, pass, trap.
+        assert!(
+            module.functions[0].blocks.len() >= 3,
+            "expected at least 3 blocks, got {}",
+            module.functions[0].blocks.len()
+        );
+        // At least one Trap terminator must exist.
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
     }
 
     #[test]
-    fn builtin_assert_eq_produces_unsupported_construct_not_unresolved_artifact() {
-        assert_builtin_structured_error("assert_eq");
+    fn assert_integer_one_lowers_via_truthy_coercion() {
+        // assert(1) → Compare(Ne, 1, 0) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert",
+                vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        // Must contain a Compare(Ne) to coerce the integer to Bool.
+        let has_ne_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Ne, .. })
+            })
+        });
+        assert!(has_ne_compare, "expected a Ne Compare for truthy-integer coercion");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_eq_same_integers_lowers_to_validated_cfg() {
+        // assert_eq(1, 1) → Compare(Eq) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I64)),
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I64)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_eq_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Eq, .. })
+            })
+        });
+        assert!(has_eq_compare, "expected an Eq Compare for assert_eq");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_eq_bool_true_true_lowers_to_validated_cfg() {
+        // assert_eq(true, true) → Compare(Eq, Bool, Bool) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(bool_expr(true)),
+                    SemanticCallArg::Expr(bool_expr(true)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_with_wrong_arity_produces_invariant_violation() {
+        // assert() with 0 args → InternalInvariantViolation (arity check)
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt("assert", vec![])],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::InternalInvariantViolation { .. }),
+            "expected InternalInvariantViolation for wrong assert arity, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn assert_eq_with_wrong_arity_produces_invariant_violation() {
+        // assert_eq() with 0 args → InternalInvariantViolation
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt("assert_eq", vec![])],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::InternalInvariantViolation { .. }),
+            "expected InternalInvariantViolation for wrong assert_eq arity, got: {:?}",
+            err
+        );
     }
 
     #[test]

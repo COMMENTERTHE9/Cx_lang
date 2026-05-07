@@ -198,7 +198,7 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3; Phase 9 sub-packet 3)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
 /// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
@@ -211,6 +211,7 @@ impl std::fmt::Display for JitExecutionError {
 ///
 /// - `Jump` (unconditional block transfer with optional block-param arguments)
 /// - `Branch` (two-way conditional branch using `brif`, with block-param arguments on both edges)
+/// - `Trap` (unconditional abort — assertion-failure terminator; lowers to Cranelift `trap`)
 ///
 /// Multi-block functions are supported for forward-only control flow (no back-edges).
 /// Loop back-edges are deferred to a later sub-packet.
@@ -369,7 +370,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1, 2, and 3):
+/// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 9 sub-packet 3):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
@@ -379,6 +380,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// - [`IrTerminator::Return`] — return with or without a value
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
 /// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
+/// - [`IrTerminator::Trap`] — unconditional abort (assertion-failure); lowers to Cranelift `trap`
 ///
 /// Block sealing strategy: each block is sealed immediately after `switch_to_block` because
 /// IR blocks are emitted in topological order for forward-only CFGs.  All predecessor edges
@@ -629,6 +631,13 @@ fn compile_ir_function(
                     })
                     .collect::<Result<_, _>>()?;
                 builder.ins().brif(cond_val, then_cl, &then_cl_args, else_cl, &else_cl_args);
+            }
+            IrTerminator::Trap => {
+                use cranelift_codegen::ir::TrapCode;
+                // User trap code 1 = assertion failure.
+                // TrapCode::unwrap_user panics at compile time if the code is 0 or reserved;
+                // code 1 is always valid (reserved range starts at 251).
+                builder.ins().trap(TrapCode::unwrap_user(1));
             }
         }
     }
@@ -1202,6 +1211,7 @@ mod jit_tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I32,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return {
@@ -1421,6 +1431,130 @@ mod jit_tests {
         assert_eq!(r.unwrap().exit_code.raw(), 1);
     }
 
+    // ── Trap terminator tests ────────────────────────────────────────────────
+
+    #[test]
+    fn jit_trap_in_dead_else_branch_compiles_and_passes() {
+        // Verify that a Trap terminator compiles correctly via Cranelift.
+        // The Trap block is NEVER executed at runtime (the branch condition is
+        // always true), so this test is safe to run in-process.
+        //
+        // CFG:
+        //   block0:
+        //     v0 = const Bool 1    // always true
+        //     branch v0, block1, block2
+        //   block1:               // taken: condition was true
+        //     v1 = const I32 0
+        //     return v1            // → exit code 0
+        //   block2:               // unreachable — Trap (assertion failure path)
+        //     trap
+        let module = IrModule {
+            debug_name: "test_trap_dead".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Trap,
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_assert_pattern_passes_when_condition_is_true() {
+        // Models: assert(1 == 1)
+        // IR: compare 1 == 1 → Bool, branch on result:
+        //   true  → return 0 (pass)
+        //   false → Trap (assertion failure)
+        // Expected: returns 0 (condition is satisfied).
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_assert_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 1 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 1 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Trap,
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
     #[test]
     fn jit_branch_with_block_args_on_both_edges() {
         // main() -> I32 {
@@ -1461,13 +1595,13 @@ mod jit_tests {
                     },
                     IrBlock {
                         id: BlockId(1),
-                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(3)) },
                     },
                     IrBlock {
                         id: BlockId(2),
-                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(4)) },
                     },
