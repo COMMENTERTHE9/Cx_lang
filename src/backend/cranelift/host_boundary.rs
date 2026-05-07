@@ -380,9 +380,13 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
 /// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
 ///
-/// Block sealing strategy: each block is sealed immediately after `switch_to_block` because
-/// IR blocks are emitted in topological order for forward-only CFGs.  All predecessor edges
-/// (from `jump` / `brif`) are registered before the successor block is visited.
+/// Block sealing strategy: all Cranelift blocks are sealed in a single deferred pass after
+/// every block's body and terminator have been emitted.  Early per-block sealing would
+/// violate Cranelift's invariant for loop back-edges: the loop-header block receives a
+/// predecessor jump from the body block, which is emitted *after* the header in IR order.
+/// Sealing the header immediately would hide that back-edge from Cranelift.  Instead,
+/// `seal_all_blocks()` is called once after the emit loop, at which point every predecessor
+/// edge — including back-edges — has already been registered.
 ///
 /// All other instructions yield [`JitExecutionError::UnsupportedConstruct`].
 #[cfg(feature = "jit")]
@@ -419,15 +423,10 @@ fn compile_ir_function(
     }
 
     // Phase 2: emit each block's body.
+    // Blocks are NOT sealed per-block here; seal_all_blocks() is called after the loop.
     for ir_block in &ir_func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
-        // Blocks are processed in IR order, which is topological for forward-only CFGs.
-        // Each block is sealed immediately after switch_to_block: by the time we visit
-        // block N, all predecessor terminators (jump / brif) referencing block N have
-        // already been emitted in earlier iterations, so all predecessor edges are
-        // registered in Cranelift's internal tracking before the seal call.
-        builder.seal_block(cl_block);
 
         for inst in &ir_block.insts {
             match inst {
@@ -632,6 +631,10 @@ fn compile_ir_function(
             }
         }
     }
+
+    // Seal all blocks in one deferred pass now that every predecessor edge
+    // (including loop back-edges) has been registered in Cranelift's tracking.
+    builder.seal_all_blocks();
 
     Ok(())
 }
@@ -1202,6 +1205,7 @@ mod jit_tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I32,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return {
@@ -1461,13 +1465,13 @@ mod jit_tests {
                     },
                     IrBlock {
                         id: BlockId(1),
-                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(3)) },
                     },
                     IrBlock {
                         id: BlockId(2),
-                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(4)) },
                     },
@@ -1477,5 +1481,211 @@ mod jit_tests {
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    // ── Loop back-edge tests (CX-47) ─────────────────────────────────────────
+
+    #[test]
+    fn jit_while_loop_back_edge_counts_to_five() {
+        // Exercises a while-loop back-edge: the body block jumps back to the
+        // header, which is the classic case that triggered Cranelift's
+        // "block sealed too early" invariant before the deferred-seal fix.
+        //
+        // main() -> I32 {
+        //   block0:                      // entry
+        //     v0 = 0 : I32
+        //     jump block1(v0)
+        //   block1(v1: I32):             // header — carries counter
+        //     v2 = 5 : I32
+        //     v3 = compare Lt(v1, v2)   // I8
+        //     branch v3, block2, block3
+        //   block2:                      // body
+        //     v4 = 1 : I32
+        //     v5 = add(v1, v4)
+        //     jump block1(v5)            // ← back-edge
+        //   block3:                      // exit
+        //     return v1                  // counter == 5
+        // }
+        // Expected: 5
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_while_back_edge".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam { value: ValueId(1), ty: IrType::I32, read_only: false }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(5)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 5);
+    }
+
+    #[test]
+    fn jit_for_loop_back_edge_sums_one_to_four() {
+        // Exercises a for-loop back-edge with two loop-carried values (sum, i).
+        // The header block has two block params; the body updates both and jumps
+        // back — a two-argument back-edge, which is the pattern produced by the
+        // Cx for-loop IR lowering.
+        //
+        // main() -> I32 {
+        //   block0:                          // entry
+        //     v0 = 0 : I32                  // sum = 0
+        //     v1 = 1 : I32                  // i = 1
+        //     jump block1(v0, v1)
+        //   block1(v2: I32, v3: I32):        // header — (sum, i)
+        //     v4 = 5 : I32                  // limit (exclusive)
+        //     v5 = compare Lt(v3, v4)       // i < 5?
+        //     branch v5, block2, block3(v2)
+        //   block2:                          // body
+        //     v6 = add(v2, v3)              // sum + i
+        //     v7 = 1 : I32
+        //     v8 = add(v3, v7)              // i + 1
+        //     jump block1(v6, v8)            // ← back-edge with two args
+        //   block3(v9: I32):                 // exit — receives final sum
+        //     return v9                      // 0+1+2+3+4 = 10
+        // }
+        // Expected: 10
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_for_back_edge".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 1 },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0), ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![
+                            BlockParam { value: ValueId(2), ty: IrType::I32, read_only: false }, // sum
+                            BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }, // i
+                        ],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(5),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(5),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Binary {
+                                dst: ValueId(6),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(2),
+                                rhs: ValueId(3),
+                            },
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(8),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(3),
+                                rhs: ValueId(7),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6), ValueId(8)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam { value: ValueId(9), ty: IrType::I32, read_only: false }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(9)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 10); // 0+1+2+3+4 = 10
     }
 }
