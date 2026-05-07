@@ -1202,6 +1202,7 @@ mod jit_tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I32,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return {
@@ -1461,13 +1462,13 @@ mod jit_tests {
                     },
                     IrBlock {
                         id: BlockId(1),
-                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(3)) },
                     },
                     IrBlock {
                         id: BlockId(2),
-                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(4)) },
                     },
