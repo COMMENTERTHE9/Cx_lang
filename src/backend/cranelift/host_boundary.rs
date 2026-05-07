@@ -212,8 +212,7 @@ impl std::fmt::Display for JitExecutionError {
 /// - `Jump` (unconditional block transfer with optional block-param arguments)
 /// - `Branch` (two-way conditional branch using `brif`, with block-param arguments on both edges)
 ///
-/// Multi-block functions are supported for forward-only control flow (no back-edges).
-/// Loop back-edges are deferred to a later sub-packet.
+/// Multi-block functions are supported including back-edge control flow (loops).
 ///
 /// All other IR instructions return [`JitExecutionError::UnsupportedConstruct`].
 pub struct HostBoundary;
@@ -371,7 +370,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 ///
 /// Supported instructions (Phase 14 sub-packets 1, 2, and 3):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
-/// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem
+/// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem (integer types only)
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
 /// - [`IrInst::Load`] — typed memory load from a pointer
 /// - [`IrInst::Store`] — typed memory store through a pointer
@@ -380,9 +379,18 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
 /// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
 ///
-/// Block sealing strategy: each block is sealed immediately after `switch_to_block` because
-/// IR blocks are emitted in topological order for forward-only CFGs.  All predecessor edges
-/// (from `jump` / `brif`) are registered before the successor block is visited.
+/// Block sealing strategy: all blocks are sealed at once with `seal_all_blocks()` after all
+/// instructions and terminators have been emitted.  This is safe for any control-flow graph
+/// (forward-only or with back-edges) and prevents Cranelift from panicking when a jump targets
+/// a block that was processed in an earlier loop iteration.
+///
+/// ## No-panic guarantee (Phase 15)
+///
+/// On IR that passes `validate_module`, this function must not panic.  Every error path that
+/// would otherwise trigger a Cranelift internal assertion is converted to a structured error:
+/// - `Binary` on `F64` — returns `UnsupportedConstruct` (only integer arithmetic is implemented)
+/// - `Compare` on floating-point values — returns `UnsupportedConstruct` (only `icmp` is wired up)
+/// - Back-edge loops — compile without panic; execution is correct for loops that terminate
 ///
 /// All other instructions yield [`JitExecutionError::UnsupportedConstruct`].
 #[cfg(feature = "jit")]
@@ -422,12 +430,10 @@ fn compile_ir_function(
     for ir_block in &ir_func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
-        // Blocks are processed in IR order, which is topological for forward-only CFGs.
-        // Each block is sealed immediately after switch_to_block: by the time we visit
-        // block N, all predecessor terminators (jump / brif) referencing block N have
-        // already been emitted in earlier iterations, so all predecessor edges are
-        // registered in Cranelift's internal tracking before the seal call.
-        builder.seal_block(cl_block);
+        // Sealing is deferred to after all blocks are emitted (see seal_all_blocks below).
+        // Eager sealing would panic for back-edge CFGs: when block N jumps back to block M
+        // (M < N), block M has already been switched to and would have been sealed, but
+        // the back-edge from N is a new predecessor that would arrive after the seal.
 
         for inst in &ir_block.insts {
             match inst {
@@ -450,7 +456,17 @@ fn compile_ir_function(
                     val_map.insert(*dst, cl_val);
                 }
 
-                IrInst::Binary { dst, op, ty: _, lhs, rhs } => {
+                IrInst::Binary { dst, op, ty, lhs, rhs } => {
+                    // Guard: all arithmetic ops below are integer-only (iadd/isub/imul/sdiv/srem).
+                    // F64 binary arithmetic would cause Cranelift to panic on type mismatch.
+                    if *ty == IrType::F64 {
+                        return Err(JitExecutionError::UnsupportedConstruct {
+                            construct: format!(
+                                "Binary {:?} on F64 (not yet supported; only integer arithmetic is implemented)",
+                                op
+                            ),
+                        });
+                    }
                     let lhs_val = *val_map.get(lhs).ok_or_else(|| {
                         JitExecutionError::CodegenFailure {
                             detail: format!("undefined value {:?} used as binary lhs", lhs),
@@ -532,6 +548,20 @@ fn compile_ir_function(
                             detail: format!("undefined value {:?} used as compare rhs", rhs),
                         }
                     })?;
+                    // Guard: icmp only works on integer types. If the operands are float values
+                    // (e.g. from a function param with type F64), Cranelift would panic on a
+                    // type mismatch. Detect this by querying the Cranelift DFG.
+                    {
+                        let lhs_cl_ty = builder.func.dfg.value_type(lhs_val);
+                        if lhs_cl_ty.is_float() {
+                            return Err(JitExecutionError::UnsupportedConstruct {
+                                construct: format!(
+                                    "Compare on floating-point type {} (not yet supported; only integer icmp is implemented)",
+                                    lhs_cl_ty
+                                ),
+                            });
+                        }
+                    }
                     // Map Cx compare ops to Cranelift signed-integer condition codes.
                     // Unsigned variants are deferred until unsigned integer types are added.
                     let cc = match op {
@@ -632,6 +662,11 @@ fn compile_ir_function(
             }
         }
     }
+
+    // Seal all blocks at once now that every instruction and terminator has been emitted.
+    // This is the safe strategy for any CFG: Cranelift can resolve all block-parameter
+    // propagation with complete predecessor information.
+    builder.seal_all_blocks();
 
     Ok(())
 }
@@ -1202,6 +1237,7 @@ mod jit_tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I32,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return {
@@ -1461,13 +1497,13 @@ mod jit_tests {
                     },
                     IrBlock {
                         id: BlockId(1),
-                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(3)) },
                     },
                     IrBlock {
                         id: BlockId(2),
-                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32 }],
+                        params: vec![BlockParam { value: ValueId(4), ty: IrType::I32, read_only: false }],
                         insts: vec![],
                         term: IrTerminator::Return { value: Some(ValueId(4)) },
                     },
@@ -1476,6 +1512,213 @@ mod jit_tests {
         };
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    // ── Phase 15: no-panic guarantee tests ──────────────────────────────────
+
+    /// Binary F64 must return UnsupportedConstruct, not panic.
+    ///
+    /// F64 values are introduced via function parameters (the only way to get F64
+    /// into the JIT without ConstFloat, which is also unsupported).  The function is
+    /// named "main" with a non-None return type so it is not treated as synthetic main,
+    /// allowing it to have typed parameters and a return type.
+    #[test]
+    fn jit_binary_f64_returns_unsupported() {
+        use crate::ir::types::{BlockParam, IrParam};
+        // main(x: F64) -> I32 { block0(v0: F64): v1 = add F64(v0, v0); v2 = const 0: I32; return v2 }
+        // The Binary F64 guard must fire before Cranelift sees the type-mismatched iadd.
+        let module = IrModule {
+            debug_name: "test_binary_f64".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![IrParam { name: "x".to_string(), ty: IrType::F64 }],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![BlockParam {
+                        value: ValueId(0),
+                        ty: IrType::F64,
+                        read_only: false,
+                    }],
+                    insts: vec![
+                        IrInst::Binary {
+                            dst: ValueId(1),
+                            op: BinaryOp::Add,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(0),
+                        },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(
+            matches!(result, Err(JitExecutionError::UnsupportedConstruct { .. })),
+            "expected UnsupportedConstruct for Binary F64, got {:?}",
+            result
+        );
+    }
+
+    /// Compare F64 must return UnsupportedConstruct, not panic.
+    ///
+    /// Same setup as the Binary F64 test: F64 values via function parameters.
+    /// The Compare guard must detect the float type via Cranelift's DFG and bail
+    /// before `icmp` receives the float value.
+    #[test]
+    fn jit_compare_f64_returns_unsupported() {
+        use crate::ir::types::{BlockParam, IrParam};
+        use crate::ir::instr::CompareOp;
+        // main(x: F64, y: F64) -> I32 { block0(v0: F64, v1: F64): v2 = cmp Eq(v0, v1); v3=const 0; return v3 }
+        let module = IrModule {
+            debug_name: "test_compare_f64".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![
+                    IrParam { name: "x".to_string(), ty: IrType::F64 },
+                    IrParam { name: "y".to_string(), ty: IrType::F64 },
+                ],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![
+                        BlockParam { value: ValueId(0), ty: IrType::F64, read_only: false },
+                        BlockParam { value: ValueId(1), ty: IrType::F64, read_only: false },
+                    ],
+                    insts: vec![
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Eq,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(
+            matches!(result, Err(JitExecutionError::UnsupportedConstruct { .. })),
+            "expected UnsupportedConstruct for Compare F64, got {:?}",
+            result
+        );
+    }
+
+    /// A back-edge loop must compile and execute correctly (no panic from sealing).
+    ///
+    /// Structure:
+    /// ```text
+    /// main() -> I32 {
+    ///   block0:
+    ///     v0 = const 0 : I32
+    ///     jump block1(v0)
+    ///   block1(v1: I32):           // loop header — back-edge target
+    ///     v2 = const 10 : I32
+    ///     v3 = compare Lt(v1, v2)
+    ///     branch v3, block2[], block3[]
+    ///   block2:                    // loop body
+    ///     v4 = const 1 : I32
+    ///     v5 = add I32 (v1, v4)
+    ///     jump block1(v5)          // ← back-edge
+    ///   block3:                    // exit
+    ///     v6 = const 42 : I32
+    ///     return v6
+    /// }
+    /// ```
+    /// Simulates `i = 0; while i < 10 { i += 1 }; return 42`.  Expected exit code: 42.
+    ///
+    /// This test verifies that the `seal_all_blocks()` strategy prevents Cranelift
+    /// from panicking on the back-edge from block2 to block1.
+    #[test]
+    fn jit_back_edge_loop_compiles_and_executes_correctly() {
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_back_edge_loop".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    // block0: initialise counter and jump to header
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    // block1(v1: I32): loop header — compare counter < 10
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 10 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![],
+                        },
+                    },
+                    // block2: loop body — increment counter, jump back (back-edge)
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1), // ← back-edge
+                            args: vec![ValueId(5)],
+                        },
+                    },
+                    // block3: exit — return 42
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(6),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT back-edge loop failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42);
     }
 }
