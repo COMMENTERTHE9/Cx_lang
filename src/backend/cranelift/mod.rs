@@ -53,19 +53,21 @@ impl std::fmt::Display for CraneliftLoweringError {
 /// Map an [`IrType`] to its Cranelift [`cranelift_codegen::ir::types::Type`]
 /// equivalent.
 ///
-/// All nine `IrType` variants are handled:
+/// All ten `IrType` variants are handled:
 ///
-/// | IrType  | Cranelift type | Notes                                    |
-/// |---------|---------------|------------------------------------------|
-/// | I8      | I8            | direct mapping                           |
-/// | I16     | I16           | direct mapping                           |
-/// | I32     | I32           | direct mapping                           |
-/// | I64     | I64           | direct mapping                           |
-/// | I128    | I128          | direct mapping                           |
-/// | F64     | F64           | direct mapping                           |
-/// | Bool    | I8            | booleans are 0/1, no native bool in CL   |
-/// | TBool   | I8            | three-state (0/1/2) fits in i8           |
-/// | Ptr     | I64           | 64-bit pointer on all supported targets  |
+/// | IrType  | Cranelift type | Notes                                                      |
+/// |---------|---------------|------------------------------------------------------------|
+/// | I8      | I8            | direct mapping                                             |
+/// | I16     | I16           | direct mapping                                             |
+/// | I32     | I32           | direct mapping                                             |
+/// | I64     | I64           | direct mapping                                             |
+/// | I128    | I128          | direct mapping                                             |
+/// | F64     | F64           | direct mapping                                             |
+/// | Bool    | I8            | booleans are 0/1, no native bool in CL                     |
+/// | TBool   | I8            | three-state (0/1/2) fits in i8                             |
+/// | Ptr     | I64           | 64-bit pointer on all supported targets                    |
+/// | Void    | —             | error: Cranelift has no void type; void functions use an   |
+/// |         |               | empty return list in their signature (no ABI param at all) |
 #[cfg(feature = "jit")]
 pub fn ir_type_to_cranelift(
     ty: &IrType,
@@ -81,6 +83,13 @@ pub fn ir_type_to_cranelift(
         IrType::Bool  => types::I8,
         IrType::TBool => types::I8,
         IrType::Ptr   => types::I64,
+        IrType::Void  => {
+            return Err(CraneliftLoweringError::InvalidIrType {
+                ty: "Void (Cranelift has no void type; void-return functions use an empty \
+                     return list — IrType::Void must never reach the signature builder)"
+                    .to_string(),
+            });
+        }
     })
 }
 
@@ -249,6 +258,47 @@ impl Backend for CraneliftBackend {
         {
             let _ = module;
             Err("Cranelift backend requires the `jit` feature — rebuild with --features jit".to_string())
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::*;
+    use crate::ir::types::IrType;
+
+    /// IrType::Void must produce an error from ir_type_to_cranelift, not a
+    /// Cranelift type, because Cranelift has no void type.  Void-return
+    /// functions skip the return-type ABI param entirely in build_cl_signature.
+    #[test]
+    fn ir_type_to_cranelift_void_returns_error() {
+        let result = ir_type_to_cranelift(&IrType::Void);
+        assert!(
+            matches!(result, Err(CraneliftLoweringError::InvalidIrType { .. })),
+            "expected InvalidIrType for Void, got {:?}",
+            result
+        );
+    }
+
+    /// All non-void scalar types must map successfully.
+    #[test]
+    fn ir_type_to_cranelift_scalar_types_succeed() {
+        for ty in &[
+            IrType::I8,
+            IrType::I16,
+            IrType::I32,
+            IrType::I64,
+            IrType::F64,
+            IrType::Bool,
+            IrType::TBool,
+            IrType::Ptr,
+        ] {
+            assert!(
+                ir_type_to_cranelift(ty).is_ok(),
+                "expected Ok for {ty:?}, got Err"
+            );
         }
     }
 }

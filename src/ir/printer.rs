@@ -192,6 +192,7 @@ fn print_type(ty: &IrType) -> &'static str {
         IrType::Bool => "bool",
         IrType::TBool => "tbool",
         IrType::Ptr => "ptr",
+        IrType::Void => "void",
     }
 }
 

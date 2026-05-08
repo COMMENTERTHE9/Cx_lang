@@ -1754,6 +1754,55 @@ mod jit_tests {
         assert!(result.is_ok(), "JIT back-edge loop failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42);
     }
+    // ── IrType::Void wiring (CX-53) ─────────────────────────────────────────
+
+    /// A module containing a void-return helper alongside a non-void `main`
+    /// must compile without error.  The helper function emits a Cranelift
+    /// signature with an empty return list; `main` returns 42 as usual.
+    ///
+    /// This verifies the end-to-end path: `return_ty: None` (void in IR) →
+    /// empty Cranelift return list → `builder.ins().return_(&[])`.
+    #[test]
+    fn jit_void_return_function_compiles_alongside_main() {
+        let module = IrModule {
+            debug_name: "test_void_func".to_string(),
+            functions: vec![
+                // Void-return helper — compiled but never called in this test.
+                IrFunction {
+                    name: "do_nothing".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+                // Non-void main that the JIT executes.
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return {
+                            value: Some(ValueId(0)),
+                        },
+                    }],
+                },
+            ],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
 }
 
 // ── JIT determinism tests (require the `jit` feature) ────────────────────────
