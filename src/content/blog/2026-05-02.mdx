@@ -1,0 +1,38 @@
+---
+title: "Cx Dev Log — 2026-05-02"
+date: 2026-05-02
+description: "Cleared a backlog of ~24 stale daily-log PRs and added documentation for the unary lowering strategy in the IR."
+---
+
+The most interesting technical artifact from today is a set of comments, not code. A documentation commit on the `stokowski/cx-6-document-unary-lowering` branch adds block-level explanations to `src/ir/lower.rs` covering how unary operators are lowered in the IR. The rest of the day was housekeeping: clearing a month-long backlog of daily-log PRs that had been piling up since late March.
+
+## Unary lowering, documented
+
+Cx's IR has no dedicated negate or boolean-not instructions. Instead, both unary operators are lowered to two-operand forms:
+
+- `Op::Minus` becomes `0 - value`
+- `Op::Not` becomes `value == 0`
+
+This means backends only need to handle one instruction shape for arithmetic and comparison, rather than carrying separate unary variants. It is a deliberate encoding choice, but it is not obvious from reading the IR code alone. The CX-6 commit (`2d665a4`) adds 25 lines of comments explaining the rationale directly in `lower.rs`.
+
+The commit is branch-local and has not been merged to main or submitted as a PR yet. It sits on top of the `stokowski/cx-6-document-unary-lowering` branch, which inherits 21 older commits from the submain lineage (Phases 10-11 IR backend work, audits, error model). The documentation commit itself carries zero integration risk since it is comments-only.
+
+## Daily-log PR backlog cleared
+
+PRs #29 through #52 were merged to main in a single batch. These cover daily logs from 2026-03-29 through 2026-05-01, along with their associated `docs/frontend/ROADMAP.md` updates. No language code changed through these merges. This had been flagged as growing housekeeping debt in several prior daily logs, and today it was resolved comprehensively.
+
+Main now has a continuous daily log record from late March through the present, which matters for traceability even if it does not move the language forward.
+
+## The submain question
+
+Submain divergence remains the dominant structural issue in the project. The submain lineage carries 22 commits not on main, spanning about 35 days. Main is still at v4.9 with 78 tests; submain carries v5.0 with 117 tests and all hard blockers resolved. New feature branches (like the CX-6 documentation branch) are forking from submain rather than main, which means the main branch roadmap and the actual state of the language continue to drift apart.
+
+This is not new information. It has been noted in multiple daily logs. But it is worth repeating because it affects how every other piece of work lands. Until submain is merged, main does not reflect where Cx actually is.
+
+## What is next
+
+The CX-6 documentation commit is ready for a PR. It is small and safe.
+
+Beyond that, the real leverage is in the same two items that have been at the top of the list for weeks: merge submain to main, then move into struct field access lowering. The struct registry and Ptr infrastructure on submain are ready for `DotAccess` on struct fields using field offsets from `StructLayoutInfo`. Struct literal lowering (`SemanticExprKind::StructLit` to Alloca plus per-field Store instructions) follows naturally after that.
+
+Matrix holds at 78/78 on main. No regressions, no new tests. A quiet day, but one that clears the path for the work ahead.
