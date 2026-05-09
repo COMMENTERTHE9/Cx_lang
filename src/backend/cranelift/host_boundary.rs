@@ -48,6 +48,39 @@
 //! JIT-level failures surface as [`JitExecutionError`] variants, not as Rust panics.
 //! `HostBoundary::execute` must catch all Cranelift errors and convert them.
 //! The caller (`CraneliftBackend::execute`) translates to the `Backend` trait's `Result<(), String>`.
+//!
+//! # Determinism Guarantee
+//!
+//! The Cx JIT backend provides a minimal determinism guarantee:
+//!
+//! > **Same IR, same target, same input → same observable output on every run.**
+//!
+//! Specifically, given an identical `IrModule` on the same platform:
+//! - The exit code returned by JIT-compiled `main` is identical across invocations.
+//! - The execution path (sequence of basic blocks and instructions) is identical.
+//! - Stack slot sizes and alignments are identical (determined entirely by the IR).
+//!
+//! ## Why the guarantee holds
+//!
+//! - `IrModule` is a plain Rust `Vec`-based data structure with no randomized ordering.
+//! - `ValueId` and `BlockId` are sequential integers; allocation order is deterministic.
+//! - `compile_ir_function` is a pure function of its `IrFunction` input — no process state.
+//! - `HashMap` usage inside `compile_ir_function` is access-only (lookup by key), never
+//!   iterated for output — hash randomization does not affect observable results.
+//! - `cranelift_native::builder()` produces a deterministic ISA for a given host CPU.
+//! - `JITModule::finalize_definitions()` processes functions in declaration order.
+//! - `seal_all_blocks()` is called once after all instructions are emitted; the deferred
+//!   strategy is deterministic for any CFG (forward-only or with loop back-edges).
+//!
+//! ## What is not guaranteed
+//!
+//! - Cross-platform binary identity (different ISAs produce different machine code bytes).
+//! - Cross-version stability (Cranelift upgrades may change code generation).
+//! - In-process stdout determinism (JIT writes directly to the host process stream;
+//!   stdout capture is a post-scaffold feature).
+//!
+//! For the full specification and test coverage table see
+//! `docs/backend/cx_jit_determinism.md`.
 
 #![allow(dead_code)]
 
@@ -1720,5 +1753,638 @@ mod jit_tests {
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT back-edge loop failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+}
+
+// ── JIT determinism tests (require the `jit` feature) ────────────────────────
+//
+// Each test verifies the minimal determinism guarantee:
+//   same IR module → two independent JIT compilations → identical exit codes.
+//
+// Tests are named `jit_determinism_*` so they can be filtered individually:
+//   cargo test --features jit determinism
+//
+// See docs/backend/cx_jit_determinism.md for the full specification.
+
+#[cfg(all(test, feature = "jit"))]
+mod determinism_tests {
+    use super::*;
+    use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
+    use crate::ir::types::{BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrType, ValueId};
+
+    /// Run `module` through two independent `HostBoundary` instances and assert
+    /// that both succeed and return the same exit code.
+    fn assert_deterministic(module: &IrModule) {
+        let r1 = HostBoundary::new().execute(module);
+        let r2 = HostBoundary::new().execute(module);
+
+        assert!(r1.is_ok(), "first JIT run failed: {:?}", r1.unwrap_err());
+        assert!(r2.is_ok(), "second JIT run failed: {:?}", r2.unwrap_err());
+
+        let code1 = r1.unwrap().exit_code.raw();
+        let code2 = r2.unwrap().exit_code.raw();
+        assert_eq!(
+            code1, code2,
+            "JIT is non-deterministic: first run returned {}, second run returned {}",
+            code1, code2
+        );
+    }
+
+    // ── ConstInt + Return ─────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_const_return_zero() {
+        // main() -> I32 { return 0 }
+        let module = IrModule {
+            debug_name: "det_const_zero".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::ConstInt {
+                        dst: ValueId(0),
+                        ty: IrType::I32,
+                        value: 0,
+                    }],
+                    term: IrTerminator::Return { value: Some(ValueId(0)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_const_return_nonzero() {
+        // main() -> I32 { return 42 }
+        let module = IrModule {
+            debug_name: "det_const_42".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::ConstInt {
+                        dst: ValueId(0),
+                        ty: IrType::I32,
+                        value: 42,
+                    }],
+                    term: IrTerminator::Return { value: Some(ValueId(0)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Binary arithmetic ─────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_arithmetic_add() {
+        // main() -> I32 { v0=10; v1=32; return v0+v1 }  → 42
+        let module = IrModule {
+            debug_name: "det_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 32 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_arithmetic_sub() {
+        // main() -> I32 { v0=50; v1=8; return v0-v1 }  → 42
+        let module = IrModule {
+            debug_name: "det_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 50 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 8 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_arithmetic_mul() {
+        // main() -> I32 { v0=6; v1=7; return v0*v1 }  → 42
+        let module = IrModule {
+            debug_name: "det_mul".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 6 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 7 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Mul,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_arithmetic_div() {
+        // main() -> I32 { v0=84; v1=2; return v0/v1 }  → 42
+        let module = IrModule {
+            debug_name: "det_div".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 84 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 2 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Div,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_arithmetic_rem() {
+        // main() -> I32 { v0=142; v1=100; return v0%v1 }  → 42
+        let module = IrModule {
+            debug_name: "det_rem".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 142 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 100 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Rem,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Alloca + Store + Load ─────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_alloca_store_load() {
+        // main() -> I32 {
+        //   slot = alloca(4, 4)
+        //   store(slot, 42)
+        //   v = load(i32, slot)
+        //   return v           → 42
+        // }
+        let module = IrModule {
+            debug_name: "det_alloca".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 4, align: 4 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 42 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Compare + Branch ──────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_branch_eq_true_path() {
+        // 5 == 5 → branch takes true path → return 1
+        let module = IrModule {
+            debug_name: "det_branch_eq_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_branch_eq_false_path() {
+        // 5 == 6 → branch takes false path → return 0
+        let module = IrModule {
+            debug_name: "det_branch_eq_false".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 6 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_branch_lt_true_path() {
+        // 3 < 7 → true → return 1
+        let module = IrModule {
+            debug_name: "det_branch_lt".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 3 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 7 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Jump + block parameters ───────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_jump_with_block_param() {
+        // main() -> I32 {
+        //   block0: v0=42; jump block1(v0)
+        //   block1(v1: I32): return v1
+        // }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_jump".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Back-edge loop ────────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_back_edge_loop() {
+        // Verify determinism for a loop CFG (back-edge from block2 to block1).
+        // Uses the same seal_all_blocks() strategy as the no-panic guarantee tests.
+        //
+        // main() -> I32 {
+        //   block0: v0=0; jump block1(v0)
+        //   block1(v1: I32):           // loop header
+        //     v2=10; v3=cmp Lt(v1,v2); branch v3, block2[], block3[]
+        //   block2:                    // body
+        //     v4=1; v5=add(v1,v4); jump block1(v5)   ← back-edge
+        //   block3:                    // exit
+        //     v6=42; return v6
+        // }
+        // Simulates: i=0; while i<10 { i+=1 }; return 42  → 42
+        let module = IrModule {
+            debug_name: "det_back_edge_loop".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 10 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1), // ← back-edge
+                            args: vec![ValueId(5)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(6),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Two-function module ───────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_two_function_module() {
+        // A module with two declared functions; verifies that function-declaration
+        // iteration order in finalize_definitions does not introduce non-determinism.
+        //
+        // Note: IrInst::Call is not yet supported, so the two functions are independent.
+        // The determinism guarantee covers the declaration-order iteration, not
+        // cross-function calls.
+        //
+        // helper() -> I32 { return 21 }  (declared first, not the entry point)
+        // main()   -> I32 { return 42 }  (entry point)
+        let module = IrModule {
+            debug_name: "det_two_fn".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "helper".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 21,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+            ],
+        };
+        assert_deterministic(&module);
     }
 }
