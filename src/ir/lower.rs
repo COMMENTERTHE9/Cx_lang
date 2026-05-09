@@ -138,6 +138,9 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
 
             let return_ty = match &function.return_ty {
                 Some(ty) => match lower_type(ty) {
+                    // IrType::Void in return position is canonicalised to None
+                    // (the IR uses Option<IrType> where None = void).
+                    Ok(IrType::Void) => None,
                     Ok(ir_ty) => Some(ir_ty),
                     Err(_) => continue,
                 },
@@ -393,7 +396,15 @@ fn lower_semantic_function(
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
     let mut bindings = HashMap::new();
-    let return_ty = function.return_ty.as_ref().map(lower_type).transpose()?;
+    let return_ty = {
+        let raw = function.return_ty.as_ref().map(lower_type).transpose()?;
+        // Canonicalise: IrType::Void in return position is equivalent to no return value.
+        // IrFunction::return_ty uses Option<IrType> where None already encodes void.
+        match raw {
+            Some(IrType::Void) => None,
+            other => other,
+        }
+    };
 
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace);
     for param in &function.params {
@@ -2351,7 +2362,10 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::Struct(_) => Ok(IrType::Ptr),
         SemanticType::Array(_, _) => Ok(IrType::Ptr),
         SemanticType::Result(_) => { unsupported_type!("Result") },
-        SemanticType::Void => { unsupported_type!("Void") },
+        // Void is a first-class IR type used to represent the absence of a return value.
+        // Callers that use lower_type for return-type lowering must canonicalise
+        // Some(IrType::Void) to None before placing it in IrFunction::return_ty.
+        SemanticType::Void => Ok(IrType::Void),
     }
 }
 
@@ -4839,6 +4853,49 @@ mod tests {
     fn lower_type_array_maps_to_ptr() {
         let result = lower_type(&SemanticType::Array(4, Box::new(SemanticType::I64)));
         assert_eq!(result, Ok(IrType::Ptr));
+    }
+
+    // lower_type must map SemanticType::Void to IrType::Void (not an error).
+    // Callers (lower_semantic_function, build_signature_table) canonicalise
+    // Some(IrType::Void) → None before it enters IrFunction::return_ty.
+    #[test]
+    fn lower_type_void_maps_to_irtype_void() {
+        let result = lower_type(&SemanticType::Void);
+        assert_eq!(result, Ok(IrType::Void));
+    }
+
+    // A user-defined void-return function (SemanticType::Void return type)
+    // must lower to an IrFunction with return_ty: None (canonicalised).
+    #[test]
+    fn lower_semantic_function_void_return_canonicalises_to_none() {
+        use crate::frontend::semantic_types::{
+            FunctionId, SemanticFunction, SemanticStmt, SemanticType,
+        };
+        // Build a minimal program: fn do_nothing() -> void {}
+        let func = SemanticFunction {
+            id: FunctionId(0),
+            name: "do_nothing".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_ty: Some(SemanticType::Void),
+            body: vec![],
+            ret_expr: None,
+            is_test: false,
+            pos: 0,
+        };
+        let program = crate::frontend::semantic_types::SemanticProgram {
+            stmts: vec![SemanticStmt::FuncDef(func)],
+            enums: vec![],
+        };
+        let module = lower_program(&program).expect("lowering must succeed");
+        assert_eq!(module.functions.len(), 1);
+        let ir_func = &module.functions[0];
+        assert_eq!(ir_func.name, "do_nothing");
+        // Void return must be canonicalised to None, not Some(IrType::Void).
+        assert_eq!(
+            ir_func.return_ty, None,
+            "void-return function must have return_ty: None in IR"
+        );
     }
 
     // Index lowering on an i64 array with an i64 literal index must emit:
