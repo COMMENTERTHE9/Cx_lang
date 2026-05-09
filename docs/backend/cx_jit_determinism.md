@@ -1,5 +1,5 @@
 # Cx JIT Determinism Guarantee
-v1.1 — 2026-05-08
+v1.2 — 2026-05-09
 
 ---
 
@@ -115,6 +115,12 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_loop_continue` | `continue` — header with three predecessors (entry, end-of-body, continue back-edge); `Compare::Lt` + `Compare::Eq` |
 | `jit_determinism_nested_loop_back_edges` | Nested loops — two independent back-edges; inner header carries both outer and inner loop vars as block params |
 | `jit_determinism_loop_accumulator` | Loop with two header params (counter + accumulator); `else_args` passes accumulated value to exit block |
+| `jit_determinism_call_return_value` | `Call` — value-returning callee; result used as exit code |
+| `jit_determinism_call_void` | `Call` — void callee (no return value); caller returns a constant |
+| `jit_determinism_call_with_args` | `Call` — callee takes two `I32` arguments; exercises argument passing |
+| `jit_determinism_call_chained` | `Call` — three-function chain; verifies forward-reference resolution |
+| `jit_determinism_call_in_branch` | `Call` inside a non-entry block (branch arm); verifies block-local call emission |
+| `jit_determinism_call_multiple` | Two calls to the same callee; verifies repeated `declare_func_in_func` stability |
 
 ### Running the Tests
 
