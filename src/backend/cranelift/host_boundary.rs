@@ -231,15 +231,17 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
 /// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
-/// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations)
+/// - `ConstFloat` — F64 constant via Cranelift `f64const`
+/// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations; F64 is not yet supported)
 /// - `Alloca` — stack slot allocation; `dst` receives an I64 pointer to the slot
 /// - `Load` — typed memory load from an Alloca-produced pointer
 /// - `Store` — typed memory store through an Alloca-produced pointer
-/// - `Compare` (Eq, Ne, Lt, Le, Gt, Ge — signed integer comparisons; result is I8)
+/// - `Compare` on integers (Eq, Ne, Lt, Le, Gt, Ge — signed integer `icmp`; result is I8)
+/// - `Compare` on F64 (Eq, Ne, Lt, Le, Gt, Ge — ordered float `fcmp`; result is I8)
 /// - `Return` (with or without a value)
 ///
 /// - `Jump` (unconditional block transfer with optional block-param arguments)
@@ -401,13 +403,15 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1, 2, and 3):
+/// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
+/// - [`IrInst::ConstFloat`] — F64 constants via Cranelift `f64const`
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem (integer types only)
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
 /// - [`IrInst::Load`] — typed memory load from a pointer
 /// - [`IrInst::Store`] — typed memory store through a pointer
-/// - [`IrInst::Compare`] — signed integer comparisons (Eq/Ne/Lt/Le/Gt/Ge); result is I8
+/// - [`IrInst::Compare`] on integers — signed `icmp` (Eq/Ne/Lt/Le/Gt/Ge); result is I8
+/// - [`IrInst::Compare`] on F64 — ordered `fcmp` (Eq/Ne/Lt/Le/Gt/Ge); result is I8
 /// - [`IrTerminator::Return`] — return with or without a value
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
 /// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
@@ -422,7 +426,8 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// On IR that passes `validate_module`, this function must not panic.  Every error path that
 /// would otherwise trigger a Cranelift internal assertion is converted to a structured error:
 /// - `Binary` on `F64` — returns `UnsupportedConstruct` (only integer arithmetic is implemented)
-/// - `Compare` on floating-point values — returns `UnsupportedConstruct` (only `icmp` is wired up)
+/// - `Compare` on integers — lowers to `icmp` with signed condition codes
+/// - `Compare` on `F64` — lowers to `fcmp` with ordered condition codes
 /// - Back-edge loops — compile without panic; execution is correct for loops that terminate
 ///
 /// All other instructions yield [`JitExecutionError::UnsupportedConstruct`].
@@ -486,6 +491,12 @@ fn compile_ir_function(
                     })?;
                     // The value fits in i64 for all supported integer types (I8/I16/I32/I64).
                     let cl_val = builder.ins().iconst(cl_ty, *value as i64);
+                    val_map.insert(*dst, cl_val);
+                }
+
+                IrInst::ConstFloat { dst, value } => {
+                    use cranelift_codegen::ir::immediates::Ieee64;
+                    let cl_val = builder.ins().f64const(Ieee64::with_bits(value.to_bits()));
                     val_map.insert(*dst, cl_val);
                 }
 
@@ -581,33 +592,36 @@ fn compile_ir_function(
                             detail: format!("undefined value {:?} used as compare rhs", rhs),
                         }
                     })?;
-                    // Guard: icmp only works on integer types. If the operands are float values
-                    // (e.g. from a function param with type F64), Cranelift would panic on a
-                    // type mismatch. Detect this by querying the Cranelift DFG.
-                    {
-                        let lhs_cl_ty = builder.func.dfg.value_type(lhs_val);
-                        if lhs_cl_ty.is_float() {
-                            return Err(JitExecutionError::UnsupportedConstruct {
-                                construct: format!(
-                                    "Compare on floating-point type {} (not yet supported; only integer icmp is implemented)",
-                                    lhs_cl_ty
-                                ),
-                            });
-                        }
-                    }
-                    // Map Cx compare ops to Cranelift signed-integer condition codes.
-                    // Unsigned variants are deferred until unsigned integer types are added.
-                    let cc = match op {
-                        CompareOp::Eq => IntCC::Equal,
-                        CompareOp::Ne => IntCC::NotEqual,
-                        CompareOp::Lt => IntCC::SignedLessThan,
-                        CompareOp::Le => IntCC::SignedLessThanOrEqual,
-                        CompareOp::Gt => IntCC::SignedGreaterThan,
-                        CompareOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                    // Dispatch to fcmp for float operands, icmp for integers.
+                    // Both produce an I8 result (0 = false, 1 = true) usable as a
+                    // `brif` condition in Branch terminators.
+                    let lhs_cl_ty = builder.func.dfg.value_type(lhs_val);
+                    let result = if lhs_cl_ty.is_float() {
+                        use cranelift_codegen::ir::condcodes::FloatCC;
+                        // Use ordered comparisons: NaN operands yield false for all
+                        // ordered conditions (Eq/Lt/Le/Gt/Ge) and true for NotEqual.
+                        let fcc = match op {
+                            CompareOp::Eq => FloatCC::Equal,
+                            CompareOp::Ne => FloatCC::NotEqual,
+                            CompareOp::Lt => FloatCC::LessThan,
+                            CompareOp::Le => FloatCC::LessThanOrEqual,
+                            CompareOp::Gt => FloatCC::GreaterThan,
+                            CompareOp::Ge => FloatCC::GreaterThanOrEqual,
+                        };
+                        builder.ins().fcmp(fcc, lhs_val, rhs_val)
+                    } else {
+                        // Map Cx compare ops to Cranelift signed-integer condition codes.
+                        // Unsigned variants are deferred until unsigned integer types are added.
+                        let cc = match op {
+                            CompareOp::Eq => IntCC::Equal,
+                            CompareOp::Ne => IntCC::NotEqual,
+                            CompareOp::Lt => IntCC::SignedLessThan,
+                            CompareOp::Le => IntCC::SignedLessThanOrEqual,
+                            CompareOp::Gt => IntCC::SignedGreaterThan,
+                            CompareOp::Ge => IntCC::SignedGreaterThanOrEqual,
+                        };
+                        builder.ins().icmp(cc, lhs_val, rhs_val)
                     };
-                    // icmp produces an I8 value (0 = false, 1 = true).
-                    // This is used directly as the `brif` condition in Branch terminators.
-                    let result = builder.ins().icmp(cc, lhs_val, rhs_val);
                     val_map.insert(*dst, result);
                 }
 
@@ -1596,50 +1610,190 @@ mod jit_tests {
         );
     }
 
-    /// Compare F64 must return UnsupportedConstruct, not panic.
+    /// Helper: build a two-block if/else module that compares two F64 constants.
     ///
-    /// Same setup as the Binary F64 test: F64 values via function parameters.
-    /// The Compare guard must detect the float type via Cranelift's DFG and bail
-    /// before `icmp` receives the float value.
-    #[test]
-    fn jit_compare_f64_returns_unsupported() {
-        use crate::ir::types::{BlockParam, IrParam};
-        use crate::ir::instr::CompareOp;
-        // main(x: F64, y: F64) -> I32 { block0(v0: F64, v1: F64): v2 = cmp Eq(v0, v1); v3=const 0; return v3 }
-        let module = IrModule {
-            debug_name: "test_compare_f64".to_string(),
+    /// ```text
+    /// main() -> I32 {
+    ///   block0:
+    ///     v0 = const lhs : F64
+    ///     v1 = const rhs : F64
+    ///     v2 = compare op(v0, v1)   // I8 via fcmp
+    ///     branch v2, block1[], block2[]
+    ///   block1:          // true path
+    ///     v3 = const true_val : I32
+    ///     return v3
+    ///   block2:          // false path
+    ///     v4 = const false_val : I32
+    ///     return v4
+    /// }
+    /// ```
+    fn float_compare_branch_module(
+        lhs: f64,
+        rhs: f64,
+        op: crate::ir::instr::CompareOp,
+        true_val: i128,
+        false_val: i128,
+    ) -> IrModule {
+        use crate::ir::instr::IrInst;
+        IrModule {
+            debug_name: "test_fcmp_branch".to_string(),
             functions: vec![IrFunction {
                 name: "main".to_string(),
-                params: vec![
-                    IrParam { name: "x".to_string(), ty: IrType::F64 },
-                    IrParam { name: "y".to_string(), ty: IrType::F64 },
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstFloat { dst: ValueId(0), value: lhs },
+                            IrInst::ConstFloat { dst: ValueId(1), value: rhs },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: true_val,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: false_val,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
                 ],
+            }],
+        }
+    }
+
+    /// ConstFloat must compile without falling through to UnsupportedConstruct.
+    #[test]
+    fn jit_const_float_compiles() {
+        use crate::ir::instr::IrInst;
+        let module = IrModule {
+            debug_name: "test_const_float".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
                 return_ty: Some(IrType::I32),
                 blocks: vec![IrBlock {
                     id: BlockId(0),
-                    params: vec![
-                        BlockParam { value: ValueId(0), ty: IrType::F64, read_only: false },
-                        BlockParam { value: ValueId(1), ty: IrType::F64, read_only: false },
-                    ],
+                    params: vec![],
                     insts: vec![
-                        IrInst::Compare {
-                            dst: ValueId(2),
-                            op: CompareOp::Eq,
-                            lhs: ValueId(0),
-                            rhs: ValueId(1),
-                        },
-                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 0 },
+                        IrInst::ConstFloat { dst: ValueId(0), value: 1.0 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
                     ],
-                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
                 }],
             }],
         };
         let result = HostBoundary::new().execute(&module);
-        assert!(
-            matches!(result, Err(JitExecutionError::UnsupportedConstruct { .. })),
-            "expected UnsupportedConstruct for Compare F64, got {:?}",
-            result
-        );
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
+    // ── Phase 15: fcmp correctness tests ────────────────────────────────────
+
+    #[test]
+    fn jit_fcmp_eq_true() {
+        // 1.5 == 1.5 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(1.5, 1.5, CompareOp::Eq, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_fcmp_eq_false() {
+        // 1.5 == 2.5 → false → return 0
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Eq, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_fcmp_ne_true() {
+        // 1.5 != 2.5 → true → return 42
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Ne, 42, 99);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_fcmp_lt_true() {
+        // 1.5 < 2.5 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Lt, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_fcmp_lt_false() {
+        // 2.5 < 1.5 → false → return 0
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(2.5, 1.5, CompareOp::Lt, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_fcmp_le_equal_is_true() {
+        // 1.5 <= 1.5 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(1.5, 1.5, CompareOp::Le, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_fcmp_gt_true() {
+        // 3.0 > 1.5 → true → return 42
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(3.0, 1.5, CompareOp::Gt, 42, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 42);
+    }
+
+    #[test]
+    fn jit_fcmp_ge_true() {
+        // 2.0 >= 2.0 → true → return 1
+        use crate::ir::instr::CompareOp;
+        let m = float_compare_branch_module(2.0, 2.0, CompareOp::Ge, 1, 0);
+        let r = HostBoundary::new().execute(&m);
+        assert!(r.is_ok(), "JIT failed: {:?}", r.unwrap_err());
+        assert_eq!(r.unwrap().exit_code.raw(), 1);
     }
 
     /// A back-edge loop must compile and execute correctly (no panic from sealing).
