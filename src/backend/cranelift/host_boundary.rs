@@ -1548,6 +1548,569 @@ mod jit_tests {
         assert_eq!(result.unwrap().exit_code.raw(), 42);
     }
 
+    // ── Phase 15: if/else differential fixtures ─────────────────────────────
+    //
+    // These fixtures verify the merge-block pattern used by if/else lowering:
+    // both branches Jump to a shared merge block that receives the branch result
+    // via a block parameter.  This is distinct from the compare_branch_module
+    // tests, which use separate Return instructions in each branch.
+
+    /// if 5 == 5 { v = 1 } else { v = 0 }; return v  → 1  (then path taken)
+    ///
+    /// ```text
+    /// block0: v0=5, v1=5, v2=cmp Eq(v0,v1), branch v2, block1[], block2[]
+    /// block1: v3=1, jump block3(v3)
+    /// block2: v4=0, jump block3(v4)
+    /// block3(v5: I32): return v5
+    /// ```
+    #[test]
+    fn jit_if_else_merge_then_path() {
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_if_else_merge_then".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(5),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // then path: 5 == 5
+    }
+
+    /// if 5 == 6 { v = 1 } else { v = 0 }; return v  → 0  (else path taken)
+    ///
+    /// Same merge-block structure; condition is false so else branch runs.
+    #[test]
+    fn jit_if_else_merge_else_path() {
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_if_else_merge_else".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 6 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(5),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0); // else path: 5 != 6
+    }
+
+    /// Nested if/else: outer true, inner true → return 42.
+    ///
+    /// ```text
+    /// if 2 > 1 { if 3 > 2 { return 42 } else { return 1 } } else { return 0 }
+    ///
+    /// block0: v0=2, v1=1, v2=cmp Gt(v0,v1), branch v2, block1[], block4[]
+    /// block1: v3=3, v4=2, v5=cmp Gt(v3,v4), branch v5, block2[], block3[]
+    /// block2: v6=42, return v6
+    /// block3: v7=1,  return v7
+    /// block4: v8=0,  return v8
+    /// ```
+    #[test]
+    fn jit_if_else_nested_inner_true_path() {
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_if_else_nested".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 2 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 1 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Gt,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(4),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 3 },
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 2 },
+                            IrInst::Compare {
+                                dst: ValueId(5),
+                                op: CompareOp::Gt,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(5),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(6),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(7),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(7)) },
+                    },
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(8),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(8)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42); // 2>1 and 3>2 both true
+    }
+
+    // ── Phase 15: while loop differential fixtures ───────────────────────────
+    //
+    // These fixtures complement jit_back_edge_loop_compiles_and_executes_correctly
+    // by covering patterns the existing test does not: zero-iteration loops,
+    // loops that return the final loop-carried value, and loops that accumulate
+    // two loop-carried variables.
+
+    /// while i < 5 { i += 1 }; return i  starting from i=5 → loop never runs → 5.
+    ///
+    /// ```text
+    /// block0: v0=5, jump block1(v0)
+    /// block1(v1: I32): v2=5, v3=cmp Lt(v1,v2), branch v3, block2[], block3(v1)
+    /// block2: v4=1, v5=add(v1,v4), jump block1(v5)   ← never taken
+    /// block3(v6: I32): return v6
+    /// ```
+    #[test]
+    fn jit_while_loop_zero_iterations() {
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_while_zero_iter".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 5,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(5)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(6),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 5); // loop never ran, i stays 5
+    }
+
+    /// i = 0; while i < 5 { i += 1 }; return i  → 5  (loop-carried value on exit).
+    ///
+    /// Differs from jit_back_edge_loop_compiles_and_executes_correctly, which
+    /// returns a constant from the exit block; here the exit block receives the
+    /// final counter value via a block parameter.
+    ///
+    /// ```text
+    /// block0: v0=0, jump block1(v0)
+    /// block1(v1: I32): v2=5, v3=cmp Lt(v1,v2), branch v3, block2[], block3(v1)
+    /// block2: v4=1, v5=add(v1,v4), jump block1(v5)
+    /// block3(v6: I32): return v6
+    /// ```
+    #[test]
+    fn jit_while_loop_returns_final_counter() {
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_while_counter".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(5)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(6),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 5); // i counted 0..4, exits at 5
+    }
+
+    /// sum=0; i=0; while i<5 { sum+=i; i+=1 }; return sum  → 10  (two loop-carried vars).
+    ///
+    /// ```text
+    /// block0: v0=0 (sum), v1=0 (i), jump block1(v0, v1)
+    /// block1(v2: I32, v3: I32): v4=5, v5=cmp Lt(v3,v4), branch v5, block2[], block3(v2)
+    /// block2: v6=add(v2,v3), v7=1, v8=add(v3,v7), jump block1(v6, v8)
+    /// block3(v9: I32): return v9
+    /// ```
+    #[test]
+    fn jit_while_loop_accumulates_sum() {
+        use crate::ir::instr::CompareOp;
+        use crate::ir::types::BlockParam;
+        let module = IrModule {
+            debug_name: "test_while_sum".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0), ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![
+                            BlockParam { value: ValueId(2), ty: IrType::I32, read_only: false },
+                            BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false },
+                        ],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(5),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(5),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Binary {
+                                dst: ValueId(6),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(2),
+                                rhs: ValueId(3),
+                            },
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(8),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(3),
+                                rhs: ValueId(7),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6), ValueId(8)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(9),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(9)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 10); // 0+1+2+3+4 = 10
+    }
+
     // ── Phase 15: no-panic guarantee tests ──────────────────────────────────
 
     /// Binary F64 must return UnsupportedConstruct, not panic.
@@ -2330,6 +2893,323 @@ mod determinism_tests {
                             value: 42,
                         }],
                         term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── if/else merge-block ───────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_if_else_merge_then_path() {
+        // if 5 == 5 { v = 1 } else { v = 0 }; return v  → 1
+        let module = IrModule {
+            debug_name: "det_if_else_then".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(5),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_if_else_merge_else_path() {
+        // if 5 == 6 { v = 1 } else { v = 0 }; return v  → 0
+        let module = IrModule {
+            debug_name: "det_if_else_else".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 6 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(5),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── while loop with loop-carried values ───────────────────────────────────
+
+    #[test]
+    fn jit_determinism_while_loop_returns_final_counter() {
+        // i=0; while i<5 { i+=1 }; return i  → 5
+        let module = IrModule {
+            debug_name: "det_while_counter".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(5)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(6),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    #[test]
+    fn jit_determinism_while_loop_accumulates_sum() {
+        // sum=0; i=0; while i<5 { sum+=i; i+=1 }; return sum  → 10
+        let module = IrModule {
+            debug_name: "det_while_sum".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0), ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![
+                            BlockParam { value: ValueId(2), ty: IrType::I32, read_only: false },
+                            BlockParam { value: ValueId(3), ty: IrType::I32, read_only: false },
+                        ],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(5),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(5),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Binary {
+                                dst: ValueId(6),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(2),
+                                rhs: ValueId(3),
+                            },
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(8),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(3),
+                                rhs: ValueId(7),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6), ValueId(8)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(9),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(9)) },
                     },
                 ],
             }],
