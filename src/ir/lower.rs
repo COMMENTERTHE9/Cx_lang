@@ -2506,7 +2506,8 @@ fn lower_assert_eq_stmt(
         | IrType::I8
         | IrType::I16
         | IrType::I32
-        | IrType::I64 => {}
+        | IrType::I64
+        | IrType::I128 => {}
         other => {
             return Err(LoweringError::UnsupportedSemanticConstruct {
                 construct: format!(
@@ -2531,7 +2532,7 @@ fn lower_assert_eq_stmt(
 /// Coerce a [`LoweredValue`] to `IrType::Bool` for use as a branch condition.
 ///
 /// - If the value is already `Bool`, it is returned unchanged.
-/// - If the value is an integer type (`I8`/`I16`/`I32`/`I64`), a
+/// - If the value is an integer type (`I8`/`I16`/`I32`/`I64`/`I128`), a
 ///   `Compare { Ne, value, 0 }` is emitted to produce a `Bool` result
 ///   (truthy semantics: any non-zero integer is true).
 /// - All other types produce an `UnsupportedSemanticConstruct` error.
@@ -2542,7 +2543,7 @@ fn coerce_to_bool(
 ) -> Result<ValueId, LoweringError> {
     match &val.ty {
         IrType::Bool => Ok(val.value),
-        IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
+        IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 | IrType::I128 => {
             let zero = ctx.fresh_value();
             active.emit(IrInst::ConstInt {
                 dst: zero,
@@ -5592,6 +5593,57 @@ mod tests {
             enums: vec![],
         };
         let module = lower_and_validate(&program);
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_i128_nonzero_lowers_via_truthy_coercion() {
+        // assert(1_i128) → Compare(Ne, 1_i128, 0_i128) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert",
+                vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I128))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_ne_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Ne, .. })
+            })
+        });
+        assert!(has_ne_compare, "expected a Ne Compare for I128 truthy-integer coercion");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_eq_same_i128_lowers_to_validated_cfg() {
+        // assert_eq(1_i128, 1_i128) → Compare(Eq) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I128)),
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I128)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_eq_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Eq, .. })
+            })
+        });
+        assert!(has_eq_compare, "expected an Eq Compare for I128 assert_eq");
         let has_trap = module.functions[0]
             .blocks
             .iter()
