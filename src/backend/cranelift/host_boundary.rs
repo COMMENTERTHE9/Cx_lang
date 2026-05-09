@@ -2452,7 +2452,7 @@ mod determinism_tests {
                 ],
             }],
         };
-        assert_deterministic(&module);
+        assert_deterministic_with_expected(&module, 5);
     }
 
     // ── Loop with continue (multiple predecessors to header) ──────────────────
@@ -2573,7 +2573,7 @@ mod determinism_tests {
                 ],
             }],
         };
-        assert_deterministic(&module);
+        assert_deterministic_with_expected(&module, 42);
     }
 
     // ── Nested loop back-edges ────────────────────────────────────────────────
@@ -2733,7 +2733,7 @@ mod determinism_tests {
                 ],
             }],
         };
-        assert_deterministic(&module);
+        assert_deterministic_with_expected(&module, 42);
     }
 
     // ── Loop with accumulated value (two header params) ───────────────────────
@@ -2841,7 +2841,7 @@ mod determinism_tests {
                 ],
             }],
         };
-        assert_deterministic(&module);
+        assert_deterministic_with_expected(&module, 10);
     }
 
     // ── Two-function module ───────────────────────────────────────────────────
