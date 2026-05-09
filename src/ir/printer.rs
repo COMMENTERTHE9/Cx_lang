@@ -178,6 +178,7 @@ pub fn print_terminator(term: &IrTerminator) -> String {
             Some(v) => format!("ret {}", print_value_id(*v)),
             None => "ret".to_string(),
         },
+        IrTerminator::Trap => "trap".to_string(),
     }
 }
 
@@ -286,6 +287,18 @@ mod tests {
 
         let output = print_module(&module);
         assert!(output.contains("v0 = call get_value(v1, v2) -> i64"));
+    }
+
+    #[test]
+    fn prints_trap_terminator() {
+        let block = IrBlock {
+            id: BlockId(5),
+            params: vec![],
+            insts: vec![],
+            term: IrTerminator::Trap,
+        };
+        let output = print_block(&block);
+        assert!(output.contains("trap"), "expected 'trap' in output, got: {}", output);
     }
 
     #[test]

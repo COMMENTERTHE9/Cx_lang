@@ -230,6 +230,12 @@ fn lower_terminator(term: &IrTerminator) -> Result<(), CraneliftLoweringError> {
                 context: format!("value={value:?}"),
             })
         }
+        IrTerminator::Trap => {
+            Err(CraneliftLoweringError::UnsupportedTerminator {
+                term: "Trap".to_string(),
+                context: "assertion-failure abort".to_string(),
+            })
+        }
     }
 }
 

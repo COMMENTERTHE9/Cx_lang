@@ -635,6 +635,8 @@ fn validate_terminator(
                 );
             }
         }
+        // Trap is an unconditional abort: no values consumed, no successor block.
+        IrTerminator::Trap => {}
     }
 }
 
@@ -1129,6 +1131,72 @@ mod tests {
         assert!(errors
             .iter()
             .any(|err| matches!(err, IrValidationError::InvalidTypeUsage { detail, .. } if detail.contains("expects 1 args"))));
+    }
+
+    #[test]
+    fn accepts_trap_terminator_in_unreachable_else_branch() {
+        // Models an assertion: branch on bool, pass → Return, fail → Trap.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "f".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Trap,
+                    },
+                ],
+            }],
+        };
+
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    #[test]
+    fn accepts_trap_as_sole_terminator_in_single_block_function() {
+        // A function that unconditionally traps is structurally valid IR.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "always_fails".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Trap,
+                }],
+            }],
+        };
+
+        assert_eq!(validate_module(&module), Ok(()));
     }
 
     #[test]
