@@ -57,6 +57,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
 ### Merged to submain (not yet on main)
+
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
 - [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; more fixtures in flight)
