@@ -2337,6 +2337,490 @@ mod determinism_tests {
         assert_deterministic(&module);
     }
 
+    // ── Loop construct with break ─────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_loop_construct_with_break() {
+        // Verify determinism for a `loop { ... break }` CFG: header block
+        // jumps unconditionally into the body; break exits via then_args on
+        // the Branch terminator; the back-edge carries the updated loop
+        // variable via else_args.
+        //
+        // main() -> I32 {
+        //   block0:      v0=0;                        jump block1(v0)
+        //   block1(v1):                               jump block2
+        //   block2:      v3=v1+1; v5=cmp Ge(v3,5);
+        //                branch v5, block3[v3],        // break→exit with new_i
+        //                          block1[v3]           // back-edge with new_i
+        //   block3(v6):  return v6
+        // }
+        // Simulates: loop { i+=1; if i>=5 { break } }; return i  → exit code 5
+        let module = IrModule {
+            debug_name: "det_loop_break".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Jump {
+                            target: BlockId(2),
+                            args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(3),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(5),
+                                op: CompareOp::Ge,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(5),
+                            then_block: BlockId(3),
+                            then_args: vec![ValueId(3)],
+                            else_block: BlockId(1),
+                            else_args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(6),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Loop with continue (multiple predecessors to header) ──────────────────
+
+    #[test]
+    fn jit_determinism_loop_continue() {
+        // Verify determinism when a `continue` statement creates a second
+        // back-edge to the loop header.  The header has three predecessors:
+        // the entry block, the end-of-body block, and the continue back-edge.
+        // seal_all_blocks() must handle all three before sealing.
+        //
+        // main() -> I32 {
+        //   block0:       v0=0;                          jump block1(v0)
+        //   block1(v1):   v3=cmp Lt(v1,7);
+        //                 branch v3, block2[], block4[]
+        //   block2:       v5=v1+1; v7=cmp Eq(v5,3);
+        //                 branch v7, block1[v5],          // continue (early back-edge)
+        //                           block3[v5]
+        //   block3(v8):   jump block1(v8)               // end-of-body back-edge
+        //   block4:       return 42
+        // }
+        // Simulates: i=0; while i<7 { i+=1; if i==3 { continue } }; return 42  → exit 42
+        let module = IrModule {
+            debug_name: "det_loop_continue".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 7 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(4),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(1),
+                                rhs: ValueId(4),
+                            },
+                            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 3 },
+                            IrInst::Compare {
+                                dst: ValueId(7),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(5),
+                                rhs: ValueId(6),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(7),
+                            then_block: BlockId(1),
+                            then_args: vec![ValueId(5)],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(5)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(8),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(8)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(9),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(9)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Nested loop back-edges ────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_nested_loop_back_edges() {
+        // Verify determinism for two nested loops, each with its own back-edge.
+        // The inner header carries both the outer (i) and inner (j) variables
+        // as block params.
+        //
+        // main() -> I32 {
+        //   block0:          v0=0;               jump block1(v0)
+        //   block1(i):       v3=cmp Lt(i,3);
+        //                    branch v3, block2[], block6[]
+        //   block2:          v4=0;               jump block3(i, v4)
+        //   block3(i2, j):   v8=cmp Lt(j,3);
+        //                    branch v8, block4[], block5[]
+        //   block4:          j2=j+1;             jump block3(i2, j2)   // inner back-edge
+        //   block5:          i3=i2+1;            jump block1(i3)       // outer back-edge
+        //   block6:          return 42
+        // }
+        // Simulates: for i in 0..3 { for j in 0..3 { } }; return 42  → exit code 42
+        let module = IrModule {
+            debug_name: "det_nested_loops".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(1),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 3 },
+                            IrInst::Compare {
+                                dst: ValueId(3),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(1),
+                                rhs: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(3),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(6),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(1), ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![
+                            BlockParam {
+                                value: ValueId(5),
+                                ty: IrType::I32,
+                                read_only: false,
+                            },
+                            BlockParam {
+                                value: ValueId(6),
+                                ty: IrType::I32,
+                                read_only: false,
+                            },
+                        ],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 3 },
+                            IrInst::Compare {
+                                dst: ValueId(8),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(6),
+                                rhs: ValueId(7),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(8),
+                            then_block: BlockId(4),
+                            then_args: vec![],
+                            else_block: BlockId(5),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(9), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(10),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(6),
+                                rhs: ValueId(9),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(5), ValueId(10)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(5),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(11), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(12),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(5),
+                                rhs: ValueId(11),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(12)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(6),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(13),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(13)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
+    // ── Loop with accumulated value (two header params) ───────────────────────
+
+    #[test]
+    fn jit_determinism_loop_accumulator() {
+        // Verify determinism when the loop header carries two block params:
+        // a loop counter (i) and an accumulator (sum).  The exit block
+        // receives the final sum via else_args on the Branch terminator.
+        //
+        // main() -> I32 {
+        //   block0:          v0=0, v1=0;         jump block1(v0, v1)
+        //   block1(i, sum):  v5=cmp Lt(i,5);
+        //                    branch v5, block2[], block3[sum]
+        //   block2:          new_sum=sum+i; new_i=i+1;
+        //                    jump block1(new_i, new_sum)
+        //   block3(ret):     return ret
+        // }
+        // Simulates: sum=0; i=0; while i<5 { sum+=i; i+=1 }; return sum  → exit code 10
+        let module = IrModule {
+            debug_name: "det_loop_accum".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(0), ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![
+                            BlockParam {
+                                value: ValueId(2),
+                                ty: IrType::I32,
+                                read_only: false,
+                            },
+                            BlockParam {
+                                value: ValueId(3),
+                                ty: IrType::I32,
+                                read_only: false,
+                            },
+                        ],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(5),
+                                op: CompareOp::Lt,
+                                lhs: ValueId(2),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(5),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Binary {
+                                dst: ValueId(6),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(3),
+                                rhs: ValueId(2),
+                            },
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(8),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(2),
+                                rhs: ValueId(7),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(8), ValueId(6)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(9),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(9)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic(&module);
+    }
+
     // ── Two-function module ───────────────────────────────────────────────────
 
     #[test]
