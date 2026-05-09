@@ -1783,10 +1783,33 @@ mod determinism_tests {
 
         let code1 = r1.unwrap().exit_code.raw();
         let code2 = r2.unwrap().exit_code.raw();
+
         assert_eq!(
             code1, code2,
             "JIT is non-deterministic: first run returned {}, second run returned {}",
             code1, code2
+        );
+    }
+
+    fn assert_deterministic_with_expected(module: &IrModule, expected: i32) {
+        let r1 = HostBoundary::new().execute(module);
+        let r2 = HostBoundary::new().execute(module);
+
+        assert!(r1.is_ok(), "first JIT run failed: {:?}", r1.unwrap_err());
+        assert!(r2.is_ok(), "second JIT run failed: {:?}", r2.unwrap_err());
+
+        let code1 = r1.unwrap().exit_code.raw();
+        let code2 = r2.unwrap().exit_code.raw();
+
+        assert_eq!(
+            code1, code2,
+            "JIT is non-deterministic: first run returned {}, second run returned {}",
+            code1, code2
+        );
+
+        assert_eq!(
+            code1, expected,
+            "JIT returned deterministic but incorrect exit code"
         );
     }
 
