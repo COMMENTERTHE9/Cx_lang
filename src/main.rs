@@ -232,7 +232,9 @@ fn run() {
                     return;
                 }
             };
-            println!("{}", crate::ir::printer::print_module(&ir));
+            if flags.trace {
+                println!("{}", crate::ir::printer::print_module(&ir));
+            }
             let b = backend::cranelift::CraneliftBackend;
             if let Err(msg) = b.execute(&ir) {
                 eprintln!("{}", msg);
