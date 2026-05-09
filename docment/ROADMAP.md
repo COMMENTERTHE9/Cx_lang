@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-05
+Last updated: 2026-05-09
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -56,15 +56,13 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
-### Started (branch-local, not merged)
-- [ ] Phase 12 — Differential harness (CX-23: sub-packet 1 done — fixture format, interpreter baseline)
-- [ ] Phase 13 — Cranelift lowering skeleton (CX-22: IrType mapping, module traversal, error types)
-- [ ] JIT Host Boundary (CX-24: process ownership, exit codes, output capture scaffold)
-
-### Next — 0.1 Path
-- [ ] Phase 9 — Runtime intrinsics boundary
-- [ ] Phase 14 — First executable Cranelift slice
-- [ ] Phase 15 — Cranelift JIT 0.1 target
+### Merged to submain (not yet on main)
+- [x] Phase 13 — Cranelift lowering skeleton (CX-22)
+- [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
+- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; more fixtures in flight)
+- [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
+- [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; CX-57/58/60/63/64/66 instruction coverage in flight)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -90,6 +88,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
