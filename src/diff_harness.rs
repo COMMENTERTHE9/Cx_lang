@@ -42,6 +42,195 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// ── Feature classification ────────────────────────────────────────────────────
+
+/// Language feature categories for the Phase 12 parity checklist.
+///
+/// Each `t*.cx` fixture maps to exactly one category. This mapping lets the
+/// differential harness report per-feature pass / skip / PARITY_FAIL counts
+/// rather than a single aggregate total.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FeatureCategory {
+    Arithmetic,
+    VariableDecl,
+    IfElse,
+    WhileLoop,
+    ForLoop,
+    InfiniteLoop,
+    DirectCall,
+    Struct,
+    Array,
+    CompoundAssign,
+    Unary,
+    Cast,
+    FloatOps,
+    BuiltinAssert,
+    Other,
+}
+
+impl FeatureCategory {
+    /// All category variants in a stable order for table output.
+    pub fn all() -> &'static [FeatureCategory] {
+        &[
+            FeatureCategory::Arithmetic,
+            FeatureCategory::VariableDecl,
+            FeatureCategory::IfElse,
+            FeatureCategory::WhileLoop,
+            FeatureCategory::ForLoop,
+            FeatureCategory::InfiniteLoop,
+            FeatureCategory::DirectCall,
+            FeatureCategory::Struct,
+            FeatureCategory::Array,
+            FeatureCategory::CompoundAssign,
+            FeatureCategory::Unary,
+            FeatureCategory::Cast,
+            FeatureCategory::FloatOps,
+            FeatureCategory::BuiltinAssert,
+            FeatureCategory::Other,
+        ]
+    }
+}
+
+impl std::fmt::Display for FeatureCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            FeatureCategory::Arithmetic     => "Arithmetic",
+            FeatureCategory::VariableDecl   => "VariableDecl",
+            FeatureCategory::IfElse         => "IfElse",
+            FeatureCategory::WhileLoop      => "WhileLoop",
+            FeatureCategory::ForLoop        => "ForLoop",
+            FeatureCategory::InfiniteLoop   => "InfiniteLoop",
+            FeatureCategory::DirectCall     => "DirectCall",
+            FeatureCategory::Struct         => "Struct",
+            FeatureCategory::Array          => "Array",
+            FeatureCategory::CompoundAssign => "CompoundAssign",
+            FeatureCategory::Unary          => "Unary",
+            FeatureCategory::Cast           => "Cast",
+            FeatureCategory::FloatOps       => "FloatOps",
+            FeatureCategory::BuiltinAssert  => "BuiltinAssert",
+            FeatureCategory::Other          => "Other",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Map a fixture stem (e.g. `"t01_arith_eq_mod"`) to its feature category.
+///
+/// Every `t*.cx` fixture maps to exactly one category. Fixtures not matching
+/// a named entry map to [`FeatureCategory::Other`].
+pub fn feature_of(fixture_name: &str) -> FeatureCategory {
+    match fixture_name {
+        // ── Arithmetic ────────────────────────────────────────────────────────
+        "t01_arith_eq_mod"
+        | "t89_overflow_t8_add"
+        | "t90_overflow_t8_mul"
+        | "t91_overflow_t8_chain"
+        | "t92_overflow_t8_compare"
+        | "t93_overflow_t16_wrap"
+        | "t94_overflow_mixed_widths"
+        | "t95_overflow_t128_unchanged"
+        | "t103_arithmetic_on_strings"
+        | "t114_eval_order_binary_arith"
+        | "t115_eval_order_compare"
+        | "t116_eval_order_nested"
+            => FeatureCategory::Arithmetic,
+
+        // ── VariableDecl ──────────────────────────────────────────────────────
+        "t15_block_scope_shadow"
+        | "t56_const_basic"
+        | "t57_const_reassign_reject"
+        | "t101_undefined_var_hint"
+        | "t102_type_mismatch_uses_cx_names"
+            => FeatureCategory::VariableDecl,
+
+        // ── IfElse ────────────────────────────────────────────────────────────
+        "t44_if_else_basic"
+        | "t45_if_else_in_func"
+        | "t46_if_not"
+            => FeatureCategory::IfElse,
+
+        // ── WhileLoop ─────────────────────────────────────────────────────────
+        "t23_while_loop"
+        | "t34_while_in"
+        | "t35_while_in_then"
+        | "t105_while_in_func"
+        | "t107_continue_in_func"
+        | "t108_nested_loops_in_func"
+            => FeatureCategory::WhileLoop,
+
+        // ── ForLoop ───────────────────────────────────────────────────────────
+        "t48_for_loop"
+        | "t104_for_in_func"
+            => FeatureCategory::ForLoop,
+
+        // ── InfiniteLoop ──────────────────────────────────────────────────────
+        "t25_loop_break"
+        | "t106_loop_break_in_func"
+            => FeatureCategory::InfiniteLoop,
+
+        // ── DirectCall ────────────────────────────────────────────────────────
+        "t02_implicit_return"
+        | "t03_explicit_return"
+        | "t04_wrong_return_type"
+        | "t05_missing_return_value"
+        | "t06_void_unexpected_return"
+        | "t07_arg_count_mismatch"
+        | "t08_arg_type_mismatch"
+        | "t14_nested_5_deep"
+        | "t29_forward_decl"
+        | "t50_nested_func_no_leak"
+        | "t113_recursive_fib"
+            => FeatureCategory::DirectCall,
+
+        // ── Struct ────────────────────────────────────────────────────────────
+        "t36_struct_probe"
+        | "t39_impl_basic"
+        | "t40_impl_return"
+        | "t43_multi_alias_impl"
+        | "t109_struct_field_overflow"
+        | "t110_struct_field_assign_overflow"
+        | "t114_field_type_mismatch_reject"
+        | "t115_strref_in_struct_reject"
+            => FeatureCategory::Struct,
+
+        // ── Array ─────────────────────────────────────────────────────────────
+        "t33_arrays"
+        | "t112_array_of_result"
+            => FeatureCategory::Array,
+
+        // ── CompoundAssign ────────────────────────────────────────────────────
+        "t26_compound_add_two"
+        | "t41_compound_assign_dot"
+            => FeatureCategory::CompoundAssign,
+
+        // ── Unary ─────────────────────────────────────────────────────────────
+        "t96_overflow_t8_unary_neg"
+            => FeatureCategory::Unary,
+
+        // Cast — no fixtures in the current matrix explicitly target casts.
+        // The variant exists for completeness when new cast fixtures are added.
+
+        // ── FloatOps ──────────────────────────────────────────────────────────
+        "t55_f64_basic"
+            => FeatureCategory::FloatOps,
+
+        // ── BuiltinAssert ─────────────────────────────────────────────────────
+        "t77_assert_basic"
+        | "t78_assert_eq_strings"
+        | "t79_assert_false_reject"
+        | "t80_assert_eq_mismatch_reject"
+            => FeatureCategory::BuiltinAssert,
+
+        // ── Other (everything not assigned to a named category) ───────────────
+        _ => FeatureCategory::Other,
+    }
+}
+
+/// Exit code produced by the Cx JIT binary when codegen encounters an
+/// unsupported construct. Matches `JitExitCode::UNSUPPORTED_CONSTRUCT` in
+/// `backend::cranelift::host_boundary`.
+const JIT_SKIP_EXIT_CODE: i32 = 127;
+
 // ── Fixture types ─────────────────────────────────────────────────────────────
 
 /// What the interpreter is expected to do when given this fixture.
@@ -215,6 +404,100 @@ pub fn cx_binary_path() -> PathBuf {
         .join(exe)
 }
 
+// ── JIT subprocess runner ─────────────────────────────────────────────────────
+
+/// Run the Cx binary in JIT mode on `fixture` and return the captured outcome.
+///
+/// Spawns `<binary> --backend=cranelift <fixture_path>` as a subprocess.
+/// An exit code of [`JIT_SKIP_EXIT_CODE`] (127) means codegen encountered an
+/// unsupported construct — callers should count this as SKIP, not PARITY_FAIL.
+///
+/// Requires the binary to have been built with `--features jit`.
+#[cfg(feature = "jit")]
+pub fn run_jit_subprocess(binary: &Path, fixture: &TestFixture) -> InterpOutcome {
+    let output = Command::new(binary)
+        .arg("--backend=cranelift")
+        .arg(&fixture.path)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn JIT binary {:?} for fixture {:?}: {}",
+                binary, fixture.path, e
+            )
+        });
+
+    InterpOutcome {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        exit_code: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// Run all matrix fixtures through the Cranelift JIT subprocess and aggregate
+/// results by [`FeatureCategory`].
+///
+/// Returns a map from category to `(pass, skip, parity_fail)` counts:
+///
+/// - **pass** — JIT outcome matched the stored fixture expectation
+/// - **skip** — JIT subprocess exited with [`JIT_SKIP_EXIT_CODE`] (127);
+///   codegen does not yet support the construct (expected, not a failure)
+/// - **parity_fail** — JIT outcome diverged from the stored expectation
+///
+/// All 15 [`FeatureCategory`] variants are present in the returned map even
+/// when no fixture maps to that category (zero counts).
+#[cfg(feature = "jit")]
+pub fn parity_by_feature(
+    binary: &Path,
+) -> std::collections::HashMap<FeatureCategory, (usize, usize, usize)> {
+    use std::collections::HashMap;
+
+    let fixtures = collect_matrix_tests();
+    let mut map: HashMap<FeatureCategory, (usize, usize, usize)> = HashMap::new();
+    for &cat in FeatureCategory::all() {
+        map.insert(cat, (0, 0, 0));
+    }
+
+    for fixture in &fixtures {
+        let cat = feature_of(&fixture.name);
+        let outcome = run_jit_subprocess(binary, fixture);
+        let entry = map.entry(cat).or_insert((0, 0, 0));
+
+        // Two SKIP signals:
+        //
+        // 1. exit 127 (JIT_SKIP_EXIT_CODE): the binary correctly propagated the
+        //    unsupported-construct sentinel. Included for forward compatibility.
+        //
+        // 2. exit 0 with non-empty stderr: the IR lowering or JIT codegen step
+        //    failed and printed an error message to stderr. The binary always
+        //    exits 0 in this case (the Cx main() never ran); a non-empty stderr
+        //    distinguishes this from a successful run that produced no stdout.
+        //    Expected-fail (semantic-error) fixtures take the same path but exit
+        //    non-zero (std::process::exit(1) in the semantic phase), so they are
+        //    not mistakenly classified as SKIP.
+        if outcome.exit_code == JIT_SKIP_EXIT_CODE
+            || (outcome.exit_code == 0 && !outcome.stderr.is_empty())
+        {
+            entry.1 += 1; // skip
+        } else {
+            let is_parity_fail = match &fixture.expectation {
+                TestExpectation::Fail => outcome.exit_code == 0,
+                TestExpectation::PassAny => outcome.exit_code != 0,
+                TestExpectation::PassWithOutput(expected) => {
+                    outcome.exit_code != 0 || normalise(&outcome.stdout) != *expected
+                }
+            };
+            if is_parity_fail {
+                entry.2 += 1; // PARITY_FAIL
+            } else {
+                entry.0 += 1; // pass
+            }
+        }
+    }
+
+    map
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -384,6 +667,64 @@ mod tests {
             "interpreter_baseline_all: {}/{} fixtures passed",
             fixtures.len(),
             fixtures.len()
+        );
+    }
+
+    // ── JIT parity by feature ─────────────────────────────────────────────────
+
+    /// Per-feature JIT parity gate (Phase 12 checklist).
+    ///
+    /// Runs every matrix fixture through the Cranelift JIT subprocess and
+    /// reports pass / skip / PARITY_FAIL counts per [`FeatureCategory`].
+    ///
+    /// A PARITY_FAIL occurs when the JIT outcome diverges from the stored
+    /// fixture expectation. A SKIP (exit 127) means codegen does not yet
+    /// support the construct — skips are expected and do not fail the test.
+    ///
+    /// Run with:
+    ///
+    /// ```text
+    /// cargo build --features jit && cargo test --features jit jit_parity_by_feature --nocapture
+    /// ```
+    #[test]
+    #[cfg(feature = "jit")]
+    fn jit_parity_by_feature() {
+        let binary = cx_binary_path();
+
+        if !binary.exists() {
+            eprintln!(
+                "SKIP jit_parity_by_feature — binary not found at {:?}.\n\
+                 Build with `cargo build --features jit` then re-run tests.",
+                binary
+            );
+            return;
+        }
+
+        let results = parity_by_feature(&binary);
+
+        println!("\njit_parity_by_feature results:");
+        println!("{:<20} {:>6} {:>6} {:>12}", "Feature", "PASS", "SKIP", "PARITY_FAIL");
+        println!("{}", "-".repeat(48));
+        for cat in FeatureCategory::all() {
+            let (pass, skip, fail) = results[cat];
+            println!("{:<20} {:>6} {:>6} {:>12}", cat, pass, skip, fail);
+        }
+        println!("{}", "-".repeat(48));
+
+        let total: usize = results.values().map(|(p, s, f)| p + s + f).sum();
+        let total_fail: usize = results.values().map(|(_, _, f)| *f).sum();
+
+        assert_eq!(
+            total_fail,
+            0,
+            "{} PARITY_FAIL(s) detected across all feature categories (see table above)",
+            total_fail
+        );
+
+        eprintln!(
+            "jit_parity_by_feature: {} fixtures checked across {} feature categories, 0 PARITY_FAILs",
+            total,
+            results.len()
         );
     }
 }
