@@ -112,7 +112,7 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_back_edge_loop` | Back-edge CFG (while loop) via `seal_all_blocks()` |
 | `jit_determinism_two_function_module` | Multiple functions in one module |
 | `jit_determinism_loop_construct_with_break` | `loop { break }` — header→body back-edge; break via `Branch` `then_args`; continue-loop via `else_args` |
-| `jit_determinism_loop_continue` | `continue` — header with three predecessors (entry, end-of-body, continue back-edge); `Compare::Ge` |
+| `jit_determinism_loop_continue` | `continue` — header with three predecessors (entry, end-of-body, continue back-edge); `Compare::Lt` + `Compare::Eq` |
 | `jit_determinism_nested_loop_back_edges` | Nested loops — two independent back-edges; inner header carries both outer and inner loop vars as block params |
 | `jit_determinism_loop_accumulator` | Loop with two header params (counter + accumulator); `else_args` passes accumulated value to exit block |
 
