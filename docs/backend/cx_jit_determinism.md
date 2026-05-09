@@ -111,6 +111,10 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_jump_with_block_param` | `Jump` + block parameters |
 | `jit_determinism_back_edge_loop` | Back-edge CFG (loop) via `seal_all_blocks()` |
 | `jit_determinism_two_function_module` | Multiple functions in one module |
+| `jit_determinism_for_loop_exclusive` | For-loop CFG (exclusive `..`): 5-block structure, `Lt` compare |
+| `jit_determinism_for_loop_inclusive` | For-loop CFG (inclusive `..=`): 5-block structure, `Le` compare |
+| `jit_determinism_for_loop_zero_iterations` | For-loop with start ≥ end: body/increment blocks unreachable |
+| `jit_determinism_for_loop_with_loop_carried_binding` | For-loop with loop-carried binding threaded through block params |
 
 ### Running the Tests
 
