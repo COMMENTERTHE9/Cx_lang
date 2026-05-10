@@ -1379,6 +1379,35 @@ mod jit_tests {
     }
 
     #[test]
+    fn jit_void_main_returns_success() {
+        // A void-returning main (return_ty: None) must be called as fn() and
+        // produce JitOutcome::success() — not as fn()->i32 which would read
+        // garbage from rax and produce an indeterminate exit code.
+        let module = IrModule {
+            debug_name: "test_void_main".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(
+            result.unwrap().exit_code.is_success(),
+            "void main must produce exit code 0"
+        );
+    }
+
+    #[test]
     fn jit_unsupported_inst_returns_error() {
         // Cast from Ptr is explicitly unsupported and must return UnsupportedConstruct.
         // Ptr casts have no scalar equivalent in Cx and are rejected at the JIT boundary.
