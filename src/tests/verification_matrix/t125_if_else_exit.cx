@@ -1,0 +1,27 @@
+// CX-97: exit-code-based JIT parity — Branch terminator (if/else).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+x: t64 = 10
+
+result: t64 = 0
+if x > 5 {
+    result = 1
+} else {
+    result = 0
+}
+assert_eq(result, 1)
+
+result = 0
+if x > 20 {
+    result = 99
+} else {
+    result = 2
+}
+assert_eq(result, 2)
+
+result = 0
+if x == 10 {
+    result = 3
+} else {
+    result = 0
+}
+assert_eq(result, 3)

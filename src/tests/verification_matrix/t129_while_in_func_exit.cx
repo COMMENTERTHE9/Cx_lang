@@ -1,0 +1,16 @@
+// CX-97: exit-code-based JIT parity — Jump+Branch terminators in function (while loop).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// Uses plain assignment (i = i + 1) to avoid compound-assign type inference.
+fnc: t64 sum_to(n: t64) {
+    total: t64 = 0
+    i: t64 = 0
+    while (i < n) {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+assert_eq(sum_to(5), 10)
+assert_eq(sum_to(10), 45)
+assert_eq(sum_to(0), 0)

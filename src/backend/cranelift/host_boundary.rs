@@ -433,13 +433,26 @@ impl HostBoundary {
         let main_id = main_id.ok_or(JitExecutionError::MainNotFound)?;
         let main_ptr = module.get_finalized_function(main_id);
 
-        // SAFETY: `module` is still alive here, keeping the JIT code mapped.
-        // The function signature () -> i32 matches the IR declaration of `main`.
-        let main_fn: unsafe extern "C" fn() -> i32 =
-            unsafe { std::mem::transmute(main_ptr) };
-        let ret = unsafe { main_fn() };
+        // The synthetic top-level main has return_ty: None (void).  Calling a
+        // void function as fn()->i32 reads garbage from rax — use the IR
+        // return type to select the correct call signature.
+        let main_is_void = ir.functions.iter()
+            .find(|f| f.name == "main")
+            .map(|f| f.return_ty.is_none())
+            .unwrap_or(true);
 
-        Ok(JitOutcome::from_main_return(ret))
+        // SAFETY: `module` is still alive here, keeping the JIT code mapped.
+        if main_is_void {
+            let main_fn: unsafe extern "C" fn() =
+                unsafe { std::mem::transmute(main_ptr) };
+            unsafe { main_fn() };
+            Ok(JitOutcome::success())
+        } else {
+            let main_fn: unsafe extern "C" fn() -> i32 =
+                unsafe { std::mem::transmute(main_ptr) };
+            let ret = unsafe { main_fn() };
+            Ok(JitOutcome::from_main_return(ret))
+        }
     }
 
     /// Stub used when the `jit` feature is not enabled.
@@ -1331,6 +1344,35 @@ mod jit_tests {
             matches!(result, Err(JitExecutionError::MainNotFound)),
             "expected MainNotFound, got {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn jit_void_main_returns_success() {
+        // A void-returning main (return_ty: None) must be called as fn() and
+        // produce JitOutcome::success() — not as fn()->i32 which would read
+        // garbage from rax and produce an indeterminate exit code.
+        let module = IrModule {
+            debug_name: "test_void_main".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(
+            result.unwrap().exit_code.is_success(),
+            "void main must produce exit code 0"
         );
     }
 

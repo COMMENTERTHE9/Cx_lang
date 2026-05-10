@@ -156,6 +156,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t44_if_else_basic"
         | "t45_if_else_in_func"
         | "t46_if_not"
+        | "t125_if_else_exit"
+        | "t126_if_else_in_func_exit"
+        | "t127_if_not_exit"
             => FeatureCategory::IfElse,
 
         // ── WhileLoop ─────────────────────────────────────────────────────────
@@ -165,6 +168,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t105_while_in_func"
         | "t107_continue_in_func"
         | "t108_nested_loops_in_func"
+        | "t128_while_loop_exit"
+        | "t129_while_in_func_exit"
             => FeatureCategory::WhileLoop,
 
         // ── ForLoop ───────────────────────────────────────────────────────────
@@ -175,6 +180,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── InfiniteLoop ──────────────────────────────────────────────────────
         "t25_loop_break"
         | "t106_loop_break_in_func"
+        | "t130_loop_break_exit"
             => FeatureCategory::InfiniteLoop,
 
         // ── DirectCall ────────────────────────────────────────────────────────
