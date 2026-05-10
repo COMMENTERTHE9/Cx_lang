@@ -231,18 +231,21 @@ impl std::fmt::Display for JitExecutionError {
 /// The differential harness captures this output by running the compiler as a subprocess.
 /// In-process pipe redirection is a post-scaffold enhancement.
 ///
-/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packet 3; Phase 15 direct calls; CX-32 PtrOffset/PtrAdd)
+/// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packets 2 and 3; CX-32 PtrOffset/PtrAdd)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
 /// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
 /// - `ConstFloat` — F64 constant via Cranelift `f64const`
 /// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations; F64 is not yet supported)
+/// - `SsaBind` — SSA value alias; `dst` inherits the Cranelift value of `src`
 /// - `Alloca` — stack slot allocation; `dst` receives an I64 pointer to the slot
 /// - `Load` — typed memory load from an Alloca-produced pointer
 /// - `Store` — typed memory store through an Alloca-produced pointer
 /// - `Compare` on integers (Eq, Ne, Lt, Le, Gt, Ge — signed integer `icmp`; result is I8)
 /// - `Compare` on F64 (Eq, Ne, Lt, Le, Gt, Ge — ordered float `fcmp`; result is I8)
-/// - `Call` — direct call to a function declared in the same module (value-returning or void)
+/// - `Call` — direct call to a user-defined or runtime-intrinsic function; dispatches via
+///   a two-pass `func_id_map` built before compilation; runtime intrinsics (e.g. `cx_printn`)
+///   are pre-declared as imported symbols and resolved at `finalize_definitions` time
 /// - `PtrOffset` — compile-time pointer advance: zero-offset aliases base; nonzero emits `iadd` with an `iconst`
 /// - `PtrAdd` — runtime pointer advance: emits `iadd(base, offset_val)` where both operands are I64
 /// - `Return` (with or without a value)
@@ -252,9 +255,17 @@ impl std::fmt::Display for JitExecutionError {
 /// - `Trap` (unconditional abort — assertion-failure terminator; lowers to Cranelift `trap`)
 ///
 /// Multi-block functions are supported including back-edge control flow (loops).
-/// Multi-function modules are supported: each function may call any other function in the module.
 ///
 /// All other IR instructions return [`JitExecutionError::UnsupportedConstruct`].
+/// Runtime intrinsic: print an integer to stdout followed by a newline.
+///
+/// Exported as `cx_printn` in the JIT symbol table. JIT-compiled Cx code calls this
+/// via `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+/// The symbol is pre-declared as an Import in every JIT module (see `execute`).
+extern "C" fn cx_printn(n: i64) {
+    println!("{}", n);
+}
+
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -273,6 +284,7 @@ impl HostBoundary {
         use cranelift_codegen::settings::{self, Configurable};
         use cranelift_jit::{JITBuilder, JITModule};
         use cranelift_module::{FuncId, Linkage, Module};
+        use std::collections::HashMap;
 
         // Build the native ISA.
         let mut flag_builder = settings::builder();
@@ -296,15 +308,31 @@ impl HostBoundary {
                 detail: e.to_string(),
             })?;
 
-        let jit_builder =
+        // Register runtime intrinsic symbols so the JIT linker can resolve them.
+        let mut jit_builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+        jit_builder.symbol("cx_printn", cx_printn as *const u8);
         let mut module = JITModule::new(jit_builder);
 
-        // Pass 1: declare every function and collect its FuncId.  All declarations must
-        // precede body compilation so that IrInst::Call can reference any callee regardless
-        // of declaration order.
-        let mut func_id_map: std::collections::HashMap<String, FuncId> =
-            std::collections::HashMap::new();
+        // Pass 1: declare every user-defined function AND runtime intrinsics into
+        // func_id_map before any function body is compiled.  compile_ir_function
+        // needs the complete map so that IrInst::Call can resolve all callees.
+        let mut func_id_map: HashMap<String, FuncId> = HashMap::new();
+
+        // Pre-declare runtime intrinsics as imported symbols.
+        {
+            use cranelift_codegen::ir::AbiParam;
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(cranelift_codegen::ir::types::I64));
+            let id = module
+                .declare_function("cx_printn", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_printn".to_string(), id);
+        }
+
         for ir_func in &ir.functions {
             let sig = build_cl_signature(&module, ir_func)?;
             let func_id = module
@@ -315,8 +343,7 @@ impl HostBoundary {
             func_id_map.insert(ir_func.name.clone(), func_id);
         }
 
-        // Pass 2: compile each function body with access to the full func_id_map so
-        // that IrInst::Call can emit cross-function call instructions.
+        // Pass 2: compile each function body with the complete func_id_map.
         let mut main_id = None;
         for (func_idx, ir_func) in ir.functions.iter().enumerate() {
             let func_id = func_id_map[&ir_func.name];
@@ -464,7 +491,7 @@ fn compile_ir_function(
 ) -> Result<(), JitExecutionError> {
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::InstBuilder;
-    use cranelift_module::Module as CraneliftModule;
+    use cranelift_module::Module;
     use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
     use crate::ir::types::{BlockId, IrType, ValueId};
     use super::ir_type_to_cranelift;
@@ -652,14 +679,24 @@ fn compile_ir_function(
                     val_map.insert(*dst, result);
                 }
 
+                IrInst::SsaBind { dst, src, .. } => {
+                    // SsaBind is a pure SSA alias: the destination inherits the
+                    // Cranelift value of the source with no instruction emitted.
+                    let val = *val_map.get(src).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as SsaBind source", src),
+                        }
+                    })?;
+                    val_map.insert(*dst, val);
+                }
+
                 IrInst::Call { dst, callee, args, return_ty: _ } => {
                     let callee_id = *func_id_map.get(callee.as_str()).ok_or_else(|| {
                         JitExecutionError::CodegenFailure {
                             detail: format!("call to undefined function '{}'", callee),
                         }
                     })?;
-                    let func_ref =
-                        module.declare_func_in_func(callee_id, builder.func);
+                    let func_ref = module.declare_func_in_func(callee_id, builder.func);
                     let call_args: Vec<cranelift_codegen::ir::Value> = args
                         .iter()
                         .map(|vid| {
@@ -1152,7 +1189,7 @@ mod jit_tests {
 
     #[test]
     fn jit_unsupported_inst_returns_error() {
-        // SsaBind is not supported in sub-packet 1.
+        // Cast is not yet supported in the JIT backend and triggers UnsupportedConstruct.
         let module = IrModule {
             debug_name: "test_unsupported".to_string(),
             functions: vec![IrFunction {
@@ -1164,10 +1201,11 @@ mod jit_tests {
                     params: vec![],
                     insts: vec![
                         IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 0 },
-                        IrInst::SsaBind {
+                        IrInst::Cast {
                             dst: ValueId(1),
-                            ty: IrType::I32,
-                            src: ValueId(0),
+                            from: IrType::I32,
+                            to: IrType::I64,
+                            value: ValueId(0),
                         },
                     ],
                     term: IrTerminator::Return { value: Some(ValueId(1)) },
@@ -3802,5 +3840,129 @@ mod determinism_tests {
             ],
         };
         assert_deterministic(&module);
+    }
+
+    // ── SsaBind support (CX-77 Phase 9 sub-packet 2) ─────────────────────────
+
+    #[test]
+    fn jit_ssabind_aliases_value() {
+        // SsaBind(dst, src) must act as a pure alias:  val_map[dst] = val_map[src].
+        // main() -> i32 {
+        //   v0 = 42i32
+        //   v1 = SsaBind(I32, v0)   // v1 aliases v0
+        //   return v1               // → 42
+        // }
+        let module = IrModule {
+            debug_name: "test_ssabind".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        IrInst::SsaBind { dst: ValueId(1), ty: IrType::I32, src: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    // ── cx_printn intrinsic dispatch (CX-77 Phase 9 sub-packet 2) ────────────
+
+    #[test]
+    fn jit_call_cx_printn_executes_without_error() {
+        // Verifies that the JIT can:
+        //   1. Pre-declare cx_printn as an imported symbol.
+        //   2. Resolve IrInst::Call{callee:"cx_printn"} via func_id_map.
+        //   3. Execute and return exit code 0.
+        //
+        // main() -> i32 {
+        //   v0 = 42i64
+        //   cx_printn(v0)           // side-effect: prints to stdout
+        //   v1 = 0i32
+        //   return v1
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_call_cx_printn_with_computed_value() {
+        // cx_printn receives the result of a Binary Add, not a direct ConstInt.
+        // This exercises the arg-value lookup through val_map in the Call handler.
+        //
+        // main() -> i32 {
+        //   v0 = 30i64
+        //   v1 = 12i64
+        //   v2 = Add(I64, v0, v1)   // 42
+        //   cx_printn(v2)
+        //   v3 = 0i32
+        //   return v3
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn_computed".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 30 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 12 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::I64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(2)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
     }
 }
