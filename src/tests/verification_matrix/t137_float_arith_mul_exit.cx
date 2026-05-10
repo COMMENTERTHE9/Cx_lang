@@ -1,0 +1,13 @@
+// CX-103: exit-code-based JIT parity — f64 multiplication.
+// Results cast to t32 for assert_eq (f64 not yet supported by assert_eq).
+a: f64 = 2.0
+b: f64 = 4.0
+product: f64 = a * b
+n: t32 = product
+assert_eq(n, 8)
+
+x: f64 = 3.0
+y: f64 = 3.0
+product2: f64 = x * y
+m: t32 = product2
+assert_eq(m, 9)
