@@ -433,25 +433,30 @@ impl HostBoundary {
         let main_id = main_id.ok_or(JitExecutionError::MainNotFound)?;
         let main_ptr = module.get_finalized_function(main_id);
 
-        // The synthetic top-level main has return_ty: None (void).  Calling a
-        // void function as fn()->i32 reads garbage from rax — use the IR
-        // return type to select the correct call signature.
-        let main_is_void = ir.functions.iter()
+        let main_return_ty = ir.functions.iter()
             .find(|f| f.name == "main")
-            .map(|f| f.return_ty.is_none())
-            .unwrap_or(true);
+            .and_then(|f| f.return_ty.clone());
 
         // SAFETY: `module` is still alive here, keeping the JIT code mapped.
-        if main_is_void {
-            let main_fn: unsafe extern "C" fn() =
-                unsafe { std::mem::transmute(main_ptr) };
-            unsafe { main_fn() };
-            Ok(JitOutcome::success())
-        } else {
-            let main_fn: unsafe extern "C" fn() -> i32 =
-                unsafe { std::mem::transmute(main_ptr) };
-            let ret = unsafe { main_fn() };
-            Ok(JitOutcome::from_main_return(ret))
+        match main_return_ty {
+            None => {
+                let main_fn: unsafe extern "C" fn() =
+                    unsafe { std::mem::transmute(main_ptr) };
+                unsafe { main_fn() };
+                Ok(JitOutcome::success())
+            }
+            Some(crate::ir::types::IrType::I32) => {
+                let main_fn: unsafe extern "C" fn() -> i32 =
+                    unsafe { std::mem::transmute(main_ptr) };
+                let ret = unsafe { main_fn() };
+                Ok(JitOutcome::from_main_return(ret))
+            }
+            Some(other) => Err(JitExecutionError::UnsupportedConstruct {
+                construct: format!(
+                    "main return type {:?} is not supported; only void or I32 are valid",
+                    other
+                ),
+            }),
         }
     }
 
