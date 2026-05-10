@@ -275,6 +275,17 @@ extern "C" fn cx_printn(n: i64) {
     let _ = writeln!(stdout, "{n}");
 }
 
+/// Wrapper around Rust's `%` operator exposed as a C-ABI symbol for the JIT.
+///
+/// Rust's `f64 % f64` uses truncated-toward-zero remainder (same semantics as C's `fmod`).
+/// Using a Rust wrapper avoids depending on the C stdlib `fmod` symbol being resolvable
+/// by the JIT linker. Registered as `"fmod"` in the JIT symbol table so that the declared
+/// import signature `(F64, F64) -> F64` resolves correctly for all F64 Rem lowering.
+#[cfg(feature = "jit")]
+extern "C" fn host_fmod(a: f64, b: f64) -> f64 {
+    a % b
+}
+
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -321,6 +332,7 @@ impl HostBoundary {
         let mut jit_builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         jit_builder.symbol("cx_printn", cx_printn as *const u8);
+        jit_builder.symbol("fmod", host_fmod as *const u8);
         let mut module = JITModule::new(jit_builder);
 
         // Pass 1: declare every user-defined function AND runtime intrinsics into
@@ -340,6 +352,22 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert("cx_printn".to_string(), id);
+        }
+
+        // Pre-declare fmod(f64, f64) -> f64 for F64 Rem lowering.
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::F64));
+            sig.params.push(AbiParam::new(types::F64));
+            sig.returns.push(AbiParam::new(types::F64));
+            let id = module
+                .declare_function("fmod", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("fmod".to_string(), id);
         }
 
         for ir_func in &ir.functions {
@@ -459,7 +487,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packet 3; Phase 15 direct calls; CX-91 Cast + F64 binary):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
 /// - [`IrInst::ConstFloat`] — F64 constants via Cranelift `f64const`
-/// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem; F64 arithmetic: fadd/fsub/fmul/fdiv/frem
+/// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem; F64 arithmetic: fadd/fsub/fmul/fdiv; F64 Rem via fmod libcall
 /// - [`IrInst::Cast`] — scalar type conversions: integer widening (`sextend`/`uextend`), narrowing (`ireduce`), int↔F64 (`fcvt_from_sint`/`fcvt_to_sint_sat`)
 /// - [`IrInst::Alloca`] — stack slot allocation; `dst` receives an I64 pointer
 /// - [`IrInst::Load`] — typed memory load from a pointer
@@ -486,7 +514,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// On IR that passes `validate_module`, this function must not panic.  Every error path that
 /// would otherwise trigger a Cranelift internal assertion is converted to a structured error:
 /// - `Binary` on integers — lowers to `iadd`/`isub`/`imul`/`sdiv`/`srem`
-/// - `Binary` on `F64` — lowers to `fadd`/`fsub`/`fmul`/`fdiv`/`frem`
+/// - `Binary` on `F64` — lowers to `fadd`/`fsub`/`fmul`/`fdiv`; Rem lowers to fmod libcall
 /// - `Cast` between scalars — lowers to `sextend`/`uextend`/`ireduce`/`fcvt_from_sint`/`fcvt_to_sint_sat`
 /// - `Cast` with Ptr or Void — returns `UnsupportedConstruct`
 /// - `Compare` on integers — lowers to `icmp` with signed condition codes
@@ -580,18 +608,27 @@ fn compile_ir_function(
                     })?;
                     let result = if *ty == IrType::F64 {
                         // F64 binary arithmetic.
-                        // Rem has no single Cranelift instruction; compute a - trunc(a/b) * b
-                        // which matches C fmod (truncation-toward-zero remainder).
+                        // Rem uses a libcall to host_fmod (Rust's `%` operator, same semantics
+                        // as C fmod — truncated-toward-zero remainder). A pure inline formula
+                        // `a - trunc(a/b) * b` is incorrect when a/b overflows to infinity
+                        // (e.g., fmod(1.7e308, 1e-10) would produce -Inf instead of a value
+                        // in [0, 1e-10)).
                         match op {
                             BinaryOp::Add => builder.ins().fadd(lhs_val, rhs_val),
                             BinaryOp::Sub => builder.ins().fsub(lhs_val, rhs_val),
                             BinaryOp::Mul => builder.ins().fmul(lhs_val, rhs_val),
                             BinaryOp::Div => builder.ins().fdiv(lhs_val, rhs_val),
                             BinaryOp::Rem => {
-                                let q = builder.ins().fdiv(lhs_val, rhs_val);
-                                let qt = builder.ins().trunc(q);
-                                let p = builder.ins().fmul(qt, rhs_val);
-                                builder.ins().fsub(lhs_val, p)
+                                let fmod_id = *func_id_map.get("fmod").ok_or_else(|| {
+                                    JitExecutionError::CodegenFailure {
+                                        detail: "fmod not pre-declared in func_id_map".to_string(),
+                                    }
+                                })?;
+                                let fmod_ref =
+                                    module.declare_func_in_func(fmod_id, builder.func);
+                                let call_inst =
+                                    builder.ins().call(fmod_ref, &[lhs_val, rhs_val]);
+                                builder.inst_results(call_inst)[0]
                             }
                         }
                     } else {
@@ -4187,6 +4224,50 @@ mod determinism_tests {
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 1); // 10.0 % 3.0 = 1.0 → 1
+    }
+
+    #[test]
+    fn jit_f64_binary_rem_overflow_safe() {
+        // Regression for CX-93: the inline formula `a - trunc(a/b) * b` overflows when
+        // a/b exceeds f64::MAX (the intermediate fdiv produces +Inf, and the final fsub
+        // returns -Inf). fmod(1.7e308, 1e-10) must return a value in [0, 1e-10), which
+        // truncates to I32 0 — not I32::MIN (-2147483648) from the broken formula.
+        //
+        // main(): i32 { v0 = 1.7e308; v1 = 1e-10; v2 = v0 % v1; v3 = cast F64→I32 v2; return v3 }  → 0
+        let module = IrModule {
+            debug_name: "test_f64_rem_overflow".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 1.7e308 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 1e-10 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Rem,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        // fmod(1.7e308, 1e-10) is in [0, 1e-10); fcvt_to_sint_sat → 0
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
     }
 
     // ── CX-91: Cast ───────────────────────────────────────────────────────────
