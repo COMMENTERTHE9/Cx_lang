@@ -78,28 +78,21 @@ impl std::error::Error for LoweringError {}
 // Classification (see docs/backend/cx_runtime_intrinsics_v0.1.md for the
 // full boundary specification):
 //
-//   Category          | Builtins
-//   ──────────────────┼────────────────────────────────
-//   I/O (stdout)      | print, println, printn
-//   I/O (stdin)       | read, input
-//   Debug / assertion | assert, assert_eq
+//   Category          | Builtins          | Status
+//   ──────────────────┼───────────────────┼──────────────────────────────────
+//   I/O (stdout)      | print, println    | blocked on frontend string ABI
+//   I/O (stdout)      | printn            | LOWERABLE — see lower_printn_stmt
+//   I/O (stdin)       | read, input       | blocked on Phase 8 str layout
+//   Debug / assertion | assert, assert_eq | LOWERABLE — Phase 9 sub-packet 3
 //
-// None of these have codegen support yet. Lowering them through the normal
-// `signature_table` path would produce a misleading `UnresolvedSemanticArtifact`
-// error. Instead, `is_cx_builtin` gates the call paths so they produce a
-// structured `UnsupportedSemanticConstruct` with an explicit Phase 9 note.
+// Builtins that remain in `is_cx_builtin` produce a structured
+// `UnsupportedSemanticConstruct` error instead of a misleading
+// `UnresolvedSemanticArtifact` from a signature_table miss.
 //
-// When Phase 9 sub-packet 2 lands, each builtin here will be replaced by a
-// concrete `IrIntrinsic` opcode or a runtime-call ABI signature — at which
-// point this function will shrink until it is empty.
-//
-// Note: `assert` and `assert_eq` are NOT listed here — they are now fully
-// lowerable to IR (Phase 9 sub-packet 3) and are handled before this gate.
+// Builtins that are handled before this gate (assert, assert_eq, printn)
+// are intercepted in `lower_stmt` and never reach `is_cx_builtin`.
 fn is_cx_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "print" | "println" | "printn" | "read" | "input"
-    )
+    matches!(name, "print" | "println" | "read" | "input")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -316,6 +309,8 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
 }
 
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
+    const RESERVED_RUNTIME_INTRINSICS: &[&str] = &["cx_printn"];
+
     if program.stmts.is_empty() {
         return Ok(IrModule {
             debug_name: "cxir_v0".into(),
@@ -335,6 +330,14 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     for stmt in &program.stmts {
         match stmt {
             SemanticStmt::FuncDef(function) => {
+                if RESERVED_RUNTIME_INTRINSICS.contains(&function.name.as_str()) {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "function name '{}' is reserved for runtime intrinsics",
+                            function.name
+                        ),
+                    });
+                }
                 if function.name == "main" {
                     has_real_main = true;
                 }
@@ -604,13 +607,15 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
-            // Phase 9 sub-packet 3: assert and assert_eq are now fully lowerable.
-            // Intercept them before the is_cx_builtin gate so they are routed to
-            // the dedicated lowering functions rather than returning a structured error.
+            // Phase 9 sub-packets 2 and 3: assert/assert_eq and printn are now
+            // fully lowerable.  Intercept them before the is_cx_builtin gate so
+            // they are routed to the dedicated lowering functions rather than
+            // returning a structured error.
             if let SemanticExprKind::Call { callee, args, .. } = &expr.kind {
                 match callee.as_str() {
                     "assert" => return lower_assert_stmt(args, ctx, current),
                     "assert_eq" => return lower_assert_eq_stmt(args, ctx, current),
+                    "printn" => return lower_printn_stmt(args, ctx, current),
                     _ => {}
                 }
             }
@@ -2420,6 +2425,49 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
 //
 // Unsupported types (e.g. Ptr, F64, StrRef) produce a structured
 // UnsupportedSemanticConstruct error so the caller gets a clear diagnostic.
+
+/// Lower `printn(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+///
+/// `printn` is a Cx builtin that prints an integer to stdout.  At the IR level
+/// it lowers to a call to the `cx_printn` runtime intrinsic, which is pre-declared
+/// in the JIT module as an imported C-ABI symbol.
+///
+/// Only `I64` arguments are accepted; other types produce a structured error.
+fn lower_printn_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("printn expects 1 argument, got {}", args.len()),
+        });
+    }
+    let arg_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr argument to printn".to_string(),
+            });
+        }
+    };
+    let arg = lower_expr(arg_expr, ctx, &mut current)?;
+    if arg.ty != IrType::I64 {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "printn argument must be I64, got {:?} — other types not yet supported",
+                arg.ty
+            ),
+        });
+    }
+    current.emit(IrInst::Call {
+        dst: None,
+        callee: "cx_printn".to_string(),
+        args: vec![arg.value],
+        return_ty: None,
+    })?;
+    Ok(Some(current))
+}
 
 /// Lower `assert(cond)` as a void statement.
 ///
@@ -5497,8 +5545,55 @@ mod tests {
     }
 
     #[test]
-    fn builtin_printn_produces_unsupported_construct_not_unresolved_artifact() {
-        assert_builtin_structured_error("printn");
+    fn printn_lowers_to_cx_printn_call() {
+        // printn(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "printn",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn printn_with_non_i64_arg_returns_error() {
+        // printn with an I32 argument must return UnsupportedSemanticConstruct.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "printn",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I32))],
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).expect_err("lowering should fail for non-I64 printn arg");
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("I64")
+            ),
+            "expected UnsupportedSemanticConstruct mentioning I64, got: {:?}",
+            err
+        );
     }
 
     // assert and assert_eq are now lowerable (Phase 9 sub-packet 3) so they no
