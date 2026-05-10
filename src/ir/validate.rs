@@ -61,7 +61,7 @@ pub enum IrValidationError {
 struct ValidatorFunctionSig {
     param_count: usize,
     param_types: Vec<IrType>,
-    has_return: bool,
+    return_ty: Option<IrType>,
 }
 
 /// Return the signatures of every known runtime intrinsic.
@@ -77,7 +77,7 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
         ValidatorFunctionSig {
             param_count: 1,
             param_types: vec![IrType::I64],
-            has_return: false,
+            return_ty: None,
         },
     );
     sigs
@@ -92,9 +92,7 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
         function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
             param_count: function.params.len(),
             param_types: function.params.iter().map(|p| p.ty.clone()).collect(),
-            has_return: function.blocks.iter().any(|b| {
-                matches!(b.term, IrTerminator::Return { .. })
-            }),
+            return_ty: function.return_ty.clone(),
         });
     }
 
@@ -403,15 +401,49 @@ fn validate_inst(
                     }
                 }
 
-                if !sig.has_return && (dst.is_some() || return_ty.is_some()) {
-                    errors.push(IrValidationError::InvalidTypeUsage {
-                        function: function.name.clone(),
-                        block,
-                        detail: format!(
-                            "Call to '{}': callee returns void but call provides destination/return_ty",
-                            callee
-                        ),
-                    });
+                match (&sig.return_ty, dst, return_ty) {
+                    (None, None, None) => {}
+                    (None, Some(_), _) | (None, None, Some(_)) => {
+                        errors.push(IrValidationError::InvalidTypeUsage {
+                            function: function.name.clone(),
+                            block,
+                            detail: format!(
+                                "Call to '{}' is void and must not declare dst/return_ty",
+                                callee
+                            ),
+                        });
+                    }
+                    (Some(expected), Some(dst), Some(actual)) => {
+                        if actual != expected {
+                            errors.push(IrValidationError::InvalidTypeUsage {
+                                function: function.name.clone(),
+                                block,
+                                detail: format!(
+                                    "Call to '{}': return type {:?} does not match callee signature {:?}",
+                                    callee, actual, expected
+                                ),
+                            });
+                        }
+                        define_value(
+                            function,
+                            block,
+                            *dst,
+                            actual.clone(),
+                            "Call destination",
+                            defined_values,
+                            errors,
+                        );
+                    }
+                    (Some(_), None, _) | (Some(_), Some(_), None) => {
+                        errors.push(IrValidationError::InvalidTypeUsage {
+                            function: function.name.clone(),
+                            block,
+                            detail: format!(
+                                "Call to '{}' must provide both dst and return_ty",
+                                callee
+                            ),
+                        });
+                    }
                 }
             } else {
                 errors.push(IrValidationError::InvalidTypeUsage {
@@ -419,26 +451,6 @@ fn validate_inst(
                     block,
                     detail: format!("Call to undefined function '{}'", callee),
                 });
-            }
-
-            if let Some(dst) = dst {
-                let Some(return_ty) = return_ty else {
-                    errors.push(IrValidationError::InvalidTypeUsage {
-                        function: function.name.clone(),
-                        block,
-                        detail: "Call with dst must provide return_ty".to_string(),
-                    });
-                    return;
-                };
-                define_value(
-                    function,
-                    block,
-                    *dst,
-                    return_ty.clone(),
-                    "Call destination",
-                    defined_values,
-                    errors,
-                );
             }
         }
         IrInst::Cast {
@@ -1557,6 +1569,59 @@ mod tests {
     }
 
     #[test]
+    fn validator_rejects_non_void_call_missing_dst_and_return_ty() {
+        // A user-defined function that returns I64, called without dst or return_ty,
+        // must be rejected: callee has a return type but call site omits both.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "get_value".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I64),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I64,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::Call {
+                            dst: None,
+                            callee: "get_value".to_string(),
+                            args: vec![],
+                            return_ty: None,
+                        }],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+            ],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject non-void call without dst/return_ty");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                if detail.contains("Call to 'get_value' must provide both dst and return_ty")
+            )),
+            "expected missing-dst/return_ty error for non-void call, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
     fn validator_rejects_void_intrinsic_call_with_dst_or_return_ty() {
         // cx_printn is void; a Call that assigns its result to a dst or declares
         // a return_ty must be rejected.
@@ -1588,7 +1653,7 @@ mod tests {
             errors.iter().any(|err| matches!(
                 err,
                 IrValidationError::InvalidTypeUsage { detail, .. }
-                if detail.contains("Call to 'cx_printn': callee returns void")
+                if detail.contains("Call to 'cx_printn' is void and must not declare dst/return_ty")
             )),
             "expected void-return shape error for cx_printn, got: {:?}",
             errors
