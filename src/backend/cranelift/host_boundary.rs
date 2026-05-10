@@ -418,7 +418,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
-/// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packet 3; Phase 15 direct calls):
+/// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packet 3; Phase 15 direct calls; CX-32 PtrOffset/PtrAdd):
 /// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
 /// - [`IrInst::ConstFloat`] — F64 constants via Cranelift `f64const`
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem (integer types only)
@@ -428,6 +428,8 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// - [`IrInst::Compare`] on integers — signed `icmp` (Eq/Ne/Lt/Le/Gt/Ge); result is I8
 /// - [`IrInst::Compare`] on F64 — ordered `fcmp` (Eq/Ne/Lt/Le/Gt/Ge); result is I8
 /// - [`IrInst::Call`] — direct call to a named function in `func_id_map` (value-returning or void)
+/// - [`IrInst::PtrOffset`] — advance a pointer by a compile-time byte offset (`iadd_imm`; 0-offset is a no-op)
+/// - [`IrInst::PtrAdd`] — advance a pointer by a runtime I64 byte offset (`iadd`)
 /// - [`IrTerminator::Return`] — return with or without a value
 /// - [`IrTerminator::Jump`] — unconditional branch with optional block-param arguments
 /// - [`IrTerminator::Branch`] — two-way conditional branch (`brif`) with block-param arguments
@@ -676,6 +678,37 @@ fn compile_ir_function(
                         let results = builder.inst_results(call_inst);
                         val_map.insert(*dst_vid, results[0]);
                     }
+                }
+
+                IrInst::PtrOffset { dst, base, offset } => {
+                    let base_val = *val_map.get(base).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as PtrOffset base", base),
+                        }
+                    })?;
+                    let result = if *offset == 0 {
+                        base_val
+                    } else {
+                        use cranelift_codegen::ir::types;
+                        let off_val = builder.ins().iconst(types::I64, *offset as i64);
+                        builder.ins().iadd(base_val, off_val)
+                    };
+                    val_map.insert(*dst, result);
+                }
+
+                IrInst::PtrAdd { dst, base, offset } => {
+                    let base_val = *val_map.get(base).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as PtrAdd base", base),
+                        }
+                    })?;
+                    let offset_val = *val_map.get(offset).ok_or_else(|| {
+                        JitExecutionError::CodegenFailure {
+                            detail: format!("undefined value {:?} used as PtrAdd offset", offset),
+                        }
+                    })?;
+                    let result = builder.ins().iadd(base_val, offset_val);
+                    val_map.insert(*dst, result);
                 }
 
                 other => {
@@ -3647,5 +3680,121 @@ mod determinism_tests {
             ],
         };
         assert_deterministic(&module);
+    }
+
+    // ── PtrOffset and PtrAdd (CX-32) ────────────────────────────────────────
+
+    /// PtrOffset with offset=0 must alias the base pointer without emitting an
+    /// iadd instruction.  Store through base, load through alias — must read back
+    /// the same value.
+    #[test]
+    fn jit_ptr_offset_zero_aliases_base() {
+        // main(): i32 {
+        //   slot  = alloca(4, 4)
+        //   alias = ptr_offset(slot, 0)   // zero offset → same pointer
+        //   store(slot, 42i32)
+        //   v     = load(i32, alias)
+        //   return v                      // → 42
+        // }
+        let module = IrModule {
+            debug_name: "test_ptr_offset_zero".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 4, align: 4 },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 0 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 42 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(2) },
+                        IrInst::Load { dst: ValueId(3), ty: IrType::I32, ptr: ValueId(1) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    /// PtrOffset with a nonzero offset must advance the pointer by exactly that
+    /// many bytes.  Write 10 at base and 99 at base+4; load from base+4 → 99.
+    #[test]
+    fn jit_ptr_offset_nonzero_advances_ptr() {
+        // main(): i32 {
+        //   slot  = alloca(8, 4)
+        //   field = ptr_offset(slot, 4)
+        //   store(slot,  10i32)
+        //   store(field, 99i32)
+        //   v     = load(i32, field)
+        //   return v                      // → 99
+        // }
+        let module = IrModule {
+            debug_name: "test_ptr_offset_nonzero".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 4 },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 4 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 10 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(2) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 99 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(3) },
+                        IrInst::Load { dst: ValueId(4), ty: IrType::I32, ptr: ValueId(1) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(4)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 99);
+    }
+
+    /// PtrAdd with a runtime stride must advance the pointer by the I64 offset
+    /// value.  Allocate two i32 slots (8 bytes), store 77 at slot+4, load it.
+    #[test]
+    fn jit_ptr_add_runtime_offset() {
+        // main(): i32 {
+        //   slot    = alloca(8, 4)
+        //   stride  = 4i64
+        //   element = ptr_add(slot, stride)
+        //   store(element, 77i32)
+        //   v       = load(i32, element)
+        //   return v                      // → 77
+        // }
+        let module = IrModule {
+            debug_name: "test_ptr_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 4 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 4 },
+                        IrInst::PtrAdd { dst: ValueId(2), base: ValueId(0), offset: ValueId(1) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 77 },
+                        IrInst::Store { ptr: ValueId(2), value: ValueId(3) },
+                        IrInst::Load { dst: ValueId(4), ty: IrType::I32, ptr: ValueId(2) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(4)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 77);
     }
 }
