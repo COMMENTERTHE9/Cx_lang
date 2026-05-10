@@ -1512,13 +1512,11 @@ fn lower_expr(
                 lower_type(from)?
             };
             let to_ty = lower_type(to)?;
-            // Skip no-op casts: if the source and target types already match
-            // (which happens when a Numeric literal was lowered to the same
-            // type as the cast target), emit no instruction.
+            ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
+            // Skip no-op casts only after validating source type invariants.
             if from_ty == to_ty {
                 return Ok(LoweredValue { value: lowered.value, ty: to_ty });
             }
-            ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
             let dst = ctx.fresh_value();
             active.emit(IrInst::Cast {
                 dst,
@@ -1799,10 +1797,16 @@ fn lower_value(
 
     match value {
         SemanticValue::Num(n) => {
-            let value =
-                i128::try_from(*n).map_err(|_| LoweringError::InternalInvariantViolation {
-                    detail: format!("integer literal {n} exceeds i128 IR constant range"),
-                })?;
+            let value = *n;
+            if ty == IrType::I64
+                && (value < i64::MIN as i128 || value > i64::MAX as i128)
+            {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "integer literal {value} exceeds default I64 literal range during lowering"
+                    ),
+                });
+            }
             active.emit(IrInst::ConstInt {
                 dst,
                 ty: ty.clone(),
