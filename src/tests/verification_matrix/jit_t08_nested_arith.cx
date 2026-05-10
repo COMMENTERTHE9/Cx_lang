@@ -1,0 +1,7 @@
+// JIT differential fixture — nested arithmetic expression.
+// Tests: multiple ConstInt + multiple Binary ops + Return.
+// Interpreter: registers main, exits 0.
+// JIT: compiles and executes main(); ((2 + 3) * 4) - 20 == 0 → exit 0.
+fnc: t64 main() {
+    return (2 + 3) * 4 - 20
+}

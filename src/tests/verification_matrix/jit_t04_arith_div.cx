@@ -1,0 +1,7 @@
+// JIT differential fixture — division.
+// Tests: ConstInt + Binary(Div) + Binary(Sub) + Return.
+// Interpreter: registers main, exits 0.
+// JIT: compiles and executes main(); 20 / 4 - 5 == 0 → exit 0.
+fnc: t64 main() {
+    return 20 / 4 - 5
+}

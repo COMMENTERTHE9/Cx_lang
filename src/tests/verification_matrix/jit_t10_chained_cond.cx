@@ -1,0 +1,13 @@
+// JIT differential fixture — chained if/else conditionals.
+// Tests: multiple Compare + Branch + Jump terminators.
+// Interpreter: registers main, exits 0.
+// JIT: compiles and executes main(); 10 > 3 and 7 > 4 → return 0 → exit 0.
+fnc: t64 main() {
+    if 10 > 3 {
+        if 7 > 4 {
+            return 0
+        }
+        return 1
+    }
+    return 2
+}

@@ -1927,9 +1927,14 @@ fn common_numeric_type(lhs: &SemanticType, rhs: &SemanticType) -> SemanticType {
     if matches!(lhs, SemanticType::F64) || matches!(rhs, SemanticType::F64) {
         return SemanticType::F64;
     }
-    // Both literals — unchanged behavior
+    // Both literals — default to I64 rather than I128.
+    // I64 is the widest signed integer that Cranelift can represent as a single
+    // iconst (I128 requires two i64s and is not yet JIT-supported).  Practical
+    // Cx programs with integer literals that require more than 64 bits declare
+    // their variables with explicit `t128` types, so the widening to I128 is
+    // not needed at the literal level.
     if matches!(lhs, SemanticType::Numeric) && matches!(rhs, SemanticType::Numeric) {
-        return SemanticType::I128;
+        return SemanticType::I64;
     }
     // Numeric (literal) marker — adopt the other side's declared type
     if matches!(lhs, SemanticType::Numeric) {

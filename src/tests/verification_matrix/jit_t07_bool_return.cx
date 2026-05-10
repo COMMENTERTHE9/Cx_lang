@@ -1,0 +1,7 @@
+// JIT differential fixture — bool false return.
+// Tests: ConstInt(Bool) + Return (no arithmetic involved).
+// Interpreter: registers main, exits 0.
+// JIT: compiles and executes main(); false == 0 → exit 0.
+fnc: bool main() {
+    return false
+}

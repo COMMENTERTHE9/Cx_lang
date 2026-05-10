@@ -1,0 +1,7 @@
+// JIT differential fixture — remainder.
+// Tests: ConstInt + Binary(Rem) + Binary(Sub) + Return.
+// Interpreter: registers main, exits 0.
+// JIT: compiles and executes main(); 17 % 5 - 2 == 0 → exit 0.
+fnc: t64 main() {
+    return 17 % 5 - 2
+}

@@ -1,11 +1,11 @@
-//! CX-23 — Differential harness: interpreter baseline capture and fixture format.
+//! Differential harness: interpreter baseline and JIT comparison.
 //!
-//! Phase 12, sub-packet 1.
+//! # Phase 12 coverage
 //!
-//! This module is the shell of the differential testing harness. It defines
-//! the data types, fixture format, and collection logic for running every
-//! matrix test through the interpreter and comparing output against stored
-//! expectations.
+//! - **Sub-packet 1 (CX-23)**: harness shell — fixture format, collection,
+//!   interpreter subprocess runner, and interpreter baseline gate.
+//! - **Sub-packet 3 (CX-34)**: JIT subprocess runner and differential
+//!   comparison for the full supported 0.1 construct set.
 //!
 //! # Fixture format
 //!
@@ -17,26 +17,44 @@
 //! <name>.cx.expected_fail    — zero-byte marker (present only for expected-failure tests)
 //! ```
 //!
-//! A `.cx` file with neither companion file is a "pass-any" test: the interpreter
-//! must exit 0, but its stdout is not verified.
+//! A `.cx` file with neither companion file is a "pass-any" test: the
+//! interpreter must exit 0, but its stdout is not verified.
+//!
+//! # JIT-comparable fixtures
+//!
+//! Fixtures whose filename starts with `jit_` are designed to be executed by
+//! both the interpreter and the Cranelift JIT backend.  They must:
+//!
+//! - Pass the interpreter (exit 0).
+//! - Pass the JIT (`--backend=cranelift`, exit 0).
+//!
+//! Each `jit_` fixture defines an explicit `main()` function that returns 0
+//! on success.  No I/O (`print`) is used — correctness is verified through
+//! the return value / process exit code.  The interpreter registers `main`
+//! and exits 0 without calling it; the JIT compiles and executes `main` and
+//! propagates its return value as the process exit code.  Both backends agree
+//! on exit 0 for a correct program.
 //!
 //! # Comparison semantics
 //!
-//! Stored expected-output files may use CRLF or LF line endings (the files were
-//! created on Windows and may have CRLF). The interpreter subprocess also produces
-//! CRLF on Windows. Both sides are normalised to LF and right-trimmed before
-//! comparison — matching the behaviour of the bash `$()` command substitution used
-//! in `run_matrix.sh`.
+//! Stored expected-output files may use CRLF or LF line endings (the files
+//! were created on Windows and may have CRLF).  The interpreter subprocess
+//! also produces CRLF on Windows.  Both sides are normalised to LF and
+//! right-trimmed before comparison — matching the behaviour of the bash `$()`
+//! command substitution used in `run_matrix.sh`.
 //!
 //! # Sub-packet deliverables
 //!
 //! - `TestExpectation` — what a fixture expects from the interpreter
 //! - `TestFixture` — one matrix test entry
-//! - `InterpOutcome` — result of a single interpreter run
+//! - `InterpOutcome` — result of a single interpreter/JIT subprocess run
 //! - `collect_matrix_tests()` — enumerate all fixtures from the matrix directory
-//! - `run_interpreter()` — capture one interpreter run via subprocess
+//! - `collect_jit_fixtures()` — enumerate only `jit_`-prefixed fixtures
+//! - `run_interpreter()` — capture one interpreter subprocess run
+//! - `run_jit_subprocess()` — capture one JIT (`--backend=cranelift`) run
 //! - `cx_binary_path()` — locate the compiled Cx binary
-//! - `#[test] interpreter_baseline_all` — baseline gate
+//! - `#[test] interpreter_baseline_all` — interpreter baseline gate
+//! - `#[test] jit_differential_all` — JIT parity gate for all supported constructs
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -354,6 +372,22 @@ pub fn collect_matrix_tests() -> Vec<TestFixture> {
 
             TestFixture { name, path, expectation }
         })
+        .collect()
+}
+
+/// Enumerate only `jit_`-prefixed fixtures from the verification matrix.
+///
+/// Returns fixtures sorted by filename so that the order is deterministic
+/// across runs and platforms.
+///
+/// JIT-comparable fixtures must pass both the interpreter (exit 0) and the
+/// Cranelift JIT (`--backend=cranelift`, exit 0).  Each defines a `main()`
+/// function that returns 0 on success; no I/O (`print`) is used so both
+/// backends agree on exit code without producing stdout.
+pub fn collect_jit_fixtures() -> Vec<TestFixture> {
+    collect_matrix_tests()
+        .into_iter()
+        .filter(|f| f.name.starts_with("jit_"))
         .collect()
 }
 
@@ -760,6 +794,112 @@ mod tests {
             "jit_parity_by_feature: {} fixtures checked across {} feature categories, 0 PARITY_FAILs",
             total,
             results.len()
+        );
+    }
+
+    // ── JIT fixture collection ─────────────────────────────────────────────────
+
+    /// `collect_jit_fixtures()` must return at least one fixture and every
+    /// fixture name must start with the `jit_` prefix.
+    #[test]
+    fn collects_jit_fixtures_non_empty_and_prefixed() {
+        let fixtures = collect_jit_fixtures();
+        assert!(
+            !fixtures.is_empty(),
+            "collect_jit_fixtures() returned no fixtures — at least one jit_*.cx must exist"
+        );
+        for f in &fixtures {
+            assert!(
+                f.name.starts_with("jit_"),
+                "collect_jit_fixtures() returned a fixture without the jit_ prefix: {}",
+                f.name
+            );
+        }
+    }
+
+    // ── JIT differential gate ─────────────────────────────────────────────────
+
+    /// Full-construct JIT differential gate (Phase 12 sub-packet 3).
+    ///
+    /// Runs every `jit_`-prefixed fixture through both the interpreter and the
+    /// Cranelift JIT backend.  Each fixture must:
+    ///
+    /// 1. Pass the interpreter (exit 0) — confirming the program is semantically
+    ///    valid.
+    /// 2. Pass the JIT (`--backend=cranelift`, exit 0) — confirming the JIT
+    ///    compiles and executes it correctly.
+    ///
+    /// `jit_*` fixtures cover the full set of constructs the JIT currently
+    /// supports: constant integers, arithmetic, variable declarations, if/else
+    /// conditionals, while loops, direct function calls, and assert_eq.  No
+    /// I/O (`print`) is used — correctness is verified via the process exit
+    /// code produced by `main()`.
+    ///
+    /// Run with:
+    ///
+    /// ```text
+    /// cargo build --features jit && cargo test --features jit jit_differential_all --nocapture
+    /// ```
+    #[test]
+    #[cfg(feature = "jit")]
+    fn jit_differential_all() {
+        let binary = cx_binary_path();
+
+        if !binary.exists() {
+            eprintln!(
+                "SKIP jit_differential_all — binary not found at {:?}.\n\
+                 Build with `cargo build --features jit` then re-run tests.",
+                binary
+            );
+            return;
+        }
+
+        let fixtures = collect_jit_fixtures();
+        assert!(
+            !fixtures.is_empty(),
+            "jit_differential_all requires at least one jit_* fixture"
+        );
+
+        let mut failures: Vec<String> = Vec::new();
+
+        for fixture in &fixtures {
+            // Step 1: interpreter must accept the program (semantic validity).
+            let interp = run_interpreter(&binary, fixture);
+            if !interp.passed() {
+                failures.push(format!(
+                    "INTERP FAIL [exit {}]: {}\n  stderr: {}",
+                    interp.exit_code,
+                    fixture.name,
+                    interp.stderr.lines().next().unwrap_or("(no stderr)")
+                ));
+                continue;
+            }
+
+            // Step 2: JIT must compile and execute successfully.
+            let jit = run_jit_subprocess(&binary, fixture);
+            if !jit.passed() {
+                failures.push(format!(
+                    "JIT FAIL [exit {}]: {}\n  stderr: {}",
+                    jit.exit_code,
+                    fixture.name,
+                    jit.stderr.lines().next().unwrap_or("(no stderr)")
+                ));
+            }
+        }
+
+        if !failures.is_empty() {
+            panic!(
+                "\n{} JIT differential failure(s) out of {} jit_* fixture(s):\n\n{}\n",
+                failures.len(),
+                fixtures.len(),
+                failures.join("\n\n")
+            );
+        }
+
+        eprintln!(
+            "jit_differential_all: {}/{} jit_* fixtures passed both backends",
+            fixtures.len(),
+            fixtures.len()
         );
     }
 }

@@ -1,0 +1,7 @@
+// JIT differential fixture — addition.
+// Tests: ConstInt + Binary(Add) + Return.
+// Interpreter: registers main, exits 0 (no top-level execution).
+// JIT: compiles and executes main(); (3 + 4) - 7 == 0 → exit 0.
+fnc: t64 main() {
+    return 3 + 4 - 7
+}

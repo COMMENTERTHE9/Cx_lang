@@ -1,0 +1,7 @@
+// JIT differential fixture — constant zero return.
+// Tests: ConstInt + Return (minimal round-trip).
+// Interpreter: registers main, exits 0.
+// JIT: compiles and executes main(); returns 0 → exit 0.
+fnc: t64 main() {
+    return 0
+}

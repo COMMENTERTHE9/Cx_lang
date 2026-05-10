@@ -1,0 +1,14 @@
+// JIT differential fixture — recursive function call.
+// Tests: Call (recursive) + Compare(Le) + Branch + Binary(Sub).
+// Interpreter: registers both functions, exits 0.
+// JIT: countdown(3) recurses to 0, returns 0 → exit 0.
+fnc: t64 countdown(n: t64) {
+    if n <= 0 {
+        return 0
+    }
+    return countdown(n - 1)
+}
+
+fnc: t64 main() {
+    return countdown(3)
+}

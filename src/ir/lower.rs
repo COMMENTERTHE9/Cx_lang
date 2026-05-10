@@ -1501,8 +1501,23 @@ fn lower_expr(
         }
         SemanticExprKind::Cast { expr, from, to } => {
             let lowered = lower_expr(expr, ctx, active)?;
-            let from_ty = lower_type(from)?;
+            // When the source type is `Numeric`, the semantic layer inserted a
+            // widening cast from an unresolved literal.  The literal has already
+            // been lowered to I64 (see `lower_value`), so we use the actual
+            // lowered type as the IR source rather than trying to lower `Numeric`
+            // (which has no IR equivalent).
+            let from_ty = if *from == SemanticType::Numeric {
+                lowered.ty.clone()
+            } else {
+                lower_type(from)?
+            };
             let to_ty = lower_type(to)?;
+            // Skip no-op casts: if the source and target types already match
+            // (which happens when a Numeric literal was lowered to the same
+            // type as the cast target), emit no instruction.
+            if from_ty == to_ty {
+                return Ok(LoweredValue { value: lowered.value, ty: to_ty });
+            }
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
             let dst = ctx.fresh_value();
             active.emit(IrInst::Cast {
@@ -1770,7 +1785,16 @@ fn lower_value(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
-    let ty = lower_type(semantic_ty)?;
+    // Numeric literals have no explicit type annotation in Cx source.  The
+    // semantic layer uses `SemanticType::Numeric` as a placeholder.  At the IR
+    // level we default unresolved numeric literals to I64, the widest signed
+    // integer type that Cranelift can represent as a single `iconst`.
+    let resolved_ty = if *semantic_ty == SemanticType::Numeric {
+        &SemanticType::I64
+    } else {
+        semantic_ty
+    };
+    let ty = lower_type(resolved_ty)?;
     let dst = ctx.fresh_value();
 
     match value {
