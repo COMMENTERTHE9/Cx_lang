@@ -1,0 +1,32 @@
+// CX-97: exit-code-based JIT parity — Jump+Branch terminators (while loop).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// Uses plain assignment (i = i + 1) to avoid compound-assign type inference.
+fnc: t64 count_loop(limit: t64) {
+    i: t64 = 0
+    while (i < limit) {
+        i = i + 1
+    }
+    return i
+}
+
+fnc: t64 sum_loop(n: t64) {
+    total: t64 = 0
+    i: t64 = 0
+    while (i < n) {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+assert_eq(count_loop(5), 5)
+assert_eq(count_loop(0), 0)
+assert_eq(sum_loop(5), 10)
+assert_eq(sum_loop(0), 0)
+
+// Top-level while at file scope — exercises the void-main Jump+Branch lowering path.
+top: t64 = 0
+while (top < 4) {
+    top = top + 1
+}
+assert_eq(top, 4)
