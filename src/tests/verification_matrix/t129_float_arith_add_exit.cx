@@ -1,0 +1,13 @@
+// CX-101: exit-code-based JIT parity — f64 addition.
+// Results cast to t32 for assert_eq (f64 not yet supported by assert_eq).
+a: f64 = 3.0
+b: f64 = 4.0
+sum: f64 = a + b
+n: t32 = sum
+assert_eq(n, 7)
+
+x: f64 = 0.5
+y: f64 = 1.5
+sum2: f64 = x + y
+m: t32 = sum2
+assert_eq(m, 2)
