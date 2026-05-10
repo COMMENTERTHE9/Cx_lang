@@ -67,6 +67,18 @@ struct ValidatorFunctionSig {
     has_return: bool,
 }
 
+/// Validate every function in an IR module and collect any validation errors.
+///
+/// Scans all module functions to build per-function signatures, then runs function-level validation
+/// (structure, control-flow, SSA/value usage, and type checks). Returns `Ok(())` when no problems
+/// were found; otherwise returns `Err` with a vector of `IrValidationError` describing each issue.
+///
+/// # Examples
+///
+/// ```
+/// let module = IrModule { functions: vec![] }; // empty module is accepted
+/// assert!(validate_module(&module).is_ok());
+/// ```
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
 
@@ -92,6 +104,21 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
     }
 }
 
+/// Determine if a function name is a reserved runtime intrinsic.
+///
+/// The reserved intrinsic names are: `"print"`, `"println"`, `"printn"`,
+/// `"read"`, `"input"`, `"assert"`, `"assert_eq"`, and `"is_known"`.
+///
+/// # Returns
+///
+/// `true` if `name` matches one of the reserved intrinsic names, `false` otherwise.
+///
+/// # Examples
+///
+/// ```
+/// assert!(is_reserved_runtime_intrinsic("print"));
+/// assert!(!is_reserved_runtime_intrinsic("custom_fn"));
+/// ```
 fn is_reserved_runtime_intrinsic(name: &str) -> bool {
     matches!(
         name,
@@ -100,6 +127,32 @@ fn is_reserved_runtime_intrinsic(name: &str) -> bool {
     )
 }
 
+/// Validates a single IR function and appends any found validation errors to `errors`.
+///
+/// Performs structural checks (empty name/body, duplicate block ids/params), instruction
+/// and terminator validation (value definitions/uses, type checks, control-flow targets),
+/// enforces SSA and loop read-only invariants, and consults `function_sigs` for call-site checks.
+///
+/// # Parameters
+///
+/// - `function_index`: Index of the function in the module; used to attribute certain errors.
+/// - `function`: The IR function to validate.
+/// - `function_sigs`: Map of known function call signatures used to validate `Call` instructions.
+/// - `errors`: Mutable collection that receives `IrValidationError` entries discovered during validation.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use std::collections::HashMap;
+/// # use crate::ir::{IrFunction, ValidatorFunctionSig, IrValidationError};
+/// let function_index = 0usize;
+/// let function = /* construct or obtain an IrFunction */ unimplemented!();
+/// let function_sigs: HashMap<String, ValidatorFunctionSig> = HashMap::new();
+/// let mut errors: Vec<IrValidationError> = Vec::new();
+///
+/// validate_function(function_index, &function, &function_sigs, &mut errors);
+/// // `errors` now contains any validation issues found for `function`.
+/// ```
 fn validate_function(
     function_index: usize,
     function: &IrFunction,
@@ -1439,6 +1492,30 @@ mod tests {
     // Reserved runtime intrinsic name tests
     // ---------------------------------------------------------------------------
 
+    /// Constructs a minimal `IrModule` containing a single function named `name` with an empty body.
+    ///
+    /// The generated function has no parameters, no return type, and a single entry block (id 0)
+    /// whose terminator is `IrTerminator::Return { value: None }`.
+    ///
+    /// # Parameters
+    ///
+    /// - `name`: the name to assign to the single function inside the module.
+    ///
+    /// # Returns
+    ///
+    /// An `IrModule` with one function matching the provided name and a single empty block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let m = single_block_function("foo");
+    /// assert_eq!(m.functions.len(), 1);
+    /// assert_eq!(m.functions[0].name, "foo");
+    /// assert!(m.functions[0].params.is_empty());
+    /// assert!(m.functions[0].return_ty.is_none());
+    /// assert_eq!(m.functions[0].blocks.len(), 1);
+    /// assert_eq!(m.functions[0].blocks[0].id, BlockId(0));
+    /// ```
     fn single_block_function(name: &str) -> IrModule {
         IrModule {
             debug_name: "m".to_string(),
