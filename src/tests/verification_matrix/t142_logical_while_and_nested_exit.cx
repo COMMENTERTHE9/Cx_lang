@@ -1,0 +1,77 @@
+// CX-107: exit-code-based JIT parity — LogicalOps in while conditions
+// and nested/chained expressions.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// ─── While with && condition ─────────────────────────────────────────────────
+// Loop while both i < 5 and j > 0 hold simultaneously.
+// i starts at 0 and j starts at 10; both advance each iteration.
+// AND short-circuits: once i reaches 5 the first operand is false and the
+// loop exits without evaluating j > 0.  Expect 5 iterations.
+wand_i: t64 = 0
+wand_j: t64 = 10
+wand_count: t64 = 0
+while (wand_i < 5 && wand_j > 0) {
+    wand_count = wand_count + 1
+    wand_i = wand_i + 1
+    wand_j = wand_j - 1
+}
+assert_eq(wand_count, 5)
+
+// AND while short-circuit: first operand immediately false → body never runs.
+wsc_i: t64 = 10
+wsc_count: t64 = 0
+while (wsc_i < 5 && wsc_count < 100) {
+    wsc_count = wsc_count + 1
+}
+assert_eq(wsc_count, 0)
+
+// ─── While with || condition ─────────────────────────────────────────────────
+// Loop while either a < 3 or b < 3.
+// Both start at 0 and tick together; loop exits when both reach 3 (3 iters).
+wor_a: t64 = 0
+wor_b: t64 = 0
+wor_count: t64 = 0
+while (wor_a < 3 || wor_b < 3) {
+    wor_count = wor_count + 1
+    wor_a = wor_a + 1
+    wor_b = wor_b + 1
+}
+assert_eq(wor_count, 3)
+
+// ─── Nested: AND with OR as right operand ────────────────────────────────────
+// true && (false || true) → inner OR produces true; outer AND: true && true → true.
+nest1: bool = true && (false || true)
+assert_eq(nest1, true)
+
+// false && (true || true) → outer AND short-circuits on false LHS → false.
+// The inner OR must NOT be evaluated (short-circuit proof).
+nest2: bool = false && (true || true)
+assert_eq(nest2, false)
+
+// ─── Nested: OR with AND as right operand ────────────────────────────────────
+// false || (true && false) → inner AND produces false; outer OR: false || false → false.
+nest3: bool = false || (true && false)
+assert_eq(nest3, false)
+
+// true || (false && true) → outer OR short-circuits on true LHS → true.
+// The inner AND must NOT be evaluated.
+nest4: bool = true || (false && true)
+assert_eq(nest4, true)
+
+// ─── Chained && (left-associative: (a && b) && c) ───────────────────────────
+// (true && true) && true → true
+chain1: bool = true && true && true
+assert_eq(chain1, true)
+
+// (true && false) && true → inner false; outer: false && true → false.
+chain2: bool = true && false && true
+assert_eq(chain2, false)
+
+// ─── Chained || (left-associative: (a || b) || c) ───────────────────────────
+// (false || false) || true → inner false; outer: false || true → true.
+chain3: bool = false || false || true
+assert_eq(chain3, true)
+
+// (true || false) || false → inner OR short-circuits to true; outer: true || false → true.
+chain4: bool = true || false || false
+assert_eq(chain4, true)
