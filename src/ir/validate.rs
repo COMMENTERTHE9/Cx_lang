@@ -402,6 +402,17 @@ fn validate_inst(
                         }
                     }
                 }
+
+                if !sig.has_return && (dst.is_some() || return_ty.is_some()) {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!(
+                            "Call to '{}': callee returns void but call provides destination/return_ty",
+                            callee
+                        ),
+                    });
+                }
             } else {
                 errors.push(IrValidationError::InvalidTypeUsage {
                     function: function.name.clone(),
@@ -1541,6 +1552,45 @@ mod tests {
                     && detail.contains("expected I64")
             )),
             "expected type-mismatch error for cx_printn, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validator_rejects_void_intrinsic_call_with_dst_or_return_ty() {
+        // cx_printn is void; a Call that assigns its result to a dst or declares
+        // a return_ty must be rejected.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Call {
+                            dst: Some(ValueId(1)),
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: Some(IrType::I64),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject void intrinsic call with dst/return_ty");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                if detail.contains("Call to 'cx_printn': callee returns void")
+            )),
+            "expected void-return shape error for cx_printn, got: {:?}",
             errors
         );
     }

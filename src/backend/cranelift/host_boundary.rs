@@ -263,7 +263,9 @@ impl std::fmt::Display for JitExecutionError {
 /// via `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
 /// The symbol is pre-declared as an Import in every JIT module (see `execute`).
 extern "C" fn cx_printn(n: i64) {
-    println!("{}", n);
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let _ = writeln!(stdout, "{n}");
 }
 
 pub struct HostBoundary;
