@@ -56,6 +56,9 @@ pub enum IrValidationError {
         value: ValueId,
         context: String,
     },
+    ReservedRuntimeIntrinsicName {
+        function: String,
+    },
 }
 
 struct ValidatorFunctionSig {
@@ -89,6 +92,14 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
     }
 }
 
+fn is_reserved_runtime_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "print" | "println" | "printn" | "read" | "input"
+            | "assert" | "assert_eq" | "is_known"
+    )
+}
+
 fn validate_function(
     function_index: usize,
     function: &IrFunction,
@@ -97,6 +108,12 @@ fn validate_function(
 ) {
     if function.name.is_empty() {
         errors.push(IrValidationError::EmptyFunctionName { function_index });
+    }
+
+    if is_reserved_runtime_intrinsic(&function.name) {
+        errors.push(IrValidationError::ReservedRuntimeIntrinsicName {
+            function: function.name.clone(),
+        });
     }
 
     if function.blocks.is_empty() {
@@ -1416,6 +1433,120 @@ mod tests {
             "expected LoopVariableReassignment error, got: {:?}",
             errors
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Reserved runtime intrinsic name tests
+    // ---------------------------------------------------------------------------
+
+    fn single_block_function(name: &str) -> IrModule {
+        IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: name.to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn rejects_function_named_print() {
+        let errors = validate_module(&single_block_function("print"))
+            .expect_err("validator should reject function named 'print'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "print"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_println() {
+        let errors = validate_module(&single_block_function("println"))
+            .expect_err("validator should reject function named 'println'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "println"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_printn() {
+        let errors = validate_module(&single_block_function("printn"))
+            .expect_err("validator should reject function named 'printn'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "printn"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_read() {
+        let errors = validate_module(&single_block_function("read"))
+            .expect_err("validator should reject function named 'read'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "read"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_input() {
+        let errors = validate_module(&single_block_function("input"))
+            .expect_err("validator should reject function named 'input'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "input"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_assert() {
+        let errors = validate_module(&single_block_function("assert"))
+            .expect_err("validator should reject function named 'assert'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "assert"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_assert_eq() {
+        let errors = validate_module(&single_block_function("assert_eq"))
+            .expect_err("validator should reject function named 'assert_eq'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "assert_eq"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_is_known() {
+        let errors = validate_module(&single_block_function("is_known"))
+            .expect_err("validator should reject function named 'is_known'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "is_known"
+        )));
+    }
+
+    #[test]
+    fn accepts_function_with_non_reserved_name() {
+        assert_eq!(validate_module(&single_block_function("my_func")), Ok(()));
     }
 
     #[test]
