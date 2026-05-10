@@ -226,11 +226,17 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t96_overflow_t8_unary_neg"
             => FeatureCategory::Unary,
 
-        // Cast — no fixtures in the current matrix explicitly target casts.
-        // The variant exists for completeness when new cast fixtures are added.
+        // ── Cast ─────────────────────────────────────────────────────────────
+        "t139_cast_t32_to_f64_exit"
+        | "t140_cast_f64_truncate_exit"
+            => FeatureCategory::Cast,
 
         // ── FloatOps ──────────────────────────────────────────────────────────
         "t55_f64_basic"
+        | "t135_float_arith_add_exit"
+        | "t136_float_arith_sub_exit"
+        | "t137_float_arith_mul_exit"
+        | "t138_float_arith_div_exit"
             => FeatureCategory::FloatOps,
 
         // ── BuiltinAssert ─────────────────────────────────────────────────────
