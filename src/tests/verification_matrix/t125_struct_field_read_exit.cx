@@ -1,0 +1,5 @@
+// CX-94: exit-code-based JIT parity — struct field read, first field (no PtrOffset).
+// Correctness verified by exit code only (0 = all asserts held).
+struct Point { x: t64, y: t64 }
+p: Point = Point { x: 10, y: 20 }
+assert_eq(p.x, 10)

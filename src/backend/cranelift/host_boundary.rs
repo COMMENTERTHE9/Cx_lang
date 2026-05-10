@@ -433,13 +433,57 @@ impl HostBoundary {
         let main_id = main_id.ok_or(JitExecutionError::MainNotFound)?;
         let main_ptr = module.get_finalized_function(main_id);
 
+        // Validate `main`'s full signature before dispatching.
+        //
+        // Real Cx programs always produce a synthetic `main` with no parameters
+        // and no return type (`return_ty: None`).  The validator enforces this.
+        // Calling a void function as `fn() -> i32` is UB — the register file is
+        // indeterminate after `ret`.  Instead, call as `fn()` and return exit code 0.
+        //
+        // Manually-constructed IR (e.g. JIT unit tests) may declare `main` with
+        // `return_ty: Some(IrType::I32)` to exercise non-zero exit codes.  In
+        // that case the Cranelift signature has an I32 return, so calling as
+        // `fn() -> i32` is correct and the return value becomes the exit code.
+        //
+        // Any other signature (parameters present, or unsupported return type) is
+        // rejected as UnsupportedConstruct rather than transmuted unsafely.
+        //
         // SAFETY: `module` is still alive here, keeping the JIT code mapped.
-        // The function signature () -> i32 matches the IR declaration of `main`.
-        let main_fn: unsafe extern "C" fn() -> i32 =
-            unsafe { std::mem::transmute(main_ptr) };
-        let ret = unsafe { main_fn() };
+        let main_func = ir
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .ok_or(JitExecutionError::MainNotFound)?;
 
-        Ok(JitOutcome::from_main_return(ret))
+        if !main_func.params.is_empty() {
+            return Err(JitExecutionError::UnsupportedConstruct {
+                construct: format!(
+                    "main has {} parameter(s); entry point must be parameter-free",
+                    main_func.params.len()
+                ),
+            });
+        }
+
+        match &main_func.return_ty {
+            None => {
+                let main_fn: unsafe extern "C" fn() =
+                    unsafe { std::mem::transmute(main_ptr) };
+                unsafe { main_fn() };
+                Ok(JitOutcome::success())
+            }
+            Some(crate::ir::types::IrType::I32) => {
+                let main_fn: unsafe extern "C" fn() -> i32 =
+                    unsafe { std::mem::transmute(main_ptr) };
+                let ret = unsafe { main_fn() };
+                Ok(JitOutcome::from_main_return(ret))
+            }
+            Some(other) => Err(JitExecutionError::UnsupportedConstruct {
+                construct: format!(
+                    "main has unsupported return type {:?}; only () and i32 are valid entry-point signatures",
+                    other
+                ),
+            }),
+        }
     }
 
     /// Stub used when the `jit` feature is not enabled.
