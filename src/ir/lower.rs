@@ -1500,18 +1500,25 @@ fn lower_expr(
             lower_binary(lhs, *op, rhs, &expr.ty, ctx, active)
         }
         SemanticExprKind::Cast { expr, from, to } => {
+            let to_ty = lower_type(to)?;
+            // When the source is a bare Numeric literal, lower it directly with
+            // the concrete cast target type.  This avoids the Numeric→I64 default
+            // in lower_value and its I64 bounds check, which would reject large
+            // literals (e.g. values > i64::MAX) that are valid for wider targets
+            // such as I128.
+            if *from == SemanticType::Numeric {
+                if let SemanticExprKind::Value(value) = &expr.kind {
+                    return lower_value(value, to, ctx, active);
+                }
+            }
             let lowered = lower_expr(expr, ctx, active)?;
-            // When the source type is `Numeric`, the semantic layer inserted a
-            // widening cast from an unresolved literal.  The literal has already
-            // been lowered to I64 (see `lower_value`), so we use the actual
-            // lowered type as the IR source rather than trying to lower `Numeric`
-            // (which has no IR equivalent).
             let from_ty = if *from == SemanticType::Numeric {
+                // Non-literal Numeric source — not expected in well-formed IR;
+                // fall back gracefully using the actual lowered type.
                 lowered.ty.clone()
             } else {
                 lower_type(from)?
             };
-            let to_ty = lower_type(to)?;
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
             // Skip no-op casts only after validating source type invariants.
             if from_ty == to_ty {
@@ -2964,6 +2971,81 @@ mod tests {
                 }
             )
         }));
+    }
+
+    #[test]
+    fn numeric_literal_cast_to_i128_allows_large_values() {
+        // Numeric literal > i64::MAX cast to I128 must succeed — the literal
+        // is wider than I64's range but fits in I128.
+        let large: i128 = i64::MAX as i128 + 1;
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I128,
+                SemanticExpr {
+                    ty: SemanticType::I128,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(SemanticExpr {
+                            ty: SemanticType::Numeric,
+                            kind: SemanticExprKind::Value(SemanticValue::Num(large)),
+                        }),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::I128,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(
+            insts.iter().any(|inst| matches!(
+                inst,
+                IrInst::ConstInt { ty: IrType::I128, value: v, .. } if *v == large
+            )),
+            "expected ConstInt I128 with value {large}, got: {insts:?}"
+        );
+    }
+
+    #[test]
+    fn numeric_literal_cast_to_i64_in_range_emits_const_int() {
+        // A Numeric literal within I64 range cast to I64 must produce a
+        // ConstInt (not a Cast instruction) and no error.
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I64,
+                SemanticExpr {
+                    ty: SemanticType::I64,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(SemanticExpr {
+                            ty: SemanticType::Numeric,
+                            kind: SemanticExprKind::Value(SemanticValue::Num(42)),
+                        }),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::I64,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(
+            insts.iter().any(|inst| matches!(
+                inst,
+                IrInst::ConstInt { ty: IrType::I64, value: 42, .. }
+            )),
+            "expected ConstInt I64 value=42"
+        );
+        assert!(
+            !insts.iter().any(|inst| matches!(inst, IrInst::Cast { .. })),
+            "unexpected Cast instruction for Numeric→I64 literal"
+        );
     }
 
     #[test]
