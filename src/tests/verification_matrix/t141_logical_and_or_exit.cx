@@ -1,0 +1,82 @@
+// CX-105: exit-code-based JIT parity — logical AND/OR short-circuit operators.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// AND: both true → true
+result: t64 = 0
+x: bool = true && true
+if x {
+    result = 1
+} else {
+    result = 0
+}
+assert_eq(result, 1)
+
+// AND: lhs false → false (short-circuit)
+result = 0
+y: bool = false && true
+if y {
+    result = 99
+} else {
+    result = 2
+}
+assert_eq(result, 2)
+
+// AND: rhs false → false
+result = 0
+z: bool = true && false
+if z {
+    result = 99
+} else {
+    result = 3
+}
+assert_eq(result, 3)
+
+// OR: both false → false
+result = 0
+a: bool = false || false
+if a {
+    result = 99
+} else {
+    result = 4
+}
+assert_eq(result, 4)
+
+// OR: lhs true → true (short-circuit)
+result = 0
+b: bool = true || false
+if b {
+    result = 5
+} else {
+    result = 0
+}
+assert_eq(result, 5)
+
+// OR: rhs true → true
+result = 0
+c: bool = false || true
+if c {
+    result = 6
+} else {
+    result = 0
+}
+assert_eq(result, 6)
+
+// AND used directly in if condition
+result = 0
+p: t64 = 3
+q: t64 = 5
+if p < 4 && q > 4 {
+    result = 7
+} else {
+    result = 0
+}
+assert_eq(result, 7)
+
+// OR used directly in if condition
+result = 0
+if p > 10 || q > 4 {
+    result = 8
+} else {
+    result = 0
+}
+assert_eq(result, 8)

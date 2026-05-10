@@ -66,6 +66,7 @@ pub enum FeatureCategory {
     Cast,
     FloatOps,
     BuiltinAssert,
+    LogicalOps,
     Other,
 }
 
@@ -87,6 +88,7 @@ impl FeatureCategory {
             FeatureCategory::Cast,
             FeatureCategory::FloatOps,
             FeatureCategory::BuiltinAssert,
+            FeatureCategory::LogicalOps,
             FeatureCategory::Other,
         ]
     }
@@ -109,6 +111,7 @@ impl std::fmt::Display for FeatureCategory {
             FeatureCategory::Cast           => "Cast",
             FeatureCategory::FloatOps       => "FloatOps",
             FeatureCategory::BuiltinAssert  => "BuiltinAssert",
+            FeatureCategory::LogicalOps     => "LogicalOps",
             FeatureCategory::Other          => "Other",
         };
         write!(f, "{}", s)
@@ -245,6 +248,10 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t79_assert_false_reject"
         | "t80_assert_eq_mismatch_reject"
             => FeatureCategory::BuiltinAssert,
+
+        // ── LogicalOps ────────────────────────────────────────────────────────
+        "t141_logical_and_or_exit"
+            => FeatureCategory::LogicalOps,
 
         // ── Other (everything not assigned to a named category) ───────────────
         _ => FeatureCategory::Other,

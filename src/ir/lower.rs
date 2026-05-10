@@ -1958,6 +1958,9 @@ fn lower_value(
 //
 // This ordering is a language guarantee for Cx 0.1 and must not be changed
 // by optimisation passes.  See docs/backend/cx_eval_order.md.
+//
+// Exception: Op::And and Op::Or use short-circuit evaluation and are
+// dispatched to lower_logical before any operand is evaluated.
 fn lower_binary(
     lhs: &SemanticExpr,
     op: Op,
@@ -1966,6 +1969,11 @@ fn lower_binary(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    // Short-circuit operators must be dispatched before eager evaluation.
+    if matches!(op, Op::And | Op::Or) {
+        return lower_logical(lhs, op, rhs, ctx, active);
+    }
+
     // Left operand lowered first — preserves left-to-right evaluation order.
     let lhs = lower_expr(lhs, ctx, active)?;
     // Right operand lowered second — all lhs side effects are already emitted.
@@ -2023,13 +2031,101 @@ fn lower_binary(
             })
         }
         Op::Not => unreachable!("Op::Not is unary only"),
-        Op::And => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Binary::And".to_string(),
-        }),
-        Op::Or => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Binary::Or".to_string(),
-        }),
+        Op::And | Op::Or => unreachable!("And/Or dispatched to lower_logical above"),
     }
+}
+
+// Logical AND/OR short-circuit lowering
+//
+// `a && b` and `a || b` cannot be lowered as eager binary instructions
+// because the right operand must not be evaluated when the left operand
+// already determines the result.  Instead, we emit a three-block CFG:
+//
+//   [decision]           — current block; evaluates lhs; terminates with Branch
+//       |    \
+//   [rhs]  [sc]          — rhs: evaluates rhs; sc: emits the short-circuit constant
+//       \    /
+//     [merge(result)]    — receives the Bool result via a block parameter
+//
+// For AND: Branch(lhs, then=rhs, else=sc);  sc emits false (0).
+// For OR:  Branch(lhs, then=sc, else=rhs);  sc emits true  (1).
+//
+// On return, *active has been replaced with the merge block so the caller
+// can continue emitting instructions after the logical expression.
+fn lower_logical(
+    lhs: &SemanticExpr,
+    op: Op,
+    rhs: &SemanticExpr,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    let incoming = active.bindings.clone();
+
+    // Evaluate the left operand in the current (decision) block.
+    let lhs_val = lower_expr(lhs, ctx, active)?;
+    ensure_type_match("logical lhs", IrType::Bool, lhs_val.ty.clone())?;
+
+    // Block that evaluates the right operand (reached when short-circuit does not fire).
+    let mut rhs_active = ctx.start_block(vec![], incoming.clone());
+    let rhs_block_id = rhs_active.id();
+
+    // Block that produces the short-circuit constant (reached when lhs settles the result).
+    let mut sc_active = ctx.start_block(vec![], incoming.clone());
+    let sc_block_id = sc_active.id();
+
+    // Merge block receives the Bool result from whichever path ran.
+    let result_param = ctx.fresh_value();
+    let merge_block = ctx.start_block(
+        vec![BlockParam { value: result_param, ty: IrType::Bool, read_only: false }],
+        incoming,
+    );
+    let merge_id = merge_block.id();
+
+    // AND: true lhs → evaluate rhs; false lhs → short-circuit to false.
+    // OR:  true lhs → short-circuit to true; false lhs → evaluate rhs.
+    let (then_id, else_id) = match op {
+        Op::And => (rhs_block_id, sc_block_id),
+        Op::Or  => (sc_block_id,  rhs_block_id),
+        _       => unreachable!(),
+    };
+
+    // Terminate the decision block and hand *active over to the merge block
+    // so the caller continues emitting into the merge block.
+    active.terminate(IrTerminator::Branch {
+        cond: lhs_val.value,
+        then_block: then_id,
+        then_args: vec![],
+        else_block: else_id,
+        else_args: vec![],
+    })?;
+    let old_active = std::mem::replace(active, merge_block);
+    ctx.seal_block(old_active)?;
+
+    // Lower the right operand and jump to merge with its value.
+    let rhs_val = lower_expr(rhs, ctx, &mut rhs_active)?;
+    ensure_type_match("logical rhs", IrType::Bool, rhs_val.ty.clone())?;
+    rhs_active.terminate(IrTerminator::Jump {
+        target: merge_id,
+        args: vec![rhs_val.value],
+    })?;
+    ctx.seal_block(rhs_active)?;
+
+    // Emit the short-circuit constant and jump to merge.
+    // AND short-circuits to false (0); OR short-circuits to true (1).
+    let sc_const: i128 = match op {
+        Op::And => 0,
+        Op::Or  => 1,
+        _       => unreachable!(),
+    };
+    let sc_dst = ctx.fresh_value();
+    sc_active.emit(IrInst::ConstInt { dst: sc_dst, ty: IrType::Bool, value: sc_const })?;
+    sc_active.terminate(IrTerminator::Jump {
+        target: merge_id,
+        args: vec![sc_dst],
+    })?;
+    ctx.seal_block(sc_active)?;
+
+    Ok(LoweredValue { value: result_param, ty: IrType::Bool })
 }
 
 // Struct field access lowering strategy
@@ -6072,5 +6168,147 @@ mod tests {
             has_cast_i64_to_f64,
             "expected Cast(I64 → F64) for Numeric→F64 cast; integer fast path must not apply to float targets"
         );
+    }
+
+    fn logical_and_expr(lhs: SemanticExpr, rhs: SemanticExpr) -> SemanticExpr {
+        SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(lhs),
+                op: Op::And,
+                pos: 0,
+                rhs: Box::new(rhs),
+            },
+        }
+    }
+
+    fn logical_or_expr(lhs: SemanticExpr, rhs: SemanticExpr) -> SemanticExpr {
+        SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(lhs),
+                op: Op::Or,
+                pos: 0,
+                rhs: Box::new(rhs),
+            },
+        }
+    }
+
+    #[test]
+    fn lowers_logical_and_to_short_circuit_cfg() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_and_expr(bool_expr(true), bool_expr(false)),
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        // Short-circuit lowering creates 4 blocks: entry/decision, rhs, sc, merge.
+        assert!(
+            main_fn.blocks.len() >= 4,
+            "AND short-circuit must produce at least 4 blocks, got {}",
+            main_fn.blocks.len()
+        );
+        // There must be at least one Branch terminator (the decision branch).
+        let has_branch = main_fn.blocks.iter().any(|b| {
+            matches!(b.term, IrTerminator::Branch { .. })
+        });
+        assert!(has_branch, "AND must emit a Branch terminator");
+        // The short-circuit constant for AND is false (0).
+        let has_false_const = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::Bool, value: 0, .. })
+        });
+        assert!(has_false_const, "AND must emit ConstInt(Bool, 0) for the short-circuit path");
+    }
+
+    #[test]
+    fn lowers_logical_or_to_short_circuit_cfg() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_or_expr(bool_expr(false), bool_expr(true)),
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            main_fn.blocks.len() >= 4,
+            "OR short-circuit must produce at least 4 blocks, got {}",
+            main_fn.blocks.len()
+        );
+        let has_branch = main_fn.blocks.iter().any(|b| {
+            matches!(b.term, IrTerminator::Branch { .. })
+        });
+        assert!(has_branch, "OR must emit a Branch terminator");
+        // The short-circuit constant for OR is true (1).
+        let has_true_const = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::Bool, value: 1, .. })
+        });
+        assert!(has_true_const, "OR must emit ConstInt(Bool, 1) for the short-circuit path");
+    }
+
+    #[test]
+    fn logical_and_result_is_bool() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_and_expr(bool_expr(true), bool_expr(true)),
+            )],
+            enums: vec![],
+        };
+        // IR validation (inside lower_and_validate) checks type consistency.
+        // A successful call guarantees the result is Bool.
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn logical_or_result_is_bool() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_or_expr(bool_expr(false), bool_expr(false)),
+            )],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn nested_logical_and_or_lowers_without_error() {
+        // (true && false) || true
+        let inner = logical_and_expr(bool_expr(true), bool_expr(false));
+        let outer = logical_or_expr(inner, bool_expr(true));
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(0), "x", SemanticType::Bool, outer)],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn logical_and_used_as_if_condition_lowers_correctly() {
+        // if true && false { } else { }
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::IfElse {
+                condition: logical_and_expr(bool_expr(true), bool_expr(false)),
+                then_body: vec![],
+                else_ifs: vec![],
+                else_body: Some(vec![]),
+                pos: 0,
+            }],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
     }
 }
