@@ -1,0 +1,6 @@
+// CX-94: exit-code-based JIT parity — struct field write then read-back.
+// Correctness verified by exit code only (0 = all asserts held).
+struct Counter { value: t64 }
+c: Counter = Counter { value: 0 }
+c.value = 42
+assert_eq(c.value, 42)

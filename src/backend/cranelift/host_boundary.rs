@@ -388,13 +388,37 @@ impl HostBoundary {
         let main_id = main_id.ok_or(JitExecutionError::MainNotFound)?;
         let main_ptr = module.get_finalized_function(main_id);
 
+        // Dispatch based on whether `main` has an explicit return type.
+        //
+        // Real Cx programs always produce a synthetic `main` with no return type
+        // (`return_ty: None`).  The validator enforces this.  Calling a void
+        // function as `fn() -> i32` is UB — the register file is indeterminate
+        // after `ret`.  Instead, call as `fn()` and return exit code 0.
+        //
+        // Manually-constructed IR (e.g. JIT unit tests) may declare `main` with
+        // `return_ty: Some(IrType::I32)` to exercise non-zero exit codes.  In
+        // that case the Cranelift signature has an I32 return, so calling as
+        // `fn() -> i32` is correct and the return value becomes the exit code.
+        //
         // SAFETY: `module` is still alive here, keeping the JIT code mapped.
-        // The function signature () -> i32 matches the IR declaration of `main`.
-        let main_fn: unsafe extern "C" fn() -> i32 =
-            unsafe { std::mem::transmute(main_ptr) };
-        let ret = unsafe { main_fn() };
+        let main_returns_value = ir
+            .functions
+            .iter()
+            .find(|f| f.name == "main")
+            .map(|f| f.return_ty.is_some())
+            .unwrap_or(false);
 
-        Ok(JitOutcome::from_main_return(ret))
+        if main_returns_value {
+            let main_fn: unsafe extern "C" fn() -> i32 =
+                unsafe { std::mem::transmute(main_ptr) };
+            let ret = unsafe { main_fn() };
+            Ok(JitOutcome::from_main_return(ret))
+        } else {
+            let main_fn: unsafe extern "C" fn() =
+                unsafe { std::mem::transmute(main_ptr) };
+            unsafe { main_fn() };
+            Ok(JitOutcome::success())
+        }
     }
 
     /// Stub used when the `jit` feature is not enabled.

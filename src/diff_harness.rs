@@ -200,6 +200,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t110_struct_field_assign_overflow"
         | "t114_field_type_mismatch_reject"
         | "t115_strref_in_struct_reject"
+        | "t125_struct_field_read_exit"
+        | "t126_struct_second_field_read_exit"
+        | "t127_struct_field_write_exit"
             => FeatureCategory::Struct,
 
         // ── Array ─────────────────────────────────────────────────────────────
@@ -210,6 +213,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── CompoundAssign ────────────────────────────────────────────────────
         "t26_compound_add_two"
         | "t41_compound_assign_dot"
+        | "t128_struct_compound_assign_exit"
             => FeatureCategory::CompoundAssign,
 
         // ── Unary ─────────────────────────────────────────────────────────────
