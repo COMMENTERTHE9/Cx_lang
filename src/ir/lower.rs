@@ -1558,21 +1558,35 @@ fn lower_expr(
         SemanticExprKind::Cast { expr, from, to } => {
             let to_ty = lower_type(to)?;
             if *from == SemanticType::Numeric {
-                // The source is an unresolved numeric literal.  Lower it
-                // directly at the cast destination type so the literal is
-                // range-validated against `to_ty` (not the target default)
-                // and emitted at the correct width, eliminating a redundant
-                // default-width → to_ty cast.
-                if let SemanticExprKind::Value(semantic_val) = &expr.kind {
-                    let lowered = lower_value(semantic_val, to, ctx, active)?;
-                    ensure_type_match("cast source", to_ty.clone(), lowered.ty.clone())?;
-                    return Ok(lowered);
+                if ir_int_range(&to_ty).is_some() {
+                    // Integer target: fast path — lower the literal directly at
+                    // to_ty so it is range-validated against the actual
+                    // destination width and emitted without a redundant
+                    // default-width → to_ty cast instruction.
+                    if let SemanticExprKind::Value(semantic_val) = &expr.kind {
+                        let lowered = lower_value(semantic_val, to, ctx, active)?;
+                        ensure_type_match("cast source", to_ty.clone(), lowered.ty.clone())?;
+                        return Ok(lowered);
+                    }
                 }
-                // Non-literal Numeric expression (should not arise in
-                // well-formed programs): fall through to the general path.
+                // Non-integer target (e.g. F64) or non-literal Numeric
+                // expression: lower the source at the target-default integer
+                // width (I64 on 64-bit), then emit a Cast to the destination
+                // type.  lower_type(Numeric) has no IR equivalent, so we use
+                // the actual lowered type as the cast source.
                 let lowered = lower_expr(expr, ctx, active)?;
-                ensure_type_match("cast source", to_ty.clone(), lowered.ty)?;
-                return Ok(LoweredValue { value: lowered.value, ty: to_ty });
+                let from_ty = lowered.ty.clone();
+                if from_ty == to_ty {
+                    return Ok(LoweredValue { value: lowered.value, ty: to_ty });
+                }
+                let dst = ctx.fresh_value();
+                active.emit(IrInst::Cast {
+                    dst,
+                    from: from_ty,
+                    to: to_ty.clone(),
+                    value: lowered.value,
+                })?;
+                return Ok(LoweredValue { value: dst, ty: to_ty });
             }
             let lowered = lower_expr(expr, ctx, active)?;
             let from_ty = lower_type(from)?;
@@ -5930,6 +5944,38 @@ mod tests {
             matches!(err, LoweringError::UnsupportedSemanticConstruct { .. }),
             "expected UnsupportedSemanticConstruct for out-of-range Numeric->I32 cast, got: {:?}",
             err
+        );
+    }
+
+    #[test]
+    fn cast_from_numeric_to_f64_uses_default_width_cast() {
+        // A Numeric literal cast to F64 must NOT take the integer fast path.
+        // Expected IR: ConstInt(I64, 42) followed by Cast(I64 → F64).
+        // The fast path would wrongly emit ConstInt(F64, 42), which the IR
+        // validator rejects because ConstInt requires an integer or bool type.
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::F64,
+                SemanticExpr {
+                    ty: SemanticType::F64,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(int_expr(42, SemanticType::Numeric)),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::F64,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_cast_i64_to_f64 = module.functions[0].blocks[0].insts.iter().any(|inst| {
+            matches!(inst, IrInst::Cast { from: IrType::I64, to: IrType::F64, .. })
+        });
+        assert!(
+            has_cast_i64_to_f64,
+            "expected Cast(I64 → F64) for Numeric→F64 cast; integer fast path must not apply to float targets"
         );
     }
 }
