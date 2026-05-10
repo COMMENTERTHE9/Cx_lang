@@ -64,10 +64,30 @@ struct ValidatorFunctionSig {
     has_return: bool,
 }
 
+/// Return the signatures of every known runtime intrinsic.
+///
+/// These are pre-seeded into the validator's `function_sigs` map so that
+/// `IrInst::Call` to an intrinsic like `cx_printn` passes validation even
+/// though it has no `IrFunction` entry in the module.
+fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
+    let mut sigs = HashMap::new();
+    // cx_printn(n: I64) -> void — Phase 9 sub-packet 2 print-integer intrinsic.
+    sigs.insert(
+        "cx_printn".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::I64],
+            has_return: false,
+        },
+    );
+    sigs
+}
+
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
 
-    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = HashMap::new();
+    // Seed known runtime intrinsic signatures before scanning user-defined functions.
+    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
     for function in &module.functions {
         function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
             param_count: function.params.len(),
@@ -1451,6 +1471,75 @@ mod tests {
                 IrValidationError::LoopVariableReassignment { .. }
             )),
             "expected LoopVariableReassignment error, got: {:?}",
+            errors
+        );
+    }
+
+    // ── Runtime intrinsic signature tests (CX-38) ────────────────────────────
+
+    #[test]
+    fn validator_accepts_cx_printn_call_with_i64_arg() {
+        // A call to `cx_printn(i64)` must pass validation even though cx_printn
+        // has no IrFunction entry in the module — it is seeded by known_intrinsic_sigs.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    #[test]
+    fn validator_rejects_cx_printn_call_with_wrong_arg_type() {
+        // cx_printn expects I64; passing I32 must produce a type-mismatch error.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject wrong-type arg to cx_printn");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                if detail.contains("cx_printn")
+            )),
+            "expected type-mismatch error for cx_printn, got: {:?}",
             errors
         );
     }
