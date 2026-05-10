@@ -1352,21 +1352,46 @@ mod jit_tests {
         // A void-returning main (return_ty: None) must be called as fn() and
         // produce JitOutcome::success() — not as fn()->i32 which would read
         // garbage from rax and produce an indeterminate exit code.
+        //
+        // The helper function returns 99 (non-zero); main calls it and discards
+        // the result.  Under the old wrong calling convention (fn()->i32), rax
+        // holds 99 after the call and the exit code would be non-zero, making
+        // this test reliably surface the regression.
         let module = IrModule {
             debug_name: "test_void_main".to_string(),
-            functions: vec![IrFunction {
-                name: "main".to_string(),
-                params: vec![],
-                return_ty: None,
-                blocks: vec![IrBlock {
-                    id: BlockId(0),
+            functions: vec![
+                IrFunction {
+                    name: "helper".to_string(),
                     params: vec![],
-                    insts: vec![
-                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
-                    ],
-                    term: IrTerminator::Return { value: None },
-                }],
-            }],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 99 },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Call {
+                                dst: None,
+                                callee: "helper".to_string(),
+                                args: vec![],
+                                return_ty: Some(IrType::I32),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+            ],
         };
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
