@@ -6357,4 +6357,120 @@ mod tests {
             "logical OR with non-Bool result type must be rejected by lower_logical"
         );
     }
+
+    // Observable side-effect proof: the Call instruction (representing an
+    // observable RHS side effect) must appear only in the RHS block, never in
+    // the SC block.  This is the IR-level equivalent of the rhs_trap() fixture
+    // in t141_logical_and_or_exit.cx — it proves that short-circuit lowering
+    // truly isolates RHS evaluation to the path where it is needed.
+
+    #[test]
+    fn and_short_circuit_rhs_call_is_in_rhs_block_only() {
+        // x: bool = false && side_effect_fn()
+        // AND: then=rhs (LHS true → evaluate RHS), else=sc (LHS false → false constant).
+        // The Call must land in the rhs block and must be absent from the sc block.
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_and_expr(bool_expr(false), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("AND must emit a Branch terminator");
+        let (rhs_id, sc_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+
+        let rhs_block = main_fn.blocks.iter().find(|b| b.id == rhs_id).unwrap();
+        let sc_block  = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+
+        assert!(
+            rhs_block.insts.iter().any(|i| matches!(i, IrInst::Call { .. })),
+            "Call must be present in the RHS block"
+        );
+        assert!(
+            !sc_block.insts.iter().any(|i| matches!(i, IrInst::Call { .. })),
+            "Call must NOT be present in the SC block — AND short-circuit must suppress RHS evaluation"
+        );
+    }
+
+    #[test]
+    fn or_short_circuit_rhs_call_is_in_rhs_block_only() {
+        // x: bool = true || side_effect_fn()
+        // OR: then=sc (LHS true → true constant), else=rhs (LHS false → evaluate RHS).
+        // The Call must land in the rhs block and must be absent from the sc block.
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_or_expr(bool_expr(true), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("OR must emit a Branch terminator");
+        let (sc_id, rhs_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+
+        let rhs_block = main_fn.blocks.iter().find(|b| b.id == rhs_id).unwrap();
+        let sc_block  = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+
+        assert!(
+            rhs_block.insts.iter().any(|i| matches!(i, IrInst::Call { .. })),
+            "Call must be present in the RHS block"
+        );
+        assert!(
+            !sc_block.insts.iter().any(|i| matches!(i, IrInst::Call { .. })),
+            "Call must NOT be present in the SC block — OR short-circuit must suppress RHS evaluation"
+        );
+    }
 }
