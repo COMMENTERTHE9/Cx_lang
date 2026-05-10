@@ -383,6 +383,9 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let mut has_real_main = false;
     let signature_table = build_signature_table(program);
     let struct_table = build_struct_table(program);
+    // Single place where the compilation target is chosen; threaded into every
+    // lowering context so all target-dependent decisions use the same config.
+    let target = TargetConfig::host();
 
     for stmt in &program.stmts {
         match stmt {
@@ -390,7 +393,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace, target)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
@@ -409,19 +412,19 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, trace)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, trace, target)?);
     }
 
     Ok(module)
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, trace: bool) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, trace: bool, target: TargetConfig) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
         allow_return_stmt: false,
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, TargetConfig::host());
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
         stmts.iter().copied(),
@@ -447,6 +450,7 @@ fn lower_semantic_function(
     signature_table: &HashMap<String, FunctionSignature>,
     struct_table: &HashMap<String, StructLayoutInfo>,
     trace: bool,
+    target: TargetConfig,
 ) -> Result<IrFunction, LoweringError> {
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
@@ -461,7 +465,7 @@ fn lower_semantic_function(
         }
     };
 
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, TargetConfig::host());
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -1552,18 +1556,26 @@ fn lower_expr(
             lower_binary(lhs, *op, rhs, &expr.ty, ctx, active)
         }
         SemanticExprKind::Cast { expr, from, to } => {
-            let lowered = lower_expr(expr, ctx, active)?;
-            // When the source type is `Numeric`, the semantic layer inserted a
-            // widening cast from an unresolved literal.  The literal has already
-            // been lowered to I64 (see `lower_value`), so we use the actual
-            // lowered type as the IR source rather than trying to lower `Numeric`
-            // (which has no IR equivalent).
-            let from_ty = if *from == SemanticType::Numeric {
-                lowered.ty.clone()
-            } else {
-                lower_type(from)?
-            };
             let to_ty = lower_type(to)?;
+            if *from == SemanticType::Numeric {
+                // The source is an unresolved numeric literal.  Lower it
+                // directly at the cast destination type so the literal is
+                // range-validated against `to_ty` (not the target default)
+                // and emitted at the correct width, eliminating a redundant
+                // default-width → to_ty cast.
+                if let SemanticExprKind::Value(semantic_val) = &expr.kind {
+                    let lowered = lower_value(semantic_val, to, ctx, active)?;
+                    ensure_type_match("cast source", to_ty.clone(), lowered.ty.clone())?;
+                    return Ok(lowered);
+                }
+                // Non-literal Numeric expression (should not arise in
+                // well-formed programs): fall through to the general path.
+                let lowered = lower_expr(expr, ctx, active)?;
+                ensure_type_match("cast source", to_ty.clone(), lowered.ty)?;
+                return Ok(LoweredValue { value: lowered.value, ty: to_ty });
+            }
+            let lowered = lower_expr(expr, ctx, active)?;
+            let from_ty = lower_type(from)?;
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
             // Skip no-op casts only after validating source type invariants.
             if from_ty == to_ty {
@@ -1829,6 +1841,20 @@ fn lower_expr(
     }
 }
 
+/// Returns the inclusive `[min, max]` range of values that fit in `ty` as a
+/// signed integer, or `None` if `ty` is not an integer type.
+fn ir_int_range(ty: &IrType) -> Option<(i128, i128)> {
+    match ty {
+        IrType::I8   => Some((i8::MIN  as i128, i8::MAX  as i128)),
+        IrType::I16  => Some((i16::MIN as i128, i16::MAX as i128)),
+        IrType::I32  => Some((i32::MIN as i128, i32::MAX as i128)),
+        IrType::I64  => Some((i64::MIN as i128, i64::MAX as i128)),
+        IrType::I128 => Some((i128::MIN, i128::MAX)),
+        IrType::Bool => Some((0, 1)),
+        _            => None,
+    }
+}
+
 fn lower_value(
     value: &SemanticValue,
     semantic_ty: &SemanticType,
@@ -1849,16 +1875,14 @@ fn lower_value(
     match value {
         SemanticValue::Num(n) => {
             let value = *n;
-            let default_lit_ty = ctx.target.numeric_literal_ir_type();
-            if ty == default_lit_ty
-                && (value < ctx.target.numeric_literal_min()
-                    || value > ctx.target.numeric_literal_max())
-            {
-                return Err(LoweringError::UnsupportedSemanticConstruct {
-                    construct: format!(
-                        "integer literal {value} exceeds target numeric literal range during lowering"
-                    ),
-                });
+            if let Some((min, max)) = ir_int_range(&ty) {
+                if value < min || value > max {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "integer literal {value} does not fit in {ty:?} during lowering"
+                        ),
+                    });
+                }
             }
             active.emit(IrInst::ConstInt {
                 dst,
@@ -5850,8 +5874,9 @@ mod tests {
 
     #[test]
     fn cast_from_numeric_source_uses_lowered_type() {
-        // A Cast with from=Numeric should use the actual lowered type (I64 on
-        // 64-bit host) rather than failing with UnsupportedSemanticType.
+        // A Cast with from=Numeric should lower the literal directly at the
+        // cast destination type (I32), emitting ConstInt(I32) without an
+        // intermediate I64 → I32 cast instruction.
         let program = SemanticProgram {
             stmts: vec![typed_assign(
                 BindingId(1),
@@ -5869,9 +5894,42 @@ mod tests {
             enums: vec![],
         };
         let module = lower_and_validate(&program);
-        let has_cast = module.functions[0].blocks[0].insts.iter().any(|inst| {
+        let has_const_i32 = module.functions[0].blocks[0].insts.iter().any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::I32, value: 7, .. })
+        });
+        assert!(has_const_i32, "expected ConstInt(I32, 7) — Numeric literal lowered at cast destination, no intermediate Cast needed");
+        let has_spurious_cast = module.functions[0].blocks[0].insts.iter().any(|inst| {
             matches!(inst, IrInst::Cast { from: IrType::I64, to: IrType::I32, .. })
         });
-        assert!(has_cast, "expected Cast(I64 -> I32) from Numeric->I32 cast");
+        assert!(!has_spurious_cast, "unexpected I64→I32 Cast: Numeric literal should be emitted at I32 directly");
+    }
+
+    #[test]
+    fn cast_from_numeric_out_of_i32_range_is_rejected() {
+        // A Numeric literal that exceeds i32::MAX must be rejected when cast to
+        // I32, even though it would pass the default I64 range check.
+        let too_large: i128 = i32::MAX as i128 + 1;
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I32,
+                SemanticExpr {
+                    ty: SemanticType::I32,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(int_expr(too_large, SemanticType::Numeric)),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::I32,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::UnsupportedSemanticConstruct { .. }),
+            "expected UnsupportedSemanticConstruct for out-of-range Numeric->I32 cast, got: {:?}",
+            err
+        );
     }
 }
