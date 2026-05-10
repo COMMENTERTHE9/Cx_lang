@@ -1971,7 +1971,7 @@ fn lower_binary(
 ) -> Result<LoweredValue, LoweringError> {
     // Short-circuit operators must be dispatched before eager evaluation.
     if matches!(op, Op::And | Op::Or) {
-        return lower_logical(lhs, op, rhs, ctx, active);
+        return lower_logical(lhs, op, rhs, result_ty, ctx, active);
     }
 
     // Left operand lowered first — preserves left-to-right evaluation order.
@@ -2056,9 +2056,11 @@ fn lower_logical(
     lhs: &SemanticExpr,
     op: Op,
     rhs: &SemanticExpr,
+    result_ty: &SemanticType,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    ensure_type_match("logical result", IrType::Bool, lower_type(result_ty)?)?;
     let incoming = active.bindings.clone();
 
     // Evaluate the left operand in the current (decision) block.
@@ -6310,5 +6312,49 @@ mod tests {
             enums: vec![],
         };
         let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn logical_and_with_non_bool_result_type_is_rejected() {
+        // A logical AND expression whose semantic result type is I64 (not Bool)
+        // must be rejected before CFG lowering proceeds.
+        let expr = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(bool_expr(true)),
+                op: Op::And,
+                pos: 0,
+                rhs: Box::new(bool_expr(false)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
+            enums: vec![],
+        };
+        assert!(
+            lower_program(&program).is_err(),
+            "logical AND with non-Bool result type must be rejected by lower_logical"
+        );
+    }
+
+    #[test]
+    fn logical_or_with_non_bool_result_type_is_rejected() {
+        let expr = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(bool_expr(false)),
+                op: Op::Or,
+                pos: 0,
+                rhs: Box::new(bool_expr(true)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
+            enums: vec![],
+        };
+        assert!(
+            lower_program(&program).is_err(),
+            "logical OR with non-Bool result type must be rejected by lower_logical"
+        );
     }
 }

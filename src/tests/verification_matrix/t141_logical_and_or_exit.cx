@@ -1,6 +1,13 @@
 // CX-105: exit-code-based JIT parity — logical AND/OR short-circuit operators.
 // No stdout; correctness verified by exit code only (0 = all asserts held).
 
+// rhs_trap() traps with assert(false) if executed; used to prove that
+// short-circuiting prevents RHS evaluation when LHS settles the result.
+fnc: bool rhs_trap() {
+    assert(false)
+    return false
+}
+
 // AND: both true → true
 result: t64 = 0
 x: bool = true && true
@@ -80,3 +87,15 @@ if p > 10 || q > 4 {
     result = 0
 }
 assert_eq(result, 8)
+
+// Short-circuit proof: RHS must NOT be evaluated when LHS settles the result.
+// If rhs_trap() is called, it will assert(false) causing a non-zero exit,
+// which proves short-circuiting is broken.
+
+// AND: lhs false → short-circuit (rhs_trap must NOT be called)
+sc_and: bool = false && rhs_trap()
+assert_eq(sc_and, false)
+
+// OR: lhs true → short-circuit (rhs_trap must NOT be called)
+sc_or: bool = true || rhs_trap()
+assert_eq(sc_or, true)
