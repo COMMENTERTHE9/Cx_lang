@@ -234,7 +234,7 @@ impl std::fmt::Display for JitExecutionError {
 /// ## Supported Instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packets 2 and 3; CX-32 PtrOffset/PtrAdd; CX-91 Cast + F64 binary)
 ///
 /// The JIT implementation (enabled with the `jit` feature) supports:
-/// - `ConstInt` (types: I8, I16, I32, I64 — not I128)
+/// - `ConstInt` (types: I8, I16, I32, I64, I128 via `iconcat`)
 /// - `ConstFloat` — F64 constant via Cranelift `f64const`
 /// - `Binary` (Add, Sub, Mul, Div, Rem — signed integer operations and F64 arithmetic)
 /// - `Cast` — scalar type conversions:
@@ -539,7 +539,7 @@ fn build_cl_signature<M: cranelift_module::Module>(
 /// Emit Cranelift IR instructions for a single [`IrFunction`] into `builder`.
 ///
 /// Supported instructions (Phase 14 sub-packets 1, 2, and 3; Phase 15 float compare; Phase 9 sub-packet 3; Phase 15 direct calls; CX-91 Cast + F64 binary):
-/// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64 (not I128)
+/// - [`IrInst::ConstInt`] — integer constants for I8/I16/I32/I64/I128 (I128 via `iconcat`)
 /// - [`IrInst::ConstFloat`] — F64 constants via Cranelift `f64const`
 /// - [`IrInst::Binary`] — signed integer arithmetic: Add, Sub, Mul, Div, Rem; F64 arithmetic: fadd/fsub/fmul/fdiv; F64 Rem via fmod libcall
 /// - [`IrInst::Cast`] — scalar type conversions: integer widening (`sextend`/`uextend`), narrowing (`ireduce`), int↔F64 (`fcvt_from_sint`/`fcvt_to_sint_sat`)
@@ -625,22 +625,26 @@ fn compile_ir_function(
         for inst in &ir_block.insts {
             match inst {
                 IrInst::ConstInt { dst, ty, value } => {
-                    // I128 cannot be represented as a single iconst (Cranelift
-                    // emulates it as two i64s). Deferred to a future sub-packet.
                     if *ty == IrType::I128 {
-                        return Err(JitExecutionError::UnsupportedConstruct {
-                            construct: "ConstInt I128 (not supported)"
-                                .to_string(),
-                        });
+                        // iconst only accepts imm64; split into lo/hi i64 halves
+                        // and reconstruct with iconcat.
+                        use cranelift_codegen::ir::types;
+                        let lo = *value as i64;
+                        let hi = (*value >> 64) as i64;
+                        let lo_val = builder.ins().iconst(types::I64, lo);
+                        let hi_val = builder.ins().iconst(types::I64, hi);
+                        let result = builder.ins().iconcat(lo_val, hi_val);
+                        val_map.insert(*dst, result);
+                    } else {
+                        let cl_ty = ir_type_to_cranelift(ty).map_err(|e| {
+                            JitExecutionError::UnsupportedConstruct {
+                                construct: e.to_string(),
+                            }
+                        })?;
+                        // The value fits in i64 for all supported integer types (I8/I16/I32/I64).
+                        let cl_val = builder.ins().iconst(cl_ty, *value as i64);
+                        val_map.insert(*dst, cl_val);
                     }
-                    let cl_ty = ir_type_to_cranelift(ty).map_err(|e| {
-                        JitExecutionError::UnsupportedConstruct {
-                            construct: e.to_string(),
-                        }
-                    })?;
-                    // The value fits in i64 for all supported integer types (I8/I16/I32/I64).
-                    let cl_val = builder.ins().iconst(cl_ty, *value as i64);
-                    val_map.insert(*dst, cl_val);
                 }
 
                 IrInst::ConstFloat { dst, value } => {
@@ -2061,6 +2065,241 @@ mod jit_tests {
         };
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    // ── I128 support tests (Phase 15 gap) ───────────────────────────────────
+
+    /// ConstInt I128 must no longer return UnsupportedConstruct.
+    ///
+    /// The constant is created but the function returns an unrelated I32, so
+    /// this test only verifies that codegen does not reject the I128 ConstInt.
+    #[test]
+    fn jit_i128_const_is_accepted() {
+        // main() -> I32 {
+        //   _ = const 0 : I128    // I128 creation — must not fail
+        //   v1 = const 0 : I32
+        //   return v1
+        // }
+        let module = IrModule {
+            debug_name: "test_i128_accepted".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 0 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT rejected I128 ConstInt: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
+    /// I128 add: 10 + 32 == 42 — exercises ConstInt I128 and Binary Add I128.
+    ///
+    /// Correctness is verified by comparing the I128 result with a known constant
+    /// and branching to return 42 (pass) or 0 (fail).
+    #[test]
+    fn jit_i128_add_result_correct() {
+        // main() -> I32 {
+        //   v0 = const 10 : I128
+        //   v1 = const 32 : I128
+        //   v2 = add I128(v0, v1)        // 42 as I128
+        //   v3 = const 42 : I128
+        //   v4 = compare Eq(v2, v3)
+        //   branch v4, block1[], block2[]
+        //   block1: return 42
+        //   block2: return 0
+        // }
+        let module = IrModule {
+            debug_name: "test_i128_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 10 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I128, value: 32 },
+                            IrInst::Binary {
+                                dst: ValueId(2),
+                                op: BinaryOp::Add,
+                                ty: IrType::I128,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                            IrInst::ConstInt { dst: ValueId(3), ty: IrType::I128, value: 42 },
+                            IrInst::Compare {
+                                dst: ValueId(4),
+                                op: crate::ir::instr::CompareOp::Eq,
+                                lhs: ValueId(2),
+                                rhs: ValueId(3),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(4),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt { dst: ValueId(5), ty: IrType::I32, value: 42 }],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 0 }],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT I128 add failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    /// I128 alloca+store+load roundtrip: a 16-byte slot must preserve I128 values.
+    #[test]
+    fn jit_i128_alloca_store_load_roundtrip() {
+        // main() -> I32 {
+        //   slot = alloca(16, 16)
+        //   v0   = const 99999 : I128
+        //   store(slot, v0)
+        //   v1   = load(I128, slot)
+        //   v2   = const 99999 : I128
+        //   v3   = compare Eq(v1, v2)
+        //   branch v3, block1[], block2[]
+        //   block1: return 42
+        //   block2: return 0
+        // }
+        let module = IrModule {
+            debug_name: "test_i128_slot".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Alloca { dst: ValueId(0), size: 16, align: 16 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I128, value: 99999 },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                            IrInst::Load { dst: ValueId(2), ty: IrType::I128, ptr: ValueId(0) },
+                            IrInst::ConstInt { dst: ValueId(3), ty: IrType::I128, value: 99999 },
+                            IrInst::Compare {
+                                dst: ValueId(4),
+                                op: crate::ir::instr::CompareOp::Eq,
+                                lhs: ValueId(2),
+                                rhs: ValueId(3),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(4),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt { dst: ValueId(5), ty: IrType::I32, value: 42 }],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 0 }],
+                        term: IrTerminator::Return { value: Some(ValueId(6)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT I128 slot roundtrip failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 42);
+    }
+
+    /// A large I128 constant with non-zero hi bits must survive iconcat correctly.
+    ///
+    /// Value chosen: (1i128 << 65) + 7, which sets bit 65 in the high half and
+    /// bit 2 + bit 1 + bit 0 in the low half, exercising both halves of iconcat.
+    #[test]
+    fn jit_i128_large_constant_hi_bits() {
+        let big: i128 = (1i128 << 65) + 7;
+        // main() -> I32 {
+        //   v0 = const big : I128
+        //   v1 = const big : I128
+        //   v2 = compare Eq(v0, v1)     // must be true
+        //   branch v2, block1[], block2[]
+        //   block1: return 42
+        //   block2: return 0
+        // }
+        let module = IrModule {
+            debug_name: "test_i128_large".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: big },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I128, value: big },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: crate::ir::instr::CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 42 }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 0 }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT I128 large constant failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 42);
     }
 
