@@ -1,0 +1,12 @@
+// CX-120: exit-code-based JIT parity — unary integer negation (mirrors t96).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// JIT SKIP: unary negation not yet lowered to JIT IR; exits 127.
+
+x: t64 = 5
+assert_eq(-x, -5)
+
+y: t64 = -3
+assert_eq(-y, 3)
+
+z: t64 = 0
+assert_eq(-z, 0)

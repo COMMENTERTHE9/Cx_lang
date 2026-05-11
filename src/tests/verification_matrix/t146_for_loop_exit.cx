@@ -1,0 +1,21 @@
+// CX-120: exit-code-based JIT parity — for-loop accumulation (mirrors t48).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// JIT SKIP: for-loop lowering not yet implemented; exits 127.
+
+sum: t64 = 0
+for i in 0..5 {
+    sum = sum + i
+}
+assert_eq(sum, 10)
+
+sum = 0
+for i in 0..3 {
+    sum = sum + i
+}
+assert_eq(sum, 3)
+
+sum = 0
+for i in 0..1 {
+    sum = sum + i
+}
+assert_eq(sum, 0)

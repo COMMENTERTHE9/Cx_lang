@@ -178,6 +178,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── ForLoop ───────────────────────────────────────────────────────────
         "t48_for_loop"
         | "t104_for_in_func"
+        | "t146_for_loop_exit"
+        | "t147_for_in_func_exit"
             => FeatureCategory::ForLoop,
 
         // ── InfiniteLoop ──────────────────────────────────────────────────────
@@ -217,6 +219,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── Array ─────────────────────────────────────────────────────────────
         "t33_arrays"
         | "t112_array_of_result"
+        | "t148_array_basic_exit"
             => FeatureCategory::Array,
 
         // ── CompoundAssign ────────────────────────────────────────────────────
@@ -227,6 +230,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
 
         // ── Unary ─────────────────────────────────────────────────────────────
         "t96_overflow_t8_unary_neg"
+        | "t149_unary_neg_exit"
             => FeatureCategory::Unary,
 
         // ── Cast ─────────────────────────────────────────────────────────────

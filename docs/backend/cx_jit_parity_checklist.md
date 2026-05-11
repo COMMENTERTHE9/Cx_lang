@@ -22,13 +22,13 @@ set:
 | VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
-| ForLoop        | For-in loops                                 | t48, t104 |
+| ForLoop        | For-in loops                                 | t48, t104 (output-verified); t146, t147 (exit-code-verified, CX-120) |
 | InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
-| Array          | Array literals and array-of-result           | t33, t112 |
+| Array          | Array literals and array-of-result           | t33, t112 (output-verified); t148 (exit-code-verified, CX-120) |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
-| Unary          | Unary operators (negation, etc.)             | t96 |
+| Unary          | Unary operators (negation, etc.)             | t96 (output-verified); t149 (exit-code-verified, CX-120) |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
@@ -102,10 +102,11 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-113` (submain as of CX-113 merge window, 2026-05-11).
+Run on branch `stokowski/CX-120` (submain as of CX-120 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), the CX-111 bool-variable negation extension to t131, and
-CX-113 when-block exit-code fixtures (t143–t145).
+fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
+CX-113 when-block exit-code fixtures (t143–t145), and CX-120 ForLoop/Array/Unary
+exit-code fixtures (t146–t149).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -114,20 +115,20 @@ Arithmetic                6     11            0
 VariableDecl              5      3            0
 IfElse                    3      3            0
 WhileLoop                 2      6            0
-ForLoop                   0      2            0
+ForLoop                   0      4            0
 InfiniteLoop              1      2            0
 DirectCall                5      6            0
 Struct                    5      6            0
-Array                     0      2            0
+Array                     0      3            0
 CompoundAssign            1      2            0
-Unary                     0      1            0
+Unary                     0      2            0
 Cast                      0      2            0
 FloatOps                  0      5            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     51            0
 ------------------------------------------------
-Total: 149 fixtures, 0 PARITY_FAILs
+Total: 153 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -164,6 +165,20 @@ and while-in/while-in-then constructs (not yet JIT-lowerable).
 mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
 in JIT (when-block lowering not yet implemented; exits 127). Once when-block
 lowering lands, these fixtures will transition from SKIP to PASS without changes.
+
+**ForLoop parity coverage (CX-120):** t146 mirrors t48 (top-level for loop,
+accumulation), t147 mirrors t104 (for loop in a function). Both are SKIP in JIT
+(for-loop lowering not yet implemented; exits 127). The 4 SKIP total includes the
+2 original output-verified fixtures plus the 2 new exit-code-verified mirrors.
+
+**Array parity coverage (CX-120):** t148 mirrors t33 (array index read and
+write). SKIP in JIT (array lowering not yet implemented; exits 127). The 3 SKIP
+total includes the 2 original fixtures plus the new exit-code-verified mirror.
+
+**Unary parity coverage (CX-120):** t149 mirrors t96 (unary integer negation,
+using t64 to test the basic semantic without t8 overflow). SKIP in JIT (unary
+negation not yet lowered; exits 127). The 2 SKIP total includes the original
+output-verified fixture plus the new exit-code-verified mirror.
 
 ---
 

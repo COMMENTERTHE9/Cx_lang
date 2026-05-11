@@ -1,0 +1,15 @@
+// CX-120: exit-code-based JIT parity — for-loop in a function (mirrors t104).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// JIT SKIP: for-loop lowering not yet implemented; exits 127.
+
+fnc: t64 sum_range(n: t64) {
+    s: t64 = 0
+    for i in 0..n {
+        s = s + i
+    }
+    return s
+}
+
+assert_eq(sum_range(3), 3)
+assert_eq(sum_range(5), 10)
+assert_eq(sum_range(0), 0)
