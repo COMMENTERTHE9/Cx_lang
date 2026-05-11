@@ -13,7 +13,7 @@ current baseline from a real run, and the gate semantics used by the
 
 Every fixture in `src/tests/verification_matrix/` maps to exactly one
 `FeatureCategory` variant. The mapping is defined by `feature_of()` in
-`src/diff_harness.rs`. The 15 categories cover the full 0.1 supported construct
+`src/diff_harness.rs`. The 16 categories cover the full 0.1 supported construct
 set:
 
 | Category       | Description                                  | Key fixtures |
@@ -25,7 +25,7 @@ set:
 | ForLoop        | For-in loops                                 | t48, t104 |
 | InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
-| Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t128 |
+| Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
 | Unary          | Unary operators (negation, etc.)             | t96 |
