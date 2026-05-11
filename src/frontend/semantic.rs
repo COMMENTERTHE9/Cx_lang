@@ -806,10 +806,16 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let tp = self.current_type_params.clone();
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
-                        let (binding, ty) = self.lookup_var(name)
-                            .map(|info| (info.binding, binding_type(info, &tp)))
-                            .unwrap_or((BindingId(u32::MAX), SemanticType::Unknown));
-                        SemanticLValue::Binding { binding, name: name.clone(), ty }
+                        let info = self.lookup_var(name)
+                            .ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
+                        if !info.initialized {
+                            return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
+                        }
+                        SemanticLValue::Binding {
+                            binding: info.binding,
+                            name: name.clone(),
+                            ty: binding_type(info, &tp),
+                        }
                     }
                     AssignTarget::Field(container, field) => {
                         let binding = self.lookup_var(container).map(|info| info.binding);
