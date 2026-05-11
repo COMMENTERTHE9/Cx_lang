@@ -1,0 +1,11 @@
+// CX-115: exit-code-based JIT parity — recursive function call (factorial).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 fact(n: t64) {
+    if n < 2 {
+        return 1
+    }
+    return n * fact(n - 1)
+}
+assert_eq(fact(1), 1)
+assert_eq(fact(5), 120)
+assert_eq(fact(10), 3628800)

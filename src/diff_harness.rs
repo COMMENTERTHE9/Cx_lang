@@ -198,6 +198,12 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t29_forward_decl"
         | "t50_nested_func_no_leak"
         | "t113_recursive_fib"
+        | "t143_direct_call_implicit_return_exit"
+        | "t144_direct_call_explicit_return_exit"
+        | "t145_direct_call_no_args_exit"
+        | "t146_direct_call_chained_exit"
+        | "t147_direct_call_forward_decl_exit"
+        | "t148_direct_call_recursive_exit"
             => FeatureCategory::DirectCall,
 
         // ── Struct ────────────────────────────────────────────────────────────

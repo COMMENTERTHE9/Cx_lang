@@ -1,0 +1,8 @@
+// CX-115: exit-code-based JIT parity — forward declaration (call before definition).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+assert_eq(double(5), 10)
+assert_eq(double(0), 0)
+
+fnc: t64 double(x: t64) {
+    x * 2
+}

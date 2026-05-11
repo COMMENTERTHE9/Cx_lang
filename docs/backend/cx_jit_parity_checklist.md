@@ -24,7 +24,7 @@ set:
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
 | ForLoop        | For-in loops                                 | t48, t104 |
 | InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
-| DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
+| DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 (output-verified); t143–t148 (exit-code-verified, CX-115) |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
@@ -102,9 +102,10 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-111` (submain as of CX-111 merge window, 2026-05-11).
+Run on branch `stokowski/CX-115` (submain as of CX-115 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), and the CX-111 bool-variable negation extension to t131.
+fixtures (t141–t142), the CX-111 bool-variable negation extension to t131, and the CX-115
+DirectCall exit-code fixtures (t143–t148).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -115,7 +116,7 @@ IfElse                    3      3            0
 WhileLoop                 2      6            0
 ForLoop                   0      2            0
 InfiniteLoop              1      2            0
-DirectCall                5      6            0
+DirectCall               10      7            0
 Struct                    5      6            0
 Array                     0      2            0
 CompoundAssign            1      2            0
@@ -126,7 +127,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     48            0
 ------------------------------------------------
-Total: 146 fixtures, 0 PARITY_FAILs
+Total: 152 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -158,6 +159,13 @@ exit-code-verified set; the 3 SKIP are the print-based originals.
 top-level while at file scope; t133 covers while in a function. The 2 PASS
 reflect the exit-code-verified set; the 6 SKIP include print-based originals
 and while-in/while-in-then constructs (not yet JIT-lowerable).
+
+**DirectCall parity coverage (CX-115):** t143 (implicit return), t144 (explicit return),
+t145 (zero-argument function), t146 (chained calls), t147 (forward declaration), t148
+(recursive factorial) mirror the print-based originals t02, t03, t14, t29, and t113.
+Five of the six fixtures PASS immediately (JIT already lowers direct calls for these
+patterns); one remains SKIP alongside the 6 print-based originals. The 10 PASS reflects
+5 expected-fail fixtures plus 5 new exit-code-verified fixtures.
 
 ---
 
