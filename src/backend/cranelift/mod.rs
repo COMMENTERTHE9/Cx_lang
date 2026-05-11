@@ -241,6 +241,14 @@ fn lower_terminator(term: &IrTerminator) -> Result<(), CraneliftLoweringError> {
 
 // ── Backend impl ─────────────────────────────────────────────────────────────
 
+/// Returns `true` when `e` is a compile-or-link failure that warrants an IR
+/// dump.  `RuntimePanic` means the IR compiled successfully and the failure
+/// happened at execution time, so the dump would not add signal.
+#[cfg(feature = "jit")]
+fn should_dump_ir_on_jit_failure(e: &host_boundary::JitExecutionError) -> bool {
+    !matches!(e, host_boundary::JitExecutionError::RuntimePanic { .. })
+}
+
 impl Backend for CraneliftBackend {
     fn execute(&self, module: &IrModule) -> Result<(), BackendError> {
         #[cfg(feature = "jit")]
@@ -270,6 +278,11 @@ impl Backend for CraneliftBackend {
                         // 126 = JIT_RUNTIME_FAILURE: program compiled but crashed.
                         JitExecutionError::RuntimePanic { .. } => 126,
                     };
+                    if should_dump_ir_on_jit_failure(&e) {
+                        eprintln!("--- cx jit: compile/link failed — IR dump ---");
+                        eprint!("{}", crate::ir::printer::print_module(module));
+                        eprintln!("--- end IR dump ---");
+                    }
                     Err(BackendError {
                         message: e.to_string(),
                         exit_code,
@@ -385,6 +398,48 @@ mod tests {
         assert!(
             CraneliftBackend.execute(&module).is_ok(),
             "program exiting 0 must produce Ok(())"
+        );
+    }
+
+    // ── IR dump gating tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn ir_dump_suppressed_for_runtime_panic() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::RuntimePanic { detail: "crash".to_string() };
+        assert!(
+            !should_dump_ir_on_jit_failure(&err),
+            "RuntimePanic must not trigger an IR dump"
+        );
+    }
+
+    #[test]
+    fn ir_dump_enabled_for_codegen_failure() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::CodegenFailure { detail: "bad".to_string() };
+        assert!(
+            should_dump_ir_on_jit_failure(&err),
+            "CodegenFailure must trigger an IR dump"
+        );
+    }
+
+    #[test]
+    fn ir_dump_enabled_for_unsupported_construct() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::UnsupportedConstruct { construct: "X".to_string() };
+        assert!(
+            should_dump_ir_on_jit_failure(&err),
+            "UnsupportedConstruct must trigger an IR dump"
+        );
+    }
+
+    #[test]
+    fn ir_dump_enabled_for_main_not_found() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::MainNotFound;
+        assert!(
+            should_dump_ir_on_jit_failure(&err),
+            "MainNotFound must trigger an IR dump"
         );
     }
 
