@@ -2425,10 +2425,11 @@ fn lower_array_lit(
         });
     }
 
-    // Numeric is a placeholder type used by the semantic layer for untyped
-    // integer literals.  Map it to the target's default integer width (I64 on
-    // 64-bit) so arrays of untyped literals (e.g. [10, 20, 30]) lower cleanly.
-    let elem_ir_ty = if elem_sem_ty == &SemanticType::Numeric {
+    // Numeric and Unknown are placeholder types used by the semantic layer for
+    // untyped integer literals.  Map both to the target's default integer width
+    // (I64 on 64-bit) so arrays of untyped literals (e.g. [10, 20, 30]) lower
+    // cleanly regardless of which placeholder the semantic pass emitted.
+    let elem_ir_ty = if matches!(elem_sem_ty, SemanticType::Numeric | SemanticType::Unknown) {
         ctx.target.numeric_literal_ir_type()
     } else {
         lower_type(elem_sem_ty)?
@@ -5287,6 +5288,21 @@ mod tests {
         }
     }
 
+    // Helper: build an ArrayLit SemanticExpr with N Numeric-typed elements,
+    // matching what the semantic layer emits for untyped integer literals.
+    fn array_lit_numeric(elements: Vec<i128>) -> SemanticExpr {
+        let count = elements.len();
+        SemanticExpr {
+            ty: SemanticType::Array(count, Box::new(SemanticType::Numeric)),
+            kind: SemanticExprKind::ArrayLit {
+                elements: elements
+                    .into_iter()
+                    .map(|v| int_expr(v, SemanticType::Numeric))
+                    .collect(),
+            },
+        }
+    }
+
     // Helper: build an Index SemanticExpr.
     fn index_expr(
         target: SemanticExpr,
@@ -5352,6 +5368,37 @@ mod tests {
             .iter()
             .any(|i| matches!(i, IrInst::PtrOffset { offset: 0, .. }));
         assert!(!has_ptr_offset_0, "unexpected PtrOffset(0) for first element");
+    }
+
+    // ArrayLit with Numeric placeholder element type must still emit one
+    // ArrayAlloca (using the target's default integer width), locking in the
+    // SemanticType::Numeric fallback introduced in lower_array_lit.
+    #[test]
+    fn lowers_array_lit_numeric_elem_uses_default_int() {
+        let arr = array_lit_numeric(vec![10, 20, 30]);
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "arr",
+                SemanticType::Array(3, Box::new(SemanticType::Numeric)),
+                arr,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        // The fallback maps Numeric → I64 on a 64-bit target; count stays 3.
+        let alloca_count = insts
+            .iter()
+            .filter(|i| matches!(i, IrInst::ArrayAlloca { element_type: IrType::I64, count: 3, .. }))
+            .count();
+        assert_eq!(alloca_count, 1, "expected exactly one ArrayAlloca(I64, 3) for Numeric element type");
     }
 
     // lower_type must map SemanticType::Array(_) to IrType::Ptr.

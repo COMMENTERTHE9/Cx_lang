@@ -728,6 +728,14 @@ fn compile_ir_function(
                     use cranelift_codegen::ir::types;
 
                     let layout = compute_array_layout(element_type, *count);
+                    let slot_size = u32::try_from(layout.total_size).map_err(|_| {
+                        JitExecutionError::UnsupportedConstruct {
+                            construct: format!(
+                                "ArrayAlloca total size {} exceeds Cranelift stack-slot limit",
+                                layout.total_size
+                            ),
+                        }
+                    })?;
                     let align_shift = if layout.alignment == 0 {
                         0u8
                     } else {
@@ -735,7 +743,7 @@ fn compile_ir_function(
                     };
                     let slot = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
-                        layout.total_size as u32,
+                        slot_size,
                         align_shift,
                     ));
                     let ptr_val = builder.ins().stack_addr(types::I64, slot, 0);
