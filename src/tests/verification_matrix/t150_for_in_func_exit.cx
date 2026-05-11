@@ -2,9 +2,12 @@
 // No stdout; correctness verified by exit code only (0 = all asserts held).
 fnc: t64 sum_range(n: t64) {
     total: t64 = 0
+    cnt: t64 = 0
     for i in 0..n {
         total = total + i
+        cnt = cnt + 1
     }
+    assert_eq(cnt, n)
     return total
 }
 

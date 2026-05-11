@@ -28,3 +28,10 @@ for i in 1..=4 {
     sum = sum + i
 }
 assert_eq(sum, 10)
+
+// Non-zero lower bound: 2+3+4+5 = 14 (catches lower-bound off-by-one).
+probe: t64 = 0
+for i in 2..6 {
+    probe = probe + i
+}
+assert_eq(probe, 14)
