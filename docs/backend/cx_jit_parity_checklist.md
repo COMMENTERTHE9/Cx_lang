@@ -26,8 +26,8 @@ set:
 | InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
-| Array          | Array literals and array-of-result           | t33, t112 |
-| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t146 |
+| Array          | Array literals and array-of-result           | t33, t112; exit-code-verified: t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit (CX-121) |
+| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t149 |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
@@ -102,11 +102,12 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-119` (submain as of CX-119 merge window, 2026-05-11).
+Run on branch `stokowski/CX-126` (submain as of CX-126 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
-CX-113 when-block exit-code fixtures (t143–t145), and CX-119 var compound assign
-exit-code fixture (t146).
+CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
+exit-code fixture (renamed to t149 in CX-126), and CX-121 array exit-code
+fixtures (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -119,7 +120,7 @@ ForLoop                   0      2            0
 InfiniteLoop              1      2            0
 DirectCall                5      6            0
 Struct                    5      6            0
-Array                     0      2            0
+Array                     0      5            0
 CompoundAssign            2      2            0
 Unary                     0      1            0
 Cast                      0      2            0
@@ -128,7 +129,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     51            0
 ------------------------------------------------
-Total: 150 fixtures, 0 PARITY_FAILs
+Total: 153 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -166,13 +167,25 @@ mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
 in JIT (when-block lowering not yet implemented; exits 127). Once when-block
 lowering lands, these fixtures will transition from SKIP to PASS without changes.
 
-**CompoundAssign Var-target parity (CX-119):** t146 tests all five compound-assign
-operators (+=, -=, *=, /=, %=) on a typed t64 plain variable, verified by exit
-code. Fixed a semantic-analysis bug where the Var-target branch used
-`info.inferred` only (defaulting to `Unknown` for typed variables declared with an
-explicit type annotation) instead of `binding_type()` which checks `declared`
-first. The 2 PASS reflect t128 (struct field) and t146 (plain variable); the 2
-SKIP are t26 and t41 (print-based, JIT not yet lowerable for `print`).
+**Array parity coverage (CX-121):** t146_array_read_exit, t147_array_write_exit,
+and t148_array_in_func_exit exercise array literal construction and indexed reads,
+array element writes, and array operations inside a function respectively. All
+three use exit-code verification (assert_eq, no print). They currently SKIP (exit
+127, UNSUPPORTED_CONSTRUCT) because JIT array lowering (PtrAdd + Load/Store) is
+not yet implemented (Phase 12+ pending). The 5 SKIP total = 2 original
+print-based fixtures (t33, t112) + 3 new exit-code-verified fixtures. When JIT
+array lowering lands, these three will transition from SKIP to PASS without
+fixture changes.
+
+**CompoundAssign Var-target parity (CX-119/CX-126):** t149_var_compound_assign_exit
+tests all five compound-assign operators (+=, -=, *=, /=, %=) on a typed t64
+plain variable, verified by exit code. (Renamed from t146 to t149 in CX-126 to
+resolve a numeric-prefix collision with t146_array_read_exit added by CX-121.)
+Fixed a semantic-analysis bug where the Var-target branch used `info.inferred`
+only (defaulting to `Unknown` for typed variables declared with an explicit type
+annotation) instead of `binding_type()` which checks `declared` first. The
+2 PASS reflect t128 (struct field) and t149 (plain variable); the 2 SKIP are
+t26 and t41 (print-based, JIT not yet lowerable for `print`).
 
 ---
 
