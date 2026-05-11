@@ -228,7 +228,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t26_compound_add_two"
         | "t41_compound_assign_dot"
         | "t128_struct_compound_assign_exit"
-        | "t146_var_compound_assign_exit"
+        | "t151_var_compound_assign_exit"
             => FeatureCategory::CompoundAssign,
 
         // ── Unary ─────────────────────────────────────────────────────────────

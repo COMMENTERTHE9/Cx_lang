@@ -27,7 +27,7 @@ set:
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 (output-verified); t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit (exit-code-verified, CX-121) |
-| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t146 |
+| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151 |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
@@ -106,7 +106,7 @@ Run on branch `stokowski/CX-124` (submain as of CX-124 merge window, 2026-05-11)
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
-exit-code fixture (t146_var_compound_assign_exit), CX-121 Array exit-code fixtures
+exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit), and
 CX-124 ForLoop exit-code fixtures (t149–t150).
 
@@ -168,12 +168,12 @@ mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
 in JIT (when-block lowering not yet implemented; exits 127). Once when-block
 lowering lands, these fixtures will transition from SKIP to PASS without changes.
 
-**CompoundAssign Var-target parity (CX-119):** t146 tests all five compound-assign
+**CompoundAssign Var-target parity (CX-119):** t151 tests all five compound-assign
 operators (+=, -=, *=, /=, %=) on a typed t64 plain variable, verified by exit
 code. Fixed a semantic-analysis bug where the Var-target branch used
 `info.inferred` only (defaulting to `Unknown` for typed variables declared with an
 explicit type annotation) instead of `binding_type()` which checks `declared`
-first. The 2 PASS reflect t128 (struct field) and t146 (plain variable); the 2
+first. The 2 PASS reflect t128 (struct field) and t151 (plain variable); the 2
 SKIP are t26 and t41 (print-based, JIT not yet lowerable for `print`).
 
 **ForLoop parity coverage (CX-124):** t149 mirrors t48 (top-level for loop at file scope),
