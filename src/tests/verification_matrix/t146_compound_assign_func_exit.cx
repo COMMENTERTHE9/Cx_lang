@@ -1,0 +1,12 @@
+// CX-118: exit-code-based JIT parity — compound assign operators inside a function.
+// Verifies that compound assign lowering works on function-local variables.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 apply_ops(v: t64) {
+    v += 10
+    v -= 3
+    v *= 2
+    return v
+}
+
+assert_eq(apply_ops(5), 24)
+assert_eq(apply_ops(0), 14)

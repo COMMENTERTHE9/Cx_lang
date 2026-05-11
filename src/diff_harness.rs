@@ -184,6 +184,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t25_loop_break"
         | "t106_loop_break_in_func"
         | "t134_loop_break_exit"
+        | "t143_infinite_loop_counter_exit"
+        | "t144_infinite_loop_countdown_exit"
             => FeatureCategory::InfiniteLoop,
 
         // ── DirectCall ────────────────────────────────────────────────────────
@@ -223,6 +225,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t26_compound_add_two"
         | "t41_compound_assign_dot"
         | "t128_struct_compound_assign_exit"
+        | "t145_compound_assign_vars_exit"
+        | "t146_compound_assign_func_exit"
             => FeatureCategory::CompoundAssign,
 
         // ── Unary ─────────────────────────────────────────────────────────────

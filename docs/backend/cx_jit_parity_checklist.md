@@ -23,11 +23,11 @@ set:
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
 | ForLoop        | For-in loops                                 | t48, t104 |
-| InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
+| InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 (output-verified); t143, t144 (exit-code-verified, CX-118) |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 |
-| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
+| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 (output-verified); t145, t146 (exit-code-verified, CX-118) |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
@@ -102,9 +102,10 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-111` (submain as of CX-111 merge window, 2026-05-11).
+Run on branch `stokowski/CX-118` (submain as of CX-118 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), and the CX-111 bool-variable negation extension to t131.
+fixtures (t141–t142), the CX-111 bool-variable negation extension to t131, and the CX-118
+InfiniteLoop/CompoundAssign fixtures (t143–t146).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -114,11 +115,11 @@ VariableDecl              5      3            0
 IfElse                    3      3            0
 WhileLoop                 2      6            0
 ForLoop                   0      2            0
-InfiniteLoop              1      2            0
+InfiniteLoop              3      2            0
 DirectCall                5      6            0
 Struct                    5      6            0
 Array                     0      2            0
-CompoundAssign            1      2            0
+CompoundAssign            1      4            0
 Unary                     0      1            0
 Cast                      0      2            0
 FloatOps                  0      5            0
@@ -126,7 +127,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     48            0
 ------------------------------------------------
-Total: 146 fixtures, 0 PARITY_FAILs
+Total: 150 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -158,6 +159,19 @@ exit-code-verified set; the 3 SKIP are the print-based originals.
 top-level while at file scope; t133 covers while in a function. The 2 PASS
 reflect the exit-code-verified set; the 6 SKIP include print-based originals
 and while-in/while-in-then constructs (not yet JIT-lowerable).
+
+**InfiniteLoop parity coverage (CX-118):** t143 covers a file-scope loop
+accumulator (back-edge fires correctly across multiple iterations without a
+function wrapper); t144 covers a countdown pattern in a function (complements
+t134's first-even search). The 3 PASS reflect t134 + t143 + t144; the 2 SKIP
+are the print-based originals (t25, t106).
+
+**CompoundAssign parity coverage (CX-118):** t145 covers all five compound
+assign operators (+=, -=, *=, /=, %=) on plain variables; t146 covers compound
+assign on function-local variables. Both are SKIP because the JIT does not yet
+lower the Var-target Load + Binop + Store pattern (exit 0, stderr). The 1 PASS
+is the existing t128 (struct field compound assign, which uses a different
+Field-target codepath). SKIP is expected; 0 PARITY_FAILs maintained.
 
 ---
 

@@ -1,0 +1,17 @@
+// CX-118: exit-code-based JIT parity — InfiniteLoop inside a function (countdown).
+// Complements t134 (loop+break in a function) with a different accumulation pattern.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 sum_down(n: t64) {
+    i: t64 = n
+    result: t64 = 0
+    loop {
+        if i == 0 { break }
+        result = result + i
+        i = i - 1
+    }
+    return result
+}
+
+assert_eq(sum_down(4), 10)
+assert_eq(sum_down(1), 1)
+assert_eq(sum_down(0), 0)

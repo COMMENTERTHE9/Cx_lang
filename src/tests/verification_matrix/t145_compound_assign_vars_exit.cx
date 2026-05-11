@@ -1,0 +1,22 @@
+// CX-118: exit-code-based JIT parity — compound assign on plain variables.
+// Verifies the Var-target Load + Binop + Store pattern for all five operators.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+a: t64 = 10
+a += 5
+assert_eq(a, 15)
+
+b: t64 = 20
+b -= 8
+assert_eq(b, 12)
+
+c: t64 = 6
+c *= 7
+assert_eq(c, 42)
+
+d: t64 = 30
+d /= 5
+assert_eq(d, 6)
+
+e: t64 = 17
+e %= 5
+assert_eq(e, 2)
