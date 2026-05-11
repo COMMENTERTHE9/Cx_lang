@@ -803,10 +803,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 operand,
                 pos,
             } => {
+                let tp = self.current_type_params.clone();
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
-                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(u32::MAX));
-                        let ty = self.lookup_var(name).and_then(|info| info.inferred.clone()).unwrap_or(SemanticType::Unknown);
+                        let (binding, ty) = self.lookup_var(name)
+                            .map(|info| (info.binding, binding_type(info, &tp)))
+                            .unwrap_or((BindingId(u32::MAX), SemanticType::Unknown));
                         SemanticLValue::Binding { binding, name: name.clone(), ty }
                     }
                     AssignTarget::Field(container, field) => {

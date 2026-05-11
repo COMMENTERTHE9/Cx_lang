@@ -1,0 +1,23 @@
+// CX-119: exit-code-based JIT parity — compound assign on plain variables.
+// Exercises all five compound-assign operators (+=, -=, *=, /=, %=) on a
+// typed t64 variable.  Correctness verified by exit code only (0 = all
+// asserts held).
+x: t64 = 10
+x += 5
+assert_eq(x, 15)
+
+x = 20
+x -= 8
+assert_eq(x, 12)
+
+x = 6
+x *= 7
+assert_eq(x, 42)
+
+x = 100
+x /= 4
+assert_eq(x, 25)
+
+x = 17
+x %= 5
+assert_eq(x, 2)
