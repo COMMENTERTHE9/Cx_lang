@@ -13,25 +13,26 @@ current baseline from a real run, and the gate semantics used by the
 
 Every fixture in `src/tests/verification_matrix/` maps to exactly one
 `FeatureCategory` variant. The mapping is defined by `feature_of()` in
-`src/diff_harness.rs`. The 15 categories cover the full 0.1 supported construct
+`src/diff_harness.rs`. The 16 categories cover the full 0.1 supported construct
 set:
 
 | Category       | Description                                  | Key fixtures |
 |----------------|----------------------------------------------|--------------|
-| Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116 |
-| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102 |
-| IfElse         | Conditional branches                         | t44, t45, t46 |
-| WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 |
+| Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116–t121 |
+| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
+| IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
+| WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
 | ForLoop        | For-in loops                                 | t48, t104 |
-| InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106 |
+| InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
-| Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject |
+| Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 |
-| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41 |
+| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
 | Unary          | Unary operators (negation, etc.)             | t96 |
-| Cast           | Explicit type casts (no fixtures yet in 0.1 matrix) | — |
-| FloatOps       | f64 operations                               | t55 |
+| Cast           | Explicit type casts                          | t139, t140 |
+| FloatOps       | f64 operations                               | t55, t135–t138 |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
+| LogicalOps     | Logical AND/OR short-circuit operators       | t141, t142 |
 | Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111 |
 
 Fixtures not explicitly listed in `feature_of()` fall into `Other`.
@@ -98,31 +99,34 @@ expected program behavior and must be investigated and fixed.
 Captured from:
 
 ```bash
-cargo build --features jit && cargo test --features jit jit_parity_by_feature --nocapture
+cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-69` (submain as of CX-69 merge window, 2026-05-09).
+Run on branch `stokowski/CX-111` (submain as of CX-111 merge window, 2026-05-11).
+Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
+fixtures (t141–t142), and the CX-111 bool-variable negation extension to t131.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
-Arithmetic                1     11            0
-VariableDecl              2      3            0
-IfElse                    0      3            0
-WhileLoop                 0      6            0
+Arithmetic                6     11            0
+VariableDecl              5      3            0
+IfElse                    3      3            0
+WhileLoop                 2      6            0
 ForLoop                   0      2            0
-InfiniteLoop              0      2            0
+InfiniteLoop              1      2            0
 DirectCall                5      6            0
-Struct                    2      6            0
+Struct                    5      6            0
 Array                     0      2            0
-CompoundAssign            0      2            0
+CompoundAssign            1      2            0
 Unary                     0      1            0
-Cast                      0      0            0
-FloatOps                  0      1            0
-BuiltinAssert             0      4            0
+Cast                      0      2            0
+FloatOps                  0      5            0
+BuiltinAssert             2      2            0
+LogicalOps                2      0            0
 Other                    13     48            0
 ------------------------------------------------
-Total: 120 fixtures, 0 PARITY_FAILs
+Total: 146 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -131,20 +135,29 @@ Total: 120 fixtures, 0 PARITY_FAILs
 
 - **Expected-fail fixtures** in any category exit non-zero (semantic error),
   matching the expectation. Both interpreter and JIT correctly reject them.
+- **Exit-code-verified fixtures** (t117–t142) use `assert_eq` instead of
+  `print`, so their correctness is verified by exit code 0. These pass
+  even though the `print` builtin is not yet JIT-lowerable (Phase 9 pending).
 - A small number of **pass-any fixtures** where the JIT happened to compile
   and execute successfully (no stderr error, exit 0) also appear as PASS.
 
 **SKIP fixtures** are those where IR lowering or JIT codegen has not yet been
-implemented for the construct used. At this baseline the primary gap is that
-the `print` builtin is not yet lowerable to IR (Phase 9 pending). This affects
-nearly all categories since most verification matrix fixtures call `print`.
-As Phase 9, Phase 14, and subsequent phases land, SKIP counts will decrease
-and PASS counts will increase.
+implemented for the construct used. The primary gap remains that the `print`
+builtin is not lowerable to IR (Phase 9 pending), affecting all output-verified
+fixtures. As Phase 9, Phase 14, and subsequent phases land, SKIP counts will
+decrease and PASS counts will increase.
 
-**PARITY_FAIL = 0** across all categories. The gate holds.
+**PARITY_FAIL = 0** across all 16 categories. The gate holds.
 
-**Cast has no fixtures** in the current verification matrix. The category
-exists in the classification to accommodate future fixtures.
+**IfElse parity coverage (CX-102/CX-111):** t129 mirrors t44 (basic if/else),
+t130 mirrors t45 (if/else in function), t131 mirrors t46 (negated conditions,
+including bool-variable negation added in CX-111). The 3 PASS reflect the
+exit-code-verified set; the 3 SKIP are the print-based originals.
+
+**WhileLoop parity coverage (CX-102):** t132 covers basic while loops and
+top-level while at file scope; t133 covers while in a function. The 2 PASS
+reflect the exit-code-verified set; the 6 SKIP include print-based originals
+and while-in/while-in-then constructs (not yet JIT-lowerable).
 
 ---
 
