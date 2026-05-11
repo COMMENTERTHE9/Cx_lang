@@ -26,7 +26,7 @@ set:
 | InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
-| Array          | Array literals and array-of-result           | t33, t112 |
+| Array          | Array literals and array-of-result           | t33, t112; t143–t145 (exit-code-verified, CX-114) |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
@@ -102,9 +102,10 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-111` (submain as of CX-111 merge window, 2026-05-11).
+Run on branch `stokowski/CX-114` (submain as of CX-114 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), and the CX-111 bool-variable negation extension to t131.
+fixtures (t141–t142), the CX-111 bool-variable negation extension to t131, and the CX-114
+Array exit-code fixtures (t143–t145).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -117,7 +118,7 @@ ForLoop                   0      2            0
 InfiniteLoop              1      2            0
 DirectCall                5      6            0
 Struct                    5      6            0
-Array                     0      2            0
+Array                     0      5            0
 CompoundAssign            1      2            0
 Unary                     0      1            0
 Cast                      0      2            0
@@ -126,7 +127,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     48            0
 ------------------------------------------------
-Total: 146 fixtures, 0 PARITY_FAILs
+Total: 149 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -158,6 +159,13 @@ exit-code-verified set; the 3 SKIP are the print-based originals.
 top-level while at file scope; t133 covers while in a function. The 2 PASS
 reflect the exit-code-verified set; the 6 SKIP include print-based originals
 and while-in/while-in-then constructs (not yet JIT-lowerable).
+
+**Array parity coverage (CX-114):** t143 covers array literal creation and
+indexed reads; t144 covers array element write and read-back; t145 covers array
+creation and access inside a function body. All 5 Array fixtures currently SKIP
+in JIT because Alloca/PtrOffset/Load/Store are not yet JIT-lowerable. The 2
+print-based originals (t33, t112) also SKIP. When JIT array support lands, all
+5 exit-code fixtures are expected to transition to PASS.
 
 ---
 

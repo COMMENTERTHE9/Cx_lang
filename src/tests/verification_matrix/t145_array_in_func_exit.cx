@@ -1,0 +1,7 @@
+// CX-114: exit-code-based JIT parity — array creation and indexed read inside a function.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 get_mid() {
+    vals: [3: t64] = [100, 200, 300]
+    return vals:[1]
+}
+assert_eq(get_mid(), 200)

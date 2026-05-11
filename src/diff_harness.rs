@@ -217,6 +217,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── Array ─────────────────────────────────────────────────────────────
         "t33_arrays"
         | "t112_array_of_result"
+        | "t143_array_read_exit"
+        | "t144_array_write_exit"
+        | "t145_array_in_func_exit"
             => FeatureCategory::Array,
 
         // ── CompoundAssign ────────────────────────────────────────────────────
