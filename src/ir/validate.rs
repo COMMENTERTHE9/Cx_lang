@@ -510,7 +510,14 @@ fn validate_inst(
             }
             define_value(function, block, *dst, IrType::Ptr, "Alloca destination", defined_values, errors);
         }
-        IrInst::ArrayAlloca { dst, element_type: _, count } => {
+        IrInst::ArrayAlloca { dst, element_type, count } => {
+            if *element_type == IrType::Void {
+                errors.push(IrValidationError::InvalidTypeUsage {
+                    function: function.name.clone(),
+                    block,
+                    detail: "ArrayAlloca element_type cannot be Void".to_string(),
+                });
+            }
             if *count == 0 {
                 errors.push(IrValidationError::InvalidTypeUsage {
                     function: function.name.clone(),

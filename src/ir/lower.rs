@@ -2425,10 +2425,11 @@ fn lower_array_lit(
         });
     }
 
-    // Numeric is a placeholder type used by the semantic layer for untyped
-    // integer literals.  Map it to the target's default integer width (I64 on
-    // 64-bit) so arrays of untyped literals (e.g. [10, 20, 30]) lower cleanly.
-    let elem_ir_ty = if elem_sem_ty == &SemanticType::Numeric {
+    // Numeric and Unknown are placeholder types used by the semantic layer for
+    // untyped integer literals.  Map both to the target's default integer width
+    // (I64 on 64-bit) so arrays of untyped literals (e.g. [10, 20, 30]) lower
+    // cleanly regardless of which placeholder the frontend assigned.
+    let elem_ir_ty = if matches!(elem_sem_ty, SemanticType::Numeric | SemanticType::Unknown) {
         ctx.target.numeric_literal_ir_type()
     } else {
         lower_type(elem_sem_ty)?
@@ -5352,6 +5353,44 @@ mod tests {
             .iter()
             .any(|i| matches!(i, IrInst::PtrOffset { offset: 0, .. }));
         assert!(!has_ptr_offset_0, "unexpected PtrOffset(0) for first element");
+    }
+
+    // Regression: ArrayLit with SemanticType::Numeric elements (untyped integer
+    // literals like [10, 20, 30]) must produce ArrayAlloca with element_type I64.
+    #[test]
+    fn lowers_array_lit_numeric_elem_uses_default_int() {
+        let count = 3usize;
+        let arr = SemanticExpr {
+            ty: SemanticType::Array(count, Box::new(SemanticType::Numeric)),
+            kind: SemanticExprKind::ArrayLit {
+                elements: vec![10i128, 20, 30]
+                    .into_iter()
+                    .map(|v| int_expr(v, SemanticType::Numeric))
+                    .collect(),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "arr",
+                SemanticType::Array(count, Box::new(SemanticType::Numeric)),
+                arr,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        let alloca_count = insts
+            .iter()
+            .filter(|i| matches!(i, IrInst::ArrayAlloca { element_type: IrType::I64, count: 3, .. }))
+            .count();
+        assert_eq!(alloca_count, 1, "expected one ArrayAlloca(I64, 3) for Numeric elements");
     }
 
     // lower_type must map SemanticType::Array(_) to IrType::Ptr.
