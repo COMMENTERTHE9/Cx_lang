@@ -1,0 +1,11 @@
+// CX-117: exit-code-based JIT parity — t64→f64 widening cast.
+// Exercises the I64→F64 conversion path (fcvt_from_sint on a 64-bit value).
+a: t64 = 42
+b: f64 = a
+c: t32 = b
+assert_eq(c, 42)
+
+x: t64 = -100
+y: f64 = x
+z: t32 = y
+assert_eq(z, -100)

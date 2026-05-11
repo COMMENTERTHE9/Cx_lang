@@ -232,6 +232,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── Cast ─────────────────────────────────────────────────────────────
         "t139_cast_t32_to_f64_exit"
         | "t140_cast_f64_truncate_exit"
+        | "t145_cast_neg_t32_to_f64_exit"
+        | "t146_cast_t64_to_f64_exit"
             => FeatureCategory::Cast,
 
         // ── FloatOps ──────────────────────────────────────────────────────────
@@ -240,6 +242,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t136_float_arith_sub_exit"
         | "t137_float_arith_mul_exit"
         | "t138_float_arith_div_exit"
+        | "t143_float_arith_mod_exit"
+        | "t144_float_neg_exit"
             => FeatureCategory::FloatOps,
 
         // ── BuiltinAssert ─────────────────────────────────────────────────────

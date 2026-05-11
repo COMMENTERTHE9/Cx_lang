@@ -1,0 +1,11 @@
+// CX-117: exit-code-based JIT parity — negative t32→f64 widening cast.
+// Verifies that sign is preserved when a negative t32 widens to f64.
+a: t32 = -42
+b: f64 = a
+c: t32 = b
+assert_eq(c, -42)
+
+x: t32 = -100
+y: f64 = x
+z: t32 = y
+assert_eq(z, -100)
