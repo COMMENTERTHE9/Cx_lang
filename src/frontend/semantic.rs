@@ -803,11 +803,19 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 operand,
                 pos,
             } => {
+                let tp = self.current_type_params.clone();
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
-                        let binding = self.lookup_var(name).map(|info| info.binding).unwrap_or(BindingId(u32::MAX));
-                        let ty = self.lookup_var(name).and_then(|info| info.inferred.clone()).unwrap_or(SemanticType::Unknown);
-                        SemanticLValue::Binding { binding, name: name.clone(), ty }
+                        let info = self.lookup_var(name)
+                            .ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
+                        if !info.initialized {
+                            return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
+                        }
+                        SemanticLValue::Binding {
+                            binding: info.binding,
+                            name: name.clone(),
+                            ty: binding_type(info, &tp),
+                        }
                     }
                     AssignTarget::Field(container, field) => {
                         let binding = self.lookup_var(container).map(|info| info.binding);
