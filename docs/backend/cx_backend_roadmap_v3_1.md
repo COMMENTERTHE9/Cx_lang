@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.2 — 2026-05-10
+v4.3 — 2026-05-11
 
 ---
 
