@@ -251,6 +251,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
 
         // ── LogicalOps ────────────────────────────────────────────────────────
         "t141_logical_and_or_exit"
+        | "t142_logical_while_and_nested_exit"
             => FeatureCategory::LogicalOps,
 
         // ── Other (everything not assigned to a named category) ───────────────
