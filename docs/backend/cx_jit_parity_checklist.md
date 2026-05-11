@@ -28,7 +28,7 @@ set:
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128 |
-| Unary          | Unary operators (negation, etc.)             | t96 |
+| Unary          | Unary operators (negation, etc.)             | t96, t143, t144 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
@@ -102,9 +102,10 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-111` (submain as of CX-111 merge window, 2026-05-11).
+Run on branch `stokowski/CX-116` (submain as of CX-116 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), and the CX-111 bool-variable negation extension to t131.
+fixtures (t141–t142), the CX-111 bool-variable negation extension to t131, and CX-116
+Unary parity fixtures (t143–t144).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -119,14 +120,14 @@ DirectCall                5      6            0
 Struct                    5      6            0
 Array                     0      2            0
 CompoundAssign            1      2            0
-Unary                     0      1            0
+Unary                     2      1            0
 Cast                      0      2            0
 FloatOps                  0      5            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     48            0
 ------------------------------------------------
-Total: 146 fixtures, 0 PARITY_FAILs
+Total: 148 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -135,7 +136,7 @@ Total: 146 fixtures, 0 PARITY_FAILs
 
 - **Expected-fail fixtures** in any category exit non-zero (semantic error),
   matching the expectation. Both interpreter and JIT correctly reject them.
-- **Exit-code-verified fixtures** (t117–t142) use `assert_eq` instead of
+- **Exit-code-verified fixtures** (t117–t144) use `assert_eq` instead of
   `print`, so their correctness is verified by exit code 0. These pass
   even though the `print` builtin is not yet JIT-lowerable (Phase 9 pending).
 - A small number of **pass-any fixtures** where the JIT happened to compile
@@ -158,6 +159,11 @@ exit-code-verified set; the 3 SKIP are the print-based originals.
 top-level while at file scope; t133 covers while in a function. The 2 PASS
 reflect the exit-code-verified set; the 6 SKIP include print-based originals
 and while-in/while-in-then constructs (not yet JIT-lowerable).
+
+**Unary parity coverage (CX-116):** t143 covers integer arithmetic negation
+(`-x`) verified by summing `−x + x = 0`; t144 covers boolean NOT (`!x`)
+storing the result in a bool variable. The 2 PASS reflect exit-code-verified
+fixtures; the 1 SKIP is t96 (print-based, awaiting Phase 9).
 
 ---
 
