@@ -6357,4 +6357,262 @@ mod tests {
             "logical OR with non-Bool result type must be rejected by lower_logical"
         );
     }
+
+    // CX-109: Hardened RHS-block-only proof.
+    //
+    // CX-108 proved that a Call appearing as the RHS of a short-circuit
+    // expression lands in the RHS block and not in the SC block.  These tests
+    // strengthen that proof to cover all blocks: we scan every block in the
+    // lowered function and assert that the Call appears in exactly one of them,
+    // and that block is the RHS block.  This rules out leakage into the decision
+    // block, the merge block, or any synthetic block the lowering might
+    // introduce in the future.
+    //
+    // We additionally prove that the short-circuit constant (false for AND,
+    // true for OR) is confined to the SC block and does not appear in the RHS
+    // block, completing the dual-isolation guarantee.
+
+    #[test]
+    fn and_rhs_call_confined_to_rhs_block_across_all_blocks() {
+        // false && side_effect_fn()
+        // Scans every block in main; the Call must appear in exactly one block
+        // and that block must be the RHS block (then-branch of the AND Branch).
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_and_expr(bool_expr(false), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("AND must emit a Branch terminator");
+        // AND: then_block = rhs, else_block = sc.
+        let rhs_id = match &branch_block.term {
+            IrTerminator::Branch { then_block, .. } => *then_block,
+            _ => unreachable!(),
+        };
+
+        let blocks_with_call: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| matches!(i, IrInst::Call { .. })))
+            .collect();
+
+        assert_eq!(
+            blocks_with_call.len(),
+            1,
+            "Call must appear in exactly one block; got {} — decision/sc/merge block isolation violated",
+            blocks_with_call.len()
+        );
+        assert_eq!(
+            blocks_with_call[0].id,
+            rhs_id,
+            "The sole block containing a Call must be the RHS block"
+        );
+    }
+
+    #[test]
+    fn or_rhs_call_confined_to_rhs_block_across_all_blocks() {
+        // true || side_effect_fn()
+        // Scans every block in main; the Call must appear in exactly one block
+        // and that block must be the RHS block (else-branch of the OR Branch).
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_or_expr(bool_expr(true), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("OR must emit a Branch terminator");
+        // OR: then_block = sc, else_block = rhs.
+        let rhs_id = match &branch_block.term {
+            IrTerminator::Branch { else_block, .. } => *else_block,
+            _ => unreachable!(),
+        };
+
+        let blocks_with_call: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| matches!(i, IrInst::Call { .. })))
+            .collect();
+
+        assert_eq!(
+            blocks_with_call.len(),
+            1,
+            "Call must appear in exactly one block; got {} — decision/sc/merge block isolation violated",
+            blocks_with_call.len()
+        );
+        assert_eq!(
+            blocks_with_call[0].id,
+            rhs_id,
+            "The sole block containing a Call must be the RHS block"
+        );
+    }
+
+    #[test]
+    fn and_sc_block_contains_exactly_false_constant() {
+        // false && side_effect_fn()
+        // Proves that the AND SC block holds exactly one instruction — the
+        // false short-circuit constant — and that no such constant leaks into
+        // the RHS block.
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_and_expr(bool_expr(false), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("AND must emit a Branch terminator");
+        // AND: then_block = rhs, else_block = sc.
+        let (rhs_id, sc_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+        let sc_block  = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+        let rhs_block = main_fn.blocks.iter().find(|b| b.id == rhs_id).unwrap();
+
+        assert_eq!(
+            sc_block.insts.len(),
+            1,
+            "AND SC block must contain exactly one instruction (the short-circuit constant), got {}",
+            sc_block.insts.len()
+        );
+        assert!(
+            matches!(sc_block.insts[0], IrInst::ConstInt { ty: IrType::Bool, value: 0, .. }),
+            "AND SC block's sole instruction must be ConstInt(Bool, 0)"
+        );
+        assert!(
+            !rhs_block.insts.iter().any(|i| matches!(i, IrInst::ConstInt { ty: IrType::Bool, value: 0, .. })),
+            "ConstInt(Bool, 0) must not appear in the RHS block — false constant belongs only in SC block"
+        );
+    }
+
+    #[test]
+    fn or_sc_block_contains_exactly_true_constant() {
+        // true || side_effect_fn()
+        // Proves that the OR SC block holds exactly one instruction — the
+        // true short-circuit constant — and that no such constant leaks into
+        // the RHS block.
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_or_expr(bool_expr(true), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("OR must emit a Branch terminator");
+        // OR: then_block = sc, else_block = rhs.
+        let (sc_id, rhs_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+        let sc_block  = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+        let rhs_block = main_fn.blocks.iter().find(|b| b.id == rhs_id).unwrap();
+
+        assert_eq!(
+            sc_block.insts.len(),
+            1,
+            "OR SC block must contain exactly one instruction (the short-circuit constant), got {}",
+            sc_block.insts.len()
+        );
+        assert!(
+            matches!(sc_block.insts[0], IrInst::ConstInt { ty: IrType::Bool, value: 1, .. }),
+            "OR SC block's sole instruction must be ConstInt(Bool, 1)"
+        );
+        assert!(
+            !rhs_block.insts.iter().any(|i| matches!(i, IrInst::ConstInt { ty: IrType::Bool, value: 1, .. })),
+            "ConstInt(Bool, 1) must not appear in the RHS block — true constant belongs only in SC block"
+        );
+    }
 }
