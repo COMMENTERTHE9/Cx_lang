@@ -1186,7 +1186,7 @@ mod tests {
 mod jit_tests {
     use super::*;
     use crate::ir::instr::{BinaryOp, IrInst, IrTerminator};
-    use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
+    use crate::ir::types::{BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId};
 
     /// Build a minimal `main() -> i32` module that returns a single constant.
     fn const_return_module(value: i128) -> IrModule {
@@ -2804,6 +2804,105 @@ mod jit_tests {
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT ptr_add failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 55);
+    }
+
+    // ── TBool calling convention validation (CX-127, Phase 8 Round 2) ─────────
+    //
+    // These tests verify the TBool calling convention at the JIT level:
+    // - TBool function parameters are accepted by Cranelift (TBool maps to I8)
+    // - All three TBool values (0 = false, 1 = true, 2 = unknown) round-trip
+    //   through a function call without corruption
+    // - Cast TBool → I32 uses zero-extension (uextend), preserving 0/1/2
+    //
+    // Each test materialises a TBool value via Alloca+Store+Load (because
+    // ConstInt rejects IrType::TBool — the validator limits ConstInt to integer
+    // and Bool types), then passes it to a helper that casts TBool → I32 and
+    // returns it, using the I32 value as the process exit code.
+    //
+    // Helper shape for all three tests:
+    //   pass_tbool_as_i32(t: TBool) -> I32:
+    //     B0(v0: TBool): v1 = Cast(TBool → I32, v0); return v1
+    //   main() -> I32:
+    //     B0: v10=ConstInt(I8,<n>); v11=Alloca(1,1); Store(v11,v10);
+    //         v12=Load(TBool,v11); v13=Call(pass_tbool_as_i32,[v12])->I32; return v13
+
+    fn tbool_param_module(raw_value: i128) -> IrModule {
+        IrModule {
+            debug_name: format!("tbool_param_{}", raw_value),
+            functions: vec![
+                IrFunction {
+                    name: "pass_tbool_as_i32".to_string(),
+                    params: vec![IrParam { name: "t".to_string(), ty: IrType::TBool }],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![BlockParam {
+                            value: ValueId(0),
+                            ty: IrType::TBool,
+                            read_only: true,
+                        }],
+                        insts: vec![IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::TBool,
+                            to: IrType::I32,
+                            value: ValueId(0),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(10), ty: IrType::I8, value: raw_value },
+                            IrInst::Alloca { dst: ValueId(11), size: 1, align: 1 },
+                            IrInst::Store { ptr: ValueId(11), value: ValueId(10) },
+                            IrInst::Load { dst: ValueId(12), ty: IrType::TBool, ptr: ValueId(11) },
+                            IrInst::Call {
+                                dst: Some(ValueId(13)),
+                                callee: "pass_tbool_as_i32".to_string(),
+                                args: vec![ValueId(12)],
+                                return_ty: Some(IrType::I32),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(13)) },
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn jit_tbool_param_false_passes_correctly() {
+        // TBool value 0 (false) survives the call boundary and returns as I32(0).
+        let module = tbool_param_module(0);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 0);
+    }
+
+    #[test]
+    fn jit_tbool_param_true_passes_correctly() {
+        // TBool value 1 (true) survives the call boundary and returns as I32(1).
+        let module = tbool_param_module(1);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1);
+    }
+
+    #[test]
+    fn jit_tbool_param_unknown_passes_correctly() {
+        // TBool value 2 (unknown) survives the call boundary and returns as I32(2).
+        // This is the critical case: "unknown" is the third state that has no Bool
+        // equivalent, so it exercises the 0/1/2 wire format explicitly.
+        let module = tbool_param_module(2);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 2);
     }
 }
 

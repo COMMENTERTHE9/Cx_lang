@@ -63,17 +63,20 @@ When copy param support lands in the compiled backend:
 
 ## Open Design Questions
 
-### TBool Representation — PARTIALLY LOCKED
+### TBool Representation — LOCKED (0.1)
 Three-state value: true (1), false (0), unknown (2).
 - Wire format and storage size: LOCKED. 1 byte, values 0/1/2, stored as I8 at Cranelift level.
-- IrType::TBool exists in the IR type system. Not yet produced by lower_type (awaiting SemanticType::TBool in frontend).
+- IrType::TBool exists in the IR type system. Maps to Cranelift `types::I8`.
 - Valid operations: comparison (0/1/2), three-way branching. Invalid: arithmetic, bitwise.
-- Wire format 0/1/2 is locked from the language spec.
-- Runtime representation: u8? enum? tagged union?
-- Does IrType need a TBool variant or is it lowered as I8 with 0/1/2 convention?
-- Unknown propagation: IR-level checks or runtime intrinsic calls?
-- TBool function parameters: calling convention implications.
-- Arithmetic on unknown-infected values: propagation cost and mechanism.
+- Runtime representation: u8 stored in a 1-byte slot. No enum wrapping. Values 0/1/2 are the only valid states.
+- IrType::TBool is a first-class IR type — not lowered as I8 with a comment. The type carries semantic intent.
+- TBool function parameters: LOCKED. Follows C ABI treating TBool as I8. Passed in the same integer registers as Bool (RDI/RSI/RDX/RCX/R8/R9 on Linux x64; RCX/RDX/R8/R9 on Windows x64). Values 0/1/2 are preserved across the call boundary without padding or encoding. Zero-extended when widened to a larger integer type (Cast TBool → I32 uses `uextend`, not `sextend`).
+- JIT validation: all three TBool wire values (0 = false, 1 = true, 2 = unknown) round-trip correctly through JIT-compiled function calls (confirmed by CX-127 tests in `host_boundary.rs`).
+
+**Post-0.1 deferred items:**
+- Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? This decision gates when-block lowering and unknown-infected arithmetic.
+- Arithmetic on unknown-infected values: propagation cost and mechanism. Blocked on unknown propagation strategy.
+- When-block lowering: TBool three-way branching requires two nested Branch instructions since IR Branch is two-way only. Design work needed before implementation.
 
 ### String Layout — OPEN
 - `str` at C boundary is `(*const u8, u32)` — pointer + length, no null termination. LOCKED per frontend dev.

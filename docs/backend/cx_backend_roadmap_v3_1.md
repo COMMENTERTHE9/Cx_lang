@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.2 — 2026-05-10
+v4.3 — 2026-05-11
 
 ---
 
@@ -249,9 +249,11 @@ Without this phase, parity testing is incomplete — the backend could produce o
 - str and strref layout at backend boundary
   - Arena ownership question: the tree-walk interpreter's arena is a Vec<u8> in RunTime. In JIT mode, does the JIT call into the same RunTime arena via intrinsic calls, maintain its own separate arena, or treat strings as heap-allocated (arena as interpreter-only optimization)? This decision affects strref escape rules since strref is an arena view that cannot outlive the arena. Must be answered before any string layout is defined.
 - Handle<T> runtime representation
-- TBool calling convention — a TBool param is not a bool param; function parameter passing convention for TBool needs explicit decision
-- Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? Arithmetic on unknown-infected values: propagation cost and mechanism must be defined
+- Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? Arithmetic on unknown-infected values: propagation cost and mechanism. This decision gates when-block lowering.
 - Return value rules for large values and void — IrType::Void still pending
+
+**Locked in Round 2 (2026-05-11, CX-127):**
+- TBool calling convention — LOCKED. TBool function parameters follow C ABI treating TBool as I8, passed in the standard integer registers (RDI/RSI/RDX/RCX/R8/R9 on Linux; RCX/RDX/R8/R9 on Windows). Values 0/1/2 preserved across the call boundary. Zero-extended on widening (Cast TBool → I32 uses `uextend`). JIT validation tests confirm all three wire values round-trip correctly.
 
 Done when:
 - Every core Cx type has a documented backend representation
@@ -645,7 +647,7 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 
 **Active**
 - Surface area reduction (Phase 11) — all original open items closed; remaining: `when` block lowering/rejection, method call actual lowering
-- ABI and data layout Round 2 (Phase 8) — str/strref layout, Handle<T>, TBool calling convention, unknown propagation still open
+- ABI and data layout Round 2 (Phase 8) — TBool calling convention LOCKED (CX-127); str/strref layout, Handle<T>, unknown propagation still open
 - Differential backend harness (Phase 12) — harness running, 120 fixtures, 0 PARITY_FAILs; full construct set coverage expansion in progress (CX-34)
 - Cranelift JIT — 0.1 target (Phase 15) — no-panic, float ops, exit-code, PtrOffset, intrinsic validation, numeric casts all landed; cast JIT, DotAccess JIT parity, full fixture coverage still in flight
 
@@ -666,6 +668,14 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.3 (2026-05-11)
+
+- Phase 8 Round 2 partial progress: TBool calling convention LOCKED — TBool params follow C ABI as I8, values 0/1/2 preserved across call boundary, zero-extended on widening; JIT validation tests confirm (CX-127)
+- `docs/backend/cx_abi_v0.1.md` TBool section updated from PARTIALLY LOCKED to LOCKED; post-0.1 deferred items explicitly listed (unknown propagation, when-block lowering strategy)
+- Roadmap Progress Board updated to reflect TBool calling convention locked; str/strref layout, Handle<T>, unknown propagation remain open Phase 8 items
 
 ---
 
