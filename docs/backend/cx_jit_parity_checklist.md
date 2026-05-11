@@ -33,7 +33,7 @@ set:
 | FloatOps       | f64 operations                               | t55, t135–t138 |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
 | LogicalOps     | Logical AND/OR short-circuit operators       | t141, t142 |
-| Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111 |
+| Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113) |
 
 Fixtures not explicitly listed in `feature_of()` fall into `Other`.
 
@@ -102,9 +102,10 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-111` (submain as of CX-111 merge window, 2026-05-11).
+Run on branch `stokowski/CX-113` (submain as of CX-113 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), and the CX-111 bool-variable negation extension to t131.
+fixtures (t141–t142), the CX-111 bool-variable negation extension to t131, and
+CX-113 when-block exit-code fixtures (t143–t145).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -124,9 +125,9 @@ Cast                      0      2            0
 FloatOps                  0      5            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
-Other                    13     48            0
+Other                    13     51            0
 ------------------------------------------------
-Total: 146 fixtures, 0 PARITY_FAILs
+Total: 149 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -158,6 +159,11 @@ exit-code-verified set; the 3 SKIP are the print-based originals.
 top-level while at file scope; t133 covers while in a function. The 2 PASS
 reflect the exit-code-verified set; the 6 SKIP include print-based originals
 and while-in/while-in-then constructs (not yet JIT-lowerable).
+
+**WhenBlock parity coverage (CX-113):** t143 mirrors t19 (numeric pattern), t144
+mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
+in JIT (when-block lowering not yet implemented; exits 127). Once when-block
+lowering lands, these fixtures will transition from SKIP to PASS without changes.
 
 ---
 
