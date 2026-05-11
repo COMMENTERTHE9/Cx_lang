@@ -1,0 +1,30 @@
+// CX-124: exit-code-based JIT parity — for-in range loop at file scope.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// Exclusive range: 0+1+2+3+4 = 10.
+total: t64 = 0
+for i in 0..5 {
+    total = total + i
+}
+assert_eq(total, 10)
+
+// Non-zero lower bound: 2+3+4 = 9; catches start-bound off-by-one.
+offset_total: t64 = 0
+for i in 2..5 {
+    offset_total = offset_total + i
+}
+assert_eq(offset_total, 9)
+
+// Empty range: start == end yields 0 iterations.
+count: t64 = 0
+for i in 3..3 {
+    count = count + 1
+}
+assert_eq(count, 0)
+
+// Inclusive range: 1+2+3+4 = 10.
+sum: t64 = 0
+for i in 1..=4 {
+    sum = sum + i
+}
+assert_eq(sum, 10)

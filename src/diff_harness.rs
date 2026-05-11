@@ -178,6 +178,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         // ── ForLoop ───────────────────────────────────────────────────────────
         "t48_for_loop"
         | "t104_for_in_func"
+        | "t149_for_loop_exit"
+        | "t150_for_in_func_exit"
             => FeatureCategory::ForLoop,
 
         // ── InfiniteLoop ──────────────────────────────────────────────────────

@@ -22,11 +22,11 @@ set:
 | VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
-| ForLoop        | For-in loops                                 | t48, t104 |
+| ForLoop        | For-in loops                                 | t48, t104 (output-verified); t149, t150 (exit-code-verified, CX-124) |
 | InfiniteLoop   | `loop { ... break }` (infinite loop + break) | t25, t106, t134 |
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
-| Array          | Array literals and array-of-result           | t33, t112 |
+| Array          | Array literals and array-of-result           | t33, t112 (output-verified); t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit (exit-code-verified, CX-121) |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t146 |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
@@ -102,11 +102,13 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-119` (submain as of CX-119 merge window, 2026-05-11).
+Run on branch `stokowski/CX-124` (submain as of CX-124 merge window, 2026-05-11).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
-CX-113 when-block exit-code fixtures (t143–t145), and CX-119 var compound assign
-exit-code fixture (t146).
+CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
+exit-code fixture (t146_var_compound_assign_exit), CX-121 Array exit-code fixtures
+(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit), and
+CX-124 ForLoop exit-code fixtures (t149–t150).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -115,11 +117,11 @@ Arithmetic                6     11            0
 VariableDecl              5      3            0
 IfElse                    3      3            0
 WhileLoop                 2      6            0
-ForLoop                   0      2            0
+ForLoop                   2      2            0
 InfiniteLoop              1      2            0
 DirectCall                5      6            0
 Struct                    5      6            0
-Array                     0      2            0
+Array                     0      5            0
 CompoundAssign            2      2            0
 Unary                     0      1            0
 Cast                      0      2            0
@@ -128,7 +130,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    13     51            0
 ------------------------------------------------
-Total: 150 fixtures, 0 PARITY_FAILs
+Total: 155 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -173,6 +175,12 @@ code. Fixed a semantic-analysis bug where the Var-target branch used
 explicit type annotation) instead of `binding_type()` which checks `declared`
 first. The 2 PASS reflect t128 (struct field) and t146 (plain variable); the 2
 SKIP are t26 and t41 (print-based, JIT not yet lowerable for `print`).
+
+**ForLoop parity coverage (CX-124):** t149 mirrors t48 (top-level for loop at file scope),
+covering exclusive range (`0..5`), empty range (`3..3`, 0 iterations), and inclusive range
+(`1..=4`). t150 mirrors t104 (for loop inside a function), covering a sum-accumulator pattern
+with a mutable variable carried through the loop. The 2 PASS reflect the exit-code-verified
+set; the 2 SKIP are the print-based originals (t48, t104).
 
 ---
 
