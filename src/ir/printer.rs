@@ -111,6 +111,14 @@ pub fn print_inst(inst: &IrInst) -> String {
         IrInst::Alloca { dst, size, align } => {
             format!("{} = alloca size {} align {}", print_value_id(*dst), size, align)
         }
+        IrInst::ArrayAlloca { dst, element_type, count } => {
+            format!(
+                "{} = array_alloca {} * {}",
+                print_value_id(*dst),
+                print_type(element_type),
+                count
+            )
+        }
         IrInst::PtrOffset { dst, base, offset } => {
             format!(
                 "{} = ptr_offset {} + {}",

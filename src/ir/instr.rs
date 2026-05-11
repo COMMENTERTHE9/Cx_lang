@@ -65,6 +65,16 @@ pub enum IrInst {
         size: usize,
         align: usize,
     },
+    /// Allocate a fixed-size array on the stack.
+    ///
+    /// Equivalent to `Alloca { size: element_size(element_type) * count,
+    /// align: align_bytes(element_type) }` but carries explicit array
+    /// semantics so the JIT emitter can use typed layout helpers.
+    ArrayAlloca {
+        dst: ValueId,
+        element_type: IrType,
+        count: usize,
+    },
     /// Advance a pointer by a compile-time byte offset.
     ///
     /// `dst = ptr_offset base + offset`

@@ -176,6 +176,12 @@ fn lower_instruction(inst: &IrInst) -> Result<(), CraneliftLoweringError> {
                 context: format!("dst={dst:?} size={size} align={align}"),
             })
         }
+        IrInst::ArrayAlloca { dst, element_type, count } => {
+            Err(CraneliftLoweringError::UnsupportedInstruction {
+                inst: "ArrayAlloca".to_string(),
+                context: format!("dst={dst:?} element_type={element_type:?} count={count}"),
+            })
+        }
         IrInst::PtrOffset { dst, base, offset } => {
             Err(CraneliftLoweringError::UnsupportedInstruction {
                 inst: "PtrOffset".to_string(),
