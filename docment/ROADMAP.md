@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-10
+Last updated: 2026-05-12
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -79,7 +79,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] 120 fixtures, 0 PARITY_FAILs
   - [x] Determinism tests (CX-55)
   - [ ] Full construct set coverage expansion (CX-34 on feature branch)
-  - [ ] CI gate on every PR
+  - [x] CI gate on every PR (CX-133)
 - [ ] Phase 15 — Cranelift JIT 0.1 target
   - [x] No-panic guarantee on valid IR (CX-50)
   - [x] Float comparison + ConstFloat (CX-52)
@@ -91,7 +91,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [ ] Cast instruction JIT coverage (CX-91 on feature branch)
   - [ ] DotAccess JIT parity fixtures (CX-94 on feature branch)
   - [ ] Full parity fixture coverage (CX-34 on feature branch)
-  - [ ] Differential harness in CI
+  - [x] Differential harness in CI (CX-133)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
