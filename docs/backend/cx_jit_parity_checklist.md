@@ -102,33 +102,35 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-124` (submain as of CX-124 merge window, 2026-05-11).
+Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
-(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit), and
-CX-124 ForLoop exit-code fixtures (t149–t150).
+(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
+CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
+(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
+dispatch to cx_printn.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
-Arithmetic                6     11            0
+Arithmetic                8      9            0
 VariableDecl              5      3            0
-IfElse                    3      3            0
-WhileLoop                 2      6            0
-ForLoop                   2      2            0
-InfiniteLoop              1      2            0
-DirectCall                5      6            0
-Struct                    5      6            0
-Array                     0      5            0
+IfElse                    4      2            0
+WhileLoop                 5      3            0
+ForLoop                   4      0            0
+InfiniteLoop              2      1            0
+DirectCall                7      4            0
+Struct                    6      5            0
+Array                     3      2            0
 CompoundAssign            2      2            0
 Unary                     0      1            0
 Cast                      0      2            0
 FloatOps                  0      5            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
-Other                    13     51            0
+Other                    16     48            0
 ------------------------------------------------
 Total: 155 fixtures, 0 PARITY_FAILs
 ```
@@ -139,29 +141,33 @@ Total: 155 fixtures, 0 PARITY_FAILs
 
 - **Expected-fail fixtures** in any category exit non-zero (semantic error),
   matching the expectation. Both interpreter and JIT correctly reject them.
-- **Exit-code-verified fixtures** (t117–t142) use `assert_eq` instead of
-  `print`, so their correctness is verified by exit code 0. These pass
-  even though the `print` builtin is not yet JIT-lowerable (Phase 9 pending).
+- **Exit-code-verified fixtures** use `assert_eq` instead of `print`, so
+  their correctness is verified by exit code 0.
+- **Output-verified fixtures** whose `print` calls were previously SKIP are
+  now PASS following CX-136 print/println dispatch to `cx_printn` for i64
+  arguments.
 - A small number of **pass-any fixtures** where the JIT happened to compile
   and execute successfully (no stderr error, exit 0) also appear as PASS.
 
 **SKIP fixtures** are those where IR lowering or JIT codegen has not yet been
-implemented for the construct used. The primary gap remains that the `print`
-builtin is not lowerable to IR (Phase 9 pending), affecting all output-verified
-fixtures. As Phase 9, Phase 14, and subsequent phases land, SKIP counts will
-decrease and PASS counts will increase.
+implemented for the construct used. The primary remaining gaps are constructs
+not yet JIT-lowerable (when-blocks, float ops, casts, unary, enums, generics,
+handles, and other Phase 14+ constructs). As subsequent phases land, SKIP
+counts will continue to decrease and PASS counts will increase.
 
 **PARITY_FAIL = 0** across all 16 categories. The gate holds.
 
-**IfElse parity coverage (CX-102/CX-111):** t129 mirrors t44 (basic if/else),
+**IfElse parity coverage (CX-102/CX-111/CX-136):** t129 mirrors t44 (basic if/else),
 t130 mirrors t45 (if/else in function), t131 mirrors t46 (negated conditions,
-including bool-variable negation added in CX-111). The 3 PASS reflect the
-exit-code-verified set; the 3 SKIP are the print-based originals.
+including bool-variable negation added in CX-111). The 4 PASS reflect the
+3 exit-code-verified fixtures plus one print-based original now passing via
+CX-136 print dispatch; the 2 SKIP are the remaining print-based originals.
 
-**WhileLoop parity coverage (CX-102):** t132 covers basic while loops and
-top-level while at file scope; t133 covers while in a function. The 2 PASS
-reflect the exit-code-verified set; the 6 SKIP include print-based originals
-and while-in/while-in-then constructs (not yet JIT-lowerable).
+**WhileLoop parity coverage (CX-102/CX-136):** t132 covers basic while loops and
+top-level while at file scope; t133 covers while in a function. The 5 PASS
+reflect the 2 exit-code-verified fixtures plus 3 print-based originals now
+passing via CX-136 print dispatch; the 3 SKIP are while-in/while-in-then
+constructs not yet JIT-lowerable.
 
 **WhenBlock parity coverage (CX-113):** t143 mirrors t19 (numeric pattern), t144
 mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
@@ -174,13 +180,21 @@ code. Fixed a semantic-analysis bug where the Var-target branch used
 `info.inferred` only (defaulting to `Unknown` for typed variables declared with an
 explicit type annotation) instead of `binding_type()` which checks `declared`
 first. The 2 PASS reflect t128 (struct field) and t151 (plain variable); the 2
-SKIP are t26 and t41 (print-based, JIT not yet lowerable for `print`).
+SKIP are t26 and t41 (print-based originals that remain SKIP).
 
-**ForLoop parity coverage (CX-124):** t149 mirrors t48 (top-level for loop at file scope),
+**ForLoop parity coverage (CX-124/CX-136):** t149 mirrors t48 (top-level for loop at file scope),
 covering exclusive range (`0..5`), empty range (`3..3`, 0 iterations), and inclusive range
 (`1..=4`). t150 mirrors t104 (for loop inside a function), covering a sum-accumulator pattern
-with a mutable variable carried through the loop. The 2 PASS reflect the exit-code-verified
-set; the 2 SKIP are the print-based originals (t48, t104).
+with a mutable variable carried through the loop. The 4 PASS cover all four ForLoop fixtures:
+t149 and t150 (exit-code-verified) plus t48 and t104 (print-based originals now passing via
+CX-136 print dispatch). ForLoop has 0 SKIP — full parity coverage across this category.
+
+**Array parity coverage (CX-121):** t146_array_read_exit, t147_array_write_exit, and
+t148_array_in_func_exit are exit-code-verified fixtures that exercise stack array allocation,
+element read/write, and array passing through function calls. The 3 PASS reflect these three
+fixtures passing via the CX-121 ArrayAlloca JIT emit (`IrInst::ArrayAlloca` lowered to
+Cranelift via `compute_array_layout`). The 2 SKIP are t33 and t112 (print-based originals
+that remain SKIP).
 
 ---
 
