@@ -374,4 +374,46 @@ mod tests {
         assert_eq!(IrType::Void.size_bytes(), 0);
         assert_eq!(IrType::Void.align_bytes(), 1);
     }
+
+    // Large-value return convention — out-pointer sizing validation.
+    // These tests confirm the layout used to size caller-allocated return storage per
+    // cx_abi_v0.1.md "Large-Value Return Convention".
+
+    #[test]
+    fn large_value_return_struct_single_i32() {
+        // struct { I32 } — caller allocates 4 bytes @ align 4
+        let layout = compute_struct_layout(&[IrType::I32]);
+        assert_eq!(layout.field_offsets, vec![0]);
+        assert_eq!(layout.total_size, 4);
+        assert_eq!(layout.alignment, 4);
+    }
+
+    #[test]
+    fn large_value_return_struct_i32_then_i64() {
+        // struct { I32, I64 } — I32 @ 0, 4 pad, I64 @ 8 → caller allocates 16 bytes @ align 8
+        let layout = compute_struct_layout(&[IrType::I32, IrType::I64]);
+        assert_eq!(layout.field_offsets, vec![0, 8]);
+        assert_eq!(layout.total_size, 16);
+        assert_eq!(layout.alignment, 8);
+    }
+
+    #[test]
+    fn large_value_return_array_single_i64() {
+        // [1: t64] — even a single-element array uses out-pointer; caller allocates 8 bytes @ align 8
+        let layout = compute_array_layout(&IrType::I64, 1);
+        assert_eq!(layout.element_size, 8);
+        assert_eq!(layout.stride, 8);
+        assert_eq!(layout.total_size, 8);
+        assert_eq!(layout.alignment, 8);
+    }
+
+    #[test]
+    fn large_value_return_array_3_i32() {
+        // [3: t32] — caller allocates 12 bytes @ align 4
+        let layout = compute_array_layout(&IrType::I32, 3);
+        assert_eq!(layout.element_size, 4);
+        assert_eq!(layout.stride, 4);
+        assert_eq!(layout.total_size, 12);
+        assert_eq!(layout.alignment, 4);
+    }
 }

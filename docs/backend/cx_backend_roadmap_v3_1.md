@@ -250,7 +250,9 @@ Without this phase, parity testing is incomplete — the backend could produce o
   - Arena ownership question: the tree-walk interpreter's arena is a Vec<u8> in RunTime. In JIT mode, does the JIT call into the same RunTime arena via intrinsic calls, maintain its own separate arena, or treat strings as heap-allocated (arena as interpreter-only optimization)? This decision affects strref escape rules since strref is an arena view that cannot outlive the arena. Must be answered before any string layout is defined.
 - Handle<T> runtime representation
 - Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? Arithmetic on unknown-infected values: propagation cost and mechanism. This decision gates when-block lowering.
-- Return value rules for large values and void — IrType::Void still pending
+**Locked in Round 3 (2026-05-12, CX-143):**
+- Large-value (struct/array) return convention — LOCKED. Out-pointer pattern: caller allocates stack storage, passes hidden first `Ptr` parameter, callee writes through it, IR return type is `None`. Type-based rule (any struct or array uses out-pointer regardless of size). Platform mapping: RDI on Linux x64, RCX on Windows x64. Implementation post-0.1; 0.1 backend produces `UnsupportedConstruct` for struct/array return. 4 confidence tests added in `src/ir/types.rs`.
+- `IrType::Void` at IR boundary — LOCKED. `SemanticType::Void` maps to `IrType::Void` in `lower_type` and is canonicalised to `None` in `IrFunction::return_ty`. `IrType::Void` must never appear in block parameters, instruction operands, or `IrFunction::return_ty` in valid IR. Void functions lower to Cranelift `return_(&[])`.
 
 **Locked in Round 2 (2026-05-11, CX-127):**
 - TBool calling convention — LOCKED. TBool function parameters follow C ABI treating TBool as I8, passed in the standard integer registers (RDI/RSI/RDX/RCX/R8/R9 on Linux; RCX/RDX/R8/R9 on Windows). Values 0/1/2 preserved across the call boundary. Zero-extended on widening (Cast TBool → I32 uses `uextend`). JIT validation tests confirm all three wire values round-trip correctly.

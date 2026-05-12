@@ -61,6 +61,45 @@ When copy param support lands in the compiled backend:
 
 ---
 
+## Large-Value Return Convention — LOCKED (post-0.1)
+
+Structs and fixed-size arrays are **large-value types** and cannot be returned in registers. All large-value returns use the **hidden out-pointer pattern**:
+
+1. Caller allocates storage for the return value on its own stack frame before the call.
+2. Caller passes a pointer to that storage as a **hidden first parameter** (position 0 in the parameter list, before all declared parameters).
+3. Callee writes the complete return value through the out-pointer before executing `Return`.
+4. Callee's declared return type at IR level is `None` (void return — no register value produced).
+
+**Threshold rule:** A return type requires out-pointer treatment if and only if its `SemanticType` is `Struct` or `Array`. Scalars (I8–I128, F64, Bool, TBool, Ptr) always use register return per the Calling Convention section above. The rule is **type-based**, not size-based — a single-field struct still uses the out-pointer pattern.
+
+**IR encoding:**
+- `IrFunction::return_ty` is `None` for any function returning a struct or array.
+- The hidden out-pointer is injected as the first `IrParam` with type `Ptr` at IR lowering time.
+- The callee stores each field or element to the out-pointer using `PtrOffset` + `Store` (struct) or `PtrAdd` + `Store` (array) before executing `Return { value: None }`.
+- The caller passes the stack-allocated pointer as the first argument in `IrInst::Call`.
+
+**Platform ABI mapping (x86-64):**
+- Linux x64 (SystemV): the out-pointer occupies the first integer register (RDI). Declared parameters shift right by one slot.
+- Windows x64 (fastcall): the out-pointer occupies the first argument slot (RCX). Declared parameters shift right by one slot.
+
+**0.1 status:** Struct and array return is **not supported** in the 0.1 compiled backend. Functions returning structs or arrays produce a structured `CxError::UnsupportedConstruct` at codegen time. They are handled by the interpreter only until the post-0.1 out-pointer lowering pass lands.
+
+**Caller stack allocation sizing:**
+- Struct: use `compute_struct_layout` from `src/ir/types.rs` — allocate `total_size` bytes at `alignment`.
+- Array: use `compute_array_layout` from `src/ir/types.rs` — allocate `total_size` bytes at `alignment`.
+
+Confidence tests in `src/ir/types.rs` validate out-pointer sizing for representative struct and array return shapes.
+
+---
+
+## Void Return at IR Boundary — LOCKED
+
+`void` (no return value) is represented as `None` in `IrFunction::return_ty`. `IrType::Void` is used only transiently during type lowering (`lower_type` maps `SemanticType::Void` to `IrType::Void`) and is canonicalised to `None` before being stored in the IR. `IrType::Void` must never appear in block parameters, instruction operands, or `IrFunction::return_ty` in valid IR.
+
+At the calling convention boundary: no register is written for void functions. Callee executes `Return { value: None }`, which lowers to a Cranelift `return_(&[])` with an empty value list.
+
+---
+
 ## Open Design Questions
 
 ### TBool Representation — LOCKED (0.1)
