@@ -214,6 +214,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t125_struct_field_read_exit"
         | "t126_struct_second_field_read_exit"
         | "t127_struct_field_write_exit"
+        | "t152_impl_basic_exit"
+        | "t153_impl_return_exit"
+        | "t154_multi_alias_impl_exit"
             => FeatureCategory::Struct,
 
         // ── Array ─────────────────────────────────────────────────────────────

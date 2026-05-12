@@ -1,0 +1,33 @@
+// CX-148: exit-code-based JIT parity — MethodCall multi-alias impl (two struct params).
+// Exercises a multi-alias impl block whose methods receive two struct instances
+// and mutate the first via field reads from the second.
+// JIT: exits 127 (SKIP — MethodCall not yet lowered).
+// Interpreter: exits 0 (all asserts held).
+struct Player {
+    health: t32,
+    position: t32,
+}
+
+struct World {
+    origin: t32,
+    gravity: t32,
+}
+
+world_sync: impl (p: Player, w: World) {
+    fnc: sync_position() {
+        p.position = w.origin
+    }
+
+    fnc: apply_gravity() {
+        p.health -= w.gravity
+    }
+}
+
+let p;
+p = Player { health: 100, position: 0 }
+let w;
+w = World { origin: 50, gravity: 10 }
+p.sync_position(w)
+p.apply_gravity(w)
+assert_eq(p.position, 50)
+assert_eq(p.health, 90)

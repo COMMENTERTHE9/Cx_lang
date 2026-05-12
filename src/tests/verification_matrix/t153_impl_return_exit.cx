@@ -1,0 +1,25 @@
+// CX-148: exit-code-based JIT parity — MethodCall return value.
+// Exercises a method that increments a counter field, then reads the value
+// back via a returning method call.
+// JIT: exits 127 (SKIP — MethodCall not yet lowered).
+// Interpreter: exits 0 (all asserts held).
+struct Counter {
+    value: t32,
+}
+
+counter_methods: impl (c: Counter) {
+    fnc: increment() {
+        c.value = c.value + 1
+    }
+
+    fnc: t32 get() {
+        c.value
+    }
+}
+
+let c;
+c = Counter { value: 0 }
+c.increment()
+c.increment()
+c.increment()
+assert_eq(c.get(), 3)

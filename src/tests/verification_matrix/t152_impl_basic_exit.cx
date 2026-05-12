@@ -1,0 +1,18 @@
+// CX-148: exit-code-based JIT parity — MethodCall basic (void method, field mutation).
+// Exercises a void method call that mutates a struct field via the self-alias.
+// JIT: exits 127 (SKIP — MethodCall not yet lowered).
+// Interpreter: exits 0 (all asserts held).
+struct Player {
+    health: t32,
+}
+
+player_methods: impl (p: Player) {
+    fnc: take_damage(amount: t32) {
+        p.health -= amount
+    }
+}
+
+let p;
+p = Player { health: 100 }
+p.take_damage(30)
+assert_eq(p.health, 70)
