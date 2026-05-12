@@ -1,13 +1,17 @@
 // CX-131: exit-code-based JIT parity — f64 modulo (remainder).
-// Results cast to t32 for assert_eq (f64 not yet supported by assert_eq).
+// Scaled exact check: multiply remainder by 10 before casting to t32.
+// This catches backend drift hidden by direct truncation (e.g. 1.9 → 1).
 a: f64 = 10.0
 b: f64 = 3.0
 rem: f64 = a % b
-n: t32 = rem
-assert_eq(n, 1)
+scale: f64 = 10.0
+product: f64 = rem * scale
+n: t32 = product
+assert_eq(n, 10)
 
-x: f64 = 7.5
-y: f64 = 2.5
+x: f64 = 5.5
+y: f64 = 2.0
 rem2: f64 = x % y
-m: t32 = rem2
-assert_eq(m, 0)
+product2: f64 = rem2 * scale
+m: t32 = product2
+assert_eq(m, 15)
