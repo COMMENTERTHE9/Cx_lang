@@ -246,6 +246,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t136_float_arith_sub_exit"
         | "t137_float_arith_mul_exit"
         | "t138_float_arith_div_exit"
+        | "t152_float_print_basic"
+        | "t153_float_print_add"
+        | "t154_float_print_neg"
             => FeatureCategory::FloatOps,
 
         // ── BuiltinAssert ─────────────────────────────────────────────────────

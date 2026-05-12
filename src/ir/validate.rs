@@ -74,12 +74,21 @@ struct ValidatorFunctionSig {
 /// though it has no `IrFunction` entry in the module.
 fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
     let mut sigs = HashMap::new();
-    // cx_printn(n: I64) -> void — Phase 9 sub-packet 2 print-integer intrinsic.
+    // cx_printn(n: I64) -> void — print integer with newline.
     sigs.insert(
         "cx_printn".to_string(),
         ValidatorFunctionSig {
             param_count: 1,
             param_types: vec![IrType::I64],
+            has_return: false,
+        },
+    );
+    // cx_printf(x: F64) -> void — print f64 with newline.
+    sigs.insert(
+        "cx_printf".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::F64],
             has_return: false,
         },
     );
