@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.3 — 2026-05-11
+v4.4 — 2026-05-12
 
 ---
 
@@ -117,6 +117,9 @@ These are conditions, not features. All must be true before 0.1 ships.
 - Closures and lambdas
 - Async and continuations
 - when blocks — produces structured UnsupportedSemanticConstruct error; when lowering will require design work for TBool three-way branching (true/false/unknown requires two nested Branch instructions since IR only has two-way Branch)
+- `str` — produces structured UnsupportedSemanticType error; blocked on arena ownership decision (Phase 8 open item)
+- `strref` — produces structured UnsupportedSemanticType error; co-blocked with `str` on arena ownership decision; semantic layer also proactively rejects strref in assignment targets, struct fields, and return positions
+- `Handle<T>` — produces structured UnsupportedSemanticType error; handle registry intrinsics are post-0.1 (Phase 9)
 
 This list is intentional. Unsupported constructs must produce structured errors, not silently misbehave.
 
@@ -246,14 +249,14 @@ Without this phase, parity testing is incomplete — the backend could produce o
 - Target platform matrix explicit — Windows x64 and Linux x64 ✅
 
 **Still open:**
-- str and strref layout at backend boundary
-  - Arena ownership question: the tree-walk interpreter's arena is a Vec<u8> in RunTime. In JIT mode, does the JIT call into the same RunTime arena via intrinsic calls, maintain its own separate arena, or treat strings as heap-allocated (arena as interpreter-only optimization)? This decision affects strref escape rules since strref is an arena view that cannot outlive the arena. Must be answered before any string layout is defined.
-- Handle<T> runtime representation
 - Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? Arithmetic on unknown-infected values: propagation cost and mechanism. This decision gates when-block lowering.
-- Return value rules for large values and void — IrType::Void still pending
 
 **Locked in Round 2 (2026-05-11, CX-127):**
 - TBool calling convention — LOCKED. TBool function parameters follow C ABI treating TBool as I8, passed in the standard integer registers (RDI/RSI/RDX/RCX/R8/R9 on Linux; RCX/RDX/R8/R9 on Windows). Values 0/1/2 preserved across the call boundary. Zero-extended on widening (Cast TBool → I32 uses `uextend`). JIT validation tests confirm all three wire values round-trip correctly.
+
+**Documented in Round 4 (2026-05-12, CX-145):**
+- `str` and `strref` documented as explicitly unsupported in backend 0.1 — wire format wire footprint for `str` is settled (`(*const u8, u32)`), but backend support is blocked on the arena ownership decision. Both types produce structured `UnsupportedSemanticType` errors at the lowering boundary. Full entry in `docs/backend/cx_abi_v0.1.md` under "Explicitly Unsupported in Backend 0.1".
+- `Handle<T>` documented as explicitly unsupported in backend 0.1 — handle registry intrinsics are post-0.1 (Phase 9). Produces structured `UnsupportedSemanticType` error at the lowering boundary. Full entry in `docs/backend/cx_abi_v0.1.md` under "Explicitly Unsupported in Backend 0.1".
 
 Done when:
 - Every core Cx type has a documented backend representation
@@ -647,7 +650,7 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 
 **Active**
 - Surface area reduction (Phase 11) — all original open items closed; remaining: `when` block lowering/rejection, method call actual lowering
-- ABI and data layout Round 2 (Phase 8) — TBool calling convention LOCKED (CX-127); str/strref layout, Handle<T>, unknown propagation still open
+- ABI and data layout Round 4 (Phase 8) — str/strref and Handle<T> documented as explicitly unsupported in 0.1 (CX-145); TBool calling convention LOCKED (CX-127); unknown propagation still open
 - Differential backend harness (Phase 12) — harness running, 120 fixtures, 0 PARITY_FAILs; full construct set coverage expansion in progress (CX-34)
 - Cranelift JIT — 0.1 target (Phase 15) — no-panic, float ops, exit-code, PtrOffset, intrinsic validation, numeric casts all landed; cast JIT, DotAccess JIT parity, full fixture coverage still in flight
 
@@ -668,6 +671,16 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.4 (2026-05-12)
+
+- Phase 8 Round 4: `str`, `strref`, and `Handle<T>` documented as explicitly unsupported in backend 0.1 (CX-145) — dedicated "Explicitly Unsupported in Backend 0.1" section added to `docs/backend/cx_abi_v0.1.md`; blocking reasons, current enforcement, and post-0.1 paths documented for each type
+- `str` and `strref` removed from Phase 8 "Still open" list — status is now documented (explicitly unsupported), not an undocumented gap
+- `Handle<T>` removed from Phase 8 "Still open" list — same reason
+- Backend Support Matrix updated: `str`, `strref`, `Handle<T>` added to the "Explicitly unsupported in backend 0.1" list with structured-error notes
+- Progress Board updated from Round 2 to Round 4
 
 ---
 

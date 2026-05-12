@@ -78,10 +78,11 @@ Three-state value: true (1), false (0), unknown (2).
 - Arithmetic on unknown-infected values: propagation cost and mechanism. Blocked on unknown propagation strategy.
 - When-block lowering: TBool three-way branching requires two nested Branch instructions since IR Branch is two-way only. Design work needed before implementation.
 
-### String Layout — OPEN
+### String Layout — OPEN (str and strref not supported in 0.1)
 - `str` at C boundary is `(*const u8, u32)` — pointer + length, no null termination. LOCKED per frontend dev.
 - Arena ownership in JIT mode: does the JIT call into the interpreter's RunTime arena, maintain its own arena, or heap-allocate?
 - `strref` escape rules depend on arena ownership decision.
+- Both `str` and `strref` are explicitly unsupported in backend 0.1 pending the arena decision. See "Explicitly Unsupported in Backend 0.1" section below.
 
 ### Copy Parameter Convention — LOCKED (post-0.1)
 Deferred to post-0.1. See Calling Convention section above for the locked decision and implementation plan.
@@ -142,3 +143,55 @@ Tag-only enums at 0.1. No data-carrying variants.
 Group and super-group membership is a semantic concept only — no impact on wire format. The tag is just a `u8` regardless of group structure.
 
 Note: the interpreter matches enum variants by string name, not numeric tag. The compiled backend will use numeric tags. These are different internal representations for the same value. Enum values cannot be passed between interpreted and compiled code without a translation layer. Not a 0.1 problem — documented here so it doesn't surprise anyone later.
+
+---
+
+## Explicitly Unsupported in Backend 0.1
+
+These types exist in the Cx frontend and semantic layer but have no backend representation in 0.1. Any program that triggers these types at the lowering boundary receives a structured `UnsupportedSemanticType` error — no panics, no silent misbehavior. This section documents the blocking reason and post-0.1 path for each type.
+
+This section was added in Phase 8 Round 4 (CX-145).
+
+### str — NOT SUPPORTED IN 0.1
+
+`str` is an owned string type. The C-boundary wire format is settled (`(*const u8, u32)` — pointer + length, no null termination, per frontend developer decision), but backend support requires resolving arena ownership first.
+
+**Blocking decision — arena ownership in JIT mode.** The tree-walk interpreter allocates strings into a `Vec<u8>` arena in `RunTime`. Three options are open:
+1. JIT calls into the interpreter's `RunTime` arena via intrinsic calls.
+2. JIT maintains its own separate arena.
+3. Strings are heap-allocated in JIT mode (arena is an interpreter-only optimization).
+
+This decision affects `strref` escape rules and gates the Phase 9 read/input intrinsic implementation.
+
+**Current enforcement.** `SemanticType::Str` at the lowering boundary produces `LoweringError::UnsupportedSemanticType { ty: "Str" }`. `SemanticValue::Str(_)` in expression lowering also produces this error. Both are structured and named.
+
+**Post-0.1 path.** Once the arena ownership decision is made, the String Layout section above will be finalized and this entry will move to the type layout sections as a LOCKED entry.
+
+---
+
+### strref — NOT SUPPORTED IN 0.1
+
+`strref` is a borrowed view into a `str`'s backing arena. It cannot outlive the arena that owns the underlying bytes.
+
+**Blocking decision — same as `str`.** `strref` escape rules are entirely dependent on the arena ownership decision that blocks `str`. The two types are co-blocked: `strref` cannot be defined at the backend level until `str`'s arena model is decided.
+
+**Current enforcement.** The semantic layer proactively rejects `strref` in several positions before lowering is reached:
+- Cannot assign a `strref` to a variable (it does not outlive its origin scope).
+- Cannot use `strref` as a struct field type.
+- Cannot return `strref` from a function.
+
+Any `strref` that does reach the lowering pass produces `LoweringError::UnsupportedSemanticType { ty: "StrRef" }`. The semantic rejections live in `src/frontend/semantic.rs`.
+
+**Post-0.1 path.** Blocked on the `str` arena ownership decision. Resolves together with `str`.
+
+---
+
+### Handle\<T\> — NOT SUPPORTED IN 0.1
+
+`Handle<T>` is a typed generational handle into a `HandleRegistry<T>`. The handle itself is two `u32` fields — slot index and generation counter. The registry detects stale handles by bumping the generation counter on removal.
+
+**Reason not supported.** Handle registry operations — insert, get, remove, stale detection — are classified as post-0.1 work. No ABI-level intrinsic protocol for handle registry interaction has been designed. The handle's machine footprint (8 bytes, two u32 fields at natural alignment) is derivable from the struct layout rules, but the runtime intrinsic calls needed to operate on a live registry are not yet defined.
+
+**Current enforcement.** `SemanticType::Handle(_)` at the lowering boundary produces `LoweringError::UnsupportedSemanticType { ty: "Handle" }`. Handle operations in expressions — `HandleNew`, `HandleVal`, `HandleDrop` — produce `UnsupportedSemanticConstruct` errors before the type check is reached. The runtime implementation lives in `src/runtime/handle.rs` but is not wired into the backend codegen path.
+
+**Post-0.1 path.** Tracked as "Handle registry operations — post-0.1" in Phase 9 of `docs/backend/cx_backend_roadmap_v3_1.md`. When the Phase 9 handle sub-packet lands, this section will be updated with the ABI for handle registry intrinsic calls and the handle wire format will be promoted to a LOCKED entry.
