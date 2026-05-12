@@ -671,7 +671,9 @@ fn lower_stmt(
                 match callee.as_str() {
                     "assert" => return lower_assert_stmt(args, ctx, current),
                     "assert_eq" => return lower_assert_eq_stmt(args, ctx, current),
-                    "print" | "println" => return lower_print_stmt(args, ctx, current),
+                    "print" | "println" => {
+                        return lower_print_stmt(callee.as_str(), args, ctx, current)
+                    }
                     "printn" => return lower_printn_stmt(args, ctx, current),
                     _ => {}
                 }
@@ -2716,20 +2718,21 @@ fn lower_printn_stmt(
 /// in the JIT symbol table.  Non-I64 arguments (e.g. strings) produce a structured
 /// error because string printing requires string ABI support not yet available.
 fn lower_print_stmt(
+    builtin_name: &str,
     args: &[SemanticCallArg],
     ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     if args.len() != 1 {
         return Err(LoweringError::InternalInvariantViolation {
-            detail: format!("print/println expects 1 argument, got {}", args.len()),
+            detail: format!("{} expects 1 argument, got {}", builtin_name, args.len()),
         });
     }
     let arg_expr = match &args[0] {
         SemanticCallArg::Expr(e) => e,
         _ => {
             return Err(LoweringError::UnsupportedSemanticConstruct {
-                construct: "non-Expr argument to print".to_string(),
+                construct: format!("non-Expr argument to {}", builtin_name),
             });
         }
     };
@@ -2737,8 +2740,8 @@ fn lower_print_stmt(
     if arg.ty != IrType::I64 {
         return Err(LoweringError::UnsupportedSemanticConstruct {
             construct: format!(
-                "print argument must be I64, got {:?} — string and other types not yet supported",
-                arg.ty
+                "{} argument must be I64, got {:?} — string and other types not yet supported",
+                builtin_name, arg.ty
             ),
         });
     }
