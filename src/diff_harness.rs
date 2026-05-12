@@ -517,9 +517,10 @@ pub fn run_jit_subprocess(binary: &Path, fixture: &TestFixture) -> InterpOutcome
 fn emit_parity_fail_diagnostic(
     binary: &Path,
     fixture: &TestFixture,
+    category: FeatureCategory,
     outcome: &InterpOutcome,
 ) {
-    eprintln!("PARITY_FAIL: {}", fixture.name);
+    eprintln!("PARITY_FAIL: {} [{}]", fixture.name, category);
     eprintln!("  expected : {:?}", fixture.expectation);
     eprintln!("  exit_code: {}", outcome.exit_code);
     if !outcome.stdout.is_empty() {
@@ -532,33 +533,60 @@ fn emit_parity_fail_diagnostic(
         }
     }
 
-    match Command::new(binary)
+    use std::io::Read;
+    use wait_timeout::ChildExt;
+
+    let mut child = match Command::new(binary)
         .arg("--backend=validate")
         .arg(&fixture.path)
         .env("NO_COLOR", "1")
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
     {
-        Ok(out) => {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("  (IR dump failed: {})", e);
+            return;
+        }
+    };
+
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
+
+    let ir_text = match child.wait_timeout(JIT_TIMEOUT) {
+        Ok(Some(_status)) => {
+            let mut stdout_bytes = Vec::new();
+            let mut stderr_bytes = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut stdout_bytes);
+            let _ = stderr_pipe.read_to_end(&mut stderr_bytes);
             // validate prints IR to stdout on success, stderr on validation error
-            let ir_text = if !out.stdout.is_empty() {
-                String::from_utf8_lossy(&out.stdout).into_owned()
+            if !stdout_bytes.is_empty() {
+                String::from_utf8_lossy(&stdout_bytes).into_owned()
             } else {
-                String::from_utf8_lossy(&out.stderr).into_owned()
-            };
-            if !ir_text.trim().is_empty() {
-                eprintln!("--- IR dump: {} ---", fixture.name);
-                eprint!("{}", ir_text);
-                if !ir_text.ends_with('\n') {
-                    eprintln!();
-                }
-                eprintln!("--- end IR dump ---");
-            } else {
-                eprintln!("  (IR dump unavailable)");
+                String::from_utf8_lossy(&stderr_bytes).into_owned()
             }
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            eprintln!("  (IR dump timed out after {}s)", JIT_TIMEOUT.as_secs());
+            return;
         }
         Err(e) => {
             eprintln!("  (IR dump failed: {})", e);
+            return;
         }
+    };
+
+    if !ir_text.trim().is_empty() {
+        eprintln!("--- IR dump: {} ---", fixture.name);
+        eprint!("{}", ir_text);
+        if !ir_text.ends_with('\n') {
+            eprintln!();
+        }
+        eprintln!("--- end IR dump ---");
+    } else {
+        eprintln!("  (IR dump unavailable)");
     }
 }
 
@@ -616,7 +644,7 @@ pub fn parity_by_feature(
             };
             if is_parity_fail {
                 entry.2 += 1; // PARITY_FAIL
-                emit_parity_fail_diagnostic(binary, fixture, &outcome);
+                emit_parity_fail_diagnostic(binary, fixture, cat, &outcome);
             } else {
                 entry.0 += 1; // pass
             }
