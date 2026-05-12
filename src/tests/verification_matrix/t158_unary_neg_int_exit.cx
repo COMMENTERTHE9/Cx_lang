@@ -1,0 +1,11 @@
+// CX-131: exit-code-based JIT parity — unary arithmetic negation on integers.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+x: t64 = 5
+assert_eq(-x + x, 0)
+
+y: t64 = 100
+neg_y: t64 = -y
+assert_eq(neg_y + y, 0)
+
+z: t64 = 0
+assert_eq(-z, 0)

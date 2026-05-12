@@ -1,0 +1,10 @@
+// CX-131: exit-code-based JIT parity — function calling another function (chained calls).
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 square(x: t64) {
+    x * x
+}
+fnc: t64 sum_of_squares(a: t64, b: t64) {
+    square(a) + square(b)
+}
+assert_eq(sum_of_squares(3, 4), 25)
+assert_eq(sum_of_squares(1, 1), 2)

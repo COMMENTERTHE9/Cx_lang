@@ -1,0 +1,8 @@
+// CX-131: exit-code-based JIT parity — function with explicit return.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 pick_first(a: t64, b: t64) {
+    return a;
+    b
+}
+assert_eq(pick_first(10, 20), 10)
+assert_eq(pick_first(99, 1), 99)

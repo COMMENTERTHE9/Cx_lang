@@ -186,6 +186,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t25_loop_break"
         | "t106_loop_break_in_func"
         | "t134_loop_break_exit"
+        | "t164_infinite_loop_counter_exit"
+        | "t165_infinite_loop_countdown_exit"
             => FeatureCategory::InfiniteLoop,
 
         // ── DirectCall ────────────────────────────────────────────────────────
@@ -200,6 +202,12 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t29_forward_decl"
         | "t50_nested_func_no_leak"
         | "t113_recursive_fib"
+        | "t152_direct_call_implicit_return_exit"
+        | "t153_direct_call_explicit_return_exit"
+        | "t154_direct_call_no_args_exit"
+        | "t155_direct_call_chained_exit"
+        | "t156_direct_call_forward_decl_exit"
+        | "t157_direct_call_recursive_exit"
             => FeatureCategory::DirectCall,
 
         // ── Struct ────────────────────────────────────────────────────────────
@@ -229,15 +237,20 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t41_compound_assign_dot"
         | "t128_struct_compound_assign_exit"
         | "t151_var_compound_assign_exit"
+        | "t166_compound_assign_func_exit"
             => FeatureCategory::CompoundAssign,
 
         // ── Unary ─────────────────────────────────────────────────────────────
         "t96_overflow_t8_unary_neg"
+        | "t158_unary_neg_int_exit"
+        | "t159_unary_not_bool_exit"
             => FeatureCategory::Unary,
 
         // ── Cast ─────────────────────────────────────────────────────────────
         "t139_cast_t32_to_f64_exit"
         | "t140_cast_f64_truncate_exit"
+        | "t162_cast_neg_t32_to_f64_exit"
+        | "t163_cast_t64_to_f64_exit"
             => FeatureCategory::Cast,
 
         // ── FloatOps ──────────────────────────────────────────────────────────
@@ -246,6 +259,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t136_float_arith_sub_exit"
         | "t137_float_arith_mul_exit"
         | "t138_float_arith_div_exit"
+        | "t160_float_arith_mod_exit"
+        | "t161_float_neg_exit"
             => FeatureCategory::FloatOps,
 
         // ── BuiltinAssert ─────────────────────────────────────────────────────

@@ -1,0 +1,6 @@
+// CX-131: exit-code-based JIT parity — zero-argument function call.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+fnc: t64 answer() {
+    42
+}
+assert_eq(answer(), 42)

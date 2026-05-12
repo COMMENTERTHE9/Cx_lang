@@ -1,0 +1,12 @@
+// CX-131: exit-code-based JIT parity — unary boolean NOT operator.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+t: bool = true
+f: bool = false
+assert_eq(!t, false)
+assert_eq(!f, true)
+
+b: bool = !t
+assert_eq(b, false)
+
+c: bool = !f
+assert_eq(c, true)

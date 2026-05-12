@@ -1,0 +1,12 @@
+// CX-131: exit-code-based JIT parity — InfiniteLoop file-scope accumulator.
+// Verifies the back-edge jump fires correctly across multiple iterations at file scope.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+sum: t64 = 0
+i: t64 = 1
+loop {
+    if i > 5 { break }
+    sum = sum + i
+    i = i + 1
+}
+assert_eq(sum, 15)
+assert_eq(i, 6)
