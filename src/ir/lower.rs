@@ -80,7 +80,7 @@ impl std::error::Error for LoweringError {}
 //
 //   Category          | Builtins          | Status
 //   ──────────────────┼───────────────────┼──────────────────────────────────
-//   I/O (stdout)      | print, println    | blocked on frontend string ABI
+//   I/O (stdout)      | print, println    | LOWERABLE (I64 only) — routes to cx_printn
 //   I/O (stdout)      | printn            | LOWERABLE — see lower_printn_stmt
 //   I/O (stdin)       | read, input       | blocked on Phase 8 str layout
 //   Debug / assertion | assert, assert_eq | LOWERABLE — Phase 9 sub-packet 3
@@ -89,10 +89,10 @@ impl std::error::Error for LoweringError {}
 // `UnsupportedSemanticConstruct` error instead of a misleading
 // `UnresolvedSemanticArtifact` from a signature_table miss.
 //
-// Builtins that are handled before this gate (assert, assert_eq, printn)
+// Builtins that are handled before this gate (assert, assert_eq, print, println, printn)
 // are intercepted in `lower_stmt` and never reach `is_cx_builtin`.
 fn is_cx_builtin(name: &str) -> bool {
-    matches!(name, "print" | "println" | "read" | "input")
+    matches!(name, "read" | "input")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -663,7 +663,7 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
-            // Phase 9 sub-packets 2 and 3: assert/assert_eq and printn are now
+            // Phase 9 sub-packets 2 and 3: assert/assert_eq, print, println, and printn are now
             // fully lowerable.  Intercept them before the is_cx_builtin gate so
             // they are routed to the dedicated lowering functions rather than
             // returning a structured error.
@@ -671,13 +671,15 @@ fn lower_stmt(
                 match callee.as_str() {
                     "assert" => return lower_assert_stmt(args, ctx, current),
                     "assert_eq" => return lower_assert_eq_stmt(args, ctx, current),
+                    "print" | "println" => return lower_print_stmt(args, ctx, current),
                     "printn" => return lower_printn_stmt(args, ctx, current),
                     _ => {}
                 }
             }
-            // Builtin intrinsics (print, etc.) are not in the signature_table.
-            // Intercept them here so they produce a structured UnsupportedSemanticConstruct
-            // rather than falling through to a misleading UnresolvedSemanticArtifact.
+            // Remaining unimplemented builtin intrinsics (read, input) are not in the
+            // signature_table.  Intercept them here so they produce a structured
+            // UnsupportedSemanticConstruct rather than falling through to a misleading
+            // UnresolvedSemanticArtifact.
             if let SemanticExprKind::Call { callee, .. } = &expr.kind {
                 if is_cx_builtin(callee) {
                     return Err(LoweringError::UnsupportedSemanticConstruct {
@@ -1613,12 +1615,12 @@ fn lower_expr(
             })
         }
         SemanticExprKind::Call { callee, function: _, args } => {
-            // Remaining builtin intrinsics (print, println, printn, read, input) are not
-            // in the signature_table.  Intercept them before the lookup so the error is
+            // Remaining unimplemented builtin intrinsics (read, input) are not in the
+            // signature_table.  Intercept them before the lookup so the error is
             // structured and actionable rather than the generic UnresolvedSemanticArtifact
             // produced by a table miss.
-            // Note: assert/assert_eq are handled at statement level and should not reach
-            // lower_expr in well-formed programs.
+            // Note: assert/assert_eq, print, println, and printn are handled at statement
+            // level and should not reach lower_expr in well-formed programs.
             if is_cx_builtin(callee) {
                 return Err(LoweringError::UnsupportedSemanticConstruct {
                     construct: format!(
@@ -2694,6 +2696,48 @@ fn lower_printn_stmt(
         return Err(LoweringError::UnsupportedSemanticConstruct {
             construct: format!(
                 "printn argument must be I64, got {:?} — other types not yet supported",
+                arg.ty
+            ),
+        });
+    }
+    current.emit(IrInst::Call {
+        dst: None,
+        callee: "cx_printn".to_string(),
+        args: vec![arg.value],
+        return_ty: None,
+    })?;
+    Ok(Some(current))
+}
+
+/// Lower `print(n)` or `println(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+///
+/// Both `print` and `println` in Cx print a value followed by a newline.  For I64
+/// arguments this maps to the `cx_printn` runtime intrinsic which is already registered
+/// in the JIT symbol table.  Non-I64 arguments (e.g. strings) produce a structured
+/// error because string printing requires string ABI support not yet available.
+fn lower_print_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("print/println expects 1 argument, got {}", args.len()),
+        });
+    }
+    let arg_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr argument to print".to_string(),
+            });
+        }
+    };
+    let arg = lower_expr(arg_expr, ctx, &mut current)?;
+    if arg.ty != IrType::I64 {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "print argument must be I64, got {:?} — string and other types not yet supported",
                 arg.ty
             ),
         });
@@ -5819,13 +5863,85 @@ mod tests {
     }
 
     #[test]
-    fn builtin_print_produces_unsupported_construct_not_unresolved_artifact() {
-        assert_builtin_structured_error("print");
+    fn print_i64_lowers_to_cx_printn_call() {
+        // print(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "print",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from print");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
     }
 
     #[test]
-    fn builtin_println_produces_unsupported_construct_not_unresolved_artifact() {
-        assert_builtin_structured_error("println");
+    fn println_i64_lowers_to_cx_printn_call() {
+        // println(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "println",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from println");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn print_non_i64_arg_returns_unsupported_construct() {
+        // print with an I32 argument must return UnsupportedSemanticConstruct.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "print",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I32))],
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).expect_err("lowering should fail for non-I64 print arg");
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("I64")
+            ),
+            "expected UnsupportedSemanticConstruct mentioning I64, got: {:?}",
+            err
+        );
     }
 
     #[test]
