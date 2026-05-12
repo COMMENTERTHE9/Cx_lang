@@ -508,6 +508,60 @@ pub fn run_jit_subprocess(binary: &Path, fixture: &TestFixture) -> InterpOutcome
     }
 }
 
+/// Print a diagnostic for a single PARITY_FAIL and attempt to dump the IR.
+///
+/// Invokes the Cx binary with `--backend=validate` to obtain a textual IR dump
+/// without executing the program.  The dump is written to stderr so it appears
+/// inline with `cargo test --nocapture` output.
+#[cfg(feature = "jit")]
+fn emit_parity_fail_diagnostic(
+    binary: &Path,
+    fixture: &TestFixture,
+    outcome: &InterpOutcome,
+) {
+    eprintln!("PARITY_FAIL: {}", fixture.name);
+    eprintln!("  expected : {:?}", fixture.expectation);
+    eprintln!("  exit_code: {}", outcome.exit_code);
+    if !outcome.stdout.is_empty() {
+        eprintln!("  stdout   : {:?}", normalise(&outcome.stdout));
+    }
+    if !outcome.stderr.is_empty() {
+        let first = outcome.stderr.lines().next().unwrap_or("").trim();
+        if !first.is_empty() {
+            eprintln!("  stderr   : {}", first);
+        }
+    }
+
+    match Command::new(binary)
+        .arg("--backend=validate")
+        .arg(&fixture.path)
+        .env("NO_COLOR", "1")
+        .output()
+    {
+        Ok(out) => {
+            // validate prints IR to stdout on success, stderr on validation error
+            let ir_text = if !out.stdout.is_empty() {
+                String::from_utf8_lossy(&out.stdout).into_owned()
+            } else {
+                String::from_utf8_lossy(&out.stderr).into_owned()
+            };
+            if !ir_text.trim().is_empty() {
+                eprintln!("--- IR dump: {} ---", fixture.name);
+                eprint!("{}", ir_text);
+                if !ir_text.ends_with('\n') {
+                    eprintln!();
+                }
+                eprintln!("--- end IR dump ---");
+            } else {
+                eprintln!("  (IR dump unavailable)");
+            }
+        }
+        Err(e) => {
+            eprintln!("  (IR dump failed: {})", e);
+        }
+    }
+}
+
 /// Run all matrix fixtures through the Cranelift JIT subprocess and aggregate
 /// results by [`FeatureCategory`].
 ///
@@ -562,6 +616,7 @@ pub fn parity_by_feature(
             };
             if is_parity_fail {
                 entry.2 += 1; // PARITY_FAIL
+                emit_parity_fail_diagnostic(binary, fixture, &outcome);
             } else {
                 entry.0 += 1; // pass
             }
