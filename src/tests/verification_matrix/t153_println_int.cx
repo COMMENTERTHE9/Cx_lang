@@ -1,0 +1,3 @@
+// CX-137: println(i64) lowers to cx_printn — JIT parity PassWithOutput.
+x: t64 = 99
+println(x)
