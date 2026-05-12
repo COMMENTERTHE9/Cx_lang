@@ -693,7 +693,8 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 ## Key Changes — v4.4 (2026-05-12)
 
 - Phase 15 Landed: Cast JIT coverage (CX-91), F64 Rem libcall (CX-93), DotAccess IR lowering (CX-94), ArrayAlloca JIT emit (CX-121), CodeRabbit fixes on CX-121 (CX-129), IR dump on failure (CX-123), CompoundAssign Var-target JIT (CX-119/CX-122), ForLoop parity fixtures t149/t150 (CX-124/CX-125), TBool calling convention locked (CX-127), fixture rename t146→t151 (CX-128)
-- Phase 15 Still open: CX-91, CX-94 "on feature branch" references removed; "When block structured rejection in JIT path" removed (satisfied); CX-34 reference replaced with distributed HR ticket list
+- Phase 15 cleanup/reconciliation: CX-91 and CX-94 "on feature branch" references removed (both Done); "When block structured rejection in JIT path" removed (satisfied — see Phase 11); CX-34 reference replaced with distributed HR ticket list (CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131)
+- Phase 15 remaining open: parity fixture coverage across all supported 0.1 constructs (CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131 in Human Review); CI gate automation (CX-133 in Human Review)
 - Phase 12 Landed: When-block SKIP fixtures t143–t145 (CX-113), CompoundAssign fixture t151 (CX-119/CX-122), Array fixtures t146–t148 (CX-121), ForLoop fixtures t149–t150 (CX-124/CX-125), fixture rename (CX-126/CX-128); fixture total 120 → 155
 - Phase 12 Still open: CX-34 Cancelled (2026-05-10) — replaced with distributed HR ticket references (CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131); CI gate noted as CX-133 HR
 - Phase 11 Satisfied: when-block structured rejection complete — UnsupportedSemanticConstruct in lowering + SKIP fixtures (CX-113) + no-panic guarantee (CX-50)
