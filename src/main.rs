@@ -108,9 +108,15 @@ fn run() {
         .iter()
         .find(|a| !a.starts_with("--"))
         .cloned()
-        .unwrap_or_else(|| "src/tests/test.cx".to_string());
+        .unwrap_or_else(|| {
+            eprintln!("error: no input file specified\nusage: cx <file.cx> [--flags...]");
+            std::process::exit(1);
+        });
 
-    let input = fs::read_to_string(&path).expect("failed to read .cx file");
+    let input = fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("error: failed to read '{}': {}", path, e);
+        std::process::exit(1);
+    });
 
     // LEXER PHASE
     let lex_timer = flags.phase.then(|| PhaseTimer::start("LEXER"));
