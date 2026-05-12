@@ -117,6 +117,18 @@ Dynamic arrays (push/pop, runtime-sized) are post-0.1 stdlib work. When those la
 
 Layout computation implemented in `src/ir/types.rs` as `compute_array_layout`. Confidence tests cover i64, i8, bool, i128, and zero-length arrays.
 
+### Expression Evaluation Order — LOCKED (0.1)
+
+All Cx expressions are evaluated strictly left-to-right. Authoritative specification: `docs/backend/cx_eval_order.md`.
+
+ABI impact: the IR instruction stream produced by `lower_binary` and the call argument-lowering loop encodes evaluation order structurally. Instructions for the left operand are emitted before instructions for the right operand within the same basic block. All backends must preserve this instruction order — no reordering of side-effecting instructions across operand boundaries is permitted.
+
+Covered expression forms: binary arithmetic (`+`, `-`, `*`, `/`, `%`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), and function call argument lists. Short-circuit operators (`&&`, `||`) and `when` expressions are post-0.1.
+
+JIT conformance tests in `src/backend/cranelift/host_boundary.rs` (`jit_eval_order_*`) verify that `IrInst::Binary { lhs, rhs }` and `IrInst::Compare { lhs, rhs }` map `lhs` as the left operand and `rhs` as the right operand in emitted Cranelift instructions.
+
+---
+
 ### Enum Layout — LOCKED (tag-only)
 
 Tag-only enums at 0.1. No data-carrying variants.

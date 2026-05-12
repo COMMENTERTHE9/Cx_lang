@@ -2904,6 +2904,128 @@ mod jit_tests {
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 2);
     }
+
+    // ── Expression evaluation order (CX-138) ────────────────────────────────
+    //
+    // These tests verify that IrInst::Binary and IrInst::Compare map `lhs` as
+    // the left operand and `rhs` as the right operand in emitted Cranelift
+    // instructions.  Subtraction and greater-than comparison are non-commutative,
+    // so swapping operands yields a detectably wrong result without needing print
+    // side-effects.
+
+    #[test]
+    fn jit_eval_order_sub_lhs_before_rhs() {
+        // Binary{Sub, lhs=20, rhs=8} must yield 20-8=12, not 8-20=-12.
+        // A backend that swaps lhs/rhs would return -12.
+        let module = IrModule {
+            debug_name: "test_eval_order_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 20 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 8 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 12); // 20 - 8
+    }
+
+    #[test]
+    fn jit_eval_order_nested_sub_is_left_associative() {
+        // (10 - 3) - 2 = 5.  A backend that inverts associativity would compute
+        // 10 - (3 - 2) = 9.  The two Binary instructions encode left-associativity
+        // by making lhs of the outer op the result of the inner op.
+        let module = IrModule {
+            debug_name: "test_eval_order_nested_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 3 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 2 },
+                        IrInst::Binary {
+                            dst: ValueId(3),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Binary {
+                            dst: ValueId(4),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(3),
+                            rhs: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(4)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 5); // (10-3)-2
+    }
+
+    #[test]
+    fn jit_eval_order_compare_gt_lhs_is_left_operand() {
+        // Compare{Gt, lhs=10, rhs=3} must yield 1 (10 > 3 = true).
+        // A backend that swaps lhs/rhs would compute 3 > 10 = false → 0.
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_eval_order_compare_gt".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 3 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Gt,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 10 > 3 = true
+    }
 }
 
 // ── JIT determinism tests (require the `jit` feature) ────────────────────────
