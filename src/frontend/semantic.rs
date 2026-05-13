@@ -703,6 +703,25 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 result,
                 pos,
             } => {
+                // Resolve the array variable to a binding and element type.
+                // TypedAssign only stores the AST type in `declared`; fall back
+                // to it when `inferred` is None.
+                let (arr_binding, arr_elem_ty) = {
+                    let info = self.lookup_var(arr)
+                        .ok_or_else(|| sem_err!(*pos, "undefined variable: {}", arr))?;
+                    let binding = info.binding;
+                    let elem_ty = match info.inferred.as_ref() {
+                        Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
+                        Some(t) => return Err(sem_err!(*pos, "'{}' is not an array (got {:?})", arr, t)),
+                        None => match info.declared.as_ref() {
+                            Some(Type::Array(_, elem_type)) => {
+                                semantic_type_from_decl(*elem_type.clone(), &self.current_type_params)
+                            }
+                            _ => return Err(sem_err!(*pos, "array '{}' has unknown type", arr)),
+                        },
+                    };
+                    (binding, elem_ty)
+                };
                 let sem_start = self.analyze_expr(range_start)?;
                 let sem_end = self.analyze_expr(range_end)?;
                 let sem_body = body
@@ -712,6 +731,22 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let sem_chains = then_chains
                     .iter()
                     .map(|chain| {
+                        let (chain_arr_binding, chain_arr_elem_ty) = {
+                            let info = self.lookup_var(&chain.arr)
+                                .ok_or_else(|| sem_err!(*pos, "undefined variable: {}", chain.arr))?;
+                            let binding = info.binding;
+                            let elem_ty = match info.inferred.as_ref() {
+                                Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
+                                Some(t) => return Err(sem_err!(*pos, "'{}' is not an array (got {:?})", chain.arr, t)),
+                                None => match info.declared.as_ref() {
+                                    Some(Type::Array(_, elem_type)) => {
+                                        semantic_type_from_decl(*elem_type.clone(), &self.current_type_params)
+                                    }
+                                    _ => return Err(sem_err!(*pos, "array '{}' has unknown type", chain.arr)),
+                                },
+                            };
+                            (binding, elem_ty)
+                        };
                         let cs = self.analyze_expr(&chain.range_start)?;
                         let ce = self.analyze_expr(&chain.range_end)?;
                         let cb = chain
@@ -721,6 +756,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             .collect::<Result<Vec<_>, _>>()?;
                         Ok(SemanticWhileInChain {
                             arr: chain.arr.clone(),
+                            arr_binding: chain_arr_binding,
+                            arr_elem_ty: chain_arr_elem_ty,
                             start_slot: chain.start_slot,
                             range_start: cs,
                             range_end: ce,
@@ -735,6 +772,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 };
                 Ok(SemanticStmt::WhileIn {
                     arr: arr.clone(),
+                    arr_binding,
+                    arr_elem_ty,
                     start_slot: *start_slot,
                     range_start: sem_start,
                     range_end: sem_end,
