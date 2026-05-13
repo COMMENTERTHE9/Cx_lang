@@ -19,7 +19,7 @@ set:
 | Category       | Description                                  | Key fixtures |
 |----------------|----------------------------------------------|--------------|
 | Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116–t121 |
-| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
+| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124, t152, t153 |
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
 | ForLoop        | For-in loops                                 | t48, t104 (output-verified); t149, t150 (exit-code-verified, CX-124) |
@@ -102,21 +102,22 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on branch `stokowski/CX-163` (submain as of CX-163 merge window, 2026-05-13).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-163 const-declaration and block-scope-shadow
+exit-code fixtures (t152_const_decl_exit, t153_block_scope_shadow_exit).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
 Arithmetic                8      9            0
-VariableDecl              5      3            0
+VariableDecl              5      5            0
 IfElse                    4      2            0
 WhileLoop                 5      3            0
 ForLoop                   4      0            0
@@ -132,7 +133,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    16     48            0
 ------------------------------------------------
-Total: 155 fixtures, 0 PARITY_FAILs
+Total: 157 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -195,6 +196,15 @@ element read/write, and array passing through function calls. The 3 PASS reflect
 fixtures passing via the CX-121 ArrayAlloca JIT emit (`IrInst::ArrayAlloca` lowered to
 Cranelift via `compute_array_layout`). The 2 SKIP are t33 and t112 (print-based originals
 that remain SKIP).
+
+**VariableDecl const and block-scope parity (CX-163):** t152_const_decl_exit exercises
+three `const` declarations with `t64` type verified by `assert_eq`. t153_block_scope_shadow_exit
+mirrors t15_block_scope_shadow using `assert_eq` instead of `print`: outer variable x=10,
+shadowed to x=99 in an inner block, then outer x=10 restored. Both are SKIP in JIT
+(`ConstDecl` and `Block` lowering not yet implemented; exit 127). The 5 PASS remain the
+3 expected-fail fixtures (t57, t101, t102) plus 2 exit-code-verified fixtures (t122, t123)
+that already PASS. Once `ConstDecl` and `Block` lowering lands, t152 and t153 will
+transition from SKIP to PASS without changes.
 
 ---
 

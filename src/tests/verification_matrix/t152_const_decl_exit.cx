@@ -1,0 +1,8 @@
+// CX-163: exit-code-based JIT parity — const declarations.
+// Verifies that const-declared values are stored and accessible correctly.
+const LIMIT: t64 = 100
+assert_eq(LIMIT, 100)
+const OFFSET: t64 = 1
+assert_eq(OFFSET, 1)
+const MAX: t64 = 999
+assert_eq(MAX, 999)

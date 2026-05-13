@@ -1,0 +1,9 @@
+// CX-163: exit-code-based JIT parity — block-scope variable shadowing.
+// Outer x is shadowed inside the inner block; outer value is restored on exit.
+x: t64 = 10
+assert_eq(x, 10)
+{
+    x: t64 = 99
+    assert_eq(x, 99)
+}
+assert_eq(x, 10)
