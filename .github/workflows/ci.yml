@@ -137,10 +137,29 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submain') &&
-      !startsWith(github.event.head_commit.message, 'Merge')
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submain')
     steps:
+      - name: Check parent count
+        id: parents
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: commit } = await github.rest.repos.getCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+            });
+            const parentCount = commit.parents.length;
+            core.info(`Commit ${context.sha} has ${parentCount} parent(s)`);
+            if (parentCount > 1) {
+              core.info('Merge commit detected — skipping branch-guard.');
+              core.setOutput('is_merge', 'true');
+            } else {
+              core.setOutput('is_merge', 'false');
+            }
+
       - name: Reject direct push
+        if: steps.parents.outputs.is_merge == 'false'
         run: |
           echo "Direct pushes to main or submain are not allowed."
           echo "Open a PR from a feature branch targeting submain."
