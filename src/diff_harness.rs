@@ -142,6 +142,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t119_arith_mul_exit"
         | "t120_arith_div_exit"
         | "t121_arith_mod_exit"
+        | "t152_arith_t128_exit"
             => FeatureCategory::Arithmetic,
 
         // ── VariableDecl ──────────────────────────────────────────────────────

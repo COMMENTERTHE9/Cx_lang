@@ -18,7 +18,7 @@ set:
 
 | Category       | Description                                  | Key fixtures |
 |----------------|----------------------------------------------|--------------|
-| Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116–t121 |
+| Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116–t121, t152 (exit-code-verified t128, CX-162) |
 | VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
@@ -102,20 +102,20 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on branch `stokowski/CX-162` (submain as of CX-162 merge window, 2026-05-13).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-162 t128 arithmetic exit-code fixture (t152_arith_t128_exit).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
-Arithmetic                8      9            0
+Arithmetic                8     10            0
 VariableDecl              5      3            0
 IfElse                    4      2            0
 WhileLoop                 5      3            0
@@ -132,7 +132,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    16     48            0
 ------------------------------------------------
-Total: 155 fixtures, 0 PARITY_FAILs
+Total: 156 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -195,6 +195,12 @@ element read/write, and array passing through function calls. The 3 PASS reflect
 fixtures passing via the CX-121 ArrayAlloca JIT emit (`IrInst::ArrayAlloca` lowered to
 Cranelift via `compute_array_layout`). The 2 SKIP are t33 and t112 (print-based originals
 that remain SKIP).
+
+**Arithmetic t128 parity coverage (CX-162):** t152_arith_t128_exit is an exit-code-verified
+fixture exercising t128 (128-bit signed integer) add, sub, mul, and zero-numerator div/mod.
+The fixture is SKIP in JIT (t128 multi-word codegen not yet implemented; the 128-bit
+Cranelift type path is not yet lowered). Once t128 JIT lowering lands, this fixture will
+transition from SKIP to PASS without changes.
 
 ---
 
