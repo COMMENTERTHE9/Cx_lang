@@ -5999,6 +5999,102 @@ mod tests {
         );
     }
 
+    // ── CX-154: T64 variable-reference argument support ──────────────────────
+
+    #[test]
+    fn print_t64_var_ref_lowers_to_cx_printn_call() {
+        // print(x) where x: t64 = 77 — VarRef argument, not a literal.
+        // Verifies the TypedAssign → SsaBind + VarRef → cx_printn dispatch chain.
+        let binding = BindingId(0);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(binding, "x", SemanticType::I64, int_expr(77, SemanticType::I64)),
+                builtin_stmt("print", vec![SemanticCallArg::Expr(binding_ref(binding, "x", SemanticType::I64))]),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from print(t64 var)");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn println_t64_var_ref_lowers_to_cx_printn_call() {
+        // println(x) where x: t64 = 77 — same VarRef path exercised via println.
+        let binding = BindingId(0);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(binding, "x", SemanticType::I64, int_expr(77, SemanticType::I64)),
+                builtin_stmt("println", vec![SemanticCallArg::Expr(binding_ref(binding, "x", SemanticType::I64))]),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from println(t64 var)");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn printn_t64_var_ref_lowers_to_cx_printn_call() {
+        // printn(x) where x: t64 = 77 — same VarRef path exercised via printn.
+        let binding = BindingId(0);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(binding, "x", SemanticType::I64, int_expr(77, SemanticType::I64)),
+                builtin_stmt("printn", vec![SemanticCallArg::Expr(binding_ref(binding, "x", SemanticType::I64))]),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from printn(t64 var)");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
     // assert and assert_eq are now lowerable (Phase 9 sub-packet 3) so they no
     // longer trigger the is_cx_builtin gate.  The tests below verify that they
     // lower correctly to multi-block CFGs with a Trap terminator.

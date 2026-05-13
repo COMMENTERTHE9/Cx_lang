@@ -153,6 +153,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t122_vardecl_int_exit"
         | "t123_vardecl_reassign_exit"
         | "t124_vardecl_arith_exit"
+        | "t152_print_t64_variable"
             => FeatureCategory::VariableDecl,
 
         // ── IfElse ────────────────────────────────────────────────────────────

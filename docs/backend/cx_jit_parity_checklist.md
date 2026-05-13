@@ -19,7 +19,7 @@ set:
 | Category       | Description                                  | Key fixtures |
 |----------------|----------------------------------------------|--------------|
 | Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116–t121 |
-| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
+| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124, t152_print_t64_variable |
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
 | ForLoop        | For-in loops                                 | t48, t104 (output-verified); t149, t150 (exit-code-verified, CX-124) |
@@ -102,21 +102,22 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on branch `stokowski/CX-154` (submain as of CX-154 merge window, 2026-05-13).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-154 T64 variable-reference argument support for
+print/println/printn (t152_print_t64_variable).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
 Arithmetic                8      9            0
-VariableDecl              5      3            0
+VariableDecl              6      3            0
 IfElse                    4      2            0
 WhileLoop                 5      3            0
 ForLoop                   4      0            0
@@ -132,7 +133,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    16     48            0
 ------------------------------------------------
-Total: 155 fixtures, 0 PARITY_FAILs
+Total: 156 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -156,6 +157,12 @@ handles, and other Phase 14+ constructs). As subsequent phases land, SKIP
 counts will continue to decrease and PASS counts will increase.
 
 **PARITY_FAIL = 0** across all 16 categories. The gate holds.
+
+**VariableDecl T64 print parity (CX-154):** t152_print_t64_variable exercises
+print/println/printn with T64 variable references (TypedAssign + VarRef dispatch
+chain), confirming that T64-typed variables lower correctly through cx_printn.
+The 6 PASS reflect the 5 previous VariableDecl fixtures plus t152; the 3 SKIP are
+the remaining output-verified originals whose failures are unrelated to T64 support.
 
 **IfElse parity coverage (CX-102/CX-111/CX-136):** t129 mirrors t44 (basic if/else),
 t130 mirrors t45 (if/else in function), t131 mirrors t46 (negated conditions,

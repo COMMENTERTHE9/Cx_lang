@@ -4658,6 +4658,49 @@ mod determinism_tests {
         assert!(result.unwrap().exit_code.is_success());
     }
 
+    // ── CX-154: T64 variable-reference argument to cx_printn ─────────────────
+
+    #[test]
+    fn jit_cx_printn_with_t64_ssabind_variable() {
+        // cx_printn receives a T64 value stored via SsaBind, simulating x: t64 = 77; print(x).
+        // Exercises the SsaBind alias + cx_printn call chain in the JIT backend.
+        //
+        // main() -> i32 {
+        //   v0 = 77i64
+        //   v1 = SsaBind(I64, v0)   // x: t64 = 77
+        //   cx_printn(v1)           // print(x)
+        //   v2 = 0i32
+        //   return v2
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn_t64_var".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 77 },
+                        IrInst::SsaBind { dst: ValueId(1), ty: IrType::I64, src: ValueId(0) },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(1)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
     // ── CX-91: F64 binary arithmetic ─────────────────────────────────────────
 
     #[test]
