@@ -275,6 +275,18 @@ extern "C" fn cx_printn(n: i64) {
     let _ = writeln!(stdout, "{n}");
 }
 
+/// Runtime intrinsic: print a boolean value to stdout followed by a newline.
+///
+/// Exported as `cx_printb` in the JIT symbol table. JIT-compiled Cx code calls
+/// this via `IrInst::Call { callee: "cx_printb", args: [i8_value] }`.
+/// `b == 0` prints `"false"`, `b == 1` prints `"true"`.
+extern "C" fn cx_printb(b: i8) {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let s = if b == 0 { "false" } else { "true" };
+    let _ = writeln!(stdout, "{s}");
+}
+
 /// Backend-private symbol name for the F64 remainder host helper.
 ///
 /// Using a mangled name (double-underscore prefix) keeps it out of the user-visible namespace.
@@ -340,6 +352,7 @@ impl HostBoundary {
         let mut jit_builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         jit_builder.symbol("cx_printn", cx_printn as *const u8);
+        jit_builder.symbol("cx_printb", cx_printb as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         let mut module = JITModule::new(jit_builder);
 
@@ -360,6 +373,20 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert("cx_printn".to_string(), id);
+        }
+
+        // Pre-declare cx_printb(i8) -> void for Bool print lowering (CX-155).
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I8));
+            let id = module
+                .declare_function("cx_printb", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_printb".to_string(), id);
         }
 
         // Pre-declare __cx_fmod(f64, f64) -> f64 for F64 Rem lowering.

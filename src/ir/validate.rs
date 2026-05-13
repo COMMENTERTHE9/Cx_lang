@@ -83,6 +83,15 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
             has_return: false,
         },
     );
+    // cx_printb(b: Bool) -> void — CX-155 print-boolean intrinsic ("false"/"true").
+    sigs.insert(
+        "cx_printb".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::Bool],
+            has_return: false,
+        },
+    );
     sigs
 }
 
