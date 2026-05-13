@@ -31,7 +31,7 @@ set:
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
-| BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
+| BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 (output-verified); t152–t153 (exit-code-verified, CX-161) |
 | LogicalOps     | Logical AND/OR short-circuit operators       | t141, t142 |
 | Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113) |
 
@@ -109,8 +109,9 @@ CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-161 BuiltinAssert exit-code fixtures
+(t152_assert_bool_exit, t153_assert_eq_int_exit).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -128,11 +129,11 @@ CompoundAssign            2      2            0
 Unary                     0      1            0
 Cast                      0      2            0
 FloatOps                  0      5            0
-BuiltinAssert             2      2            0
+BuiltinAssert             2      4            0
 LogicalOps                2      0            0
 Other                    16     48            0
 ------------------------------------------------
-Total: 155 fixtures, 0 PARITY_FAILs
+Total: 157 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -195,6 +196,15 @@ element read/write, and array passing through function calls. The 3 PASS reflect
 fixtures passing via the CX-121 ArrayAlloca JIT emit (`IrInst::ArrayAlloca` lowered to
 Cranelift via `compute_array_layout`). The 2 SKIP are t33 and t112 (print-based originals
 that remain SKIP).
+
+**BuiltinAssert parity coverage (CX-161):** t152_assert_bool_exit covers `assert` with a
+boolean literal, a numeric-truthy literal, and a computed numeric variable. t153_assert_eq_int_exit
+covers `assert_eq` with integer literals, arithmetic expressions, and variables. Both are PassAny
+exit-code-verified fixtures; they carry no `.expected_output` companion. The 2 PASS are t79 and
+t80 (expected-fail, semantic-rejection fixtures). The 4 SKIP are t77, t78 (print-based output-verified),
+and t152, t153 (exit-code-verified): all four produce non-empty stderr from Cranelift because
+`IrTerminator::Trap` (the assert-failure path) is not yet lowered. Once Trap lowering lands,
+t77, t78, t152, and t153 will all transition from SKIP to PASS without fixture changes.
 
 ---
 

@@ -1,0 +1,16 @@
+// CX-161: exit-code-based JIT parity — assert_eq with integer values.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// Literal equality.
+assert_eq(1, 1)
+
+// Arithmetic equality: 2 + 3 must equal 5.
+assert_eq(2 + 3, 5)
+
+// Variable equality: same value in two variables.
+x: t64 = 10
+y: t64 = 10
+assert_eq(x, y)
+
+// Computed equality: sum of two variables.
+assert_eq(x + y, 20)

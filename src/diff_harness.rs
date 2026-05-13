@@ -253,6 +253,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t78_assert_eq_strings"
         | "t79_assert_false_reject"
         | "t80_assert_eq_mismatch_reject"
+        | "t152_assert_bool_exit"
+        | "t153_assert_eq_int_exit"
             => FeatureCategory::BuiltinAssert,
 
         // ── LogicalOps ────────────────────────────────────────────────────────

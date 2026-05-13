@@ -1,0 +1,14 @@
+// CX-161: exit-code-based JIT parity — assert with boolean and numeric conditions.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// Boolean literal: assert(true) must hold.
+assert(true)
+
+// Numeric truthy: assert(1) must hold (non-zero integer is truthy).
+assert(1)
+
+// Numeric computed: variable accumulation must remain truthy.
+a: t64 = 3
+b: t64 = 4
+sum: t64 = a + b
+assert(sum)
