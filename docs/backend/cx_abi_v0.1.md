@@ -73,10 +73,15 @@ Three-state value: true (1), false (0), unknown (2).
 - TBool function parameters: LOCKED. Follows C ABI treating TBool as I8. Passed in the same integer registers as Bool (RDI/RSI/RDX/RCX/R8/R9 on Linux x64; RCX/RDX/R8/R9 on Windows x64). Values 0/1/2 are preserved across the call boundary without padding or encoding. Zero-extended when widened to a larger integer type (Cast TBool → I32 uses `uextend`, not `sextend`).
 - JIT validation: all three TBool wire values (0 = false, 1 = true, 2 = unknown) round-trip correctly through JIT-compiled function calls (confirmed by CX-127 tests in `host_boundary.rs`).
 
-**Post-0.1 deferred items:**
-- Unknown propagation strategy — does unknown checking happen in IR instructions or as runtime intrinsic calls? This decision gates when-block lowering and unknown-infected arithmetic.
-- Arithmetic on unknown-infected values: propagation cost and mechanism. Blocked on unknown propagation strategy.
-- When-block lowering: TBool three-way branching requires two nested Branch instructions since IR Branch is two-way only. Design work needed before implementation.
+### Unknown Propagation Strategy — POST-0.1
+
+Deferred to post-0.1. The mechanism for propagating `unknown` through expressions is not specified for the compiled backend. The interpreter handles tbool via in-memory value representation; the compiled backend requires an explicit policy before unknown-infected operations can be lowered.
+
+Open question: does unknown checking happen in IR instructions (each arithmetic/comparison op checks its operands for `unknown`) or via runtime intrinsic calls (a helper is invoked when an operand may be `unknown`)?
+
+This decision gates two further items, also deferred to post-0.1:
+- **Arithmetic on unknown-infected values** — propagation cost and mechanism cannot be finalized until propagation strategy is chosen.
+- **When-block lowering** — TBool three-way branching requires two nested Branch instructions since IR Branch is two-way only. Design work is blocked on the propagation strategy.
 
 ### String Layout — OPEN
 - `str` at C boundary is `(*const u8, u32)` — pointer + length, no null termination. LOCKED per frontend dev.
