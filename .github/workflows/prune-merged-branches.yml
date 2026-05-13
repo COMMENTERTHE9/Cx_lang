@@ -1,0 +1,98 @@
+name: Prune Stale Branches
+
+on:
+  schedule:
+    - cron: '0 2 * * 0'  # Every Sunday at 02:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — list branches that would be deleted without deleting them'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    name: Delete Stale Branches
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DRY_RUN: ${{ inputs.dry_run == 'true' && 'true' || 'false' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prune merged and abandoned branches
+        run: |
+          set -euo pipefail
+
+          # Branches that must never be touched
+          declare -A PROTECTED=([main]=1 [submain]=1 [site]=1)
+
+          # Branches with open PRs — never delete
+          mapfile -t OPEN_LIST < <(
+            gh pr list --state open --limit 500 --json headRefName --jq '.[].headRefName'
+          )
+          declare -A OPEN_SET
+          for b in "${OPEN_LIST[@]}"; do OPEN_SET["$b"]=1; done
+
+          # Branches with closed or merged PRs — eligible for deletion
+          mapfile -t INACTIVE_LIST < <(
+            gh pr list --state closed --limit 1000 --json headRefName --jq '.[].headRefName'
+          )
+          declare -A INACTIVE_SET
+          for b in "${INACTIVE_LIST[@]}"; do INACTIVE_SET["$b"]=1; done
+
+          DELETED=0
+          SKIPPED=0
+          CUTOFF_TS=$(date -d '30 days ago' +%s)
+
+          while IFS= read -r branch; do
+            [[ "$branch" == HEAD* ]] && continue
+            [[ -v PROTECTED["$branch"] ]] && continue
+            # CodeRabbit manages its own branches
+            [[ "$branch" == coderabbitai/* ]] && continue
+            # Never delete branches backing an open PR
+            [[ -v OPEN_SET["$branch"] ]] && continue
+
+            REASON=""
+
+            if [[ -v INACTIVE_SET["$branch"] ]]; then
+              REASON="closed or merged PR"
+            elif [[ "$branch" == daily-log-* ]]; then
+              DATE_PART=$(echo "$branch" | grep -oP '\d{4}-\d{2}-\d{2}' || true)
+              if [[ -n "$DATE_PART" ]]; then
+                BRANCH_TS=$(date -d "$DATE_PART" +%s 2>/dev/null || echo 0)
+                if (( BRANCH_TS < CUTOFF_TS )); then
+                  REASON="daily-log older than 30 days"
+                fi
+              fi
+            fi
+
+            [[ -z "$REASON" ]] && continue
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "DRY RUN — would delete: $branch  ($REASON)"
+              SKIPPED=$((SKIPPED + 1))
+            else
+              echo "Deleting: $branch  ($REASON)"
+              if gh api --method DELETE \
+                   "repos/${{ github.repository }}/git/refs/heads/${branch}" 2>&1; then
+                DELETED=$((DELETED + 1))
+              else
+                echo "  Warning: could not delete $branch (already gone?)"
+              fi
+            fi
+
+          done < <(git branch -r | grep '^  origin/' | sed 's|^  origin/||')
+
+          echo ""
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "Dry run complete — $SKIPPED branch(es) would be deleted."
+          else
+            echo "Done — $DELETED branch(es) deleted."
+          fi
