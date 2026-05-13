@@ -4658,6 +4658,143 @@ mod determinism_tests {
         assert!(result.unwrap().exit_code.is_success());
     }
 
+    // ── CX-153: narrow integer widening for cx_printn (t8/t16/t32 → I64) ────
+
+    #[test]
+    fn jit_cx_printn_i32_widens_to_i64() {
+        // Verifies that an I32 value widened to I64 via Cast can be passed to cx_printn.
+        //
+        // main() -> i32 {
+        //   v0 = 42i32
+        //   v1 = Cast(I32→I64, v0)
+        //   cx_printn(v1)
+        //   v2 = 0i32
+        //   return v2
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn_i32_widen".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I32,
+                            to: IrType::I64,
+                            value: ValueId(0),
+                        },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(1)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_cx_printn_i16_widens_to_i64() {
+        // Verifies that an I16 value widened to I64 via Cast can be passed to cx_printn.
+        //
+        // main() -> i32 {
+        //   v0 = 100i16
+        //   v1 = Cast(I16→I64, v0)
+        //   cx_printn(v1)
+        //   v2 = 0i32
+        //   return v2
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn_i16_widen".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I16, value: 100 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I16,
+                            to: IrType::I64,
+                            value: ValueId(0),
+                        },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(1)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_cx_printn_i8_widens_to_i64() {
+        // Verifies that an I8 value widened to I64 via Cast can be passed to cx_printn.
+        //
+        // main() -> i32 {
+        //   v0 = 7i8
+        //   v1 = Cast(I8→I64, v0)
+        //   cx_printn(v1)
+        //   v2 = 0i32
+        //   return v2
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn_i8_widen".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: 7 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I8,
+                            to: IrType::I64,
+                            value: ValueId(0),
+                        },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(1)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
     // ── CX-91: F64 binary arithmetic ─────────────────────────────────────────
 
     #[test]

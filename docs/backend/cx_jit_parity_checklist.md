@@ -102,20 +102,21 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on branch `stokowski/CX-153` (submain as of CX-153 merge window, 2026-05-13).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-153 narrow integer (t8/t16/t32) argument widening
+for print/println/printn.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
-Arithmetic                8      9            0
+Arithmetic               11      6            0
 VariableDecl              5      3            0
 IfElse                    4      2            0
 WhileLoop                 5      3            0
@@ -125,12 +126,12 @@ DirectCall                7      4            0
 Struct                    6      5            0
 Array                     3      2            0
 CompoundAssign            2      2            0
-Unary                     0      1            0
+Unary                     1      0            0
 Cast                      0      2            0
 FloatOps                  0      5            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
-Other                    16     48            0
+Other                    17     47            0
 ------------------------------------------------
 Total: 155 fixtures, 0 PARITY_FAILs
 ```
@@ -145,7 +146,8 @@ Total: 155 fixtures, 0 PARITY_FAILs
   their correctness is verified by exit code 0.
 - **Output-verified fixtures** whose `print` calls were previously SKIP are
   now PASS following CX-136 print/println dispatch to `cx_printn` for i64
-  arguments.
+  arguments, and CX-153 narrow integer widening (t8/t16/t32 → i64) for
+  print/println/printn.
 - A small number of **pass-any fixtures** where the JIT happened to compile
   and execute successfully (no stderr error, exit 0) also appear as PASS.
 
