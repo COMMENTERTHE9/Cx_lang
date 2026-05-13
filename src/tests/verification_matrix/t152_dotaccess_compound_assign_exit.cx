@@ -1,0 +1,23 @@
+// CX-159: exit-code-based JIT parity — compound assign on a struct field.
+// Exercises all five compound-assign operators (+=, -=, *=, /=, %=) on a
+// t64 struct field. Correctness verified by exit code only (0 = all asserts held).
+struct Counter { score: t64 }
+c: Counter = Counter { score: 10 }
+c.score += 5
+assert_eq(c.score, 15)
+
+c.score = 20
+c.score -= 8
+assert_eq(c.score, 12)
+
+c.score = 6
+c.score *= 7
+assert_eq(c.score, 42)
+
+c.score = 100
+c.score /= 4
+assert_eq(c.score, 25)
+
+c.score = 17
+c.score %= 5
+assert_eq(c.score, 2)

@@ -955,6 +955,33 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             })
             .boxed();
 
+        let index_compound_assign = ident
+            .clone()
+            .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
+            .then_ignore(just(Token::PunctColon))
+            .then_ignore(just(Token::PunctBracketOpen))
+            .then(expr.clone())
+            .then_ignore(just(Token::PunctBracketClose))
+            .then(choice((
+                just(Token::OpAdd).to(Op::Plus),
+                just(Token::OpSub).to(Op::Minus),
+                just(Token::OpMul).to(Op::Mul),
+                just(Token::OpDiv).to(Op::Div),
+                just(Token::OpMod).to(Op::Mod),
+            )))
+            .then_ignore(just(Token::OpAssign))
+            .then(expr.clone())
+            .then_ignore(semi.clone().or_not())
+            .map(|((((name, pos), idx_expr), op), operand)| {
+                Stmt::CompoundAssign {
+                    target: AssignTarget::Index(name, idx_expr),
+                    op,
+                    operand,
+                    pos,
+                }
+            })
+            .boxed();
+
         // Parse a single outer macro #[name] or #[name(args)]
         let single_outer_macro = just(Token::MacroOuterOpen)
             .ignore_then(select! { Token::Identifier(name) => name })
@@ -1011,6 +1038,7 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                 ret.clone().map(|s| (s, true)),
                 typed_assign.clone().map(|s| (s, true)),
                 compound_assign.clone().map(|s| (s, true)),
+                index_compound_assign.clone().map(|s| (s, true)),
                 assign.clone().map(|s| (s, true)),
                 if_stmt.clone().map(|s| (s, true)),
                 while_in_stmt.clone().map(|s| (s, true)),
@@ -1200,6 +1228,7 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             ret,
             typed_assign,
             compound_assign,
+            index_compound_assign,
             index_assign,
             assign,
             block,

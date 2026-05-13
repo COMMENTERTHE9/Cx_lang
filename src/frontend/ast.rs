@@ -120,6 +120,7 @@ pub struct WhenArm {
 pub enum AssignTarget {
     Var(String),
     Field(String, String), // container_name, field_name
+    Index(String, Expr),   // array_name, index_expr
 }
 
 #[derive(Debug, Clone)]

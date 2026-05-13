@@ -838,6 +838,20 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         };
                         SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty, struct_name }
                     }
+                    AssignTarget::Index(name, index_expr) => {
+                        let sem_array = self.analyze_expr(&Expr::Ident(name.clone(), *pos))?;
+                        let elem_ty = match &sem_array.ty {
+                            SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
+                            SemanticType::Unknown => SemanticType::Unknown,
+                            _ => return Err(sem_err!(*pos, "compound assign index target must be an array")),
+                        };
+                        let sem_index = self.analyze_expr(index_expr)?;
+                        SemanticLValue::Index {
+                            target: Box::new(sem_array),
+                            index: Box::new(sem_index),
+                            elem_ty,
+                        }
+                    }
                 };
                 Ok(SemanticStmt::CompoundAssign {
                     target: sem_target,

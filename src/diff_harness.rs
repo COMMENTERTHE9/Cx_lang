@@ -229,6 +229,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t41_compound_assign_dot"
         | "t128_struct_compound_assign_exit"
         | "t151_var_compound_assign_exit"
+        | "t152_dotaccess_compound_assign_exit"
+        | "t153_index_compound_assign_exit"
             => FeatureCategory::CompoundAssign,
 
         // ── Unary ─────────────────────────────────────────────────────────────
