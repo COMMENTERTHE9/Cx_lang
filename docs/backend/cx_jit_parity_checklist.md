@@ -102,15 +102,9 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
-Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
-CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
-exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
-(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
-CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+Run on branch `stokowski/CX-160` (submain as of CX-160 merge window, 2026-05-13).
+Includes all prior work through CX-142 plus CX-160 `while in` IR + JIT lowering
+(lower_while_in_chain, then-chain support) and unary `*` array dereference lowering.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -118,7 +112,7 @@ Feature                PASS   SKIP  PARITY_FAIL
 Arithmetic                8      9            0
 VariableDecl              5      3            0
 IfElse                    4      2            0
-WhileLoop                 5      3            0
+WhileLoop                 7      1            0
 ForLoop                   4      0            0
 InfiniteLoop              2      1            0
 DirectCall                7      4            0
@@ -163,11 +157,13 @@ including bool-variable negation added in CX-111). The 4 PASS reflect the
 3 exit-code-verified fixtures plus one print-based original now passing via
 CX-136 print dispatch; the 2 SKIP are the remaining print-based originals.
 
-**WhileLoop parity coverage (CX-102/CX-136):** t132 covers basic while loops and
-top-level while at file scope; t133 covers while in a function. The 5 PASS
-reflect the 2 exit-code-verified fixtures plus 3 print-based originals now
-passing via CX-136 print dispatch; the 3 SKIP are while-in/while-in-then
-constructs not yet JIT-lowerable.
+**WhileLoop parity coverage (CX-102/CX-136/CX-160):** t132 covers basic while loops
+and top-level while at file scope; t133 covers while in a function. CX-160 added
+IR + JIT lowering for `while in` iterator loops (lower_while_in_chain) and
+unary `*` array dereference, moving t34 (top-level while_in) and t35 (while_in
+with then-chains) from SKIP to PASS. The 7 PASS reflect the 2 exit-code-verified
+fixtures plus 5 print-based originals; 1 SKIP remains (t105: compound-assign
+inside while in a function, separate concern).
 
 **WhenBlock parity coverage (CX-113):** t143 mirrors t19 (numeric pattern), t144
 mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
