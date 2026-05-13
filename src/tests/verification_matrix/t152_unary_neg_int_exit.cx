@@ -1,0 +1,12 @@
+// CX-156: exit-code-based JIT parity — unary integer negation.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+a: t64 = 7
+neg_a: t64 = -a
+assert_eq(neg_a + a, 0)
+
+b: t64 = 0
+assert_eq(-b, 0)
+
+c: t64 = 10
+double_neg: t64 = -(-c)
+assert_eq(double_neg, c)

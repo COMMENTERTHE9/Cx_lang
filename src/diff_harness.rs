@@ -233,6 +233,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
 
         // ── Unary ─────────────────────────────────────────────────────────────
         "t96_overflow_t8_unary_neg"
+        | "t152_unary_neg_int_exit"
+        | "t153_unary_not_bool_exit"
             => FeatureCategory::Unary,
 
         // ── Cast ─────────────────────────────────────────────────────────────

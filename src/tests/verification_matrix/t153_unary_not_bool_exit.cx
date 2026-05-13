@@ -1,0 +1,17 @@
+// CX-156: exit-code-based JIT parity — unary boolean NOT.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+p: bool = false
+q: bool = true
+result: t64 = 0
+
+if !p { result = 1 } else { result = 0 }
+assert_eq(result, 1)
+
+result = 0
+if !q { result = 0 } else { result = 2 }
+assert_eq(result, 2)
+
+x: t64 = 10
+result = 0
+if !(x == 5) { result = 3 } else { result = 0 }
+assert_eq(result, 3)
