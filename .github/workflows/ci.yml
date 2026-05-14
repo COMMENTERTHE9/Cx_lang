@@ -133,12 +133,41 @@ jobs:
           fi
 
   branch-guard:
-    name: Block Direct Push to Main
+    name: Block Direct Push to Protected Branches
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && !startsWith(github.event.head_commit.message, 'Merge pull request')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/submain')
+    permissions:
+      pull-requests: read
     steps:
+      - name: Verify push came from merged PR
+        id: verify_pr_merge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const protectedRef = context.ref.replace('refs/heads/', '');
+            const sha = context.sha;
+
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: sha,
+            });
+
+            const allowed = prs.some((pr) => {
+              return pr.merged_at &&
+                pr.merge_commit_sha === sha &&
+                pr.base &&
+                pr.base.ref === protectedRef;
+            });
+
+            core.info(`Protected ref: ${protectedRef}`);
+            core.info(`Associated PR count: ${prs.length}`);
+            core.info(`Allowed merged PR push: ${allowed}`);
+            core.setOutput('allowed', String(allowed));
+
       - name: Reject direct push
+        if: steps.verify_pr_merge.outputs.allowed != 'true'
         run: |
-          echo "Direct pushes to main are not allowed."
-          echo "Open a PR from submain or a feature branch."
+          echo "Direct pushes to main or submain are not allowed."
+          echo "Merge through a GitHub pull request targeting the protected branch."
           exit 1
