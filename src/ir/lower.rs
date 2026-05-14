@@ -247,7 +247,7 @@ struct LoweringCtx {
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
     target: TargetConfig,
-    next_synthetic_binding: u32,
+    next_synthetic_binding: Option<u32>,
 }
 
 struct ActiveBlock {
@@ -286,18 +286,18 @@ impl LoweringCtx {
             struct_table,
             trace,
             target,
-            next_synthetic_binding: first_synthetic_binding,
+            next_synthetic_binding: Some(first_synthetic_binding),
         }
     }
 
     fn alloc_synthetic_binding(&mut self) -> Result<BindingId, LoweringError> {
-        let id = BindingId(self.next_synthetic_binding);
-        self.next_synthetic_binding = self.next_synthetic_binding.checked_add(1).ok_or_else(|| {
+        let next = self.next_synthetic_binding.ok_or_else(|| {
             LoweringError::InternalInvariantViolation {
                 detail: "BindingId space exhausted: synthetic counter overflowed u32".to_string(),
             }
         })?;
-        Ok(id)
+        self.next_synthetic_binding = next.checked_add(1);
+        Ok(BindingId(next))
     }
 
     fn fresh_value(&mut self) -> ValueId {
