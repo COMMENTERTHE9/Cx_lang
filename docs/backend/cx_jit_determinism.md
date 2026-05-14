@@ -115,6 +115,10 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_loop_continue` | `continue` — header with three predecessors (entry, end-of-body, continue back-edge); `Compare::Lt` + `Compare::Eq` |
 | `jit_determinism_nested_loop_back_edges` | Nested loops — two independent back-edges; inner header carries both outer and inner loop vars as block params |
 | `jit_determinism_loop_accumulator` | Loop with two header params (counter + accumulator); `else_args` passes accumulated value to exit block |
+| `jit_determinism_for_loop_exclusive` | `for i in 0..5 {}` — 5-block for-loop CFG; exclusive `Lt` bound; 5 iterations; exit code 42 |
+| `jit_determinism_for_loop_inclusive` | `for i in 0..=4 {}` — inclusive `Le` bound; same 5 iterations; exit code 42 |
+| `jit_determinism_for_loop_zero_iterations` | `for i in 5..0 {}` — `Lt` false on first check; body/increment unreachable; exit code 7 |
+| `jit_determinism_for_loop_with_loop_carried_binding` | `sum += i` across iterations — counter + accumulator threaded as two header block params; exit code 10 |
 | `jit_determinism_call_return_value` | `Call` — value-returning callee; result used as exit code |
 | `jit_determinism_call_void` | `Call` — void callee (no return value); caller returns a constant |
 | `jit_determinism_call_with_args` | `Call` — callee takes two `I32` arguments; exercises argument passing |
