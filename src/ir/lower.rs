@@ -361,7 +361,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
 }
 
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
-    const RESERVED_RUNTIME_INTRINSICS: &[&str] = &["cx_printn"];
+    const RESERVED_RUNTIME_INTRINSICS: &[&str] = &["cx_printn", "cx_print_tbool"];
 
     if program.stmts.is_empty() {
         return Ok(IrModule {
@@ -2668,13 +2668,17 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
 // Unsupported types (e.g. Ptr, F64, StrRef) produce a structured
 // UnsupportedSemanticConstruct error so the caller gets a clear diagnostic.
 
-/// Lower `printn(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+/// Lower `printn(n)` to the appropriate type-specific runtime intrinsic call.
 ///
-/// `printn` is a Cx builtin that prints an integer to stdout.  At the IR level
-/// it lowers to a call to the `cx_printn` runtime intrinsic, which is pre-declared
+/// `printn` is a Cx builtin that prints a value to stdout.  At the IR level
+/// it lowers to a call to a type-specific runtime intrinsic, which is pre-declared
 /// in the JIT module as an imported C-ABI symbol.
 ///
-/// Only `I64` arguments are accepted; other types produce a structured error.
+/// Supported argument types:
+/// - `I64`   → `IrInst::Call { callee: "cx_printn", args: [i64_value] }`
+/// - `TBool` → `IrInst::Call { callee: "cx_print_tbool", args: [tbool_value] }` (CX-178)
+///
+/// Other argument types produce a structured `UnsupportedSemanticConstruct` error.
 fn lower_printn_stmt(
     args: &[SemanticCallArg],
     ctx: &mut LoweringCtx,
@@ -2694,29 +2698,37 @@ fn lower_printn_stmt(
         }
     };
     let arg = lower_expr(arg_expr, ctx, &mut current)?;
-    if arg.ty != IrType::I64 {
-        return Err(LoweringError::UnsupportedSemanticConstruct {
+    let callee = match arg.ty {
+        IrType::I64 => "cx_printn",
+        IrType::TBool => "cx_print_tbool",
+        _ => return Err(LoweringError::UnsupportedSemanticConstruct {
             construct: format!(
-                "printn argument must be I64, got {:?} — other types not yet supported",
+                "printn argument must be I64 or TBool, got {:?} — other types not yet supported",
                 arg.ty
             ),
-        });
-    }
+        }),
+    };
     current.emit(IrInst::Call {
         dst: None,
-        callee: "cx_printn".to_string(),
+        callee: callee.to_string(),
         args: vec![arg.value],
         return_ty: None,
     })?;
     Ok(Some(current))
 }
 
-/// Lower `print(n)` or `println(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+/// Lower `print(n)` or `println(n)` to the appropriate type-specific runtime intrinsic call.
 ///
-/// Both `print` and `println` in Cx print a value followed by a newline.  For I64
-/// arguments this maps to the `cx_printn` runtime intrinsic which is already registered
-/// in the JIT symbol table.  Non-I64 arguments (e.g. strings) produce a structured
-/// error because string printing requires string ABI support not yet available.
+/// Both `print` and `println` in Cx print a value followed by a newline.  The callee
+/// is selected by argument type; both builtins route through the same dispatch logic.
+///
+/// Supported argument types:
+/// - `I64`   → `IrInst::Call { callee: "cx_printn", args: [i64_value] }`
+/// - `TBool` → `IrInst::Call { callee: "cx_print_tbool", args: [tbool_value] }` (CX-178)
+///
+/// Non-supported arguments (e.g. strings) produce a structured
+/// `UnsupportedSemanticConstruct` error because string printing requires
+/// string ABI support not yet available.
 fn lower_print_stmt(
     builtin_name: &str,
     args: &[SemanticCallArg],
@@ -2737,17 +2749,19 @@ fn lower_print_stmt(
         }
     };
     let arg = lower_expr(arg_expr, ctx, &mut current)?;
-    if arg.ty != IrType::I64 {
-        return Err(LoweringError::UnsupportedSemanticConstruct {
+    let callee = match arg.ty {
+        IrType::I64 => "cx_printn",
+        IrType::TBool => "cx_print_tbool",
+        _ => return Err(LoweringError::UnsupportedSemanticConstruct {
             construct: format!(
-                "{} argument must be I64, got {:?} — string and other types not yet supported",
+                "{} argument must be I64 or TBool, got {:?} — string and other types not yet supported",
                 builtin_name, arg.ty
             ),
-        });
-    }
+        }),
+    };
     current.emit(IrInst::Call {
         dst: None,
-        callee: "cx_printn".to_string(),
+        callee: callee.to_string(),
         args: vec![arg.value],
         return_ty: None,
     })?;

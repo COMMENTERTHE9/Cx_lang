@@ -87,9 +87,9 @@ correct and contains the builtin name.
 
 | Builtin      | Category            | Return  | Backend mechanism                         | Status |
 |--------------|---------------------|---------|-------------------------------------------|--------|
-| `print`      | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
-| `println`    | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
-| `printn`     | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
+| `print`      | I/O — stdout        | void    | `IrInst::Call` to `cx_printn` / `cx_print_tbool` | DONE (I64, TBool) |
+| `println`    | I/O — stdout        | void    | `IrInst::Call` to `cx_printn` / `cx_print_tbool` | DONE (I64, TBool) |
+| `printn`     | I/O — stdout        | void    | `IrInst::Call` to `cx_printn` / `cx_print_tbool` | DONE (I64, TBool) |
 | `read`       | I/O — stdin         | str     | runtime call to `cx_read`                 | BLOCKED — str/strref layout (Phase 8) |
 | `input`      | I/O — stdin         | str     | runtime call to `cx_input`                | BLOCKED — str/strref layout (Phase 8) |
 | `assert`     | Debug / assertion   | void    | inline `Branch` + `IrTerminator::Trap`    | DONE — abort semantics |
@@ -99,25 +99,35 @@ correct and contains the builtin name.
 
 `print`, `println`, `printn` are stdout I/O.  They do not return a value.
 
-**Implementation (sub-packet 2 — COMPLETE):**
+**Implementation (sub-packet 2 — COMPLETE; TBool dispatch added in CX-178):**
 
-All three lower to `IrInst::Call { callee: "cx_printn", args: [i64_value], return_ty: None }`.
+The dispatch is type-driven:
+- `I64` argument → `IrInst::Call { callee: "cx_printn", args: [i64_value], return_ty: None }`
+- `TBool` argument → `IrInst::Call { callee: "cx_print_tbool", args: [tbool_value], return_ty: None }`
+
 Neither `cx_print` nor `cx_println` exist as distinct symbols — both `print` and `println`
-route through `cx_printn`.
+route through the same per-type intrinsic as `printn`.
 
 - `lower_printn_stmt` — handles `printn(n)` directly.
 - `lower_print_stmt` — handles both `print(n)` and `println(n)`; emits the same
-  `cx_printn` call for both (newline is always appended by the runtime shim).
+  type-dispatched call for both (newline is always appended by the runtime shim).
 
-Argument constraint: only `I64` arguments are accepted.  Non-I64 arguments
-(e.g. strings) produce a structured `UnsupportedSemanticConstruct` error, as
-string printing requires string ABI support not yet available.
+Argument constraints:
+- `I64` — integer output via `cx_printn`.
+- `TBool` — ternary-bool output via `cx_print_tbool` ("false"/"true"/"?").
+- All other types produce a structured `UnsupportedSemanticConstruct` error.
 
 The `cx_printn` symbol is:
 - Implemented in `src/backend/cranelift/host_boundary.rs` as `extern "C" fn cx_printn(n: i64)`.
 - Registered in every JIT module via `jit_builder.symbol("cx_printn", cx_printn as *const u8)`.
 - Pre-declared as an imported C-ABI function in the Cranelift module before any
   user function is compiled.
+
+The `cx_print_tbool` symbol is:
+- Implemented in `src/backend/cranelift/host_boundary.rs` as `extern "C" fn cx_print_tbool(n: i8)`.
+- Prints "false" for n=0, "true" for n=1, "?" for any other value (matches interpreter output).
+- Registered via `jit_builder.symbol("cx_print_tbool", cx_print_tbool as *const u8)`.
+- Pre-declared as an imported C-ABI function `(I8) -> void` in the Cranelift module.
 
 ### I/O builtins — read / input
 
@@ -171,9 +181,10 @@ failures.  Seven tests verify one per builtin.
 **Sub-packet 2 — print family — COMPLETE**
 
 `print`, `println`, `printn` lower via `lower_print_stmt` / `lower_printn_stmt`
-to `IrInst::Call` targeting the `cx_printn` runtime symbol.  I64 arguments
-supported; non-I64 returns a structured error.  JIT parity tests cover all
-three builtins.
+to `IrInst::Call` targeting the type-appropriate runtime symbol.  I64 arguments
+route to `cx_printn`; TBool arguments route to `cx_print_tbool` (CX-178).
+Non-supported types return a structured error.  JIT and validation tests cover
+all three builtins for both supported argument types.
 
 **Sub-packet 3 — assert / assert_eq — COMPLETE**
 
@@ -193,15 +204,18 @@ Stable C-ABI symbols that JIT-compiled Cx code may call:
 
 | Symbol         | Signature (C)                     | Provided by                          | Status |
 |----------------|-----------------------------------|--------------------------------------|--------|
-| `cx_printn`    | `void cx_printn(int64_t n)`       | `host_boundary.rs` (`extern "C"`)    | LIVE   |
-| `cx_read`      | TBD — blocked on str layout       | —                                    | BLOCKED |
-| `cx_input`     | TBD — blocked on str layout       | —                                    | BLOCKED |
+| `cx_printn`       | `void cx_printn(int64_t n)`      | `host_boundary.rs` (`extern "C"`)    | LIVE   |
+| `cx_print_tbool`  | `void cx_print_tbool(int8_t n)`  | `host_boundary.rs` (`extern "C"`)    | LIVE   |
+| `cx_read`         | TBD — blocked on str layout      | —                                    | BLOCKED |
+| `cx_input`        | TBD — blocked on str layout      | —                                    | BLOCKED |
 
 Notes:
 - `cx_print` and `cx_println` do not exist as separate symbols.  Both `print`
-  and `println` lower to calls to `cx_printn`.
+  and `println` lower to the same type-dispatched intrinsic as `printn`.
 - `cx_printn` always appends a newline (`writeln!`), matching the expected
   behaviour of all three stdout builtins for I64 values.
+- `cx_print_tbool` always appends a newline, printing "false" (n=0), "true" (n=1),
+  or "?" (any other n) to match the interpreter's `value_to_string()` output.
 - All string pointers passed to future I/O shims will be read-only; the shim
   will not take ownership and will not free.
 
@@ -212,7 +226,7 @@ Notes:
 - Handle<T> registry intrinsics — post-0.1
 - Arena allocation intrinsics — post-0.1
 - Error and panic propagation through the backend — post-0.1
-- TBool Unknown propagation — open design question tracked in Phase 8
+- TBool Unknown propagation beyond print dispatch — open design question tracked in Phase 8
 - String copy-on-boundary rules — blocked on str layout decision
 
 ---

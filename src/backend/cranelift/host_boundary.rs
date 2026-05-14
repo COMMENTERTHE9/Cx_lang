@@ -275,6 +275,25 @@ extern "C" fn cx_printn(n: i64) {
     let _ = writeln!(stdout, "{n}");
 }
 
+/// Runtime intrinsic: print a ternary boolean to stdout followed by a newline.
+///
+/// Exported as `cx_print_tbool` in the JIT symbol table. JIT-compiled Cx code calls this
+/// via `IrInst::Call { callee: "cx_print_tbool", args: [tbool_value] }`.
+/// The symbol is pre-declared as an Import in every JIT module (see `execute`).
+///
+/// TBool values are stored as i8: 0 = false, 1 = true, any other value = unknown.
+/// Output matches the interpreter's `value_to_string()` for `Value::TBool(b)`.
+extern "C" fn cx_print_tbool(n: i8) {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let s = match n {
+        0 => "false",
+        1 => "true",
+        _ => "?",
+    };
+    let _ = writeln!(stdout, "{s}");
+}
+
 /// Backend-private symbol name for the F64 remainder host helper.
 ///
 /// Using a mangled name (double-underscore prefix) keeps it out of the user-visible namespace.
@@ -340,6 +359,7 @@ impl HostBoundary {
         let mut jit_builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         jit_builder.symbol("cx_printn", cx_printn as *const u8);
+        jit_builder.symbol("cx_print_tbool", cx_print_tbool as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         let mut module = JITModule::new(jit_builder);
 
@@ -360,6 +380,20 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert("cx_printn".to_string(), id);
+        }
+
+        // Pre-declare cx_print_tbool(i8) -> void for TBool print dispatch (CX-178).
+        {
+            use cranelift_codegen::ir::AbiParam;
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(cranelift_codegen::ir::types::I8));
+            let id = module
+                .declare_function("cx_print_tbool", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_print_tbool".to_string(), id);
         }
 
         // Pre-declare __cx_fmod(f64, f64) -> f64 for F64 Rem lowering.
@@ -4655,6 +4689,82 @@ mod determinism_tests {
         };
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    // ── cx_print_tbool intrinsic dispatch (CX-178) ───────────────────────────
+    //
+    // These tests verify that the `cx_print_tbool` JIT intrinsic executes
+    // successfully for all three TBool states (false=0, true=1, unknown=2).
+    //
+    // TBool values cannot be created via ConstInt (the validator rejects
+    // IrType::TBool for ConstInt); instead each test uses the same
+    // ConstInt(I8, n) → Alloca → Store → Load(TBool) materialization pattern
+    // used by the TBool calling-convention tests above.
+    //
+    // Module shape:
+    //   main() -> I32:
+    //     B0: v0 = ConstInt(I8, <raw>)
+    //         v1 = Alloca(1, 1)
+    //         Store(v1, v0)
+    //         v2 = Load(TBool, v1)
+    //         Call(cx_print_tbool, [v2])
+    //         v3 = ConstInt(I32, 0)
+    //         return v3
+
+    fn cx_print_tbool_module(raw_value: i128) -> IrModule {
+        IrModule {
+            debug_name: format!("test_cx_print_tbool_{}", raw_value),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: raw_value },
+                        IrInst::Alloca { dst: ValueId(1), size: 1, align: 1 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(0) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::TBool, ptr: ValueId(1) },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_print_tbool".to_string(),
+                            args: vec![ValueId(2)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn jit_cx_print_tbool_false_executes_without_error() {
+        // TBool(0) = false: cx_print_tbool should print "false" without JIT error.
+        let module = cx_print_tbool_module(0);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed for TBool(0): {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_cx_print_tbool_true_executes_without_error() {
+        // TBool(1) = true: cx_print_tbool should print "true" without JIT error.
+        let module = cx_print_tbool_module(1);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed for TBool(1): {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_cx_print_tbool_unknown_executes_without_error() {
+        // TBool(2) = unknown: cx_print_tbool should print "?" without JIT error.
+        let module = cx_print_tbool_module(2);
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed for TBool(2): {:?}", result.unwrap_err());
         assert!(result.unwrap().exit_code.is_success());
     }
 
