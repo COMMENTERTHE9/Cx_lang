@@ -31,7 +31,7 @@ Phase 9 replaces those holes with:
 `src/frontend/semantic.rs` recognises these names in `analyze_call()` (around
 line 1446) and assigns `FunctionId(u32::MAX)` to mark them as non-user-defined:
 
-```
+```text
 print    println    printn
 read     input
 assert   assert_eq
@@ -39,7 +39,7 @@ assert   assert_eq
 
 The semantic node produced is:
 
-```
+```rust
 SemanticExprKind::Call {
     callee: "<name>",
     function: FunctionId(u32::MAX),   // sentinel — not a real function
@@ -60,7 +60,7 @@ reached lowering:
   through to `lower_expr`, and the inner lookup failed.
 - In `lower_expr` as `SemanticExprKind::Call`: `ctx.signature_table.get(callee)`
   returned `None`, producing:
-  ```
+  ```rust
   LoweringError::UnresolvedSemanticArtifact { artifact: "function '<name>'" }
   ```
 
@@ -72,7 +72,7 @@ pending feature.
 `is_cx_builtin(name: &str) -> bool` guards both call paths.  Any builtin hit
 during lowering now returns:
 
-```
+```rust
 LoweringError::UnsupportedSemanticConstruct {
     construct: "builtin '<name>' is not yet lowerable to IR — codegen pending (Phase 9)"
 }
