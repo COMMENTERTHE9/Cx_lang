@@ -275,6 +275,23 @@ extern "C" fn cx_printn(n: i64) {
     let _ = writeln!(stdout, "{n}");
 }
 
+/// Runtime intrinsic: print a 128-bit integer to stdout followed by a newline.
+///
+/// Exported as `cx_printn_i128` in the JIT symbol table. JIT-compiled Cx code calls this
+/// via `IrInst::Call { callee: "cx_printn_i128", args: [i128_value] }`.
+///
+/// Cranelift 0.115 does not support I128 in call arguments on x64 unless LLVM ABI
+/// extensions are enabled (isa/x64/abi.rs asserts on this path).  To work around this,
+/// the JIT emitter splits the I128 SSA value with `isplit` before the call and passes
+/// two I64 halves: `lo` (bits 63:0) and `hi` (bits 127:64).  This function reconstructs
+/// the signed i128 and prints it.
+extern "C" fn cx_printn_i128(lo: i64, hi: i64) {
+    let n: i128 = ((hi as i128) << 64) | (lo as u64 as i128);
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let _ = writeln!(stdout, "{n}");
+}
+
 /// Backend-private symbol name for the F64 remainder host helper.
 ///
 /// Using a mangled name (double-underscore prefix) keeps it out of the user-visible namespace.
@@ -340,6 +357,7 @@ impl HostBoundary {
         let mut jit_builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         jit_builder.symbol("cx_printn", cx_printn as *const u8);
+        jit_builder.symbol("cx_printn_i128", cx_printn_i128 as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         let mut module = JITModule::new(jit_builder);
 
@@ -360,6 +378,23 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert("cx_printn".to_string(), id);
+        }
+
+        // Pre-declare cx_printn_i128(lo: I64, hi: I64) -> void for t128 print support (CX-172).
+        // Cranelift 0.115 x64 ABI does not support I128 call params, so the I128 IR value is
+        // isplit into (lo, hi) I64 halves by the Call emitter before invoking this function.
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("cx_printn_i128", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_printn_i128".to_string(), id);
         }
 
         // Pre-declare __cx_fmod(f64, f64) -> f64 for F64 Rem lowering.
@@ -845,19 +880,36 @@ fn compile_ir_function(
                         }
                     })?;
                     let func_ref = module.declare_func_in_func(callee_id, builder.func);
-                    let cl_args: Vec<cranelift_codegen::ir::Value> = args
-                        .iter()
-                        .map(|vid| {
-                            val_map.get(vid).copied().ok_or_else(|| {
+                    // cx_printn_i128 receives its I128 IR argument as two I64 halves (lo, hi)
+                    // because Cranelift 0.115 x64 ABI does not support I128 call parameters.
+                    // isplit produces (lo, hi) matching the (i64, i64) C-ABI signature.
+                    let cl_args: Vec<cranelift_codegen::ir::Value> =
+                        if callee == "cx_printn_i128" && args.len() == 1 {
+                            let i128_val = *val_map.get(&args[0]).ok_or_else(|| {
                                 JitExecutionError::CodegenFailure {
                                     detail: format!(
-                                        "undefined value {:?} used as call arg",
-                                        vid
+                                        "undefined value {:?} used as cx_printn_i128 arg",
+                                        args[0]
                                     ),
                                 }
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
+                            })?;
+                            let (lo, hi) = builder.ins().isplit(i128_val);
+                            vec![lo, hi]
+                        } else {
+                            args
+                                .iter()
+                                .map(|vid| {
+                                    val_map.get(vid).copied().ok_or_else(|| {
+                                        JitExecutionError::CodegenFailure {
+                                            detail: format!(
+                                                "undefined value {:?} used as call arg",
+                                                vid
+                                            ),
+                                        }
+                                    })
+                                })
+                                .collect::<Result<_, _>>()?
+                        };
                     let call_inst = builder.ins().call(func_ref, &cl_args);
                     if let Some(dst_vid) = dst {
                         let results = builder.inst_results(call_inst);
@@ -4655,6 +4707,46 @@ mod determinism_tests {
         };
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    // ── CX-172: cx_printn_i128 intrinsic dispatch ────────────────────────────
+
+    #[test]
+    fn jit_call_cx_printn_i128_executes_without_error() {
+        // Verify that JIT-compiled code can call cx_printn_i128 with an I128 value.
+        //
+        // main() -> i32 {
+        //   v0 = const 42 : I128
+        //   cx_printn_i128(v0)
+        //   v1 = const 0 : I32
+        //   return v1
+        // }
+        let module = IrModule {
+            debug_name: "test_cx_printn_i128".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn_i128".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT cx_printn_i128 failed: {:?}", result.unwrap_err());
         assert!(result.unwrap().exit_code.is_success());
     }
 

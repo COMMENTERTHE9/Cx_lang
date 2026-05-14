@@ -83,6 +83,15 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
             has_return: false,
         },
     );
+    // cx_printn_i128(n: I128) -> void — CX-172 t128 argument support.
+    sigs.insert(
+        "cx_printn_i128".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::I128],
+            has_return: false,
+        },
+    );
     sigs
 }
 
@@ -1741,5 +1750,33 @@ mod tests {
             "expected void-return shape error for cx_printn, got: {:?}",
             errors
         );
+    }
+
+    #[test]
+    fn validator_accepts_cx_printn_i128_call_with_i128_arg() {
+        // A call to `cx_printn_i128(i128)` must pass validation — seeded by known_intrinsic_sigs.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn_i128".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
     }
 }
