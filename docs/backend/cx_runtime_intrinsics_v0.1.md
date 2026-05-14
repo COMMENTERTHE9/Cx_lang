@@ -1,6 +1,6 @@
 # Cx Runtime Intrinsics Boundary — v0.1
 Phase 9 specification  
-Status: sub-packet 1 complete (audit + structured errors), codegen pending
+Status: sub-packets 1–3 complete; sub-packet 4 blocked on Phase 8 str layout
 
 ---
 
@@ -19,8 +19,8 @@ Phase 9 replaces those holes with:
 1. An explicit classification of every builtin (this document).
 2. Structured `UnsupportedSemanticConstruct` errors that name the builtin and
    reference Phase 9 as the tracking phase.
-3. Eventually, concrete `IrIntrinsic` opcodes or ABI-stable runtime-call
-   signatures for each builtin.
+3. Concrete `IrInst::Call` lowering or inline IR for each builtin where the
+   design is resolved (sub-packets 2 and 3).
 
 ---
 
@@ -85,102 +85,125 @@ correct and contains the builtin name.
 
 ## Builtin Classification Table
 
-| Builtin      | Category            | Return  | Planned backend mechanism        | Blocking condition |
-|--------------|---------------------|---------|----------------------------------|--------------------|
-| `print`      | I/O — stdout        | void    | runtime call to `cx_print`       | frontend must promote to function first |
-| `println`    | I/O — stdout        | void    | runtime call to `cx_println`     | same as `print` |
-| `printn`     | I/O — stdout        | void    | runtime call to `cx_printn`      | same as `print` |
-| `read`       | I/O — stdin         | str     | runtime call to `cx_read`        | str/strref layout must be locked (Phase 8 open item) |
-| `input`      | I/O — stdin         | str     | runtime call to `cx_input`       | same as `read` |
-| `assert`     | Debug / assertion   | void    | inline Branch + trap, or runtime | semantics TBD — does assert abort or panic? |
-| `assert_eq`  | Debug / assertion   | void    | inline cmp + Branch + trap       | same as `assert` |
+| Builtin      | Category            | Return  | Backend mechanism                         | Status |
+|--------------|---------------------|---------|-------------------------------------------|--------|
+| `print`      | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
+| `println`    | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
+| `printn`     | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
+| `read`       | I/O — stdin         | str     | runtime call to `cx_read`                 | BLOCKED — str/strref layout (Phase 8) |
+| `input`      | I/O — stdin         | str     | runtime call to `cx_input`                | BLOCKED — str/strref layout (Phase 8) |
+| `assert`     | Debug / assertion   | void    | inline `Branch` + `IrTerminator::Trap`    | DONE — abort semantics |
+| `assert_eq`  | Debug / assertion   | void    | inline `Compare(Eq)` + `Branch` + `Trap`  | DONE — abort semantics |
 
 ### I/O builtins — print family
 
 `print`, `println`, `printn` are stdout I/O.  They do not return a value.
 
-Cross-roadmap dependency: **the frontend has not promoted these to real
-functions yet**.  Until they have a proper call signature (parameter types,
-arity rules) Phase 9 cannot define their ABI.  Phase 9 tracks this as its
-primary blocker.
+**Implementation (sub-packet 2 — COMPLETE):**
 
-Planned mechanism: a thin runtime shim (`cx_runtime.c` or equivalent)
-exported as a C-ABI symbol.  JIT-compiled code calls it via `IrInst::Call`
-with the shim's name as callee.  The shim writes to stdout using the platform
-C runtime (`puts` / `printf`).  No in-process pipe redirection.
+All three lower to `IrInst::Call { callee: "cx_printn", args: [i64_value], return_ty: None }`.
+Neither `cx_print` nor `cx_println` exist as distinct symbols — both `print` and `println`
+route through `cx_printn`.
+
+- `lower_printn_stmt` — handles `printn(n)` directly.
+- `lower_print_stmt` — handles both `print(n)` and `println(n)`; emits the same
+  `cx_printn` call for both (newline is always appended by the runtime shim).
+
+Argument constraint: only `I64` arguments are accepted.  Non-I64 arguments
+(e.g. strings) produce a structured `UnsupportedSemanticConstruct` error, as
+string printing requires string ABI support not yet available.
+
+The `cx_printn` symbol is:
+- Implemented in `src/backend/cranelift/host_boundary.rs` as `extern "C" fn cx_printn(n: i64)`.
+- Registered in every JIT module via `jit_builder.symbol("cx_printn", cx_printn as *const u8)`.
+- Pre-declared as an imported C-ABI function in the Cranelift module before any
+  user function is compiled.
 
 ### I/O builtins — read / input
 
 `read` and `input` return a string.  They block until stdin delivers a line.
 
-Additional blocker: the `str` / `strref` layout question from Phase 8 is
-unresolved (arena ownership in JIT mode vs. interpreter mode).  The return
-type and ownership model for these calls cannot be finalised until that
-decision is made.
+Blocker: the `str` / `strref` layout question from Phase 8 is unresolved
+(arena ownership in JIT mode vs. interpreter mode).  The return type and
+ownership model for these calls cannot be finalised until that decision is made.
+These builtins remain in `is_cx_builtin()` and produce a structured error.
 
 ### Debug builtins — assert / assert_eq
 
 `assert(cond)` and `assert_eq(lhs, rhs)` are diagnostic assertions.
 
-Design decision needed before these can be lowered:
+**Implementation (sub-packet 3 — COMPLETE):**
 
-- Do they abort the process (like C `assert`)? If so, the backend emits a
-  conditional Branch to a trap block.
-- Do they raise a Cx panic that can be caught? If so, a runtime-call mechanism
-  is needed.
+Both builtins use abort semantics (abort the process, no unwinding).  They are
+lowered to a two-branch CFG pattern:
 
-For 0.1 the expected answer is "abort" (simple, no unwinding machinery).
-That decision must be confirmed before implementation.
+```text
+[current block]
+  ... condition computation ...
+  Branch { cond, then: pass_block, else: trap_block }
+
+[pass_block]     ← execution continues here after a passing assertion
+  (empty — caller receives this as the new current block)
+
+[trap_block]
+  Trap            ← IrTerminator::Trap; maps to Cranelift `trap` in the JIT
+```
+
+Condition type handling:
+- `Bool` — used directly as the branch condition.
+- `I8`, `I16`, `I32`, `I64`, `I128` — compared `!= 0` via `Compare(Ne)` to
+  produce a `Bool` (truthy-integer assert, via `coerce_to_bool`).
+- For `assert_eq`: both operands must have the same type and that type must be
+  `Bool` or an integer (`I8`–`I128`).  A `Compare(Eq)` is emitted first, then
+  the same Branch + Trap pattern follows.
+- All other types produce a structured `UnsupportedSemanticConstruct` error.
 
 ---
 
-## Planned Implementation Path (Phase 9 remaining sub-packets)
+## Implementation Path (Phase 9 sub-packets)
 
-**Sub-packet 2 — print family (blocked on frontend)**
+**Sub-packet 1 — audit + structured errors — COMPLETE**
 
-When the frontend promotes `print`, `println`, `printn` to real functions:
+`is_cx_builtin()` guard added; all seven builtins produce structured
+`UnsupportedSemanticConstruct` errors instead of misleading artifact-resolution
+failures.  Seven tests verify one per builtin.
 
-1. Add shim symbols to `src/backend/cranelift/jit.rs` — declare them as
-   external C-ABI functions in the Cranelift module.
-2. Remove them from `is_cx_builtin()`.
-3. They then flow through the normal `IrInst::Call` path.
-4. Tests: a `.cx` program that calls `print` executes through the JIT and
-   produces matching stdout in the differential harness.
+**Sub-packet 2 — print family — COMPLETE**
 
-**Sub-packet 3 — assert / assert_eq**
+`print`, `println`, `printn` lower via `lower_print_stmt` / `lower_printn_stmt`
+to `IrInst::Call` targeting the `cx_printn` runtime symbol.  I64 arguments
+supported; non-I64 returns a structured error.  JIT parity tests cover all
+three builtins.
 
-After the abort-vs-panic decision is locked:
+**Sub-packet 3 — assert / assert_eq — COMPLETE**
 
-1. If abort: lower to `IrInst::Branch` + `IrTerminator::Trap` (or equivalent).
-   Requires adding `IrTerminator::Trap` to the IR.
-2. Remove them from `is_cx_builtin()`.
-3. Tests: a program that hits a failing assert produces exit code 126 (JIT
-   runtime failure).
+Abort semantics confirmed.  `lower_assert_stmt` and `lower_assert_eq_stmt`
+emit the Branch + Trap CFG pattern.  `IrTerminator::Trap` added to the IR.
+Six unit tests cover Bool, integer-truthy, and I128 variants for both builtins.
 
-**Sub-packet 4 — read / input (blocked on Phase 8 str layout)**
+**Sub-packet 4 — read / input — BLOCKED on Phase 8 str layout**
 
 Deferred until `str` and `strref` layout is locked in Phase 8.
 
 ---
 
-## Runtime Entry Point Registry (draft)
+## Runtime Entry Point Registry
 
-This section will list the stable C-ABI symbols that JIT-compiled Cx code
-may call.  It is a stub until sub-packets 2–4 land.
+Stable C-ABI symbols that JIT-compiled Cx code may call:
 
-| Symbol         | Signature (C)                     | Provided by       |
-|----------------|-----------------------------------|-------------------|
-| `cx_print`     | `void cx_print(const char* s)`    | cx_runtime shim   |
-| `cx_println`   | `void cx_println(const char* s)`  | cx_runtime shim   |
-| `cx_printn`    | `void cx_printn(int64_t n)`       | cx_runtime shim   |
-| `cx_read`      | TBD — blocked on str layout       | —                 |
-| `cx_input`     | TBD — blocked on str layout       | —                 |
+| Symbol         | Signature (C)                     | Provided by                          | Status |
+|----------------|-----------------------------------|--------------------------------------|--------|
+| `cx_printn`    | `void cx_printn(int64_t n)`       | `host_boundary.rs` (`extern "C"`)    | LIVE   |
+| `cx_read`      | TBD — blocked on str layout       | —                                    | BLOCKED |
+| `cx_input`     | TBD — blocked on str layout       | —                                    | BLOCKED |
 
-Ownership rules:
-- All string pointers passed to I/O shims are read-only; the shim does not
-  take ownership and does not free.
-- The caller (JIT code) is responsible for keeping the backing memory alive
-  for the duration of the call.
+Notes:
+- `cx_print` and `cx_println` do not exist as separate symbols.  Both `print`
+  and `println` lower to calls to `cx_printn`.
+- `cx_printn` always appends a newline (`writeln!`), matching the expected
+  behaviour of all three stdout builtins for I64 values.
+- All string pointers passed to future I/O shims will be read-only; the shim
+  will not take ownership and will not free.
 
 ---
 
@@ -197,7 +220,9 @@ Ownership rules:
 ## References
 
 - `src/frontend/semantic.rs` — builtin recognition in `analyze_call()` (~line 1446)
-- `src/ir/lower.rs` — `is_cx_builtin()` guard and structured error
+- `src/ir/lower.rs` — `is_cx_builtin()` guard, `lower_print_stmt`, `lower_printn_stmt`, `lower_assert_stmt`, `lower_assert_eq_stmt`
+- `src/ir/instr.rs` — `IrTerminator::Trap` definition
+- `src/ir/validate.rs` — pre-seeded `cx_printn` intrinsic signature
+- `src/backend/cranelift/host_boundary.rs` — `cx_printn` extern "C" implementation and JIT symbol registration
 - `docs/backend/cx_abi_v0.1.md` — scalar layout and calling convention
 - `docs/backend/cx_backend_roadmap_v3_1.md` — Phase 9 and its blockers
-- `src/backend/cranelift/host_boundary.rs` — JIT host boundary documentation
