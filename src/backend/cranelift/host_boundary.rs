@@ -2457,6 +2457,8 @@ mod determinism_tests {
             }],
         };
         assert_deterministic(&module);
+        let r = HostBoundary::new().execute(&module).expect("JIT failed");
+        assert_eq!(r.exit_code.raw(), 42);
     }
 
     #[test]
@@ -2550,6 +2552,8 @@ mod determinism_tests {
             }],
         };
         assert_deterministic(&module);
+        let r = HostBoundary::new().execute(&module).expect("JIT failed");
+        assert_eq!(r.exit_code.raw(), 42);
     }
 
     #[test]
@@ -2645,6 +2649,8 @@ mod determinism_tests {
             }],
         };
         assert_deterministic(&module);
+        let r = HostBoundary::new().execute(&module).expect("JIT failed");
+        assert_eq!(r.exit_code.raw(), 7);
     }
 
     #[test]
@@ -2761,6 +2767,8 @@ mod determinism_tests {
             }],
         };
         assert_deterministic(&module);
+        let r = HostBoundary::new().execute(&module).expect("JIT failed");
+        assert_eq!(r.exit_code.raw(), 10);
     }
 
     // ── Two-function module ───────────────────────────────────────────────────
