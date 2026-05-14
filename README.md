@@ -83,27 +83,31 @@ The Cranelift JIT backend compiles Cx programs to native machine code. It is the
 | Other          | 16   | 48   | 0           |
 | **Total**      | **66** | **89** | **0** |
 
-SKIP means the construct is not yet lowered to JIT codegen — it exits cleanly with an unsupported-construct error rather than producing wrong output. PARITY_FAIL (semantic divergence from the interpreter) is the hard gate: it must stay at zero.
+SKIP means the JIT did not produce verified output for the fixture — either the construct is not yet lowered, or the fixture's verification method (e.g., `print` with a non-I64 argument) is not yet supported. The fixture exits cleanly rather than producing wrong output. PARITY_FAIL (semantic divergence from the interpreter) is the hard gate: it must stay at zero.
 
 **Constructs JIT-lowered and working:**
-- Integer arithmetic, comparisons, compound assign (`+=`, `-=`, `*=`, `/=`, `%=`)
+- Integer arithmetic (`+`, `-`, `*`, `/`, `%`) on all signed types (t8–t128), comparisons, compound assign (`+=`, `-=`, `*=`, `/=`, `%=`)
+- Float arithmetic (`f64`): `+`, `-`, `*`, `/`, `%` (via libm::fmod); float comparisons
+- Unary negation — integer and float
+- Explicit type cast (`as`) — integer widening/narrowing, int↔f64 conversions
 - Logical AND/OR with short-circuit
-- Variable declarations, typed and inferred
+- Variable declarations, typed and inferred; const declarations
 - Control flow: `if`/`else`, `while`, `for` ranges (`0..n`, `1..=n`), `loop`/`break`/`continue`
-- Direct function calls — arity/type validation, return value handling
+- Direct function calls — arity/type validation, void and value return, recursion
 - Struct literals, field read/write, struct-in-function
 - Fixed-size arrays: stack allocation (`ArrayAlloca`), element read/write, array-in-function
 - Runtime intrinsics: `print`, `println`, `printn` (i64 arguments), `assert`, `assert_eq`
-- Integer type casting (numeric cast, target-aware)
 - Void function returns, exit code propagation
 
 **Constructs not yet JIT-lowered (SKIP):**
 - `when` blocks (three-way TBool branching; design work needed)
 - Method calls (`obj.method()`)
-- `f64` floating-point operations
-- Explicit cast (`as`) — core cast locked; full branch coverage in-flight
-- Unary negation
 - Enums, generics, `Handle<T>`, string arena operations, `Result<T>`/`?`
+
+Note: `f64` operations, explicit cast, and unary negation are JIT-lowered but their parity
+fixtures are currently SKIP — their test fixtures use `print(f64_value)` or `print(t8_value)`
+to verify output, and `print` only accepts I64 arguments today. The SKIP count for these
+categories will drop once print argument widening lands.
 
 ## Getting Started
 

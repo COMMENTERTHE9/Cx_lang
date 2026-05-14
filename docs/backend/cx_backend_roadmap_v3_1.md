@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.4 — 2026-05-12
+v4.5 — 2026-05-14
 
 ---
 
@@ -98,25 +98,81 @@ These are conditions, not features. All must be true before 0.1 ships.
 
 ## Backend Support Matrix — 0.1
 
-**Supported in backend 0.1:**
-- Straight-line arithmetic
-- Variable declarations and assignments
-- Functions — parameters, return types, return values
-- if / else if / else
-- Direct function calls
-- while loops
-- Basic array forms after frontend array semantics are frozen for 0.1
-- Basic struct forms after frontend struct semantics and layout rules are frozen for 0.1
+Current as of Phase 15. Updated for CX-183 (2026-05-14).
+
+**Supported in backend 0.1 (JIT-lowered and verified):**
+
+*Arithmetic and scalars:*
+- Integer arithmetic (`+`, `-`, `*`, `/`, `%`) on all signed types (t8, t16, t32, t64, t128) with wrapping semantics
+- Float arithmetic (`f64`): `+`, `-`, `*`, `/`, `%` (% via libm::fmod libcall)
+- Integer comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`) — signed icmp
+- Float comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`) — ordered fcmp
+- Unary negation — integer (all signed types) and float
+- Explicit type cast (`as`) — integer widening (`sextend`), narrowing (`ireduce`), int↔f64 (`fcvt_from_sint` / `fcvt_to_sint_sat`)
+- Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) on plain variables and struct fields
+- Logical AND/OR with short-circuit evaluation
+
+*Variables and declarations:*
+- Variable declarations — typed (`let x: t64`) and inferred (`let x`)
+- Typed assignment — explicit and implicit
+- Const declarations
+- Block-scope variable shadowing
+
+*Control flow:*
+- `if` / `else if` / `else` conditionals
+- `while` loops
+- `for i in 0..n` / `for i in 0..=n` range iteration (exclusive and inclusive)
+- `loop { ... break }` infinite loops
+- `break` and `continue` statements
+- Nested loops; `return` inside loop bodies
+
+*Functions:*
+- Function definitions with typed parameters and return types
+- Direct function calls — arity and type validation, void and value return
+- Recursive functions
+- Void function returns
+
+*Structs:*
+- Struct definitions with field declarations
+- Struct literals (`StructInstance`)
+- Struct field reads (dot notation)
+- Struct field writes (assignment and compound assign)
+- Structs as function arguments
+
+*Arrays:*
+- Fixed-size array declarations and literals (stack allocation via `ArrayAlloca`)
+- Array element reads (index)
+- Array element writes (index assignment)
+- Arrays as function arguments
+- Arrays in structs; structs in arrays
+
+*Runtime intrinsics:*
+- `print(n)`, `println(n)`, `printn(n)` — I64 arguments; routes to `cx_printn`
+- `assert(cond)` — abort semantics (`Branch` + `IrTerminator::Trap`)
+- `assert_eq(lhs, rhs)` — abort semantics (`Compare(Eq)` + `Branch` + `Trap`)
+
+*ABI and layout:*
+- Scalar layout locked for x86-64 (t8/t16/t32/t64/t128, f64, bool, tbool, Ptr)
+- Struct layout: C-compatible field ordering, natural alignment, padding
+- Array layout: contiguous stack allocation, stride-based element addressing
+- Calling convention: C ABI / SystemV on Linux x86-64; fastcall on Windows x64
+- TBool calling convention: I8 wire format, values 0/1/2 preserved across calls
+- Determinism: same IR + target + input always produces same observable output
 
 **Explicitly unsupported in backend 0.1:**
-- GPU operations
-- Filesystem operations
-- Window and rendering operations
-- Full generics surface
-- Dynamic dispatch
-- Closures and lambdas
-- Async and continuations
-- when blocks — produces structured UnsupportedSemanticConstruct error; when lowering will require design work for TBool three-way branching (true/false/unknown requires two nested Branch instructions since IR only has two-way Branch)
+- `when` blocks — produces structured `UnsupportedSemanticConstruct` error; TBool three-way branching requires two nested Branch instructions since IR only has two-way Branch; design work needed
+- Method calls (`obj.method()`) — produces structured `UnsupportedSemanticConstruct` error
+- `print` / `assert_eq` with non-I64 scalar arguments — structured error; widens to I64 pending
+- `read` / `input` builtins — blocked on str/strref layout decision (Phase 8)
+- Enums
+- Generics
+- `Handle<T>` — post-0.1
+- String and strref operations — blocked on Phase 8 str layout decision
+- `Result<T>` / `?` error propagation
+- Dynamic dispatch / closures / lambdas / async / continuations
+- GPU, filesystem, windowing, and rendering operations
+
+Note: `f64` arithmetic, explicit cast, and unary negation **are** JIT-lowered and execute correctly. Their parity fixtures show as SKIP only because the fixture verification mechanism (`print` with non-I64 arguments) is not yet supported, not because the constructs themselves are missing from the backend.
 
 This list is intentional. Unsupported constructs must produce structured errors, not silently misbehave.
 
@@ -689,6 +745,14 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 - Window and screen system — Cx Platform and GPU Roadmap
 
 ---
+
+## Key Changes — v4.5 (2026-05-14)
+
+- Backend Support Matrix expanded to reflect full Phase 15 construct set (CX-183)
+- Supported list now covers: all integer and float arithmetic, unary negation, explicit cast, compound assign, logical AND/OR, all control flow constructs (if/else, while, for, loop/break/continue), functions (direct calls, recursion, void return), structs (literals, field read/write), fixed-size arrays, runtime intrinsics (print family I64-only, assert, assert_eq), ABI/layout rules
+- Unsupported list updated: method calls and when-blocks remain; `read`/`input` blocked on Phase 8 str layout
+- Added clarifying note: f64 arithmetic, explicit cast, and unary negation are JIT-lowered; their parity fixtures are SKIP due to print/assert_eq argument type limitations, not missing backend support
+- CX-181: For-loop JIT determinism tests (jit_determinism_for_loop_*) added; 155 fixtures, 0 PARITY_FAILs unchanged
 
 ## Key Changes — v4.4 (2026-05-12)
 

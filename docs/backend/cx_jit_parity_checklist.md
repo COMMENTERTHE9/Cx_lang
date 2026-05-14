@@ -102,15 +102,16 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on submain HEAD d907ffb (CX-181 merge, 2026-05-14).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-181 for-loop JIT determinism tests (no parity
+count change — determinism tests are unit tests, not verification matrix fixtures).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -149,11 +150,29 @@ Total: 155 fixtures, 0 PARITY_FAILs
 - A small number of **pass-any fixtures** where the JIT happened to compile
   and execute successfully (no stderr error, exit 0) also appear as PASS.
 
-**SKIP fixtures** are those where IR lowering or JIT codegen has not yet been
-implemented for the construct used. The primary remaining gaps are constructs
-not yet JIT-lowerable (when-blocks, float ops, casts, unary, enums, generics,
-handles, and other Phase 14+ constructs). As subsequent phases land, SKIP
-counts will continue to decrease and PASS counts will increase.
+**SKIP fixtures** are those where the JIT did not produce verified output for the
+fixture. There are two distinct reasons a fixture is SKIP:
+
+1. **Construct not yet lowered** — IR lowering or JIT codegen has not been
+   implemented for the construct used (e.g., when-blocks, method calls, enums,
+   generics, handles).
+
+2. **Verification method not yet supported** — the construct IS JIT-lowered and
+   executes correctly, but the fixture uses a verification mechanism that is not
+   yet available. The primary example: `print` only accepts I64 arguments, so
+   fixtures that verify `f64`, `t8`, `t16`, `t32`, or `t128` results via
+   `print(result)` will SKIP even though the underlying arithmetic, cast, or
+   unary lowering works correctly. Similarly, `assert_eq` requires both operands
+   to have matching types; a fixture with `assert_eq(t32_var, 7)` will SKIP
+   because the numeric literal `7` defaults to I64.
+
+Affected categories today: **FloatOps** (t55, t135–t138), **Cast** (t139–t140),
+**Unary** (t96). The JIT lowers f64 arithmetic, explicit cast, and unary negation
+correctly — these fixtures will transition to PASS once print argument widening or
+exit-code-verified fixture replacements land.
+
+As subsequent phases land, SKIP counts will continue to decrease and PASS counts
+will increase.
 
 **PARITY_FAIL = 0** across all 16 categories. The gate holds.
 
