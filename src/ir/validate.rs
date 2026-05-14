@@ -99,15 +99,19 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
     let mut errors = Vec::new();
 
     // Seed known runtime intrinsic signatures before scanning user-defined functions.
+    // User functions whose names collide with reserved intrinsics are rejected by
+    // validate_function; guard the map as well so intrinsic sigs cannot be overwritten.
     let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
     for function in &module.functions {
-        function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
-            param_count: function.params.len(),
-            param_types: function.params.iter().map(|p| p.ty.clone()).collect(),
-            has_return: function.blocks.iter().any(|b| {
-                matches!(b.term, IrTerminator::Return { .. })
-            }),
-        });
+        if !is_reserved_runtime_intrinsic(&function.name) {
+            function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
+                param_count: function.params.len(),
+                param_types: function.params.iter().map(|p| p.ty.clone()).collect(),
+                has_return: function.blocks.iter().any(|b| {
+                    matches!(b.term, IrTerminator::Return { .. })
+                }),
+            });
+        }
     }
 
     for (function_index, function) in module.functions.iter().enumerate() {
@@ -122,11 +126,14 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
 }
 
 fn is_reserved_runtime_intrinsic(name: &str) -> bool {
-    matches!(
-        name,
-        "print" | "println" | "printn" | "read" | "input"
-            | "assert" | "assert_eq" | "is_known"
-    )
+    // Derive from the authoritative intrinsic registry so this check stays
+    // in sync whenever known_intrinsic_sigs() gains a new entry.
+    known_intrinsic_sigs().contains_key(name)
+        || matches!(
+            name,
+            "print" | "println" | "printn" | "read" | "input"
+                | "assert" | "assert_eq" | "is_known"
+        )
 }
 
 fn validate_function(
@@ -1598,6 +1605,32 @@ mod tests {
             err,
             IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
                 if function == "is_known"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_cx_print_tbool() {
+        // cx_print_tbool is seeded in known_intrinsic_sigs(); is_reserved_runtime_intrinsic()
+        // must derive from that registry and reject user functions with this name.
+        let errors = validate_module(&single_block_function("cx_print_tbool"))
+            .expect_err("validator should reject function named 'cx_print_tbool'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "cx_print_tbool"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_cx_printn() {
+        // cx_printn is seeded in known_intrinsic_sigs(); is_reserved_runtime_intrinsic()
+        // must derive from that registry and reject user functions with this name.
+        let errors = validate_module(&single_block_function("cx_printn"))
+            .expect_err("validator should reject function named 'cx_printn'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "cx_printn"
         )));
     }
 

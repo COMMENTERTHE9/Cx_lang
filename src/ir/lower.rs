@@ -80,8 +80,8 @@ impl std::error::Error for LoweringError {}
 //
 //   Category          | Builtins          | Status
 //   ──────────────────┼───────────────────┼──────────────────────────────────
-//   I/O (stdout)      | print, println    | LOWERABLE (I64 only) — routes to cx_printn
-//   I/O (stdout)      | printn            | LOWERABLE — see lower_printn_stmt
+//   I/O (stdout)      | print, println    | LOWERABLE (I64, TBool) — routes to cx_printn / cx_print_tbool
+//   I/O (stdout)      | printn            | LOWERABLE (I64, TBool) — see lower_printn_stmt
 //   I/O (stdin)       | read, input       | blocked on Phase 8 str layout
 //   Debug / assertion | assert, assert_eq | LOWERABLE — Phase 9 sub-packet 3
 //
