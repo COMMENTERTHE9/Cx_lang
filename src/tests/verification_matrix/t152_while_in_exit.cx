@@ -1,0 +1,34 @@
+// CX-175: exit-code-based JIT parity — while-in iterator loop at file scope.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// Uses arr:[0] indexed read (not *arr) because unary * on arrays is typed as
+// the array type by the semantic analyser, making it unusable in arithmetic.
+
+arr: [5: t64] = [10, 20, 30, 40, 50]
+
+// Sum all five elements via iteration: 10+20+30+40+50 = 150.
+total: t64 = 0
+while in arr:[0], 0..5 {
+    total = total + arr:[0]
+}
+assert_eq(total, 150)
+
+// Count iterations for exclusive range 0..3 = 3.
+count: t64 = 0
+while in arr:[0], 0..3 {
+    count = count + 1
+}
+assert_eq(count, 3)
+
+// Inclusive range 0..=4 yields 5 iterations.
+count2: t64 = 0
+while in arr:[0], 0..=4 {
+    count2 = count2 + 1
+}
+assert_eq(count2, 5)
+
+// Non-zero lower bound: indices 2..5 cover elements [30, 40, 50] = 120.
+partial: t64 = 0
+while in arr:[0], 2..5 {
+    partial = partial + arr:[0]
+}
+assert_eq(partial, 120)

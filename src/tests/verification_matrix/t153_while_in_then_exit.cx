@@ -1,0 +1,34 @@
+// CX-175: exit-code-based JIT parity — while-in with then-chain at file scope.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// Each test uses fresh arrays because while-in mutates arr[start_slot] in place;
+// re-using an array across loops would produce incorrect accumulated values.
+
+// Test 1: combined primary+then chain: sum(a1) + sum(b1) = 6 + 15 = 21.
+a1: [3: t64] = [1, 2, 3]
+b1: [3: t64] = [4, 5, 6]
+total: t64 = 0
+while in a1:[0], 0..3 {
+    total = total + a1:[0]
+} then in b1:[0], 0..3 {
+    total = total + b1:[0]
+}
+assert_eq(total, 21)
+
+// Test 2: primary chain alone with fresh array: 10+20+30 = 60.
+a2: [3: t64] = [10, 20, 30]
+sum_a: t64 = 0
+while in a2:[0], 0..3 {
+    sum_a = sum_a + a2:[0]
+}
+assert_eq(sum_a, 60)
+
+// Test 3: inclusive range with then-chain: 5+10+3+7 = 25.
+c: [2: t64] = [5, 10]
+d: [2: t64] = [3, 7]
+result: t64 = 0
+while in c:[0], 0..=1 {
+    result = result + c:[0]
+} then in d:[0], 0..=1 {
+    result = result + d:[0]
+}
+assert_eq(result, 25)

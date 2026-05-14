@@ -173,6 +173,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t108_nested_loops_in_func"
         | "t132_while_loop_exit"
         | "t133_while_in_func_exit"
+        | "t152_while_in_exit"
+        | "t153_while_in_then_exit"
+        | "t154_while_in_func_exit"
             => FeatureCategory::WhileLoop,
 
         // ── ForLoop ───────────────────────────────────────────────────────────

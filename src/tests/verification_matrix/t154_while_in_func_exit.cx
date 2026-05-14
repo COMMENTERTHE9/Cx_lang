@@ -1,0 +1,27 @@
+// CX-175: exit-code-based JIT parity — while-in iterator inside a user-defined function.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// Uses data:[0] indexed read (not *data) for the same reason as t152/t153.
+
+fnc: t64 sum_array_elems() {
+    data: [4: t64] = [100, 200, 300, 400]
+    total: t64 = 0
+    while in data:[0], 0..4 {
+        total = total + data:[0]
+    }
+    return total
+}
+
+fnc: t64 count_iters() {
+    data: [5: t64] = [1, 2, 3, 4, 5]
+    count: t64 = 0
+    while in data:[0], 0..5 {
+        count = count + 1
+    }
+    return count
+}
+
+// 100+200+300+400 = 1000.
+assert_eq(sum_array_elems(), 1000)
+
+// Five iterations for range 0..5.
+assert_eq(count_iters(), 5)
