@@ -247,6 +247,7 @@ struct LoweringCtx {
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
     target: TargetConfig,
+    next_synthetic_binding: u32,
 }
 
 struct ActiveBlock {
@@ -276,6 +277,7 @@ impl LoweringCtx {
         struct_table: HashMap<String, StructLayoutInfo>,
         trace: bool,
         target: TargetConfig,
+        first_synthetic_binding: u32,
     ) -> Self {
         Self {
             builder: IrBuilder::new(),
@@ -284,7 +286,14 @@ impl LoweringCtx {
             struct_table,
             trace,
             target,
+            next_synthetic_binding: first_synthetic_binding,
         }
+    }
+
+    fn alloc_synthetic_binding(&mut self) -> BindingId {
+        let id = BindingId(self.next_synthetic_binding);
+        self.next_synthetic_binding += 1;
+        id
     }
 
     fn fresh_value(&mut self) -> ValueId {
@@ -351,6 +360,67 @@ impl ActiveBlock {
         self.terminated = true;
         Ok(())
     }
+}
+
+fn max_binding_in_stmt(stmt: &SemanticStmt) -> u32 {
+    match stmt {
+        SemanticStmt::Decl { binding, .. } => binding.0,
+        SemanticStmt::TypedAssign { binding, .. } => binding.0,
+        SemanticStmt::For { binding, body, .. } => {
+            binding.0.max(max_binding_in_stmts(body.iter()))
+        }
+        SemanticStmt::WhileIn { arr_binding, body, then_chains, .. } => {
+            let body_max = max_binding_in_stmts(body.iter());
+            let chains_max = then_chains
+                .iter()
+                .map(|c| c.arr_binding.0.max(max_binding_in_stmts(c.body.iter())))
+                .max()
+                .unwrap_or(0);
+            arr_binding.0.max(body_max).max(chains_max)
+        }
+        SemanticStmt::While { body, .. } | SemanticStmt::Loop { body, .. } => {
+            max_binding_in_stmts(body.iter())
+        }
+        SemanticStmt::IfElse { then_body, else_ifs, else_body, .. } => {
+            let then_max = max_binding_in_stmts(then_body.iter());
+            let elif_max = else_ifs
+                .iter()
+                .flat_map(|(_, b)| b.iter())
+                .map(max_binding_in_stmt)
+                .max()
+                .unwrap_or(0);
+            let else_max = else_body
+                .as_deref()
+                .map(|b| max_binding_in_stmts(b.iter()))
+                .unwrap_or(0);
+            then_max.max(elif_max).max(else_max)
+        }
+        SemanticStmt::Block { stmts, .. } => max_binding_in_stmts(stmts.iter()),
+        SemanticStmt::When { arms, .. } => arms
+            .iter()
+            .map(|arm| max_binding_in_stmts(arm.body.iter()))
+            .max()
+            .unwrap_or(0),
+        SemanticStmt::FuncDef(f) => {
+            let param_max = f.params.iter().map(|p| p.binding.0).max().unwrap_or(0);
+            let body_max = max_binding_in_stmts(f.body.iter());
+            param_max.max(body_max)
+        }
+        SemanticStmt::ImplBlock { methods, .. } => methods
+            .iter()
+            .map(|m| {
+                let pm = m.params.iter().map(|p| p.binding.0).max().unwrap_or(0);
+                let bm = max_binding_in_stmts(m.body.iter());
+                pm.max(bm)
+            })
+            .max()
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn max_binding_in_stmts<'a>(stmts: impl Iterator<Item = &'a SemanticStmt>) -> u32 {
+    stmts.map(max_binding_in_stmt).max().unwrap_or(0)
 }
 
 pub fn lower_program_traced(program: &SemanticProgram) -> Result<IrModule, LoweringError> {
@@ -428,7 +498,8 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         return_ty: None,
         allow_return_stmt: false,
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
+    let first_synthetic = max_binding_in_stmts(stmts.iter().copied()).saturating_add(1);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target, first_synthetic);
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
         stmts.iter().copied(),
@@ -469,7 +540,10 @@ fn lower_semantic_function(
         }
     };
 
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
+    let param_max = function.params.iter().map(|p| p.binding.0).max().unwrap_or(0);
+    let body_max = max_binding_in_stmts(function.body.iter());
+    let first_synthetic = param_max.max(body_max).saturating_add(1);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target, first_synthetic);
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -1598,10 +1672,10 @@ fn lower_while_in_chain(
     let mut ordered_bindings: Vec<_> = incoming.keys().copied().collect();
     ordered_bindings.sort_by_key(|b| b.0);
 
-    // Allocate a synthetic BindingId for the internal loop counter so that
-    // break/continue can locate the counter value in the body's binding map.
-    let max_binding = ordered_bindings.iter().map(|b| b.0).max().unwrap_or(0);
-    let counter_binding = BindingId(max_binding + 1);
+    // Allocate a collision-free synthetic BindingId for the internal loop
+    // counter using the context-wide allocator (seeded from the program's max
+    // user binding), so it cannot collide with any body-local user binding.
+    let counter_binding = ctx.alloc_synthetic_binding();
 
     // Build the loop header: [counter(read_only), ...user_bindings].
     let counter_param = ctx.fresh_value();

@@ -709,6 +709,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let (arr_binding, arr_elem_ty) = {
                     let info = self.lookup_var(arr)
                         .ok_or_else(|| sem_err!(*pos, "undefined variable: {}", arr))?;
+                    if !info.initialized {
+                        return Err(sem_err!(*pos, "use of uninitialized variable '{}'", arr));
+                    }
                     let binding = info.binding;
                     let elem_ty = match info.inferred.as_ref() {
                         Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
@@ -720,6 +723,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             _ => return Err(sem_err!(*pos, "array '{}' has unknown type", arr)),
                         },
                     };
+                    if elem_ty == SemanticType::Unknown {
+                        return Err(sem_err!(*pos, "array '{}' has an unknown element type", arr));
+                    }
                     (binding, elem_ty)
                 };
                 let sem_start = self.analyze_expr(range_start)?;
@@ -734,6 +740,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         let (chain_arr_binding, chain_arr_elem_ty) = {
                             let info = self.lookup_var(&chain.arr)
                                 .ok_or_else(|| sem_err!(*pos, "undefined variable: {}", chain.arr))?;
+                            if !info.initialized {
+                                return Err(sem_err!(*pos, "use of uninitialized variable '{}'", chain.arr));
+                            }
                             let binding = info.binding;
                             let elem_ty = match info.inferred.as_ref() {
                                 Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
@@ -745,6 +754,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                                     _ => return Err(sem_err!(*pos, "array '{}' has unknown type", chain.arr)),
                                 },
                             };
+                            if elem_ty == SemanticType::Unknown {
+                                return Err(sem_err!(*pos, "array '{}' has an unknown element type", chain.arr));
+                            }
                             (binding, elem_ty)
                         };
                         let cs = self.analyze_expr(&chain.range_start)?;
