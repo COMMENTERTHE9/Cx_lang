@@ -33,7 +33,7 @@ set:
 | FloatOps       | f64 operations                               | t55, t135–t138 |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
 | LogicalOps     | Logical AND/OR short-circuit operators       | t141, t142 |
-| Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113) |
+| Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113); integration: t152_integration_multifn (CX-182) |
 
 Fixtures not explicitly listed in `feature_of()` fall into `Other`.
 
@@ -102,15 +102,16 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on branch `stokowski/CX-182` (submain as of CX-182 merge window, 2026-05-14).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-182 integration multi-function PassWithOutput
+fixture (t152_integration_multifn).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -130,9 +131,9 @@ Cast                      0      2            0
 FloatOps                  0      5            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
-Other                    16     48            0
+Other                    17     48            0
 ------------------------------------------------
-Total: 155 fixtures, 0 PARITY_FAILs
+Total: 156 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
