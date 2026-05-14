@@ -5432,4 +5432,478 @@ mod determinism_tests {
             result
         );
     }
+
+    // ── CX-184: PtrOffset determinism ────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_ptr_offset_zero_aliases_base() {
+        // PtrOffset with offset=0 must alias the base pointer across two independent
+        // JIT runs.
+        //
+        // main(): i32 {
+        //   slot  = alloca(4, 4)
+        //   alias = ptr_offset slot + 0
+        //   store(alias, 99i32)
+        //   v     = load(i32, slot)
+        //   return v                      // → 99
+        // }
+        let module = IrModule {
+            debug_name: "det_ptr_offset_zero".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 4, align: 4 },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 0 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 99 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(2) },
+                        IrInst::Load { dst: ValueId(3), ty: IrType::I32, ptr: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 99);
+    }
+
+    #[test]
+    fn jit_determinism_ptr_offset_nonzero_advances_ptr() {
+        // PtrOffset with offset=4 must address bytes [4..8] of an 8-byte slot
+        // across two independent JIT runs.
+        //
+        // main(): i32 {
+        //   slot = alloca(8, 4)
+        //   p4   = ptr_offset slot + 4
+        //   store(slot, 0i32)       // bytes [0..4] = 0
+        //   store(p4,   77i32)      // bytes [4..8] = 77
+        //   v    = load(i32, p4)
+        //   return v                // → 77
+        // }
+        let module = IrModule {
+            debug_name: "det_ptr_offset_nonzero".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 4 },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 4 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(2) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 77 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(3) },
+                        IrInst::Load { dst: ValueId(4), ty: IrType::I32, ptr: ValueId(1) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(4)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 77);
+    }
+
+    // ── CX-184: ArrayAlloca determinism ──────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_array_alloca_store_load() {
+        // ArrayAlloca for a 4-element I32 array; store 55 into element[0], load it
+        // back, and verify two independent JIT runs return the same value.
+        //
+        // main(): i32 {
+        //   arr  = array_alloca(I32, 4)   // 16-byte slot, alignment 4
+        //   store(arr, 55i32)
+        //   v    = load(i32, arr)
+        //   return v                      // → 55
+        // }
+        let module = IrModule {
+            debug_name: "det_array_alloca".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ArrayAlloca {
+                            dst: ValueId(0),
+                            element_type: IrType::I32,
+                            count: 4,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 55 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 55);
+    }
+
+    #[test]
+    fn jit_determinism_array_alloca_ptr_offset_second_element() {
+        // ArrayAlloca for a 3-element I32 array; PtrOffset addresses element[1]
+        // (stride 4), stores 88 there, loads back, and verifies two independent
+        // JIT runs return the same value.
+        //
+        // main(): i32 {
+        //   arr  = array_alloca(I32, 3)   // 12-byte slot
+        //   p1   = ptr_offset arr + 4     // element[1]
+        //   store(arr, 0i32)
+        //   store(p1, 88i32)
+        //   v    = load(i32, p1)
+        //   return v                      // → 88
+        // }
+        let module = IrModule {
+            debug_name: "det_array_alloca_offset".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ArrayAlloca {
+                            dst: ValueId(0),
+                            element_type: IrType::I32,
+                            count: 3,
+                        },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 4 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 0 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(2) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 88 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(3) },
+                        IrInst::Load { dst: ValueId(4), ty: IrType::I32, ptr: ValueId(1) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(4)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 88);
+    }
+
+    // ── CX-184: Cast determinism ──────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_cast_sextend_i32_to_i64() {
+        // sextend I32→I64 then ireduce I64→I32 must be stable across two runs.
+        //
+        // main(): i32 { v0=42i32; v1=sextend I32→I64 v0; v2=ireduce I64→I32 v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "det_cast_sextend".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I32,
+                            to: IrType::I64,
+                            value: ValueId(0),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(2),
+                            from: IrType::I64,
+                            to: IrType::I32,
+                            value: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_cast_ireduce_i64_to_i32() {
+        // ireduce I64→I32 must be stable across two runs.
+        //
+        // main(): i32 { v0=42i64; v1=ireduce I64→I32 v0; return v1 }  → 42
+        let module = IrModule {
+            debug_name: "det_cast_ireduce".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I64,
+                            to: IrType::I32,
+                            value: ValueId(0),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_cast_i64_to_f64_and_back() {
+        // fcvt_from_sint I64→F64 then fcvt_to_sint_sat F64→I32 must be stable
+        // across two runs.
+        //
+        // main(): i32 { v0=42i64; v1=cast I64→F64 v0; v2=cast F64→I32 v1; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "det_cast_int_float".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I64,
+                            to: IrType::F64,
+                            value: ValueId(0),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(2),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_cast_sextend_i8_negative() {
+        // Sign extension of a negative I8 value must be stable across two runs.
+        //
+        // main(): i32 { v0=-1i8; v1=sextend I8→I32 v0; return v1 }  → -1
+        let module = IrModule {
+            debug_name: "det_cast_sextend_neg".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: -1 },
+                        IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(0),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, -1);
+    }
+
+    // ── CX-184: F64 binary arithmetic determinism ─────────────────────────────
+
+    #[test]
+    fn jit_determinism_f64_binary_add() {
+        // 3.0 + 4.0 = 7.0 → 7; must be stable across two runs.
+        let module = IrModule {
+            debug_name: "det_f64_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 3.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 4.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 7);
+    }
+
+    #[test]
+    fn jit_determinism_f64_binary_sub() {
+        // 10.0 - 3.0 = 7.0 → 7; must be stable across two runs.
+        let module = IrModule {
+            debug_name: "det_f64_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 10.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 3.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 7);
+    }
+
+    #[test]
+    fn jit_determinism_f64_binary_mul() {
+        // 3.5 * 2.0 = 7.0 → 7; must be stable across two runs.
+        let module = IrModule {
+            debug_name: "det_f64_mul".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 3.5 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 2.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Mul,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 7);
+    }
+
+    #[test]
+    fn jit_determinism_f64_binary_div() {
+        // 21.0 / 3.0 = 7.0 → 7; must be stable across two runs.
+        let module = IrModule {
+            debug_name: "det_f64_div".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 21.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 3.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Div,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 7);
+    }
+
+    #[test]
+    fn jit_determinism_f64_binary_rem() {
+        // 10.0 % 3.0 = 1.0 → 1 (via fmod libcall); must be stable across two runs.
+        let module = IrModule {
+            debug_name: "det_f64_rem".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 10.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 3.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Rem,
+                            ty: IrType::F64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::F64,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 1);
+    }
 }
