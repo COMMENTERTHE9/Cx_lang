@@ -290,10 +290,14 @@ impl LoweringCtx {
         }
     }
 
-    fn alloc_synthetic_binding(&mut self) -> BindingId {
+    fn alloc_synthetic_binding(&mut self) -> Result<BindingId, LoweringError> {
         let id = BindingId(self.next_synthetic_binding);
-        self.next_synthetic_binding += 1;
-        id
+        self.next_synthetic_binding = self.next_synthetic_binding.checked_add(1).ok_or_else(|| {
+            LoweringError::InternalInvariantViolation {
+                detail: "BindingId space exhausted: synthetic counter overflowed u32".to_string(),
+            }
+        })?;
+        Ok(id)
     }
 
     fn fresh_value(&mut self) -> ValueId {
@@ -498,7 +502,11 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         return_ty: None,
         allow_return_stmt: false,
     };
-    let first_synthetic = max_binding_in_stmts(stmts.iter().copied()).saturating_add(1);
+    let first_synthetic = max_binding_in_stmts(stmts.iter().copied())
+        .checked_add(1)
+        .ok_or_else(|| LoweringError::InternalInvariantViolation {
+            detail: "BindingId space exhausted: max user binding is u32::MAX".to_string(),
+        })?;
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target, first_synthetic);
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
@@ -542,7 +550,11 @@ fn lower_semantic_function(
 
     let param_max = function.params.iter().map(|p| p.binding.0).max().unwrap_or(0);
     let body_max = max_binding_in_stmts(function.body.iter());
-    let first_synthetic = param_max.max(body_max).saturating_add(1);
+    let first_synthetic = param_max.max(body_max).checked_add(1).ok_or_else(|| {
+        LoweringError::InternalInvariantViolation {
+            detail: "BindingId space exhausted: max user binding is u32::MAX".to_string(),
+        }
+    })?;
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target, first_synthetic);
     for param in &function.params {
         match (&param.kind, &param.ty) {
@@ -1657,10 +1669,12 @@ fn lower_while_in_chain(
     spec: &FunctionLoweringSpec,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     // Derive element IR type and stride for array pointer arithmetic.
-    let elem_ir_ty = if matches!(arr_elem_ty, SemanticType::Numeric | SemanticType::Unknown) {
-        ctx.target.numeric_literal_ir_type()
-    } else {
-        lower_type(arr_elem_ty)?
+    let elem_ir_ty = match arr_elem_ty {
+        SemanticType::Numeric => ctx.target.numeric_literal_ir_type(),
+        SemanticType::Unknown => return Err(LoweringError::InternalInvariantViolation {
+            detail: "while-in array element type is Unknown; semantic analysis must resolve element types before lowering".to_string(),
+        }),
+        _ => lower_type(arr_elem_ty)?,
     };
     let stride = compute_array_layout(&elem_ir_ty, 1).stride;
 
@@ -1675,7 +1689,7 @@ fn lower_while_in_chain(
     // Allocate a collision-free synthetic BindingId for the internal loop
     // counter using the context-wide allocator (seeded from the program's max
     // user binding), so it cannot collide with any body-local user binding.
-    let counter_binding = ctx.alloc_synthetic_binding();
+    let counter_binding = ctx.alloc_synthetic_binding()?;
 
     // Build the loop header: [counter(read_only), ...user_bindings].
     let counter_param = ctx.fresh_value();
@@ -4392,6 +4406,9 @@ mod tests {
     #[test]
     fn lowers_simple_while_in() {
         let arr_binding = BindingId(0);
+        // body_local uses a BindingId that is distinct from the array binding and
+        // the synthetic counter, exercising the allocator collision fix.
+        let body_local = BindingId(10);
         let arr_ty = SemanticType::Array(5, Box::new(SemanticType::I64));
         let program = SemanticProgram {
             stmts: vec![
@@ -4404,7 +4421,7 @@ mod tests {
                     range_start: int_expr(0, SemanticType::I64),
                     range_end: int_expr(5, SemanticType::I64),
                     inclusive: false,
-                    body: vec![],
+                    body: vec![typed_assign(body_local, "x", SemanticType::I64, int_expr(42, SemanticType::I64))],
                     then_chains: vec![],
                     result: None,
                     pos: 0,
@@ -4421,6 +4438,9 @@ mod tests {
     #[test]
     fn lowers_while_in_inside_function() {
         let arr_binding = BindingId(0);
+        // body_local uses a BindingId distinct from the param and synthetic counter,
+        // exercising the allocator collision fix in a function context.
+        let body_local = BindingId(10);
         let arr_ty = SemanticType::Array(3, Box::new(SemanticType::I64));
         let program = SemanticProgram {
             stmts: vec![semantic_function(
@@ -4435,7 +4455,7 @@ mod tests {
                     range_start: int_expr(0, SemanticType::I64),
                     range_end: int_expr(3, SemanticType::I64),
                     inclusive: false,
-                    body: vec![],
+                    body: vec![typed_assign(body_local, "x", SemanticType::I64, int_expr(7, SemanticType::I64))],
                     then_chains: vec![],
                     result: None,
                     pos: 0,

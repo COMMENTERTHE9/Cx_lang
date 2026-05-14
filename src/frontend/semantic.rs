@@ -245,6 +245,29 @@ impl Analyzer {
         semantic_enum
     }
 
+    fn resolve_while_in_array(&self, arr: &str, pos: usize) -> Result<(BindingId, SemanticType), SemanticError> {
+        let info = self
+            .lookup_var(arr)
+            .ok_or_else(|| sem_err!(pos, "undefined variable: {}", arr))?;
+        if !info.initialized {
+            return Err(sem_err!(pos, "use of uninitialized variable '{}'", arr));
+        }
+        let elem_ty = match info.inferred.as_ref() {
+            Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
+            Some(t) => return Err(sem_err!(pos, "'{}' is not an array (got {:?})", arr, t)),
+            None => match info.declared.as_ref() {
+                Some(Type::Array(_, elem_type)) => {
+                    semantic_type_from_decl(*elem_type.clone(), &self.current_type_params)
+                }
+                _ => return Err(sem_err!(pos, "array '{}' has unknown type", arr)),
+            },
+        };
+        if elem_ty == SemanticType::Unknown {
+            return Err(sem_err!(pos, "array '{}' has an unknown element type", arr));
+        }
+        Ok((info.binding, elem_ty))
+    }
+
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
             Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
@@ -703,31 +726,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 result,
                 pos,
             } => {
-                // Resolve the array variable to a binding and element type.
-                // TypedAssign only stores the AST type in `declared`; fall back
-                // to it when `inferred` is None.
-                let (arr_binding, arr_elem_ty) = {
-                    let info = self.lookup_var(arr)
-                        .ok_or_else(|| sem_err!(*pos, "undefined variable: {}", arr))?;
-                    if !info.initialized {
-                        return Err(sem_err!(*pos, "use of uninitialized variable '{}'", arr));
-                    }
-                    let binding = info.binding;
-                    let elem_ty = match info.inferred.as_ref() {
-                        Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
-                        Some(t) => return Err(sem_err!(*pos, "'{}' is not an array (got {:?})", arr, t)),
-                        None => match info.declared.as_ref() {
-                            Some(Type::Array(_, elem_type)) => {
-                                semantic_type_from_decl(*elem_type.clone(), &self.current_type_params)
-                            }
-                            _ => return Err(sem_err!(*pos, "array '{}' has unknown type", arr)),
-                        },
-                    };
-                    if elem_ty == SemanticType::Unknown {
-                        return Err(sem_err!(*pos, "array '{}' has an unknown element type", arr));
-                    }
-                    (binding, elem_ty)
-                };
+                let (arr_binding, arr_elem_ty) = self.resolve_while_in_array(arr, *pos)?;
                 let sem_start = self.analyze_expr(range_start)?;
                 let sem_end = self.analyze_expr(range_end)?;
                 let sem_body = body
@@ -737,28 +736,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let sem_chains = then_chains
                     .iter()
                     .map(|chain| {
-                        let (chain_arr_binding, chain_arr_elem_ty) = {
-                            let info = self.lookup_var(&chain.arr)
-                                .ok_or_else(|| sem_err!(*pos, "undefined variable: {}", chain.arr))?;
-                            if !info.initialized {
-                                return Err(sem_err!(*pos, "use of uninitialized variable '{}'", chain.arr));
-                            }
-                            let binding = info.binding;
-                            let elem_ty = match info.inferred.as_ref() {
-                                Some(SemanticType::Array(_, elem_ty)) => *elem_ty.clone(),
-                                Some(t) => return Err(sem_err!(*pos, "'{}' is not an array (got {:?})", chain.arr, t)),
-                                None => match info.declared.as_ref() {
-                                    Some(Type::Array(_, elem_type)) => {
-                                        semantic_type_from_decl(*elem_type.clone(), &self.current_type_params)
-                                    }
-                                    _ => return Err(sem_err!(*pos, "array '{}' has unknown type", chain.arr)),
-                                },
-                            };
-                            if elem_ty == SemanticType::Unknown {
-                                return Err(sem_err!(*pos, "array '{}' has an unknown element type", chain.arr));
-                            }
-                            (binding, elem_ty)
-                        };
+                        let (chain_arr_binding, chain_arr_elem_ty) =
+                            self.resolve_while_in_array(&chain.arr, *pos)?;
                         let cs = self.analyze_expr(&chain.range_start)?;
                         let ce = self.analyze_expr(&chain.range_end)?;
                         let cb = chain
