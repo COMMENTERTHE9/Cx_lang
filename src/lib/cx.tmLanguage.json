@@ -1,0 +1,212 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "cx",
+  "displayName": "Cx",
+  "scopeName": "source.cx",
+  "fileTypes": ["cx"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#macros" },
+    { "include": "#strings" },
+    { "include": "#chars" },
+    { "include": "#function-definition" },
+    { "include": "#constants" },
+    { "include": "#types" },
+    { "include": "#keywords" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#function-call" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.cx",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.cx",
+          "begin": "/#",
+          "end": "#/"
+        }
+      ]
+    },
+    "macros": {
+      "patterns": [
+        {
+          "name": "meta.attribute.inner.cx",
+          "begin": "#!\\[",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.attribute.cx" }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.attribute.cx" }
+          },
+          "patterns": [
+            { "include": "#strings" },
+            { "include": "#numbers" },
+            {
+              "name": "entity.name.function.macro.cx",
+              "match": "\\b[_\\p{L}][_\\p{L}\\p{N}]*\\b"
+            },
+            { "include": "#punctuation" }
+          ]
+        },
+        {
+          "name": "meta.attribute.outer.cx",
+          "begin": "#\\[",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.attribute.cx" }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.attribute.cx" }
+          },
+          "patterns": [
+            { "include": "#strings" },
+            { "include": "#numbers" },
+            {
+              "name": "entity.name.function.macro.cx",
+              "match": "\\b[_\\p{L}][_\\p{L}\\p{N}]*\\b"
+            },
+            { "include": "#punctuation" }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.cx",
+          "begin": "\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.cx" }
+          },
+          "end": "\"",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.cx" }
+          },
+          "patterns": [
+            {
+              "name": "constant.character.escape.cx",
+              "match": "\\\\(?:[nrt0\\\\\"]|.)"
+            },
+            {
+              "name": "constant.other.placeholder.interpolation.cx",
+              "match": "\\{[_\\p{L}][_\\p{L}\\p{N}]*\\}"
+            }
+          ]
+        }
+      ]
+    },
+    "chars": {
+      "patterns": [
+        {
+          "name": "string.quoted.single.char.cx",
+          "match": "'([^'\\\\]|\\\\.)'"
+        }
+      ]
+    },
+    "function-definition": {
+      "patterns": [
+        {
+          "name": "meta.function.definition.cx",
+          "begin": "\\b(fnc)\\b\\s*(:)?",
+          "beginCaptures": {
+            "1": { "name": "keyword.declaration.function.cx" },
+            "2": { "name": "punctuation.separator.colon.cx" }
+          },
+          "end": "(?=\\{)|(?=$)",
+          "patterns": [
+            { "include": "#comments" },
+            { "include": "#types" },
+            { "include": "#operators" },
+            { "include": "#punctuation" },
+            {
+              "name": "entity.name.function.cx",
+              "match": "\\b[_\\p{L}][_\\p{L}\\p{N}]*\\b(?=\\s*(?:<[^>]*>\\s*)?\\()"
+            }
+          ]
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.cx",
+          "match": "\\b(?:true|false|unknown)\\b"
+        },
+        {
+          "name": "support.function.constructor.cx",
+          "match": "\\b(?:Ok|Err)\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.builtin.cx",
+          "match": "\\b(?:t8|t16|t32|t64|t128|f64|bool|strref|str|char|Handle|Result|Container)\\b"
+        },
+        {
+          "name": "storage.type.generic.cx",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.cx",
+          "match": "\\b(?:if|else|when|while|for|in|loop|break|continue|then|return)\\b"
+        },
+        {
+          "name": "keyword.declaration.cx",
+          "match": "\\b(?:let|const|pub|struct|enum|impl|group)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.cx",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.cx",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.cx",
+          "match": "::|->|=>|\\.\\.=|\\.\\.|\\+=|-=|\\*=|/=|%%=|%=|==|!=|<=|>=|&&|\\|\\||[+\\-*/%!=<>?]"
+        }
+      ]
+    },
+    "function-call": {
+      "patterns": [
+        {
+          "name": "support.function.builtin.cx",
+          "match": "\\b(?:print|read|input|assert|assert_eq|is_known|copy_into)\\b(?=\\s*\\()"
+        },
+        {
+          "name": "entity.name.function.call.cx",
+          "match": "\\b(?!fnc\\b|if\\b|while\\b|for\\b|when\\b|loop\\b)[_\\p{L}][_\\p{L}\\p{N}]*\\b(?=\\s*\\()"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.cx",
+          "match": "[{}()\\[\\],.;:]"
+        }
+      ]
+    }
+  }
+}
