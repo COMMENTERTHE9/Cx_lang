@@ -27,7 +27,7 @@ set:
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 (output-verified); t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit (exit-code-verified, CX-121) |
-| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151, t152, t153 (exit-code-verified, CX-187) |
+| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151, t152, t153 (mixed output/exit-code fixtures; CX-119, CX-187) |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
