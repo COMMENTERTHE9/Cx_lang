@@ -1,0 +1,80 @@
+---
+title: Structs and Methods
+description: Struct literals, field access, impl blocks, and method status.
+order: 7
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Structs are stable in the interpreter. The JIT lowers struct literals and field read/write. Method calls are still SKIP.
+
+## Struct Definition
+
+Struct fields are named and typed.
+
+<SourceComment source="origin/submain:examples/structs_and_methods.cx" />
+```cx
+struct Player {
+    health: t32,
+    max_health: t32,
+}
+```
+
+## Impl Blocks
+
+Impl blocks attach methods. Method calls work in the interpreter and remain in progress for the JIT.
+
+<SourceComment source="origin/submain:examples/structs_and_methods.cx" />
+```cx
+player_methods: impl (p: Player) {
+    fnc: take_damage(amount: t32) {
+        p.health -= amount
+    }
+
+    fnc: heal(amount: t32) {
+        p.health += amount
+    }
+
+    fnc: show() {
+        print(p.health)
+    }
+}
+```
+
+## Field Read And Write
+
+Field reads and writes are stable in the interpreter. Field read/write is also JIT-lowered.
+
+<SourceComment source="origin/submain:examples/structs_and_methods.cx" />
+```cx
+let p;
+p = Player { health: 100, max_health: 100 }
+p.show()
+p.take_damage(30)
+p.show()
+p.heal(10)
+p.show()
+```
+
+## Struct Field JIT Fixtures
+
+The parity suite also has exit-code fixtures for field read and write.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t127_struct_field_write_exit.cx" />
+```cx
+struct Player {
+    health: t64,
+    mana: t64,
+}
+
+p: Player = Player { health: 10, mana: 20 }
+p.health = 99
+assert_eq(p.health, 99)
+assert_eq(p.mana, 20)
+```
+
+Source example:
+[examples/structs_and_methods.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/structs_and_methods.cx).

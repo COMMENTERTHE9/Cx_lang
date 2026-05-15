@@ -1,0 +1,72 @@
+---
+title: Error Handling
+description: Result<T>, Ok, Err, and ? propagation.
+order: 10
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+`Result<T>`, `Ok`, `Err`, and `?` are stable in the interpreter. They are not JIT-lowered yet.
+
+## Result Values
+
+Functions can return `Result<T>`.
+
+<SourceComment source="origin/submain:examples/error_handling.cx" />
+```cx
+fnc: Result<t32> safe_divide(a: t32, b: t32) {
+    if b == 0 {
+        return Err("division by zero")
+    }
+    return Ok(a / b)
+}
+```
+
+## Try Propagation
+
+`?` propagates `Err` from a `Result<T>` function.
+
+<SourceComment source="origin/submain:examples/error_handling.cx" />
+```cx
+fnc: Result<t32> compute(a: t32, b: t32) {
+    let q;
+    q = safe_divide(a, b)?
+    return Ok(q * 2)
+}
+
+print(compute(10, 2))
+print(compute(10, 0))
+print(compute(9, 3))
+```
+
+## Propagation Chain
+
+The matrix covers chained propagation.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t84_try_propagation_chain.cx" />
+```cx
+fnc: Result<t32> step1(x: t32) {
+    if x == 0 {
+        return Err("zero at step1");
+    }
+    return Ok(x);
+}
+
+fnc: Result<t32> step2(x: t32) {
+    let v;
+    v = step1(x)?
+    return Ok(v + 1);
+}
+
+fnc: Result<t32> step3(x: t32) {
+    let v;
+    v = step2(x)?
+    return Ok(v + 1);
+}
+```
+
+Source example:
+[examples/error_handling.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/error_handling.cx).

@@ -1,121 +1,111 @@
 ---
 title: Variables and Assignment
-description: How values are declared, assigned, and updated in Cx today.
-order: 2
+description: Declarations, reassignment, constants, unknown values, and compound assignment.
+order: 3
 section: Core
 ---
 
-# Variables and Assignment
+import SourceComment from "../../components/SourceComment.astro";
 
-This page covers the variable and assignment forms that are visible in Cx today.
+## Status
 
-The goal here is practical: what you can write now, what is stable enough to teach, and what is still unsettled.
+Variables and assignment are stable in the interpreter. The JIT lowers typed and inferred declarations, reassignment, arithmetic over variables, and compound assignment. Some width-specific fixtures still SKIP.
 
-## Works today
+## Typed Declaration
 
-### Untyped declaration
+Declare a value by writing `name: Type = value`.
 
-You can declare a variable without assigning a value yet:
+<SourceComment source="origin/submain:src/tests/verification_matrix/t122_vardecl_int_exit.cx" />
+```cx
+x: t64 = 42
+assert_eq(x, 42)
+y: t64 = 100
+assert_eq(y, 100)
+```
 
+## Reassignment
+
+`=` updates an existing binding.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t123_vardecl_reassign_exit.cx" />
+```cx
+x: t64 = 0
+assert(x == 0)
+x = 42
+assert(x == 42)
+x = 100
+assert(x == 100)
+```
+
+## Local Inference
+
+`let` creates a binding before the value is known. The assigned value determines the type.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t17_unknown_literal.cx" />
 ```cx
 let x;
-x = 56
+x = ?
+print(x)
 ```
 
-The value assigned later determines the type.
+Local inference works. Do not document broad or global type inference as complete.
 
-### Typed declaration with assignment
+## Constants
 
-You can declare a variable with a type and an initial value in one line:
+`const` values are initialized at declaration and cannot be reassigned.
 
-```cx
-score: t64 = 10
-name: str = "Zara"
-flag: bool = true
-```
-
-This is the clearest form when the type matters.
-
-### Typed declaration without assignment
-
-You can also declare a typed variable first and assign later:
-
-```cx
-let hp: t64;
-hp = 100
-```
-
-Use this when the type is known but the value is not ready yet.
-
-### Constant declarations
-
-Use `const` for values that never change. Constants must be initialized at declaration:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t56_const_basic.cx" />
 ```cx
 const MAX_HP: t32 = 100
 const GRAVITY: f64 = 9.8
-pub const TILE_SIZE: t32 = 32
+
+print(MAX_HP)
+print(GRAVITY)
 ```
 
-`pub const` makes the constant publicly visible (module system is not yet implemented, but the syntax is accepted).
+## Compound Assignment
 
-### Reassignment
+Use the standard compound operators: `+=`, `-=`, `*=`, `/=`, `%=`.
 
-Existing variables can be reassigned:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t151_var_compound_assign_exit.cx" />
 ```cx
-x = x + 1
-name = "Lena"
-flag = false
+x: t64 = 10
+x += 5
+assert_eq(x, 15)
+
+x = 20
+x -= 8
+assert_eq(x, 12)
+
+x = 6
+x *= 7
+assert_eq(x, 42)
+
+x = 100
+x /= 4
+assert_eq(x, 25)
+
+x = 17
+x %= 5
+assert_eq(x, 2)
 ```
 
-If the name already exists, `=` updates it.
+The modulo form is `%=`.
 
-## Exists but rough
+## Unknown Values
 
-### Compound assignment
+`?` is executable in the interpreter. Unknown propagation is part of the current language surface. JIT support is incomplete.
 
-Cx currently supports compact compound assignment syntax:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t18_unknown_propagation.cx" />
 ```cx
-i +1=
-i +2=
-i -1=
-i *2=
-i /2=
-i %2=
+let x;
+x = ?
+let y;
+y = 5 + x
+print(y)
+let z;
+z = false
+let w;
+w = z && x
+print(w)
 ```
-
-This is the current interpreter form. It is not a settled design.
-
-It exists because it matches the current tokenization and parser behavior, and it may change later.
-
-The accepted form is compact, as shown above. Do not assume `i += 1` works.
-
-## Designed / not implemented
-
-### Unknown values
-
-Cx reserves `?` for unknown values, but this should not be taught as stable executable syntax yet.
-
-Treat it as design-level syntax for now. The parser and type surface may mention it, but the runtime is not a safe source of truth for everyday use yet.
-
-That means this page does not present runnable `?` examples as normal variable syntax.
-
-## Summary
-
-Safe to teach today:
-
-- `let x;`
-- `name: Type = value`
-- typed declaration before later assignment
-- `const` declarations
-- reassignment with `=`
-
-Present but still rough:
-
-- compact compound assignment like `i +1=`
-
-Not ready to teach as normal syntax:
-
-- unknown-value assignment with `?`

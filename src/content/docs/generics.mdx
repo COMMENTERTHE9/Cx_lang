@@ -1,0 +1,65 @@
+---
+title: Generics
+description: Generic functions and structs in the interpreter.
+order: 9
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Generic functions and generic structs are stable in the interpreter. They are not JIT-lowered yet.
+
+## Generic Structs
+
+Structs can take type parameters.
+
+<SourceComment source="origin/submain:examples/generics.cx" />
+```cx
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+ints: Pair = Pair { first: 10, second: 20 }
+print(ints.first)
+print(ints.second)
+
+floats: Pair = Pair { first: 3.14, second: 2.71 }
+print(floats.first)
+print(floats.second)
+```
+
+## Explicit Type Arguments
+
+The matrix includes explicit type arguments at instantiation.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t63_generic_struct_explicit.cx" />
+```cx
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+p: Pair = Pair<t32> { first: 100, second: 200 }
+print(p.first)
+print(p.second)
+```
+
+## Generic Functions
+
+Function type parameters work in the interpreter.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t53_generics_two_same.cx" />
+```cx
+fnc: T <T> first(a: T, b: T) {
+    a
+}
+
+result: t64 = first(10, 20)
+print(result)
+```
+
+Source example:
+[examples/generics.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/generics.cx).

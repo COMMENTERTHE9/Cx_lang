@@ -1,186 +1,124 @@
 ---
 title: Basic Syntax
-description: What the parser accepts today - and what it doesn't.
+description: The file shape, literals, calls, comments, and operators Cx accepts.
 order: 2
 section: Core
 ---
 
-# Basic Syntax
+import SourceComment from "../../components/SourceComment.astro";
 
-This page documents **current behavior** - what Cx accepts today.
+## Status
 
-If something is not implemented yet, it is labeled as such.
+Basic syntax is stable in the interpreter. The JIT lowers a useful subset and skips unsupported constructs cleanly.
 
-## File structure
+## File Shape
 
-No module header is required. A Cx file is a flat list of function definitions and top-level statements.
+A Cx file is a list of declarations and top-level statements. A `main` function is optional for simple scripts. Top-level statements run.
 
-- Entry point is `main`
-- Top-level `print` calls also execute directly
-
+<SourceComment source="origin/submain:examples/hello.cx" />
 ```cx
-fnc: main() {
-    print(42)
-}
+name: str = "World"
+age: t32 = 42
+score: f64 = 9.8
+
+print("Hello, {name}!")
+print("Age: {age}")
+print("Score: {score}")
 ```
 
 ## Comments
 
-Line comments and block comments are supported:
+Line comments and block comments are accepted.
 
+<SourceComment source="origin/submain:src/tests/verification_matrix/t76_block_comments.cx" />
 ```cx
-// this is a line comment
-x: t64 = 10  // inline comment
-
 /# this is a block comment #/
-/# it can span
-   multiple lines #/
+x: t32 = 10
+/# inline block comment #/
+/#
+   multi
+   line
+   comment
+#/
+print(x)
 ```
 
 ## Variables
 
-Variables are declared with a type annotation and `=`. The type comes after the name separated by `:`.
+Types follow the name after `:`. Untyped `let` declarations infer from later assignment.
 
+<SourceComment source="origin/submain:src/tests/verification_matrix/t122_vardecl_int_exit.cx" />
 ```cx
 x: t64 = 42
-name: str = "Zara"
-flag: bool = true
+assert_eq(x, 42)
+y: t64 = 100
+assert_eq(y, 100)
 ```
 
-Uninitialized declaration exists via `let` - type is inferred on first assignment:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t17_unknown_literal.cx" />
 ```cx
 let x;
-x = 42
+x = ?
+print(x)
 ```
-
-## Numeric types
-
-### Signed integers
-
-`t8`, `t16`, `t32`, `t64`, `t128`
-
-### Floating point
-
-`f64`
-
-Unsigned integers are not implemented yet.
-
-```cx
-a: t64 = 100
-b: t128 = 999999999999
-c: f64 = 3.14
-```
-
-Literal defaults:
-
-- Integer literals default to `t64` when inferred
-- Float literals default to `f64`
-
-## Strings
-
-Strings are double-quoted. Escape sequences supported: `\n`, `\t`, `\\`, `\"`.
-
-Multiline strings are not implemented yet.
-
-Template interpolation uses `{varname}` inside the string literal:
-
-```cx
-name: str = "Zara"
-print("hello {name}")
-```
-
-## Booleans
-
-Two states currently implemented: `true` and `false`.
-
-A third state (`Unknown` / `?`) is designed and specced but not implemented in the runtime.
-
-```cx
-flag: bool = true
-other: bool = false
-```
-
-## Conditionals
-
-`if/else` is intentionally withheld pending final `when` design. It is not available yet.
-
-## `when` blocks
-
-Designed but not implemented. Intended syntax:
-
-```cx
-when (cond) {
-    true    => { ... }
-    false   => { ... }
-    unknown => { ... }
-}
-```
-
-Do not use yet - the parser does not recognize it.
 
 ## Functions
 
-Functions use `fnc:`. Parameters are typed. Return type is declared after `fnc:` before the name.
+Functions use `fnc:`. A return type appears between `fnc:` and the function name. If there is no return value, omit the type.
 
-- Implicit return = last expression in body
-- Explicit return uses `return`
-
+<SourceComment source="origin/submain:examples/fibonacci.cx" />
 ```cx
-fnc: t64 add(a: t64, b: t64) {
-    a + b
+fnc: t64 fib(n: t64) {
+    if n < 2 {
+        return n
+    }
+    a: t64 = 0
+    b: t64 = 1
+    tmp: t64 = 0
+    i: t64 = 2
+    while (i <= n) {
+        tmp = a + b
+        a = b
+        b = tmp
+        i += 1
+    }
+    return b
 }
-
-fnc: greet(name: str) {
-    print("hello {name}")
-}
 ```
-
-## Parameter passing modes
-
-Cx supports three distinct parameter kinds:
-
-```cx
-fnc: inner(x.copy) { ... }        // copy - bleeds final value back to outer
-fnc: inner(x.copy.free) { ... }   // copy.free - isolated, nothing bleeds back
-fnc: inner(t: copy_into(x, y)) { ... }  // copy_into - bundles multiple vars into container t
-```
-
-These are not overloads. They are separate semantics.
-
-## Printing
-
-`print` and `printn` are built-in functions:
-
-```cx
-print(42)             // prints with newline
-print("hello")        // string
-printn("no newline")  // no newline appended
-print("{x} + {y}")    // template interpolation
-```
-
-## Handles
-
-Handles are registry-based references with generation counters and stale detection.
-
-```cx
-h: Handle<t64> = Handle.new(99)  // allocate into registry
-print(h.val)                     // dereference
-h.drop()                         // explicit free - h is now stale
-```
-
-Using a handle after `.drop()` triggers a runtime error, not undefined behavior.
 
 ## Operators
 
-Arithmetic:
+Arithmetic: `+`, `-`, `*`, `/`, `%`.
 
-`+  -  *  /  %`
+Comparison: `==`, `!=`, `>`, `<`, `>=`, `<=`.
 
-Comparison:
+Logical: `&&`, `||`, `!`.
 
-`==  !=  >  <  >=  <=`
+Compound assignment uses standard infix form.
 
-Logical:
+<SourceComment source="origin/submain:src/tests/verification_matrix/t151_var_compound_assign_exit.cx" />
+```cx
+x: t64 = 10
+x += 5
+assert_eq(x, 15)
 
-`&&  ||  !`
+x = 17
+x %= 5
+assert_eq(x, 2)
+```
+
+Use `%=` for compound modulo assignment.
+
+## Macros
+
+Outer macros use `#[name]`. The parser accepts a closed set. Unknown names are rejected.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t67_macro_outer_test.cx" />
+```cx
+#[test]
+fnc: run_test() {
+    print(1)
+}
+
+run_test()
+```

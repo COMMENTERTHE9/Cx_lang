@@ -1,0 +1,130 @@
+---
+title: Control Flow
+description: if, else, when, while, for, loop, break, and continue.
+order: 6
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Control flow is stable in the interpreter. `if` / `else` and `for` are JIT-lowered and parity-gated. `while` and `loop` have partial JIT coverage. `when` is interpreter-only today.
+
+## If And Else
+
+`if`, `else if`, and `else` work.
+
+<SourceComment source="origin/submain:examples/fizzbuzz.cx" />
+```cx
+let i;
+i = 1
+while (i <= 20) {
+    if i % 15 == 0 {
+        print("FizzBuzz")
+    } else if i % 3 == 0 {
+        print("Fizz")
+    } else if i % 5 == 0 {
+        print("Buzz")
+    } else {
+        print(i)
+    }
+    i += 1
+}
+```
+
+## While
+
+`while` works in the interpreter. The JIT has PASS and SKIP fixtures.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t132_while_loop_exit.cx" />
+```cx
+fnc: t64 sum_loop(n: t64) {
+    total: t64 = 0
+    i: t64 = 0
+    while (i < n) {
+        total = total + i
+        i = i + 1
+    }
+    return total
+}
+
+assert_eq(sum_loop(5), 10)
+```
+
+## For
+
+Range `for` loops work and have full category PASS in the current JIT parity table.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t149_for_loop_exit.cx" />
+```cx
+total: t64 = 0
+for i in 0..5 {
+    total = total + i
+}
+assert_eq(total, 10)
+
+sum: t64 = 0
+for i in 1..=4 {
+    sum = sum + i
+}
+assert_eq(sum, 10)
+```
+
+## Loop And Break
+
+`loop` and `break` work in the interpreter. JIT coverage is partial.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t106_loop_break_in_func.cx" />
+```cx
+fnc: t64 find_first_even(start: t64) {
+    i: t64 = start
+    loop {
+        if i % 2 == 0 {
+            break
+        }
+        i += 1
+    }
+    return i
+}
+print(find_first_even(7))
+```
+
+## Continue
+
+`continue` works in the interpreter. JIT coverage is partial.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t107_continue_in_func.cx" />
+```cx
+fnc: print_odds(n: t64) {
+    i: t64 = 0
+    while (i < n) {
+        i += 1
+        if i % 2 == 0 {
+            continue
+        }
+        print(i)
+    }
+}
+print_odds(6)
+```
+
+## When
+
+`when` works in the interpreter. It is not JIT-lowered yet.
+
+<SourceComment source="origin/submain:examples/tbool_uncertainty.cx" />
+```cx
+let y;
+y = ?
+
+when y {
+    true    => print("is true"),
+    false   => print("is false"),
+    unknown => print("is unknown"),
+}
+```
+
+Source examples:
+[examples/fizzbuzz.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/fizzbuzz.cx),
+[examples/tbool_uncertainty.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/tbool_uncertainty.cx).

@@ -1,0 +1,58 @@
+---
+title: Testing
+description: "#[test], --test, assert, and assert_eq."
+order: 12
+section: Tooling
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+`#[test]`, `--test`, `assert`, and `assert_eq` are stable in the interpreter path. `assert` and `assert_eq` have partial JIT coverage.
+
+## Test Macro
+
+Use `#[test]` on test functions.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t67_macro_outer_test.cx" />
+```cx
+#[test]
+fnc: run_test() {
+    print(1)
+}
+
+run_test()
+```
+
+Run tests with `--test`.
+
+## Assertions
+
+Assertions are built-ins.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t77_assert_basic.cx" />
+```cx
+assert(true)
+assert(1)
+assert_eq(1, 1)
+assert_eq(true, true)
+print("ok")
+```
+
+## String Equality
+
+`assert_eq` covers strings in the interpreter.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t78_assert_eq_strings.cx" />
+```cx
+x: str = "hello"
+y: str = "hello"
+assert_eq(x, y)
+assert_eq(1 + 1, 2)
+print("ok")
+```
+
+Source fixtures:
+[t67_macro_outer_test.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/src/tests/verification_matrix/t67_macro_outer_test.cx),
+[t77_assert_basic.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/src/tests/verification_matrix/t77_assert_basic.cx).

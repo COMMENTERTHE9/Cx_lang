@@ -1,0 +1,71 @@
+---
+title: Arrays
+description: Fixed-size arrays, indexing, writes, function use, and iteration.
+order: 8
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Fixed-size arrays are stable in the interpreter. The JIT lowers stack allocation, element read/write, and array use inside functions. Some array fixtures still SKIP.
+
+## Declaration And Indexing
+
+Array types use `[N: Type]`. Index access uses `arr:[index]`.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t146_array_read_exit.cx" />
+```cx
+arr: [5: t64] = [10, 20, 30, 40, 50]
+assert_eq(arr:[0], 10)
+assert_eq(arr:[2], 30)
+assert_eq(arr:[4], 50)
+```
+
+## Writes
+
+Array element writes work.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t147_array_write_exit.cx" />
+```cx
+arr: [3: t64] = [10, 20, 30]
+arr:[1] = 99
+assert_eq(arr:[0], 10)
+assert_eq(arr:[1], 99)
+assert_eq(arr:[2], 30)
+```
+
+## In Functions
+
+Arrays can be allocated and read inside functions.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t148_array_in_func_exit.cx" />
+```cx
+fnc: t64 pick_middle() {
+    vals: [3: t64] = [7, 42, 99]
+    return vals:[1]
+}
+result: t64 = pick_middle()
+assert_eq(result, 42)
+```
+
+## Iteration
+
+The interpreter supports array and range iteration forms.
+
+<SourceComment source="origin/submain:examples/arrays_and_loops.cx" />
+```cx
+nums: [5: t64] = [10, 20, 30, 40, 50]
+
+while in nums:[0], 0..5 {
+    print(*nums)
+}
+
+for i in 0..5 {
+    print(i)
+}
+```
+
+Source example:
+[examples/arrays_and_loops.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/arrays_and_loops.cx).

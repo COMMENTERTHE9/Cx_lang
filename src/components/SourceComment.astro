@@ -1,0 +1,5 @@
+---
+const { source } = Astro.props as { source: string };
+---
+
+<Fragment set:html={`<!-- Source: ${source} -->`} />

@@ -1,154 +1,103 @@
 ---
 title: Data Types
-description: The built-in types currently visible in Cx.
-order: 3
+description: Built-in Cx types and their current interpreter/JIT status.
+order: 4
 section: Core
 ---
 
-# Data Types
+import SourceComment from "../../components/SourceComment.astro";
 
-This page separates the type surface into three groups:
+## Status
 
-- what is safe to teach
-- what exists but is still rough
-- what is designed but not ready to treat as normal runtime behavior
+The interpreter supports the 0.1 type surface. The JIT lowers integers, bool paths, arrays, structs, and part of `tbool`. Strings, `char`, `strref`, handles, generics, `Result<T>`, and `f64` operations are not complete in the JIT.
 
-That line matters. Cx is still early, and the docs should not pretend otherwise.
+## Integers
 
-## Stable today (safe to teach)
+Cx has signed integer types `t8`, `t16`, `t32`, `t64`, and `t128`.
 
-These are the core types to teach first.
-
-### Integers
-
-Cx currently exposes a signed `t` family:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t122_vardecl_int_exit.cx" />
 ```cx
-t8
-t16
-t32
-t64
-t128
+x: t64 = 42
+assert_eq(x, 42)
+y: t64 = 100
+assert_eq(y, 100)
 ```
 
-Examples:
+Integer arithmetic and compound assignment are JIT-lowered, with some width coverage still marked SKIP.
 
-```cx
-small: t8 = 5
-count: t64 = 42
-big: t128 = 999999999999
-```
+## Floating Point
 
-### Floating point
+`f64` works in the interpreter. Float operations are SKIP in the JIT.
 
-`f64` is a 64-bit floating-point type:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t55_f64_basic.cx" />
 ```cx
 score: f64 = 3.14
 velocity: f64 = 9.8
+result: f64 = score + velocity
+print(result)
 ```
 
-Float literals default to `f64`.
+## Bool And TBool
 
-### Boolean
+`bool` has `true` and `false`. Cx also supports unknown state through `?` and `tbool` behavior.
 
-Boolean values use `bool`:
-
+<SourceComment source="origin/submain:examples/tbool_uncertainty.cx" />
 ```cx
-flag: bool = true
-other: bool = false
+a: bool = true
+b: bool = ?
+
+print(is_known(a))
+print(is_known(b))
+
+let x;
+x = true
+
+when x {
+    true    => print("is true"),
+    false   => print("is false"),
+    unknown => print("is unknown"),
+}
 ```
 
-### Strings
+Logical `&&` and `||` lower in the JIT. `when` over TBool does not.
 
-Strings use `str`:
+## Strings
 
+`str` works in the interpreter. String interpolation works in print calls. String arena operations are not JIT-lowered.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t75_string_interpolation.cx" />
 ```cx
-name: str = "Zara"
-message: str = "hello {name}"
+name: str = "Cx"
+version: t32 = 1
+print("Language: {name}")
+print("Version: {version}")
+x: f64 = 3.14
+print("Pi is about {x}")
 ```
 
-String templates are part of the current runtime behavior.
+## Char
 
-## Exists but rough
+`char` exists in the lexer, parser, semantic layer, and runtime. IR lowering rejects `Char`, so JIT support is planned.
 
-These types or type-shaped features are present in the surface or runtime, but should not be treated as polished public features yet.
+<SourceComment source="origin/submain:src/tests/verification_matrix/t24_full_system_regression.cx" />
+```cx
+print('a' == 'b')
+```
 
-### `Handle<T>`
+## Boundary Types
 
-`Handle<T>` is real in the runtime and worth knowing about, but it belongs to a more advanced part of the language:
+`strref` exists as a boundary type. User-facing constructor syntax is not settled.
 
+`Container` exists around `copy_into(...)` behavior and related runtime plumbing.
+
+## Handles
+
+`Handle<T>` works in the interpreter. It is not JIT-lowered.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t24_full_system_regression.cx" />
 ```cx
 let h;
 h = Handle.new(99)
 print(h.val)
 h.drop()
 ```
-
-This is not rough in the sense of being imaginary. It exists. But it is not a beginner type, and it should be taught with its runtime model, not as a casual primitive.
-
-### `char`
-
-`char` appears in the current syntax reference.
-
-It exists in the surface, but this page does not treat it as a fully settled everyday feature yet. Until it is better covered by runtime verification, treat it as present but not a first-pass teaching target.
-
-### `strref`
-
-`strref` exists in the type/runtime surface.
-
-Right now it should be treated as thin and specialized. It is better understood as part of internal or boundary behavior than as a fully documented everyday type.
-
-### `Container`
-
-`Container` also exists in the type/runtime surface.
-
-At the moment it is mostly relevant around `copy_into(...)` behavior and related runtime plumbing. It should not be taught as a normal first-line user type.
-
-### Arrays
-
-Array syntax appears in the parser and AST surface.
-
-That does not make arrays a stable public feature yet. They exist, but they are not ready to be taught here as a dependable part of the language.
-
-## Designed / not implemented
-
-These belong to the design surface, not the safe teaching surface.
-
-### Unknown
-
-Cx reserves `?` for unknown values.
-
-It is important to the language direction, but it should not be presented here as a normal runnable type feature unless runtime behavior is being verified directly.
-
-### `when`
-
-`when` is part of the language direction and appears in syntax discussions, but it does not belong in the stable type surface today.
-
-It is listed here only because readers will see it mentioned elsewhere. Treat it as designed rather than settled.
-
-## Summary
-
-Safe to teach first:
-
-- `t8`
-- `t16`
-- `t32`
-- `t64`
-- `t128`
-- `f64`
-- `bool`
-- `str`
-
-Present but rough:
-
-- `Handle<T>`
-- `char`
-- `strref`
-- `Container`
-- arrays
-
-Designed / not implemented:
-
-- unknown via `?`
-- `when` as a normal settled language feature

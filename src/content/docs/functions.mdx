@@ -1,64 +1,70 @@
 ---
 title: Functions
-description: How functions are defined, called, and returned from in Cx.
-order: 4
+description: Function definitions, calls, returns, forward calls, and nested functions.
+order: 5
 section: Core
 ---
 
-# Functions
+import SourceComment from "../../components/SourceComment.astro";
 
-Functions in Cx use `fnc`.
+## Status
 
-They are meant to stay direct: typed where it matters, short where possible, explicit when needed.
+Functions are stable in the interpreter. The JIT lowers direct calls, arity checks, type checks, return values, void returns, and exit-code propagation. DirectCall still has SKIP fixtures.
 
-## Works today
+## Definition
 
-### Basic function definition
+Return types go after `fnc:` and before the function name.
 
-A function with parameters and a return type looks like this (return type goes after `fnc:`):
+<SourceComment source="origin/submain:examples/fibonacci.cx" />
+```cx
+fnc: t64 fib(n: t64) {
+    if n < 2 {
+        return n
+    }
+    a: t64 = 0
+    b: t64 = 1
+    tmp: t64 = 0
+    i: t64 = 2
+    while (i <= n) {
+        tmp = a + b
+        a = b
+        b = tmp
+        i += 1
+    }
+    return b
+}
+```
 
+## Implicit Return
+
+The final bare expression can return a value.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t02_implicit_return.cx" />
 ```cx
 fnc: t64 add(a: t64, b: t64) {
     a + b
 }
+print(add(10, 20));
 ```
 
-The final bare expression is the return value.
+## Explicit Return
 
-### Function without a return type
+Use `return` when early exit is clearer.
 
-If a function performs work and does not return a value, omit the type after `fnc:`:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t03_explicit_return.cx" />
 ```cx
-fnc: greet(name: str) {
-    print(name)
-}
-```
-
-### Explicit return
-
-Cx supports explicit `return`:
-
-```cx
-fnc: t64 pick(a: t64, b: t64) {
+fnc: t64 find(a: t64, b: t64) {
     return a;
+    b
 }
+print(find(10, 20));
 ```
 
-### Implicit return
+## Forward Calls
 
-The last expression in the function body is the implicit return value:
+Top-level forward calls work in the interpreter and have partial JIT coverage.
 
-```cx
-fnc: t64 double(x: t64) {
-    x + x
-}
-```
-
-### Forward calls
-
-Top-level forward calls work today:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t29_forward_decl.cx" />
 ```cx
 outer()
 
@@ -67,92 +73,52 @@ fnc: outer() {
 }
 ```
 
-### Nested functions
+## Nested Functions
 
-Nested functions are scoped to their containing function and do not leak globally.
+Nested functions are scoped inside the containing function.
 
-## Exists but rough
-
-### Calls as statements
-
-Function calls work normally:
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t14_nested_5_deep.cx" />
 ```cx
-result: t64 = add(2, 3)
-greet("Zara");
-```
-
-Recommended for now: if a call is not the final expression in a function body, end it with `;`.
-
-That is practical guidance, not a final language-lawyer rule. Parser behavior is still settling in a few places.
-
-### Copy modes
-
-Cx currently exposes three special parameter forms:
-
-#### `.copy`
-
-```cx
-fnc: t64 inner(x.copy) {
-    x = x + 5;
-    x
+fnc: t64 level1() {
+    fnc: t64 level2() {
+        fnc: t64 level3() {
+            fnc: t64 level4() {
+                fnc: t64 level5() {
+                    5
+                }
+                level5() + 1
+            }
+            level4() + 1
+        }
+        level3() + 1
+    }
+    level2() + 1
 }
+print(level1());
 ```
 
-Operationally, `.copy` behaves like inout-style writeback in the current runtime.
+## Copy Parameters
 
-The safest description today is: it acts like a copied value that can write a final value back to the caller. That describes current behavior without freezing the long-term design too early.
+`.copy`, `.copy.free`, and `copy_into(...)` work in the interpreter. Treat the long-term semantics as still in progress.
 
-#### `.copy.free`
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t24_full_system_regression.cx" />
 ```cx
-fnc: t64 inner(x.copy.free) {
-    x = x + 5;
-    x
+x: t64 = 10
+fnc: t64 bump(n.copy) {
+    n = n + 5
+    n
 }
+print(bump(x.copy))
+print(x)
 ```
 
-This is the isolated form. It does not write changes back to the caller in the current runtime.
-
-#### `copy_into(...)`
-
+<SourceComment source="origin/submain:src/tests/verification_matrix/t24_full_system_regression.cx" />
 ```cx
-fnc: t64 inner(t: copy_into(x, y, z)) {
-    t.x + t.y + t.z
+a: t64 = 10
+b: t64 = 20
+c: t64 = 30
+fnc: t64 sum_box(t: copy_into(a, b, c)) {
+    t.a + t.b + t.c
 }
-
-result: t64 = inner(copy_into(x, y, z));
+print(sum_box(copy_into(a, b, c)))
 ```
-
-This builds a container-like argument with named fields.
-
-These forms are real and worth documenting, but they still belong to the “current runtime behavior” category more than the “fully settled long-term semantics” category.
-
-## Designed / not implemented
-
-This page does not treat `when` or unknown-driven control flow as part of the stable function model.
-
-If those forms appear elsewhere in language discussions, read them as part of the design direction unless they are being verified against the current runtime directly.
-
-## Summary
-
-Works today:
-
-- `fnc` definitions
-- typed parameters
-- optional return types
-- explicit `return`
-- implicit final-expression return
-- forward calls
-- nested functions
-
-Exists but rough:
-
-- call-statement semicolon guidance
-- `.copy`
-- `.copy.free`
-- `copy_into(...)`
-
-Designed / not implemented:
-
-- function-adjacent control flow that is not yet stable in runtime use

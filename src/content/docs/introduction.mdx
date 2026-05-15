@@ -1,68 +1,66 @@
 ---
 title: Introduction
-description: What Cx is, what it's for, and what's real today.
+description: What Cx is, what runs today, and where the backend stands.
 order: 1
 section: Core
 ---
 
-# Introduction
+## What Cx Is
 
-Cx is a systems programming language designed from the ground up for **game engines** and **real-time simulation**. It is **early and experimental** - not production-ready.
+Cx is a systems language for game engines. It has no garbage collector. It uses typed values, explicit movement, arenas, handles, and a small core.
 
-Cx prioritizes:
+Cx is early. Expect breaks.
 
-- **Deterministic memory management**
-- **Predictable performance**
-- **A lower learning curve** than Rust *without* giving up the control engine work demands
+The current version is `v0.1.0-rc`.
 
-## Design goals
+## Execution Status
 
-### No GC. No pauses.
-Cx has no garbage collector. There is no runtime scanning your heap. Memory is managed through **arenas**, **handles**, and **explicit lifecycle control**.
+The interpreter is the reference implementation.
 
-### No borrow-checker fights
-Cx's memory model is built around **scoped arenas** and **generation-counted handles**. You put things in the right bucket. The structure of those buckets makes the dangerous cases impossible.
+The Cranelift JIT is Phase 15 active and parity-gated against the interpreter. It is incomplete. Current parity gate: 155 fixtures, 66 PASS, 89 SKIP, 0 PARITY_FAILs.
 
-### Honest about tradeoffs
-Cx does not pretend to be everything. It is designed for a specific problem space and makes deliberate choices that match that space.
+SKIP means a construct is not lowered to JIT code yet. PARITY_FAIL means the JIT disagrees with the interpreter. The current gate has no parity failures.
 
-### Approachable
-The goal is **"Python for adults"** - expressive and learnable, not hostile.
+Source: [`docs/backend/cx_jit_parity_checklist.md`](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/docs/backend/cx_jit_parity_checklist.md).
 
-## What Cx is not
+## Stable In The Interpreter
 
-- Not a general-purpose language yet
-- Not production-ready (the compiler is a **tree-walk interpreter** right now)
-- Not garbage collected
-- Not Rust (no lifetime annotations required)
+- functions and direct calls
+- forward and nested functions
+- integer types `t8`, `t16`, `t32`, `t64`, `t128`
+- `f64`
+- `bool`, `str`, and `char`
+- unknown values and `tbool`
+- `if` / `else`
+- `when`
+- `while`, `for`, `loop`, `break`, `continue`
+- fixed-size arrays
+- structs, `impl`, methods, field read/write
+- grouped enums
+- generics for functions and structs
+- `Result<T>`, `Ok`, `Err`, and `?`
+- multi-file imports with `#![imports]`
+- `#[test]`, `--test`, `assert`, `assert_eq`
+- compound assignment with `+=`, `-=`, `*=`, `/=`, `%=`
+- string interpolation
+- `print`, `printn`, `read`, and `input`
 
-## Current status (truth, not marketing)
+## In Progress In The JIT
 
-### Implemented and working
-- `fnc` functions
-- Typed parameters
-- Implicit and explicit returns
-- Arithmetic + modulo
-- Comparison operators
-- Boolean logic
-- String literals with escape sequences
-- `print` and `printn`
-- Variables with type annotations
-- Scoped arenas with bump allocator
-- Free checker with double-free prevention
-- Three copy modes: `.copy`, `.copy.free`, `copy_into`
-- `Handle<T>` registry with generation counters and stale detection
+The JIT lowers integer arithmetic, comparisons, variable declarations, `if` / `else`, parts of loop control, direct calls, struct field read/write, arrays, compound assignment, logical `&&` / `||`, integer casts, `print` / `println` / `printn` for `t64`, and assertion built-ins.
 
-### Not implemented yet
-- `when` blocks
-- Loops
-- Structs
-- Arrays
-- `NullPoint<T>`
-- `Unknown` / `?` runtime support
-- GPU system
-- Compiler backend (Cranelift / LLVM)
-- Standard library
+The JIT does not yet lower `when`, method calls, `f64` operations, unary negation, enums, generics, handles, string arena operations, `Result<T>`, or `?`.
 
-## Start here
-- **Basic Syntax** -> `docs://basic-syntax`
+## Planned Or Thin
+
+- `strref` exists as a boundary type. User-facing constructor syntax is not settled.
+- C interop / FFI is post-0.1.
+- The standard library is minimal core first.
+- Broad type inference is not a finished feature. Local variable inference works.
+
+## Start Here
+
+- [Basic Syntax](/docs/basic-syntax)
+- [Functions](/docs/functions)
+- [Control Flow](/docs/control-flow)
+- [Backend Status](/docs/backend-status)

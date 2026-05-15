@@ -1,0 +1,59 @@
+---
+title: Modules and Imports
+description: "Multi-file imports with #![imports]."
+order: 11
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Multi-file imports are stable in the interpreter. Resolution happens before execution. JIT support depends on whether the imported constructs are lowerable.
+
+## Import Blocks
+
+Imports use a top-level `#![imports]` block.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t74_import_basic.cx" />
+```cx
+#![imports]
+math: use "./t74_import_basic_lib"
+
+result: t32 = math.add(10, 20)
+print(result)
+result2: t32 = math.multiply(3, 4)
+print(result2)
+```
+
+## Public Declarations
+
+Imported files expose `pub` declarations.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t74_import_basic_lib.cx" />
+```cx
+pub fnc: t32 add(a: t32, b: t32) {
+    a + b
+}
+
+pub fnc: t32 multiply(a: t32, b: t32) {
+    a * b
+}
+```
+
+## Pub-Only Fixture
+
+The matrix checks public access across files.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t64_import_pub_only.cx" />
+```cx
+#![imports]
+lib: use "./t64_import_pub_only_lib"
+
+result: t32 = lib.public_add(5, 10)
+print(result)
+```
+
+Source fixtures:
+[t74_import_basic.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/src/tests/verification_matrix/t74_import_basic.cx),
+[t74_import_basic_lib.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/src/tests/verification_matrix/t74_import_basic_lib.cx).

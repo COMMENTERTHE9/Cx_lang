@@ -1,0 +1,93 @@
+---
+title: Backend Status
+description: Interpreter reference path and Cranelift JIT parity status.
+order: 13
+section: Status
+---
+
+## Current Frame
+
+The interpreter is the reference implementation.
+
+The Cranelift JIT is Phase 15 active and parity-gated against the interpreter. It is incomplete.
+
+Current gate: 155 fixtures, 66 PASS, 89 SKIP, 0 PARITY_FAILs.
+
+Source: [`docs/backend/cx_jit_parity_checklist.md`](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/docs/backend/cx_jit_parity_checklist.md).
+
+## What PASS Means
+
+PASS means the JIT result matches the stored expectation for that fixture.
+
+Expected-fail fixtures pass when both paths reject the program. Output fixtures pass when stdout matches. Exit-code fixtures pass when assertions hold.
+
+## What SKIP Means
+
+SKIP means the construct is not lowered to JIT code yet. It exits cleanly with an unsupported-construct signal or a structured codegen error.
+
+SKIP is not a parity failure.
+
+## What PARITY_FAIL Means
+
+PARITY_FAIL means the JIT and interpreter disagree. That count must stay zero.
+
+## JIT-Lowered Today
+
+- integer arithmetic and comparisons
+- compound assignment with `+=`, `-=`, `*=`, `/=`, `%=`
+- logical `&&` / `||`
+- variable declarations, typed and inferred
+- `if` / `else`
+- `for` ranges
+- parts of `while`, `loop`, `break`, and `continue`
+- direct function calls
+- struct literals and field read/write
+- fixed-size array allocation, read, write, and function use
+- `print`, `println`, `printn` for `t64`
+- `assert` and `assert_eq`
+- integer casts
+- void returns and exit-code propagation
+
+## Not Yet JIT-Lowered
+
+- `when`
+- method calls
+- `f64` operations
+- unary negation
+- enums
+- generics
+- `Handle<T>`
+- string arena operations
+- `Result<T>` and `?`
+- `read` and `input`
+
+## Per-Feature Doc Tier
+
+| Feature area | Interpreter | JIT | Doc tier |
+| --- | --- | --- | --- |
+| Functions | Y | Partial | Stable interp / In progress JIT |
+| Structs and methods | Y | Partial | Stable interp / In progress JIT |
+| Enums | Y | N | Stable interp / In progress JIT |
+| Integers | Y | Partial | Stable interp / In progress JIT |
+| `f64` | Y | N | Stable interp / In progress JIT |
+| `bool` / `str` | Y | Partial | Stable interp / In progress JIT |
+| `char` | Y | N | Stable interp / Planned JIT |
+| `strref` | Partial | N | In progress |
+| `tbool` and unknown | Y | Partial | Stable interp / In progress JIT |
+| `when` | Y | N | Stable interp / In progress JIT |
+| `if` / `else` | Y | Y | Stable |
+| Loops | Y | Partial | Stable interp / In progress JIT |
+| Arrays | Y | Partial | Stable interp / In progress JIT |
+| Generics | Y | N | Stable interp / In progress JIT |
+| `Result<T>` | Y | N | Stable interp / In progress JIT |
+| Imports | Y | Partial / n/a | Stable interp / In progress JIT |
+| Testing | Y | Partial | Stable |
+| Compound assignment | Y | Y | Stable |
+| String interpolation | Y | N | Stable interp / In progress JIT |
+| `print` | Y | Partial | Stable interp / In progress JIT |
+| `read` / stdin | Y | N | Stable interp / Planned JIT |
+| Type inference | Partial | Partial | In progress |
+
+## Build From Source
+
+The JIT requires the `jit` feature in the language repo. The site does not publish a package install path.
