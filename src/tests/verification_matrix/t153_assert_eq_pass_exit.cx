@@ -1,0 +1,27 @@
+// CX-186: exit-code-based JIT parity — assert_eq pass-condition cases.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// Literal integer equality.
+assert_eq(1, 1)
+
+// Variable equals literal.
+x: t64 = 42
+assert_eq(x, 42)
+
+// Two variables equal.
+a: t64 = 10
+b: t64 = 10
+assert_eq(a, b)
+
+// Arithmetic expression equals expected value.
+assert_eq(2 + 3, 5)
+
+// Compound expression.
+y: t64 = 6
+assert_eq(y * 2, 12)
+
+// Accumulated result.
+sum: t64 = 0
+sum = sum + a
+sum = sum + b
+assert_eq(sum, 20)

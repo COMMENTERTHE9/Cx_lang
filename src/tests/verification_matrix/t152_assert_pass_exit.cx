@@ -1,0 +1,22 @@
+// CX-186: exit-code-based JIT parity — assert pass-condition cases.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+
+// Literal true: most basic pass case.
+assert(true)
+
+// Truthy integer literal.
+assert(1)
+
+// Comparison expression that holds.
+x: t64 = 10
+assert(x > 5)
+assert(x == 10)
+
+// Negated comparison.
+assert(x < 20)
+
+// After mutation, assertion on updated value.
+x = 3
+assert(x > 0)
+x = x + 7
+assert(x == 10)
