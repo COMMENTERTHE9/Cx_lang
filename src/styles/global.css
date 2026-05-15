@@ -6,8 +6,10 @@
 @import "@fontsource/outfit/300.css";
 @import "@fontsource/outfit/400.css";
 @import "@fontsource/outfit/500.css";
+@import "@fontsource/outfit/600.css";
 @import "@fontsource/jetbrains-mono/400.css";
 @import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
 
 /* ---------- Theme Tokens ---------- */
 :root {
@@ -21,7 +23,7 @@
     --cx-surface: #0d182e;
     --cx-surface-2: #0c1628;
     --cx-text: #b3cae3;
-    --cx-text-2: #5a7a9a;
+    --cx-text-2: #8fb5d9;
     --cx-border: #0f2040;
     --cx-accent: #00f0ff;
 
@@ -83,6 +85,16 @@ html, body {
     height: 100%;
     font-family: var(--cx-body);
     font-weight: 300;
+}
+
+*, *::before, *::after {
+    box-sizing: border-box;
+}
+
+html, body {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: clip;
 }
 
 body {
@@ -188,3 +200,17 @@ body::after {
 .prose code, .prose pre { font-family: var(--cx-mono); }
 .prose code { font-weight: 500; }
 .prose a:hover { text-decoration: underline; }
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        transition-delay: 0ms !important;
+    }
+
+    *, *::before, *::after {
+        transform: none !important;
+    }
+}

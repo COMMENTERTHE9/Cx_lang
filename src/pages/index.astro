@@ -261,6 +261,7 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
       max-width: 1400px;
       margin: 0 auto;
       padding: 0 24px;
+      min-width: 0;
     }
 
     .hero{ margin-top: 18px; }
@@ -271,6 +272,7 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
       grid-template-columns: 1.1fr 0.9fr;
       gap: 24px;
       align-items: start;
+      min-width: 0;
     }
 
     .hero-kicker{
@@ -287,6 +289,7 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
       margin: 12px 0 0;
       color: var(--cx-text);
       max-width: 20ch;
+      overflow-wrap: normal;
     }
 
     .hero-sub{
@@ -336,6 +339,7 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
     }
     .meta-chip{
       display:flex; gap: 8px; align-items:center;
+      min-width: 0;
       padding: 8px 10px;
       border-radius: 999px;
       border: 1px solid var(--cx-border);
@@ -343,6 +347,7 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
     }
 
     .hero-card{
+      min-width: 0;
       border-radius: 18px;
       border: 1px solid var(--cx-border);
       background: color-mix(in srgb, var(--cx-surface-2) 82%, transparent);
@@ -363,6 +368,7 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
     .dot.green{ background: #28c840; }
 
     .code{
+      max-width: 100%;
       margin: 0;
       padding: 14px;
       font-family: var(--cx-mono);
@@ -384,15 +390,18 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
       display:grid;
       grid-template-columns: 1fr 1fr;
       gap: 18px;
+      min-width: 0;
     }
 
     .feature-grid{
       display:grid;
       grid-template-columns: 1fr 1fr;
       gap: 18px;
+      min-width: 0;
     }
 
     .card{
+      min-width: 0;
       border: 1px solid var(--cx-border);
       background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
       border-radius: 18px;
@@ -450,6 +459,10 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
       background: color-mix(in srgb, var(--cx-surface-2) 55%, transparent);
       margin-bottom: 12px;
     }
+    .install-head > div{
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
 
     .road{ margin: 0; padding-left: 0; list-style: none; display:grid; gap: 10px; }
     .road li{ color: var(--cx-text-2); font-size: 14px; display:flex; gap: 10px; align-items:center; }
@@ -485,6 +498,26 @@ cargo run --features jit -- --backend=cranelift examples/hello.cx`}</code></pre>
       .hero-title{ font-size: 54px; }
       .two-col{ grid-template-columns: 1fr; }
       .feature-grid{ grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 640px){
+      .home-shell{ padding: 0; }
+      .hero-title{ font-size: 44px; max-width: 100%; }
+      .hero-sub{ max-width: 100%; }
+      .code,
+      .code code{
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .hero-card-footer{ align-items: flex-start; }
+      .hero-card-footer a{ overflow-wrap: anywhere; }
+      .road li{ align-items: flex-start; }
+      .home-foot{ align-items: flex-start; }
+    }
+
+    @media (max-width: 380px){
+      .hero-title{ font-size: 40px; }
+      .meta-chip{ width: 100%; justify-content: space-between; }
     }
   </style>
 </SiteLayout>

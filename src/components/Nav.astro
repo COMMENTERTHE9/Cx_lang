@@ -14,23 +14,23 @@ const { pathname } = Astro.url;
             class="backdrop-blur-md"
             style="background: color-mix(in srgb, var(--cx-surface) 78%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--cx-border) 70%, transparent) inset;"
     >
-        <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-            <a href="/" class="flex items-center gap-3">
+        <div class="nav-inner mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+            <a href="/" class="nav-brand flex items-center gap-3">
                 <span class="cx-display text-2xl leading-none" style="color: var(--cx-accent);">CX</span>
 
-                <span class="cx-mono text-xs tracking-wide" style="color: var(--cx-text-2);">
+                <span class="brand-path cx-mono text-xs tracking-wide" style="color: var(--cx-text-2);">
           ship://language/<span style="color: var(--cx-text);">home</span>
         </span>
 
                 <span
-                        class="cx-mono hidden rounded-full px-2 py-1 text-[10px] md:inline"
+                        class="brand-version cx-mono hidden rounded-full px-2 py-1 text-[10px] md:inline"
                         style="border: 1px solid var(--cx-border); color: var(--cx-text-2);"
                 >
           {SITE.version}
         </span>
             </a>
 
-            <div class="flex items-center gap-5">
+            <div class="nav-actions flex items-center gap-5">
                 {links.map((l) => (
                         <a
                                 href={l.href}
@@ -46,7 +46,7 @@ const { pathname } = Astro.url;
 
                 <a
                         href="/docs"
-                        class="cx-mono rounded-full px-3 py-1 text-xs"
+                        class="docs-pill cx-mono rounded-full px-3 py-1 text-xs"
                         style="
             border: 1px solid var(--cx-border);
             color: var(--cx-text);
@@ -61,3 +61,48 @@ const { pathname } = Astro.url;
         </div>
     </div>
 </nav>
+
+<style>
+  .nav-inner,
+  .nav-brand,
+  .nav-actions {
+    min-width: 0;
+  }
+
+  .nav-brand {
+    flex: 1 1 auto;
+    text-decoration: none;
+  }
+
+  .brand-path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nav-actions {
+    flex: 0 0 auto;
+  }
+
+  @media (max-width: 640px) {
+    .brand-path,
+    .docs-pill {
+      display: none;
+    }
+
+    .nav-actions {
+      gap: 14px;
+    }
+  }
+
+  @media (max-width: 380px) {
+    .nav-inner {
+      padding-inline: 12px;
+    }
+
+    .nav-actions {
+      gap: 10px;
+    }
+  }
+</style>

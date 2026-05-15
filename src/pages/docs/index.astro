@@ -7,32 +7,57 @@ docs.sort((a, b) => (a.data.order ?? 9999) - (b.data.order ?? 9999));
 ---
 
 <SiteLayout title="Docs | Cx" description="Cx Docs" wide={true}>
-  <h1 class="cx-display text-5xl">DOCS</h1>
-  <p class="mt-2 text-sm" style="color: var(--cx-text-2);">
-    Start here
-    <a href={`/docs/${docs[0]?.slug ?? ""}`} style="color: var(--cx-accent); text-decoration: none;">
-      {docs[0]?.data.title ?? "No docs yet"}
-    </a>
-  </p>
-
-  <div class="mt-8 space-y-3">
-    {docs.map((d) => (
-      <a
-        href={`/docs/${d.slug}`}
-        class="block rounded-xl border p-4 transition"
-        style="
-          border-color: var(--cx-border);
-          background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
-        "
-      >
-        <div class="cx-mono text-xs" style="color: var(--cx-text-2);">
-          /docs/{d.slug}
-        </div>
-        <div class="mt-1 cx-display text-3xl leading-none">{d.data.title}</div>
-        {d.data.description && (
-          <div class="mt-2 text-sm" style="color: var(--cx-text-2);">{d.data.description}</div>
-        )}
+  <div class="docs-index">
+    <h1 class="docs-index-title cx-display text-5xl">DOCS</h1>
+    <p class="mt-2 text-sm" style="color: var(--cx-text-2);">
+      Start here
+      <a href={`/docs/${docs[0]?.slug ?? ""}`} style="color: var(--cx-accent); text-decoration: none;">
+        {docs[0]?.data.title ?? "No docs yet"}
       </a>
-    ))}
+    </p>
+
+    <div class="mt-8 space-y-3">
+      {docs.map((d) => (
+        <a
+          href={`/docs/${d.slug}`}
+          class="docs-card block rounded-xl border p-4 transition"
+          style="
+            border-color: var(--cx-border);
+            background: color-mix(in srgb, var(--cx-surface) 70%, transparent);
+          "
+        >
+          <div class="docs-slug cx-mono text-xs" style="color: var(--cx-text-2);">
+            /docs/{d.slug}
+          </div>
+          <div class="mt-1 cx-display text-3xl leading-none">{d.data.title}</div>
+          {d.data.description && (
+            <div class="docs-desc mt-2 text-sm" style="color: var(--cx-text-2);">{d.data.description}</div>
+          )}
+        </a>
+      ))}
+    </div>
   </div>
 </SiteLayout>
+
+<style>
+  .docs-index,
+  .docs-card {
+    min-width: 0;
+  }
+
+  .docs-card {
+    overflow-wrap: anywhere;
+    text-decoration: none;
+  }
+
+  .docs-slug,
+  .docs-desc {
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 640px) {
+    .docs-index-title {
+      font-size: 44px;
+    }
+  }
+</style>

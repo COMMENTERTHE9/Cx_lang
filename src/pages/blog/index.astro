@@ -85,7 +85,7 @@ const grouped = Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a
 </SiteLayout>
 
 <style>
-  .blog-shell{ max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  .blog-shell{ max-width: 1200px; margin: 0 auto; padding: 0 24px; min-width: 0; }
   .months{ margin-top: 18px; display: grid; gap: 22px; }
 
   .month-head{
@@ -116,6 +116,7 @@ const grouped = Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a
   .rows{ display: grid; gap: 14px; }
 
   .row{
+    min-width: 0;
     border: 1px solid var(--cx-border);
     border-radius: 18px;
     padding: 14px 16px;
@@ -174,6 +175,7 @@ const grouped = Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a
     color: var(--cx-text);
     text-decoration: none;
     margin: 0 0 8px 0;
+    overflow-wrap: anywhere;
   }
   .row-title:hover{ text-decoration: underline; }
 
@@ -191,11 +193,14 @@ const grouped = Array.from(groups.entries()).sort((a, b) => b[0].localeCompare(a
     font-size: 14px;
     line-height: 1.6;
     color: var(--cx-text-2);
+    overflow-wrap: anywhere;
   }
   .row-desc-empty{ opacity: .7; }
 
   @media (max-width: 720px){
-    .blog-shell{ padding: 0 16px; }
+    .blog-shell{ padding: 0; }
     .row-title{ font-size: 22px; }
+    .row{ padding: 14px; }
+    .month-head{ grid-template-columns: minmax(0, auto) minmax(24px, 1fr); }
   }
 </style>
