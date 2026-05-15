@@ -3492,6 +3492,148 @@ mod determinism_tests {
         assert_deterministic(&module);
     }
 
+    // ── BuiltinAssert Trap path ───────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_builtin_assert_pass() {
+        // Models the BuiltinAssert pass path: assert(1 == 1).
+        //
+        // Cx lowers `assert(cond)` to:
+        //   Compare(Eq, lhs, rhs) → Branch { cond, then: pass_block, else: trap_block }
+        //
+        // CFG:
+        //   block0:
+        //     v0 = const 1 : I32
+        //     v1 = const 1 : I32
+        //     v2 = Compare(Eq, v0, v1)   → 1 (true)
+        //     branch v2, block1, block2
+        //   block1:                       // pass path — taken (condition is true)
+        //     v3 = const 0 : I32
+        //     return v3                   // → exit code 0
+        //   block2:                       // abort path — unreachable (condition is always true)
+        //     trap
+        //
+        // Expected: deterministic, exit code 0.
+        let module = IrModule {
+            debug_name: "det_assert_pass".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 1 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 1 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Trap,
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 0);
+    }
+
+    #[test]
+    fn jit_determinism_builtin_assert_abort_on_failure() {
+        // Models the BuiltinAssert abort-on-failure CFG structure.
+        //
+        // Cx lowers `assert(cond)` to:
+        //   Branch { cond, then: pass_block, else: trap_block }
+        //
+        // When the condition is false at runtime the else (Trap) block fires.
+        // Executing Trap in-process raises SIGILL, so for test safety the
+        // condition is forced to Bool 1 (true) — the pass path is always taken
+        // and Trap is never entered at runtime.  The test exercises the Trap
+        // instruction in the compiled CFG and confirms that the JIT generates
+        // identical code and exit code across two independent compilations.
+        //
+        // CFG:
+        //   block0:
+        //     v0 = const Bool 1            // forced true — pass condition
+        //     branch v0, block1, block2
+        //   block1:                        // pass path — taken
+        //     v1 = const 0 : I32
+        //     return v1                    // → exit code 0
+        //   block2:                        // abort path — Trap, NOT reached at runtime
+        //     trap
+        //
+        // Expected: deterministic, exit code 0.
+        let module = IrModule {
+            debug_name: "det_assert_abort".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Trap,
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 0);
+    }
+
     // ── Jump + block parameters ───────────────────────────────────────────────
 
     #[test]
