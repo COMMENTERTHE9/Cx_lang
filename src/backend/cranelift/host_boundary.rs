@@ -5432,4 +5432,513 @@ mod determinism_tests {
             result
         );
     }
+
+    // ── While-in iterator loop (CX-189) ──────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_while_in_exclusive() {
+        // Simulates `arr = [10, 20, 30]; while in arr:[0], 0..3 {}; return arr[0]`
+        // Exclusive bound (Lt): runs for counter = 0, 1, 2 → 3 iterations.
+        // Each iteration loads arr[counter] and stores it to arr[0].
+        // After the loop, arr[0] = arr[2] = 30. Expected exit code: 30.
+        //
+        // main() -> I32 {
+        //   block0: v0=alloca_arr[3xI32]; arr[0]=10; arr[1]=20; arr[2]=30;
+        //           v6=0; v7=3; jump block1(v6)
+        //   block1(v8: I32):          // header — counter
+        //     v9 = cmp Lt(v8, v7); branch v9, block2[], block4[]
+        //   block2:                   // body — load arr[counter], store arr[0]
+        //     v10=cast(I32→I64,v8); v11=4i64; v12=mul(v10,v11); v13=ptr_add(v0,v12);
+        //     v14=load(I32,v13); store(v0,v14); jump block3(v8)
+        //   block3(v15: I32):         // increment
+        //     v16=1; v17=add(v15,v16); jump block1(v17)   ← back-edge
+        //   block4:                   // exit
+        //     v18=load(I32,v0); return v18
+        // }
+        let module = IrModule {
+            debug_name: "det_while_in_excl".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    // block0: allocate arr[3], initialise elements [10,20,30], set counter=0, end=3
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ArrayAlloca { dst: ValueId(0), element_type: IrType::I32, count: 3 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 20 },
+                            IrInst::PtrOffset { dst: ValueId(3), base: ValueId(0), offset: 4 },
+                            IrInst::Store { ptr: ValueId(3), value: ValueId(2) },
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 30 },
+                            IrInst::PtrOffset { dst: ValueId(5), base: ValueId(0), offset: 8 },
+                            IrInst::Store { ptr: ValueId(5), value: ValueId(4) },
+                            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 3 },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6)],
+                        },
+                    },
+                    // block1(v8): header — compare counter < end
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(8),
+                            ty: IrType::I32,
+                            read_only: true,
+                        }],
+                        insts: vec![IrInst::Compare {
+                            dst: ValueId(9),
+                            op: CompareOp::Lt,
+                            lhs: ValueId(8),
+                            rhs: ValueId(7),
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(9),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(4),
+                            else_args: vec![],
+                        },
+                    },
+                    // block2: body — load arr[counter], store arr[0], jump to increment
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Cast { dst: ValueId(10), from: IrType::I32, to: IrType::I64, value: ValueId(8) },
+                            IrInst::ConstInt { dst: ValueId(11), ty: IrType::I64, value: 4 },
+                            IrInst::Binary {
+                                dst: ValueId(12),
+                                op: BinaryOp::Mul,
+                                ty: IrType::I64,
+                                lhs: ValueId(10),
+                                rhs: ValueId(11),
+                            },
+                            IrInst::PtrAdd { dst: ValueId(13), base: ValueId(0), offset: ValueId(12) },
+                            IrInst::Load { dst: ValueId(14), ty: IrType::I32, ptr: ValueId(13) },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(14) },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(8)],
+                        },
+                    },
+                    // block3(v15): increment — counter += 1, back-edge to header
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(15),
+                            ty: IrType::I32,
+                            read_only: true,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(16), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(17),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(15),
+                                rhs: ValueId(16),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1), // ← back-edge
+                            args: vec![ValueId(17)],
+                        },
+                    },
+                    // block4: exit — load arr[0] (= 30 after last iteration) and return
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![],
+                        insts: vec![IrInst::Load {
+                            dst: ValueId(18),
+                            ty: IrType::I32,
+                            ptr: ValueId(0),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(18)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 30);
+    }
+
+    #[test]
+    fn jit_determinism_while_in_inclusive() {
+        // Simulates `arr = [10, 20, 30]; while in arr:[0], 0..=2 {}; return arr[0]`
+        // Inclusive bound (Le): runs for counter = 0, 1, 2 → 3 iterations.
+        // Identical structure to the exclusive test; only the compare op and end value differ.
+        // Expected exit code: 30.
+        let module = IrModule {
+            debug_name: "det_while_in_incl".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ArrayAlloca { dst: ValueId(0), element_type: IrType::I32, count: 3 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 20 },
+                            IrInst::PtrOffset { dst: ValueId(3), base: ValueId(0), offset: 4 },
+                            IrInst::Store { ptr: ValueId(3), value: ValueId(2) },
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 30 },
+                            IrInst::PtrOffset { dst: ValueId(5), base: ValueId(0), offset: 8 },
+                            IrInst::Store { ptr: ValueId(5), value: ValueId(4) },
+                            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 2 }, // inclusive end = 2
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(8),
+                            ty: IrType::I32,
+                            read_only: true,
+                        }],
+                        insts: vec![IrInst::Compare {
+                            dst: ValueId(9),
+                            op: CompareOp::Le, // inclusive bound
+                            lhs: ValueId(8),
+                            rhs: ValueId(7),
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(9),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(4),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Cast { dst: ValueId(10), from: IrType::I32, to: IrType::I64, value: ValueId(8) },
+                            IrInst::ConstInt { dst: ValueId(11), ty: IrType::I64, value: 4 },
+                            IrInst::Binary {
+                                dst: ValueId(12),
+                                op: BinaryOp::Mul,
+                                ty: IrType::I64,
+                                lhs: ValueId(10),
+                                rhs: ValueId(11),
+                            },
+                            IrInst::PtrAdd { dst: ValueId(13), base: ValueId(0), offset: ValueId(12) },
+                            IrInst::Load { dst: ValueId(14), ty: IrType::I32, ptr: ValueId(13) },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(14) },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(8)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(15),
+                            ty: IrType::I32,
+                            read_only: true,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(16), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(17),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(15),
+                                rhs: ValueId(16),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(17)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![],
+                        insts: vec![IrInst::Load {
+                            dst: ValueId(18),
+                            ty: IrType::I32,
+                            ptr: ValueId(0),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(18)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 30);
+    }
+
+    #[test]
+    fn jit_determinism_while_in_zero_iterations() {
+        // Simulates `arr = [10, 20, 30]; while in arr:[0], 3..0 {}; return arr[0]`
+        // start(3) >= end(0): the header's Lt check is false on the very first evaluation.
+        // Body and increment blocks are structurally present but never executed.
+        // arr[0] remains 10. Expected exit code: 10.
+        let module = IrModule {
+            debug_name: "det_while_in_zero".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ArrayAlloca { dst: ValueId(0), element_type: IrType::I32, count: 3 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 20 },
+                            IrInst::PtrOffset { dst: ValueId(3), base: ValueId(0), offset: 4 },
+                            IrInst::Store { ptr: ValueId(3), value: ValueId(2) },
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 30 },
+                            IrInst::PtrOffset { dst: ValueId(5), base: ValueId(0), offset: 8 },
+                            IrInst::Store { ptr: ValueId(5), value: ValueId(4) },
+                            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 3 }, // counter = 3
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 0 }, // end = 0
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam {
+                            value: ValueId(8),
+                            ty: IrType::I32,
+                            read_only: true,
+                        }],
+                        insts: vec![IrInst::Compare {
+                            dst: ValueId(9),
+                            op: CompareOp::Lt,
+                            lhs: ValueId(8),
+                            rhs: ValueId(7),
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(9),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(4),
+                            else_args: vec![],
+                        },
+                    },
+                    // Never reached — structurally required by the while-in CFG.
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Cast { dst: ValueId(10), from: IrType::I32, to: IrType::I64, value: ValueId(8) },
+                            IrInst::ConstInt { dst: ValueId(11), ty: IrType::I64, value: 4 },
+                            IrInst::Binary {
+                                dst: ValueId(12),
+                                op: BinaryOp::Mul,
+                                ty: IrType::I64,
+                                lhs: ValueId(10),
+                                rhs: ValueId(11),
+                            },
+                            IrInst::PtrAdd { dst: ValueId(13), base: ValueId(0), offset: ValueId(12) },
+                            IrInst::Load { dst: ValueId(14), ty: IrType::I32, ptr: ValueId(13) },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(14) },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(8)],
+                        },
+                    },
+                    // Never reached — structurally required by the while-in CFG.
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(15),
+                            ty: IrType::I32,
+                            read_only: true,
+                        }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(16), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(17),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(15),
+                                rhs: ValueId(16),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(17)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![],
+                        insts: vec![IrInst::Load {
+                            dst: ValueId(18),
+                            ty: IrType::I32,
+                            ptr: ValueId(0),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(18)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 10);
+    }
+
+    #[test]
+    fn jit_determinism_while_in_loop_carried_binding() {
+        // Simulates `arr=[10,20,30]; sum=0; while in arr:[0], 0..3 { sum += arr[0] }; return sum`
+        // Each iteration: load arr[counter] → arr[0], then sum += arr[0].
+        // sum = 10 + 20 + 30 = 60. Expected exit code: 60.
+        //
+        // The accumulator (sum) is threaded through block params, matching what the
+        // compiler emits when a variable is live across iterations.
+        //
+        // main() -> I32 {
+        //   block0: alloca arr[3]=[10,20,30]; v6=0; v7=3; v8=0(sum); jump block1(v6,v8)
+        //   block1(v9: I32, v10: I32):    // counter, sum
+        //     v11 = cmp Lt(v9, v7); branch v11, block2[], block4[v10]
+        //   block2:                       // body: arr[0]=arr[counter]; sum+=arr[0]
+        //     v12=cast(I32→I64,v9); v13=4i64; v14=mul(v12,v13); v15=ptr_add(v0,v14);
+        //     v16=load(I32,v15); store(v0,v16); v17=add(v10,v16); jump block3(v9,v17)
+        //   block3(v18: I32, v19: I32):   // counter, updated sum
+        //     v20=1; v21=add(v18,v20); jump block1(v21,v19)   ← back-edge
+        //   block4(v22: I32):             // exit: return final sum
+        //     return v22
+        // }
+        let module = IrModule {
+            debug_name: "det_while_in_carried".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    // block0: allocate arr[3]=[10,20,30], counter=0, end=3, sum=0
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ArrayAlloca { dst: ValueId(0), element_type: IrType::I32, count: 3 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 20 },
+                            IrInst::PtrOffset { dst: ValueId(3), base: ValueId(0), offset: 4 },
+                            IrInst::Store { ptr: ValueId(3), value: ValueId(2) },
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 30 },
+                            IrInst::PtrOffset { dst: ValueId(5), base: ValueId(0), offset: 8 },
+                            IrInst::Store { ptr: ValueId(5), value: ValueId(4) },
+                            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 0 }, // counter
+                            IrInst::ConstInt { dst: ValueId(7), ty: IrType::I32, value: 3 }, // end
+                            IrInst::ConstInt { dst: ValueId(8), ty: IrType::I32, value: 0 }, // sum
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1),
+                            args: vec![ValueId(6), ValueId(8)],
+                        },
+                    },
+                    // block1(v9, v10): header — counter=v9, sum=v10
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![
+                            BlockParam { value: ValueId(9), ty: IrType::I32, read_only: true },
+                            BlockParam { value: ValueId(10), ty: IrType::I32, read_only: false },
+                        ],
+                        insts: vec![IrInst::Compare {
+                            dst: ValueId(11),
+                            op: CompareOp::Lt,
+                            lhs: ValueId(9),
+                            rhs: ValueId(7),
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(11),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(4),
+                            else_args: vec![ValueId(10)],
+                        },
+                    },
+                    // block2: body — arr[0]=arr[counter]; sum += arr[0]
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Cast { dst: ValueId(12), from: IrType::I32, to: IrType::I64, value: ValueId(9) },
+                            IrInst::ConstInt { dst: ValueId(13), ty: IrType::I64, value: 4 },
+                            IrInst::Binary {
+                                dst: ValueId(14),
+                                op: BinaryOp::Mul,
+                                ty: IrType::I64,
+                                lhs: ValueId(12),
+                                rhs: ValueId(13),
+                            },
+                            IrInst::PtrAdd { dst: ValueId(15), base: ValueId(0), offset: ValueId(14) },
+                            IrInst::Load { dst: ValueId(16), ty: IrType::I32, ptr: ValueId(15) },
+                            IrInst::Store { ptr: ValueId(0), value: ValueId(16) },
+                            IrInst::Binary {
+                                dst: ValueId(17),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(10),
+                                rhs: ValueId(16),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(9), ValueId(17)],
+                        },
+                    },
+                    // block3(v18, v19): increment — counter=v18, sum=v19
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![
+                            BlockParam { value: ValueId(18), ty: IrType::I32, read_only: true },
+                            BlockParam { value: ValueId(19), ty: IrType::I32, read_only: false },
+                        ],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(20), ty: IrType::I32, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(21),
+                                op: BinaryOp::Add,
+                                ty: IrType::I32,
+                                lhs: ValueId(18),
+                                rhs: ValueId(20),
+                            },
+                        ],
+                        term: IrTerminator::Jump {
+                            target: BlockId(1), // ← back-edge
+                            args: vec![ValueId(21), ValueId(19)],
+                        },
+                    },
+                    // block4(v22): exit — v22 receives final sum from header's Branch else_args
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![BlockParam {
+                            value: ValueId(22),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(22)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 60);
+    }
 }
