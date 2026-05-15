@@ -1,10 +1,10 @@
 ---
 title: "Cx Dev Log — 2026-04-30"
 date: 2026-04-30
-description: "Phase 11 lands compound assign lowering on submain, bringing +=, -=, *=, /=, and %%= into the IR backend with full SSA handling."
+description: "Phase 11 lands compound assign lowering on submain, bringing +=, -=, *=, /=, and %= into the IR backend with full SSA handling."
 ---
 
-After four quiet days, Phase 11 resumed today with compound assign lowering on submain. One commit, 126 new lines in `src/ir/lower.rs`, three new tests. The five compound operators (`+=`, `-=`, `*=`, `/=`, `%%=`) now lower through the IR backend for the first time. Main stays at 78/78 tests, untouched. Submain remains 22 commits ahead with a 33-day integration gap.
+After four quiet days, Phase 11 resumed today with compound assign lowering on submain. One commit, 126 new lines in `src/ir/lower.rs`, three new tests. The five compound operators (`+=`, `-=`, `*=`, `/=`, `%=`) now lower through the IR backend for the first time. Main stays at 78/78 tests, untouched. Submain remains 22 commits ahead with a 33-day integration gap.
 
 ## Compound Assign Lowering
 

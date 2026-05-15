@@ -1,5 +1,6 @@
 ---
 import AccessibilityMenu from "./AccessibilityMenu.astro";
+import { SITE } from "../lib/site";
 
 const links = [
     { href: "/docs", label: "Docs" },
@@ -25,7 +26,7 @@ const { pathname } = Astro.url;
                         class="cx-mono hidden rounded-full px-2 py-1 text-[10px] md:inline"
                         style="border: 1px solid var(--cx-border); color: var(--cx-text-2);"
                 >
-          v0.0.x
+          {SITE.version}
         </span>
             </a>
 
