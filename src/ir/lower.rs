@@ -361,7 +361,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
 }
 
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
-    const RESERVED_RUNTIME_INTRINSICS: &[&str] = &["cx_printn"];
+    let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
 
     if program.stmts.is_empty() {
         return Ok(IrModule {
@@ -385,7 +385,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     for stmt in &program.stmts {
         match stmt {
             SemanticStmt::FuncDef(function) => {
-                if RESERVED_RUNTIME_INTRINSICS.contains(&function.name.as_str()) {
+                if reserved_runtime_intrinsics.contains(function.name.as_str()) {
                     return Err(LoweringError::UnsupportedSemanticConstruct {
                         construct: format!(
                             "function name '{}' is reserved for runtime intrinsics",
@@ -5862,6 +5862,26 @@ mod tests {
             ),
             "builtin '{}' should produce UnsupportedSemanticConstruct mentioning its name, got: {:?}",
             name, err
+        );
+    }
+
+    #[test]
+    fn rejects_user_function_named_cx_printn() {
+        // lower_program_inner derives reserved C-ABI names from validate::runtime_intrinsic_names();
+        // a user function named "cx_printn" must be rejected regardless of the hardcoded list.
+        let program = SemanticProgram {
+            stmts: vec![semantic_function("cx_printn", vec![], None, vec![], None)],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("cx_printn") && construct.contains("reserved")
+            ),
+            "expected reserved-name error for 'cx_printn', got: {:?}",
+            err
         );
     }
 

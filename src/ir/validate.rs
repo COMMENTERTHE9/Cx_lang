@@ -86,6 +86,14 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
     sigs
 }
 
+/// Return the C-ABI names of every known runtime intrinsic.
+///
+/// Authoritative set shared between the validator and the IR lowering pass so
+/// that both agree on which names are reserved JIT runtime symbols.
+pub fn runtime_intrinsic_names() -> HashSet<String> {
+    known_intrinsic_sigs().into_keys().collect()
+}
+
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
 
