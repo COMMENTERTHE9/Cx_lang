@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.4 — 2026-05-12
+v4.5 — 2026-05-15
 
 ---
 
@@ -86,7 +86,7 @@ These are conditions, not features. All must be true before 0.1 ships.
 - Backend must not panic on any valid IR, even when construct support is incomplete
 - Minimal determinism guaranteed — same IR, same target, same input produces same observable output on every run
 - Core layout confidence tests pass — struct size, field offsets, array strides, bool/enum/TBool representation
-- Evaluation order for supported expressions is documented and stable — assignment side effects match semantic layer behavior exactly
+- Evaluation order for supported expressions is documented and stable — assignment side effects match semantic layer behavior exactly ✅ *(CX-138)*
 
 **Quality gates — must be true or have a tracked plan:**
 - Backend error messages refer back to source constructs where possible
@@ -199,13 +199,13 @@ See Up Next section for details.
 
 **Phase 12 — Differential Backend Harness** *(in progress)*
 
-Per-feature parity classification harness landed (CX-69). Loop fixtures (CX-68) and exit-code-based arithmetic/variable-decl fixtures (CX-92) added. 155 fixtures, 0 PARITY_FAILs. CX-34 Cancelled — construct coverage expansion distributed across per-category fixture tickets (CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131; all in Human Review).
+Per-feature parity classification harness landed (CX-69). Loop fixtures (CX-68) and exit-code-based arithmetic/variable-decl fixtures (CX-92) added. 155 fixtures, 0 PARITY_FAILs. JIT parity checklist baseline updated post-ArrayAlloca JIT and print dispatch (CX-142). ForLoop JIT determinism tests landed (CX-181/CX-61). CX-34 Cancelled — construct coverage expansion distributed across per-category fixture tickets (CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131; all in Human Review).
 
 ---
 
 **Phase 15 — Cranelift JIT — 0.1 Target** *(in progress)*
 
-No-panic guarantee (CX-50), float comparison (CX-52), exit-code propagation (CX-74), PtrOffset/PtrAdd JIT (CX-78), reserved intrinsic name rejection (CX-85), numeric literal cast corrections (CX-88/CX-90), and exit-code-based parity fixtures (CX-92) all landed. Cast JIT coverage (CX-91), F64 Rem libcall (CX-93), DotAccess JIT lowering (CX-94), ArrayAlloca JIT emit (CX-121/CX-129), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool calling convention (CX-127), and IR dump on failure (CX-123) all Done. Remaining: full parity fixture coverage (CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131 in HR), CI gate (CX-133 in HR).
+No-panic guarantee (CX-50), float comparison (CX-52), exit-code propagation (CX-74), PtrOffset/PtrAdd JIT (CX-78), reserved intrinsic name rejection (CX-85), numeric literal cast corrections (CX-88/CX-90), and exit-code-based parity fixtures (CX-92) all landed. Cast JIT coverage (CX-91), F64 Rem libcall (CX-93), DotAccess JIT lowering (CX-94), ArrayAlloca JIT emit (CX-121/CX-129), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool calling convention (CX-127), IR dump on failure (CX-123), print/println intrinsic dispatch (CX-136/CX-141), and expression evaluation order documented (CX-138) all Done. Remaining: full parity fixture coverage (CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131 in HR), CI gate (CX-133 in HR).
 
 ---
 
@@ -286,6 +286,8 @@ Goal: define exactly what the backend lowers as pure IR versus what becomes a ru
 **Sub-packet 3 — assert / assert_eq lowering** *(DONE — CX-48)*
 
 - Abort semantics confirmed — assert and assert_eq lower to abort-on-failure in IR and Cranelift JIT (CX-48, 2026-05-09/10)
+
+**Spec reconciliation** *(CX-171, 2026-05-14)*: `docs/backend/cx_runtime_intrinsics_v0.1.md` reconciled to reflect sub-packets 1–3 complete; sub-packet 4 blocked on Phase 8 str layout; classification table, implementation path, and runtime entry point registry all updated to reflect actual backend mechanisms (lower_print_stmt, cx_printn symbol, abort semantics).
 
 **Sub-packet 4 — read / input lowering** *(BLOCKED — pending str layout)*
 
@@ -383,6 +385,8 @@ This phase should be treated as a mini-system in its own right — not just a ph
 - ForLoop exit-code parity fixtures t149, t150 (CX-124/CX-125) ✅
 - t146 fixture rename — CompoundAssign → t151, resolving array/compound-assign naming collision (CX-126/CX-128) ✅
 - 155 fixtures total; 0 PARITY_FAILs — gate holds ✅
+- JIT parity checklist baseline updated post-ArrayAlloca JIT and print dispatch (CX-142) ✅
+- ForLoop JIT determinism tests — jit_determinism_for_loop_{exclusive,inclusive,zero_iterations,loop_carried_binding}; `docs/backend/cx_jit_determinism.md` updated (CX-181/CX-61) ✅
 
 **Still open:**
 - Fixture coverage expansion to full supported 0.1 construct set — distributed across CX-59 (IfElse/WhileLoop), CX-61 (ForLoop), CX-63 (DirectCall), CX-64 (Struct), CX-66 (Array), CX-114–118, CX-131 (stale fixture PR reconciliation); all in Human Review
@@ -475,6 +479,9 @@ JIT is enough for 0.1. Nobody evaluating Cx at 0.1 is benchmarking release build
 - CodeRabbit hardening on CX-124 ForLoop fixtures (CX-125) ✅
 - TBool calling convention documentation and JIT validation — Phase 8 Round 2 (CX-127) ✅
 - Rebase CX-126 — rename t146 CompoundAssign fixture to t151, resolving naming collision with CX-121's t146 array fixture (CX-128) ✅
+- print/println intrinsic dispatch wired to cx_printn — print programs exit correctly in JIT (CX-136) ✅
+- CodeRabbit diagnostic-name fix on CX-136 print/println intrinsic dispatch (CX-141) ✅
+- Expression evaluation order guarantee documented in cx_abi_v0.1.md; JIT evaluation-order test added — satisfies "evaluation order" 0.1 hard blocker (CX-138) ✅
 
 **Still open:**
 - DotAccess JIT parity fixtures — CX-64 (Struct) in Human Review
@@ -667,8 +674,8 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Active**
 - Surface area reduction (Phase 11) — all original open items closed; when-block structured rejection satisfied (CX-113/CX-50); remaining: method call actual lowering
 - ABI and data layout Round 2 (Phase 8) — TBool calling convention LOCKED (CX-127); str/strref layout, Handle<T>, unknown propagation still open
-- Differential backend harness (Phase 12) — harness running, 155 fixtures, 0 PARITY_FAILs; CX-34 Cancelled; coverage expansion distributed across CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131 (all HR); CI gate CX-133 (HR)
-- Cranelift JIT — 0.1 target (Phase 15) — cast JIT (CX-91), F64 Rem (CX-93), DotAccess lowering (CX-94), ArrayAlloca JIT (CX-121/CX-129), IR dump on failure (CX-123), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool CC (CX-127), fixture rename (CX-128) all Done; remaining: full parity fixture coverage (multiple HR tickets, 0 PARITY_FAILs), CI integration (CX-133 HR)
+- Differential backend harness (Phase 12) — harness running, 155 fixtures, 0 PARITY_FAILs; parity checklist baseline updated (CX-142); ForLoop determinism tests landed (CX-181/CX-61); CX-34 Cancelled; coverage expansion distributed across CX-59, CX-61, CX-63, CX-64, CX-66, CX-114–118, CX-131 (all HR); CI gate CX-133 (HR)
+- Cranelift JIT — 0.1 target (Phase 15) — cast JIT (CX-91), F64 Rem (CX-93), DotAccess lowering (CX-94), ArrayAlloca JIT (CX-121/CX-129), IR dump on failure (CX-123), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool CC (CX-127), fixture rename (CX-128), print/println dispatch (CX-136/CX-141), eval order documented (CX-138) all Done; remaining: full parity fixture coverage (multiple HR tickets, 0 PARITY_FAILs), CI integration (CX-133 HR)
 
 **Next — 0.1 Path**
 - Runtime intrinsics boundary sub-packet 4 (Phase 9) — read/input lowering blocked on str/strref layout decision from Phase 8
@@ -687,6 +694,16 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.5 (2026-05-15)
+
+- Phase 15 Landed: print/println intrinsic dispatch wired to cx_printn — print programs exit correctly in JIT (CX-136); CodeRabbit diagnostic-name fix on CX-136 (CX-141); expression evaluation order guarantee documented in cx_abi_v0.1.md with JIT evaluation-order test (CX-138)
+- 0.1 Release Gates: "Evaluation order for supported expressions is documented and stable" hard blocker now satisfied (CX-138) ✅
+- Phase 12 Landed: JIT parity checklist baseline updated post-ArrayAlloca JIT and print dispatch (CX-142); ForLoop JIT determinism tests — exclusive, inclusive, zero-iterations, loop-carried binding (CX-181/CX-61)
+- Phase 9 Spec reconciliation: cx_runtime_intrinsics_v0.1.md reconciled to reflect sub-packets 1–3 complete; classification table, implementation path, and runtime registry updated to actual backend mechanisms (CX-171)
+- Progress Board: Active sections for Phase 12 and Phase 15 updated to reflect all above
 
 ---
 
