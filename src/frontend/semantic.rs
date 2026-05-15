@@ -844,7 +844,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         let arr_ty = binding_type(arr_info, &tp);
                         let elem_ty = match &arr_ty {
                             SemanticType::Array(_, inner) => *inner.clone(),
-                            _ => SemanticType::Unknown,
+                            SemanticType::Unknown => SemanticType::Unknown,
+                            _ => {
+                                return Err(sem_err!(
+                                    *pos,
+                                    "compound assignment index target must be an array"
+                                ))
+                            }
                         };
                         let arr_pos = *pos;
                         let sem_target = self.analyze_expr(&Expr::Ident(arr_name.clone(), arr_pos))?;
