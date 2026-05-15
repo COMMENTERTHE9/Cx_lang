@@ -838,6 +838,23 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         };
                         SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty, struct_name }
                     }
+                    AssignTarget::Index(arr_name, idx_expr) => {
+                        let arr_info = self.lookup_var(arr_name)
+                            .ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", arr_name))?;
+                        let arr_ty = binding_type(arr_info, &tp);
+                        let elem_ty = match &arr_ty {
+                            SemanticType::Array(_, inner) => *inner.clone(),
+                            _ => SemanticType::Unknown,
+                        };
+                        let arr_pos = *pos;
+                        let sem_target = self.analyze_expr(&Expr::Ident(arr_name.clone(), arr_pos))?;
+                        let sem_index = self.analyze_expr(idx_expr)?;
+                        SemanticLValue::Index {
+                            target: Box::new(sem_target),
+                            index: Box::new(sem_index),
+                            elem_ty,
+                        }
+                    }
                 };
                 Ok(SemanticStmt::CompoundAssign {
                     target: sem_target,

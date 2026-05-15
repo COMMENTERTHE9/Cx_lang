@@ -27,7 +27,7 @@ set:
 | DirectCall     | Function definitions, calls, return semantics| t02–t08, t14, t29, t50, t113 |
 | Struct         | Struct definitions, impl blocks, field access| t36, t39, t40, t43, t109, t110, t114_field_type_mismatch_reject, t115_strref_in_struct_reject, t125–t127 |
 | Array          | Array literals and array-of-result           | t33, t112 (output-verified); t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit (exit-code-verified, CX-121) |
-| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151 |
+| CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151, t152, t153 (exit-code-verified, CX-187) |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140 |
 | FloatOps       | f64 operations                               | t55, t135–t138 |
@@ -102,15 +102,17 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-141` (submain as of CX-141 merge window, 2026-05-12).
+Run on branch `stokowski/CX-187` (submain as of CX-187 merge window, 2026-05-15).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
 exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
 (t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
 CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), and CX-136 print/println intrinsic
-dispatch to cx_printn.
+(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
+dispatch to cx_printn, and CX-187 CompoundAssign DotAccess and Index exit-code
+fixtures (t152_compound_assign_dotaccess_exit, t153_compound_assign_index_exit)
+plus parser support for `arr:[i] op= value` compound assign on array elements.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -124,7 +126,7 @@ InfiniteLoop              2      1            0
 DirectCall                7      4            0
 Struct                    6      5            0
 Array                     3      2            0
-CompoundAssign            2      2            0
+CompoundAssign            4      2            0
 Unary                     0      1            0
 Cast                      0      2            0
 FloatOps                  0      5            0
@@ -132,7 +134,7 @@ BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    16     48            0
 ------------------------------------------------
-Total: 155 fixtures, 0 PARITY_FAILs
+Total: 157 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -174,13 +176,15 @@ mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
 in JIT (when-block lowering not yet implemented; exits 127). Once when-block
 lowering lands, these fixtures will transition from SKIP to PASS without changes.
 
-**CompoundAssign Var-target parity (CX-119):** t151 tests all five compound-assign
+**CompoundAssign parity (CX-119/CX-187):** t151 tests all five compound-assign
 operators (+=, -=, *=, /=, %=) on a typed t64 plain variable, verified by exit
-code. Fixed a semantic-analysis bug where the Var-target branch used
-`info.inferred` only (defaulting to `Unknown` for typed variables declared with an
-explicit type annotation) instead of `binding_type()` which checks `declared`
-first. The 2 PASS reflect t128 (struct field) and t151 (plain variable); the 2
-SKIP are t26 and t41 (print-based originals that remain SKIP).
+code (CX-119). t152 tests all five operators on a struct field (DotAccess target),
+extending t128 which only covered `-=`. t153 tests all five operators on an array
+element (Index target), enabled by CX-187 parser support for `arr:[i] op= value`
+(added `AssignTarget::Index` to the AST and a new `index_compound_assign` parser
+rule). The 4 PASS reflect t128 (struct field -=), t151 (plain variable), t152
+(struct field all operators), and t153 (array element all operators); the 2 SKIP
+are t26 and t41 (print-based originals that remain SKIP).
 
 **ForLoop parity coverage (CX-124/CX-136):** t149 mirrors t48 (top-level for loop at file scope),
 covering exclusive range (`0..5`), empty range (`3..3`, 0 iterations), and inclusive range
