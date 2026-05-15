@@ -125,6 +125,8 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_call_chained` | `Call` — three-function chain; verifies forward-reference resolution |
 | `jit_determinism_call_in_branch` | `Call` inside a non-entry block (branch arm); verifies block-local call emission |
 | `jit_determinism_call_multiple` | Two calls to the same callee; verifies repeated `declare_func_in_func` stability |
+| `jit_determinism_compound_assign_dot_access` | `CompoundAssign` DotAccess lvalue — `PtrOffset` + `Load` + `Binary::Add` + `Store` on a non-first struct field |
+| `jit_determinism_compound_assign_index` | `CompoundAssign` Index lvalue — `ArrayAlloca` + `PtrAdd` + `Load` + `Binary::Add` + `Store` on an array element |
 
 ### Running the Tests
 

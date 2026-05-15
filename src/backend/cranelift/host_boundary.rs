@@ -5432,4 +5432,118 @@ mod determinism_tests {
             result
         );
     }
+
+    // ── CompoundAssign DotAccess and Index lvalue targets (CX-191) ───────────
+
+    #[test]
+    fn jit_determinism_compound_assign_dot_access() {
+        // Struct { f0: i32, f1: i32 } — 8-byte slot, 4-byte align.
+        // Exercises the PtrOffset + Load + Binary + Store sequence emitted for
+        // a compound-assign on a non-first struct field (DotAccess lvalue).
+        //
+        // main() -> i32 {
+        //   v0 = alloca(8, 4)             // struct slot
+        //   v1 = const 0i32
+        //   store v0, v1                  // f0 = 0  (fills first field)
+        //   v2 = ptr_offset v0 + 4       // &f1
+        //   v3 = const 12i32
+        //   store v2, v3                  // f1 = 12
+        //   v4 = load i32 v2             // current f1 = 12
+        //   v5 = const 5i32
+        //   v6 = binary add i32 v4, v5  // 12 + 5 = 17
+        //   store v2, v6                 // f1 = 17
+        //   v7 = load i32 v2            // read back = 17
+        //   return v7                    // → 17
+        // }
+        let module = IrModule {
+            debug_name: "det_compound_dot".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 4 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::PtrOffset { dst: ValueId(2), base: ValueId(0), offset: 4 },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 12 },
+                        IrInst::Store { ptr: ValueId(2), value: ValueId(3) },
+                        IrInst::Load { dst: ValueId(4), ty: IrType::I32, ptr: ValueId(2) },
+                        IrInst::ConstInt { dst: ValueId(5), ty: IrType::I32, value: 5 },
+                        IrInst::Binary {
+                            dst: ValueId(6),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(4),
+                            rhs: ValueId(5),
+                        },
+                        IrInst::Store { ptr: ValueId(2), value: ValueId(6) },
+                        IrInst::Load { dst: ValueId(7), ty: IrType::I32, ptr: ValueId(2) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(7)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 17);
+    }
+
+    #[test]
+    fn jit_determinism_compound_assign_index() {
+        // [i32; 3] array; compound-assign on element at index 1 (runtime offset).
+        // Exercises the ArrayAlloca + PtrAdd + Load + Binary + Store sequence
+        // emitted for a compound-assign on an array element (Index lvalue).
+        //
+        // main() -> i32 {
+        //   v0 = array_alloca(I32, 3)     // 3-element i32 array
+        //   v1 = const 1i32
+        //   store v0, v1                  // arr[0] = 1
+        //   v2 = const 4i64              // byte stride for index 1 (4 bytes per i32)
+        //   v3 = ptr_add v0 + v2         // &arr[1]
+        //   v4 = const 20i32
+        //   store v3, v4                  // arr[1] = 20
+        //   v5 = load i32 v3            // current arr[1] = 20
+        //   v6 = const 10i32
+        //   v7 = binary add i32 v5, v6 // 20 + 10 = 30
+        //   store v3, v7                 // arr[1] = 30
+        //   v8 = load i32 v3           // read back = 30
+        //   return v8                   // → 30
+        // }
+        let module = IrModule {
+            debug_name: "det_compound_index".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ArrayAlloca { dst: ValueId(0), element_type: IrType::I32, count: 3 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 1 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I64, value: 4 },
+                        IrInst::PtrAdd { dst: ValueId(3), base: ValueId(0), offset: ValueId(2) },
+                        IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 20 },
+                        IrInst::Store { ptr: ValueId(3), value: ValueId(4) },
+                        IrInst::Load { dst: ValueId(5), ty: IrType::I32, ptr: ValueId(3) },
+                        IrInst::ConstInt { dst: ValueId(6), ty: IrType::I32, value: 10 },
+                        IrInst::Binary {
+                            dst: ValueId(7),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(5),
+                            rhs: ValueId(6),
+                        },
+                        IrInst::Store { ptr: ValueId(3), value: ValueId(7) },
+                        IrInst::Load { dst: ValueId(8), ty: IrType::I32, ptr: ValueId(3) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(8)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 30);
+    }
 }
