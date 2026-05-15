@@ -1,5 +1,5 @@
 # Cx JIT Determinism Guarantee
-v1.2 — 2026-05-09
+v1.3 — 2026-05-15
 
 ---
 
@@ -131,6 +131,10 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_logical_and_short_circuit_lhs_false` | AND short-circuit CFG — LHS false, sc_false block taken (RHS unreachable); exit 0 |
 | `jit_determinism_logical_or_lhs_false_rhs_true` | OR short-circuit CFG — LHS false, RHS block taken; path tokens (TOKEN_TRUE=42, TOKEN_RHS=7) + `Compare::Eq` + `Cast` I8→I32 verify branch identity; exit 1 |
 | `jit_determinism_logical_or_short_circuit_lhs_true` | OR short-circuit CFG — LHS true, sc_true block taken (RHS unreachable); exit 1 |
+| `jit_determinism_unary_neg_int` | `Unary::NegInt` — negation via `0 − x` (ConstInt zero + Binary/Sub on I32); expects exit 42 |
+| `jit_determinism_unary_neg_float` | `Unary::NegFloat` — negation via `0.0 − x` (ConstFloat zero + Binary/Sub on F64) + Cast F64→I32; expects exit 7 |
+| `jit_determinism_unary_bool_not_true` | `Unary::BoolNot` — NOT true: `1 == 0` (Compare/Eq on Bool) + Cast Bool→I32; expects exit 0 |
+| `jit_determinism_unary_bool_not_false` | `Unary::BoolNot` — NOT false: `0 == 0` (Compare/Eq on Bool) + Cast Bool→I32; expects exit 1 |
 
 ### Running the Tests
 
