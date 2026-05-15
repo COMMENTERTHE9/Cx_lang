@@ -127,6 +127,10 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_call_multiple` | Two calls to the same callee; verifies repeated `declare_func_in_func` stability |
 | `jit_determinism_compound_assign_dot_access` | `CompoundAssign` DotAccess lvalue — `PtrOffset` + `Load` + `Binary::Add` + `Store` on a non-first struct field |
 | `jit_determinism_compound_assign_index` | `CompoundAssign` Index lvalue — `ArrayAlloca` + `PtrAdd` + `Load` + `Binary::Add` + `Store` on an array element |
+| `jit_determinism_logical_and_lhs_true_rhs_true` | AND short-circuit CFG — LHS true, RHS block taken; `ConstInt(Bool)` + `Branch` + `Jump` with block param; exit 1 |
+| `jit_determinism_logical_and_short_circuit_lhs_false` | AND short-circuit CFG — LHS false, sc_false block taken (RHS unreachable); exit 0 |
+| `jit_determinism_logical_or_lhs_false_rhs_true` | OR short-circuit CFG — LHS false, RHS block taken; path tokens (TOKEN_TRUE=42, TOKEN_RHS=7) + `Compare::Eq` + `Cast` I8→I32 verify branch identity; exit 1 |
+| `jit_determinism_logical_or_short_circuit_lhs_true` | OR short-circuit CFG — LHS true, sc_true block taken (RHS unreachable); exit 1 |
 
 ### Running the Tests
 
