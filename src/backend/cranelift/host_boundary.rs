@@ -5232,6 +5232,338 @@ mod determinism_tests {
         assert_deterministic(&module);
     }
 
+    // ── Logical AND/OR short-circuit (CX-192) ────────────────────────────────
+    //
+    // Each test models the canonical 4-block short-circuit CFG that lower_logical
+    // produces for `&&` and `||`:
+    //
+    //  AND:  block0 (eval LHS) → Branch(lhs):
+    //            then → block1 (eval RHS)  → Jump block3(rhs_i32)
+    //            else → block2 (sc_false)  → Jump block3(0)
+    //        block3(result: I32) → Return result
+    //
+    //  OR:   block0 (eval LHS) → Branch(lhs):
+    //            then → block1 (sc_true)   → Jump block3(1)
+    //            else → block2 (eval RHS)  → Jump block3(rhs_i32)
+    //        block3(result: I32) → Return result
+    //
+    // All four tests use assert_deterministic_with_expected to verify both
+    // determinism (identical exit codes across two independent JIT runs) and
+    // correct short-circuit semantics.
+
+    #[test]
+    fn jit_determinism_logical_and_lhs_true_rhs_true() {
+        // true && true → 1.
+        // LHS=true (1) → Branch takes rhs block; rhs block emits I32(1) → merge.
+        // sc_false block (unreachable) would emit I32(0).
+        //
+        // main() -> I32 {
+        //   block0: v0=true(Bool); branch v0, block1(rhs), block2(sc)
+        //   block1 (rhs, taken): v1=1(I32); jump block3(v1)
+        //   block2 (sc_false, not taken): v2=0(I32); jump block3(v2)
+        //   block3(v3: I32): return v3
+        // }
+        // Expected: 1
+        let module = IrModule {
+            debug_name: "det_logical_and_true_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(2),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(3),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 1);
+    }
+
+    #[test]
+    fn jit_determinism_logical_and_short_circuit_lhs_false() {
+        // false && X → 0 (short-circuit: RHS block is unreachable).
+        // LHS=false (0) → Branch takes sc_false block (else arm); result = 0.
+        // rhs block is never entered; the value it would emit does not affect
+        // the result.
+        //
+        // main() -> I32 {
+        //   block0: v0=false(Bool); branch v0, block1(rhs), block2(sc)
+        //   block1 (rhs, not taken): v1=1(I32); jump block3(v1)
+        //   block2 (sc_false, taken): v2=0(I32); jump block3(v2)
+        //   block3(v3: I32): return v3
+        // }
+        // Expected: 0
+        let module = IrModule {
+            debug_name: "det_logical_and_sc_false".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(2),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(3),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 0);
+    }
+
+    #[test]
+    fn jit_determinism_logical_or_lhs_false_rhs_true() {
+        // false || true → 1.
+        // LHS=false (0) → Branch takes rhs block (else arm); rhs emits I32(1) → merge.
+        // sc_true block (unreachable) would emit I32(1) too, but is never entered.
+        //
+        // main() -> I32 {
+        //   block0: v0=false(Bool); branch v0, block1(sc_true), block2(rhs)
+        //   block1 (sc_true, not taken): v1=1(I32); jump block3(v1)
+        //   block2 (rhs, taken): v2=1(I32); jump block3(v2)
+        //   block3(v3: I32): return v3
+        // }
+        // Expected: 1
+        let module = IrModule {
+            debug_name: "det_logical_or_false_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(2),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(3),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 1);
+    }
+
+    #[test]
+    fn jit_determinism_logical_or_short_circuit_lhs_true() {
+        // true || X → 1 (short-circuit: RHS block is unreachable).
+        // LHS=true (1) → Branch takes sc_true block (then arm); result = 1.
+        // rhs block is never entered.
+        //
+        // main() -> I32 {
+        //   block0: v0=true(Bool); branch v0, block1(sc_true), block2(rhs)
+        //   block1 (sc_true, taken): v1=1(I32); jump block3(v1)
+        //   block2 (rhs, not taken): v2=0(I32); jump block3(v2)
+        //   block3(v3: I32): return v3
+        // }
+        // Expected: 1
+        let module = IrModule {
+            debug_name: "det_logical_or_sc_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(1),
+                            ty: IrType::I32,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(1)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(2),
+                            ty: IrType::I32,
+                            value: 0,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(2)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(3),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 1);
+    }
+
     // ── SsaBind support (CX-77 Phase 9 sub-packet 2) ─────────────────────────
 
     #[test]
