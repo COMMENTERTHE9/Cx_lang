@@ -3287,6 +3287,136 @@ mod determinism_tests {
         assert_deterministic(&module);
     }
 
+    // ── Unary operations ─────────────────────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_unary_neg_int() {
+        // NegInt is lowered as `0 - x` (ConstInt zero + Binary/Sub).
+        // main() -> I32 { v0=-42i32; v1=0i32; v2=v1-v0=42; return v2 }  → 42
+        let module = IrModule {
+            debug_name: "det_neg_int".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: -42 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(1),
+                            rhs: ValueId(0),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_unary_neg_float() {
+        // NegFloat is lowered as `0.0 - x` (ConstFloat zero + Binary/Sub on F64).
+        // Cast F64→I32 to produce a verifiable integer exit code.
+        // main() -> I32 { v0=-7.0f64; v1=0.0f64; v2=v1-v0=7.0; v3=cast F64→I32 7.0=7; return v3 }  → 7
+        let module = IrModule {
+            debug_name: "det_neg_float".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: -7.0 },
+                        IrInst::ConstFloat { dst: ValueId(1), value: 0.0 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Sub,
+                            ty: IrType::F64,
+                            lhs: ValueId(1),
+                            rhs: ValueId(0),
+                        },
+                        IrInst::Cast { dst: ValueId(3), from: IrType::F64, to: IrType::I32, value: ValueId(2) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 7);
+    }
+
+    #[test]
+    fn jit_determinism_unary_bool_not_true() {
+        // BoolNot is lowered as `x == 0` (Compare/Eq against Bool zero).
+        // NOT true: (1 == 0) → false (0); Cast Bool→I32 for exit code.
+        // main() -> I32 { v0=1(Bool); v1=0(Bool); v2=(v0==v1)=0; v3=cast Bool→I32 0=0; return v3 }  → 0
+        let module = IrModule {
+            debug_name: "det_bool_not_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::Bool, value: 1 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::Bool, value: 0 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Eq,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast { dst: ValueId(3), from: IrType::Bool, to: IrType::I32, value: ValueId(2) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 0);
+    }
+
+    #[test]
+    fn jit_determinism_unary_bool_not_false() {
+        // BoolNot is lowered as `x == 0` (Compare/Eq against Bool zero).
+        // NOT false: (0 == 0) → true (1); Cast Bool→I32 for exit code.
+        // main() -> I32 { v0=0(Bool); v1=0(Bool); v2=(v0==v1)=1; v3=cast Bool→I32 1=1; return v3 }  → 1
+        let module = IrModule {
+            debug_name: "det_bool_not_false".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::Bool, value: 0 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::Bool, value: 0 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Eq,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast { dst: ValueId(3), from: IrType::Bool, to: IrType::I32, value: ValueId(2) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 1);
+    }
+
     // ── Alloca + Store + Load ─────────────────────────────────────────────────
 
     #[test]
