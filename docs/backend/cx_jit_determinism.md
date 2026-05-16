@@ -1,5 +1,5 @@
 # Cx JIT Determinism Guarantee
-v1.2 — 2026-05-09
+v1.3 — 2026-05-16
 
 ---
 
@@ -143,6 +143,20 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_unary_bool_not_false` | `BoolNot` lowered as `x == 0` — `ConstInt(Bool)` + `Compare::Eq` + `Cast` Bool→I32; NOT false → 1; exit 1 |
 | `jit_determinism_builtin_assert_pass` | `BuiltinAssert` pass path — `Compare::Eq` + `Branch` to pass/trap blocks; pass block taken (1==1); `Trap` block compiled but unreachable; exit 0 |
 | `jit_determinism_builtin_assert_abort_on_failure` | `BuiltinAssert` abort-on-failure CFG — `ConstInt(Bool 1)` + `Branch`; `Trap` instruction in compiled CFG; forced-true condition keeps Trap unreachable at runtime; exit 0 |
+| `jit_determinism_fcmp_eq_true` | `fcmp` `Equal` — 1.5 == 1.5 → true path; exit 1 |
+| `jit_determinism_fcmp_eq_false` | `fcmp` `Equal` — 1.5 == 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_ne_true` | `fcmp` `NotEqual` — 1.5 != 2.5 → true path; exit 1 |
+| `jit_determinism_fcmp_ne_false` | `fcmp` `NotEqual` — 2.5 != 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_lt_true` | `fcmp` `LessThan` — 1.5 < 2.5 → true path; exit 1 |
+| `jit_determinism_fcmp_lt_false` | `fcmp` `LessThan` — 2.5 < 1.5 → false path; exit 0 |
+| `jit_determinism_fcmp_le_true` | `fcmp` `LessThanOrEqual` — 1.5 <= 2.5 (strict-less) → true path; exit 1 |
+| `jit_determinism_fcmp_le_equal` | `fcmp` `LessThanOrEqual` — 1.5 <= 1.5 (equal boundary) → true path; exit 1 |
+| `jit_determinism_fcmp_le_false` | `fcmp` `LessThanOrEqual` — 2.5 <= 1.5 → false path; exit 0 |
+| `jit_determinism_fcmp_gt_true` | `fcmp` `GreaterThan` — 2.5 > 1.5 → true path; exit 1 |
+| `jit_determinism_fcmp_gt_false` | `fcmp` `GreaterThan` — 1.5 > 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_ge_true` | `fcmp` `GreaterThanOrEqual` — 2.5 >= 1.5 (strict-greater) → true path; exit 1 |
+| `jit_determinism_fcmp_ge_equal` | `fcmp` `GreaterThanOrEqual` — 1.5 >= 1.5 (equal boundary) → true path; exit 1 |
+| `jit_determinism_fcmp_ge_false` | `fcmp` `GreaterThanOrEqual` — 1.5 >= 2.5 → false path; exit 0 |
 
 ### Running the Tests
 
