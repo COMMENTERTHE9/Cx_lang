@@ -135,6 +135,14 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_logical_and_short_circuit_lhs_false` | AND short-circuit CFG — LHS false, sc_false block taken (RHS unreachable); exit 0 |
 | `jit_determinism_logical_or_lhs_false_rhs_true` | OR short-circuit CFG — LHS false, RHS block taken; path tokens (TOKEN_TRUE=42, TOKEN_RHS=7) + `Compare::Eq` + `Cast` I8→I32 verify branch identity; exit 1 |
 | `jit_determinism_logical_or_short_circuit_lhs_true` | OR short-circuit CFG — LHS true, sc_true block taken (RHS unreachable); exit 1 |
+| `jit_determinism_struct_two_fields_write_and_read` | Struct construction — `Alloca(8,4)` + `PtrOffset` × 2 + `Store` × 2 + `Load` × 2 + `Binary::Add`; field[0]+field[1]=42 |
+| `jit_determinism_struct_field_isolation` | Struct field isolation — write field[0]=7, write field[1]=13; load field[1] → 13; verifies no cross-field corruption |
+| `jit_determinism_compound_assign_add` | CompoundAssign Var-target `+=` — `Alloca` + `Store` + `Load` + `Binary::Add` + `Store` + `Load`; 37+5=42 |
+| `jit_determinism_compound_assign_sub` | CompoundAssign Var-target `-=` — same pattern with `Binary::Sub`; 50-8=42 |
+| `jit_determinism_compound_assign_mul` | CompoundAssign Var-target `*=` — same pattern with `Binary::Mul`; 6×7=42 |
+| `jit_determinism_tbool_false_call_boundary` | TBool call-boundary — TBool(0=false) survives `Call` + `Cast TBool→I32`; exit 0 |
+| `jit_determinism_tbool_true_call_boundary` | TBool call-boundary — TBool(1=true) survives `Call` + `Cast TBool→I32`; exit 1 |
+| `jit_determinism_tbool_unknown_call_boundary` | TBool call-boundary — TBool(2=unknown) survives `Call` + `Cast TBool→I32`; exit 2 (third state) |
 
 ### Running the Tests
 
