@@ -1,12 +1,21 @@
 ---
 import "../styles/global.css";
 import Nav from "../components/Nav.astro";
+import { SITE } from "../lib/site";
 
 const {
   title = "Cx",
-  description = "Cx - systems programming without hostility.",
+  description = SITE.description,
   wide = false,
+  canonical,
+  image = SITE.ogImage,
+  type = "website",
+  publishedTime,
 } = Astro.props;
+
+const canonicalUrl = new URL(canonical ?? Astro.url.pathname, SITE.url).toString();
+const imageUrl = new URL(image, SITE.url).toString();
+const metaDescription = description || SITE.description;
 ---
 
 <!doctype html>
@@ -51,8 +60,26 @@ const {
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{title}</title>
-  <meta name="description" content={description} />
+  <meta name="description" content={metaDescription} />
+  <link rel="canonical" href={canonicalUrl} />
+
+  <meta property="og:site_name" content={SITE.name} />
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={metaDescription} />
+  <meta property="og:type" content={type} />
+  <meta property="og:url" content={canonicalUrl} />
+  <meta property="og:image" content={imageUrl} />
+  {publishedTime && <meta property="article:published_time" content={publishedTime} />}
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content={title} />
+  <meta name="twitter:description" content={metaDescription} />
+  <meta name="twitter:image" content={imageUrl} />
+
+  <link rel="alternate" type="application/rss+xml" title="Cx Blog RSS" href={new URL(SITE.rss, SITE.url).toString()} />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.ico" sizes="any" />
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 </head>
 
 <body class="min-h-screen antialiased">

@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@astrojs/mdx": "^4.3.13",
+    "@astrojs/rss": "^4.0.18",
+    "@astrojs/sitemap": "^3.7.2",
     "@astrojs/vercel": "^9.0.4",
     "@fontsource/bebas-neue": "^5.2.7",
     "@fontsource/jetbrains-mono": "^5.2.8",

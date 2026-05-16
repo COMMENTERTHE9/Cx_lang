@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#03060f"/>
+      <stop offset="1" stop-color="#0d182e"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#00f0ff"/>
+      <stop offset="1" stop-color="#4da6ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)"/>
+  <rect x="56" y="56" width="1088" height="518" rx="28" fill="#080f1f" stroke="#0f2040" stroke-width="2"/>
+  <text x="96" y="220"
+        font-family="Bebas Neue, Impact, Arial Black, sans-serif"
+        font-size="144"
+        fill="url(#accent)"
+        letter-spacing="4">CX</text>
+  <text x="100" y="306"
+        font-family="Outfit, Segoe UI, Arial, sans-serif"
+        font-size="38"
+        fill="#b3cae3">Compiled. GC-free. Built for game engines.</text>
+  <text x="100" y="366"
+        font-family="JetBrains Mono, Consolas, monospace"
+        font-size="24"
+        fill="#8fb5d9">v0.1.0-rc / build from source / expect breaks</text>
+  <text x="100" y="504"
+        font-family="JetBrains Mono, Consolas, monospace"
+        font-size="22"
+        fill="#00f0ff">cx-lang.com</text>
+</svg>

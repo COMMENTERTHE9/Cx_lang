@@ -22,7 +22,13 @@ const typeLabel = TYPE_LABELS[typeKey] ?? "Note";
 const dateLong = entry.data.date.toLocaleString("en-US", { year: "numeric", month: "short", day: "2-digit" });
 ---
 
-<SiteLayout title={`${entry.data.title} | Cx Blog`} description={entry.data.description ?? ""} wide={true}>
+<SiteLayout
+  title={`${entry.data.title} | Cx Blog`}
+  description={entry.data.description ?? ""}
+  type="article"
+  publishedTime={entry.data.date.toISOString()}
+  wide={true}
+>
   <div class="mb-8">
     <div class="cx-mono text-xs" style="color: var(--cx-text-2);">
       ship://language/blog/<span style="color: var(--cx-text);">{entry.slug}</span>

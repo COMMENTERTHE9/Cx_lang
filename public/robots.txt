@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://cx-lang.com/sitemap.xml
+Sitemap: https://cx-lang.com/sitemap-index.xml
