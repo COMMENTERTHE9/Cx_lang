@@ -5741,6 +5741,124 @@ mod determinism_tests {
         assert_deterministic(&module);
     }
 
+    #[test]
+    fn jit_determinism_call_i64_return_value() {
+        // Call a no-arg function that returns an I64 constant; cast to I32 for exit code.
+        //
+        // get_i64() -> I64 { v0=42i64; return v0 }
+        // main()    -> I32 { v0=call get_i64() -> I64; v1=ireduce I64→I32 v0; return v1 }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_call_i64_ret".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "get_i64".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I64),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::I64,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Call {
+                                dst: Some(ValueId(0)),
+                                callee: "get_i64".to_string(),
+                                args: vec![],
+                                return_ty: Some(IrType::I64),
+                            },
+                            IrInst::Cast {
+                                dst: ValueId(1),
+                                from: IrType::I64,
+                                to: IrType::I32,
+                                value: ValueId(0),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    }],
+                },
+            ],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_call_i64_with_args() {
+        // Call a function that takes two I64 arguments and adds them; cast result to I32.
+        //
+        // add64(a: I64, b: I64) -> I64 { v2=v0+v1; return v2 }
+        // main() -> I32 { v0=20i64; v1=22i64; v2=call add64(v0,v1) -> I64; v3=ireduce I64→I32 v2; return v3 }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_call_i64_args".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "add64".to_string(),
+                    params: vec![
+                        IrParam { name: "a".to_string(), ty: IrType::I64 },
+                        IrParam { name: "b".to_string(), ty: IrType::I64 },
+                    ],
+                    return_ty: Some(IrType::I64),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![
+                            BlockParam { value: ValueId(0), ty: IrType::I64, read_only: true },
+                            BlockParam { value: ValueId(1), ty: IrType::I64, read_only: true },
+                        ],
+                        insts: vec![IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Add,
+                            ty: IrType::I64,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(2)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 20 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 22 },
+                            IrInst::Call {
+                                dst: Some(ValueId(2)),
+                                callee: "add64".to_string(),
+                                args: vec![ValueId(0), ValueId(1)],
+                                return_ty: Some(IrType::I64),
+                            },
+                            IrInst::Cast {
+                                dst: ValueId(3),
+                                from: IrType::I64,
+                                to: IrType::I32,
+                                value: ValueId(2),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    }],
+                },
+            ],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
     // ── Logical AND/OR short-circuit (CX-192) ────────────────────────────────
     //
     // Each test models the canonical 4-block short-circuit CFG that lower_logical

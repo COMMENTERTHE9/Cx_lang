@@ -129,6 +129,8 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_call_chained` | `Call` — three-function chain; verifies forward-reference resolution |
 | `jit_determinism_call_in_branch` | `Call` inside a non-entry block (branch arm); verifies block-local call emission |
 | `jit_determinism_call_multiple` | Two calls to the same callee; verifies repeated `declare_func_in_func` stability |
+| `jit_determinism_call_i64_return_value` | `Call` — no-arg callee returns `I64` constant; result `ireduce`d to `I32` for exit code |
+| `jit_determinism_call_i64_with_args` | `Call` — callee takes two `I64` arguments and adds them; `ireduce` result to `I32` for exit code |
 | `jit_determinism_compound_assign_dot_access` | `CompoundAssign` DotAccess lvalue — `PtrOffset` + `Load` + `Binary::Add` + `Store` on a non-first struct field |
 | `jit_determinism_compound_assign_index` | `CompoundAssign` Index lvalue — `ArrayAlloca` + `PtrAdd` + `Load` + `Binary::Add` + `Store` on an array element |
 | `jit_determinism_logical_and_lhs_true_rhs_true` | AND short-circuit CFG — LHS true, RHS block taken; `ConstInt(Bool)` + `Branch` + `Jump` with block param; exit 1 |
