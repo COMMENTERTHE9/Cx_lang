@@ -20,7 +20,7 @@ const blog = defineCollection({
 
     // NEW
     kind: z.enum(["release", "note", "guide"]).optional().default("note"),
-    version: z.string().optional(), // e.g. "v0.8.0"
+    version: z.string().optional(), // e.g. "v0.1.0-rc"
   }),
 });
 
