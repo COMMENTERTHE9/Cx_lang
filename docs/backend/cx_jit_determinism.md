@@ -137,6 +137,12 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_logical_or_short_circuit_lhs_true` | OR short-circuit CFG — LHS true, sc_true block taken (RHS unreachable); exit 1 |
 | `jit_determinism_if_else_merge_true_path` | If/else conditional merge — `Compare::Eq` + `Branch`; condition true → then arm → value 42 via `Jump` block param to merge block; exit 42 |
 | `jit_determinism_if_else_merge_false_path` | If/else conditional merge — `Compare::Eq` + `Branch`; condition false → else arm → value 7 via `Jump` block param to merge block; exit 7 |
+| `jit_determinism_unary_neg_int` | `NegInt` lowered as `0 - x` — `ConstInt` zero + `Binary::Sub` on I32; exit 42 |
+| `jit_determinism_unary_neg_float` | `NegFloat` lowered as `0.0 - x` — `ConstFloat` zero + `Binary::Sub` on F64 + `Cast` F64→I32; exit 7 |
+| `jit_determinism_unary_bool_not_true` | `BoolNot` lowered as `x == 0` — `ConstInt(Bool)` + `Compare::Eq` + `Cast` Bool→I32; NOT true → 0; exit 0 |
+| `jit_determinism_unary_bool_not_false` | `BoolNot` lowered as `x == 0` — `ConstInt(Bool)` + `Compare::Eq` + `Cast` Bool→I32; NOT false → 1; exit 1 |
+| `jit_determinism_builtin_assert_pass` | `BuiltinAssert` pass path — `Compare::Eq` + `Branch` to pass/trap blocks; pass block taken (1==1); `Trap` block compiled but unreachable; exit 0 |
+| `jit_determinism_builtin_assert_abort_on_failure` | `BuiltinAssert` abort-on-failure CFG — `ConstInt(Bool 1)` + `Branch`; `Trap` instruction in compiled CFG; forced-true condition keeps Trap unreachable at runtime; exit 0 |
 
 ### Running the Tests
 
