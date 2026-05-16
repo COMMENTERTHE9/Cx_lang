@@ -123,6 +123,8 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_while_in_inclusive` | `while in arr:[0], 0..=2 {}` — inclusive `Le` bound; same array iteration pattern; exit code 30 |
 | `jit_determinism_while_in_zero_iterations` | `while in arr:[0], 3..0 {}` — `Lt` false on first check; body/increment unreachable; arr[0] unchanged; exit code 10 |
 | `jit_determinism_while_in_loop_carried_binding` | `sum += arr[0]` across iterations — counter + accumulator threaded as two header block params; exit code 60 |
+| `jit_determinism_while_loop_zero_iterations` | `while (false) {}` — 4-block while-loop CFG; `Lt` false on first check; body block unreachable (back-edge structurally present); exit code 7 |
+| `jit_determinism_while_loop_accumulator` | `while i<=5 { sum+=i; i+=1 }` — two header params (counter + accumulator); inclusive `Le` bound; 5 iterations; exit code 15 |
 | `jit_determinism_call_return_value` | `Call` — value-returning callee; result used as exit code |
 | `jit_determinism_call_void` | `Call` — void callee (no return value); caller returns a constant |
 | `jit_determinism_call_with_args` | `Call` — callee takes two `I32` arguments; exercises argument passing |
