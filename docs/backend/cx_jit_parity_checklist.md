@@ -29,8 +29,8 @@ set:
 | Array          | Array literals and array-of-result           | t33, t112 (output-verified); t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit (exit-code-verified, CX-121) |
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151, t152, t153 (mixed output/exit-code fixtures; CX-119, CX-187) |
 | Unary          | Unary operators (negation, etc.)             | t96 |
-| Cast           | Explicit type casts                          | t139, t140 |
-| FloatOps       | f64 operations                               | t55, t135–t138 |
+| Cast           | Explicit type casts                          | t139, t140, t157, t158 |
+| FloatOps       | f64 operations                               | t55, t135–t138, t155, t156 |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
 | LogicalOps     | Logical AND/OR short-circuit operators       | t141, t142 |
 | Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113); integration: t154_integration_multifn (CX-182) |
@@ -102,7 +102,7 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-196` (submain as of CX-196 merge window, 2026-05-15).
+Run on branch `stokowski/CX-117` (submain as of CX-203 merge window, 2026-05-16).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
@@ -113,8 +113,11 @@ CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
 dispatch to cx_printn, CX-187 CompoundAssign DotAccess and Index exit-code
 fixtures (t152_compound_assign_dotaccess_exit, t153_compound_assign_index_exit)
 plus parser support for `arr:[i] op= value` compound assign on array elements,
-and CX-182 integration multi-function PassWithOutput fixture
-(t154_integration_multifn) rebased onto submain via CX-196.
+CX-182 integration multi-function PassWithOutput fixture
+(t154_integration_multifn) rebased onto submain via CX-196, and
+CX-117 FloatOps/Cast exit-code parity fixtures
+(t155_float_arith_mod_exit, t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit,
+t158_cast_t64_to_f64_exit).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -130,13 +133,13 @@ Struct                    6      5            0
 Array                     3      2            0
 CompoundAssign            4      2            0
 Unary                     0      1            0
-Cast                      0      2            0
-FloatOps                  0      5            0
+Cast                      0      4            0
+FloatOps                  0      7            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
 Other                    17     48            0
 ------------------------------------------------
-Total: 158 fixtures, 0 PARITY_FAILs
+Total: 162 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -201,6 +204,18 @@ element read/write, and array passing through function calls. The 3 PASS reflect
 fixtures passing via the CX-121 ArrayAlloca JIT emit (`IrInst::ArrayAlloca` lowered to
 Cranelift via `compute_array_layout`). The 2 SKIP are t33 and t112 (print-based originals
 that remain SKIP).
+
+**FloatOps parity coverage (CX-117):** t155_float_arith_mod_exit exercises f64 modulo
+(`BinaryOp::Rem` on F64 via fmod libcall) with a scaled-exact check (multiply remainder by
+10.0 before casting to t32) to catch backend drift hidden by direct truncation.
+t156_float_neg_exit exercises unary f64 negation (lowered to `ConstFloat(0.0) + Binary(Sub, F64)`).
+Both are SKIP in the current JIT (float ops not yet lowerable; exits 127).
+
+**Cast parity coverage (CX-117):** t157_cast_neg_t32_to_f64_exit verifies sign preservation
+when a negative t32 widens to f64, complementing t139's positive-value coverage.
+t158_cast_t64_to_f64_exit exercises the I64→F64 conversion path (`fcvt_from_sint` on a 64-bit
+value), which is distinct from t139's I32→F64 path. Both are SKIP in the current JIT (cast
+lowering for these paths not yet implemented; exits 127).
 
 **Integration fixture (CX-182, rebased CX-196):** t154_integration_multifn is a
 PassWithOutput fixture exercising two user-defined functions (`sum_up_to` using a while loop,
