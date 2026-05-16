@@ -1,0 +1,11 @@
+// CX-117/CX-209: exit-code-based JIT parity — unary f64 negation.
+// Negation is lowered in the IR as ConstFloat(0.0) + Binary(Sub, F64).
+a: f64 = 5.0
+neg_a: f64 = -a
+n: t32 = neg_a
+assert_eq(n, -5)
+
+b: f64 = 3.0
+neg_b: f64 = -b
+m: t32 = neg_b
+assert_eq(m, -3)
