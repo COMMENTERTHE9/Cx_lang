@@ -143,6 +143,19 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_unary_bool_not_false` | `BoolNot` lowered as `x == 0` — `ConstInt(Bool)` + `Compare::Eq` + `Cast` Bool→I32; NOT false → 1; exit 1 |
 | `jit_determinism_builtin_assert_pass` | `BuiltinAssert` pass path — `Compare::Eq` + `Branch` to pass/trap blocks; pass block taken (1==1); `Trap` block compiled but unreachable; exit 0 |
 | `jit_determinism_builtin_assert_abort_on_failure` | `BuiltinAssert` abort-on-failure CFG — `ConstInt(Bool 1)` + `Branch`; `Trap` instruction in compiled CFG; forced-true condition keeps Trap unreachable at runtime; exit 0 |
+| `jit_determinism_ptr_offset_zero_aliases_base` | `PtrOffset` offset=0 aliases base — store via alias, load via base; exit 99 |
+| `jit_determinism_ptr_offset_nonzero_advances_ptr` | `PtrOffset` offset=4 addresses bytes [4..8] of 8-byte slot; exit 77 |
+| `jit_determinism_array_alloca_store_load` | `ArrayAlloca` 4-element I32 — store 55 at element[0], load back; exit 55 |
+| `jit_determinism_array_alloca_ptr_offset_second_element` | `ArrayAlloca` + `PtrOffset` to element[1] (stride 4) — store 88, load back; exit 88 |
+| `jit_determinism_cast_sextend_i32_to_i64` | `Cast` sextend I32→I64 then ireduce I64→I32; exit 42 |
+| `jit_determinism_cast_ireduce_i64_to_i32` | `Cast` ireduce I64→I32; exit 42 |
+| `jit_determinism_cast_i64_to_f64_and_back` | `Cast` fcvt_from_sint I64→F64 then fcvt_to_sint_sat F64→I32; exit 42 |
+| `jit_determinism_cast_sextend_i8_negative` | `Cast` sextend negative I8→I32 (−1 sign-extends to −1); exit −1 |
+| `jit_determinism_f64_binary_add` | F64 `Binary::Add` — 3.0 + 4.0 = 7.0 → exit 7 |
+| `jit_determinism_f64_binary_sub` | F64 `Binary::Sub` — 10.0 − 3.0 = 7.0 → exit 7 |
+| `jit_determinism_f64_binary_mul` | F64 `Binary::Mul` — 3.5 × 2.0 = 7.0 → exit 7 |
+| `jit_determinism_f64_binary_div` | F64 `Binary::Div` — 21.0 ÷ 3.0 = 7.0 → exit 7 |
+| `jit_determinism_f64_binary_rem` | F64 `Binary::Rem` — 10.0 % 3.0 = 1.0 via fmod libcall → exit 1 |
 
 ### Running the Tests
 
