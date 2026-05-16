@@ -1986,7 +1986,16 @@ fn lower_binary(
 
     match op {
         Op::Plus | Op::Minus | Op::Mul | Op::Div | Op::Mod => {
-            let ty = lower_type(result_ty)?;
+            // SemanticType::Numeric is an unresolved placeholder for integer
+            // literals without an explicit type annotation.  Resolve it to the
+            // target's native integer width (I64 on 64-bit) so that expressions
+            // like `0 + 0` or `3 * 4` lower successfully instead of returning
+            // an UnsupportedSemanticType error (which propagates as JIT SKIP).
+            let ty = if *result_ty == SemanticType::Numeric {
+                ctx.target.numeric_literal_ir_type()
+            } else {
+                lower_type(result_ty)?
+            };
             ensure_type_match("binary lhs", ty.clone(), lhs.ty)?;
             ensure_type_match("binary rhs", ty.clone(), rhs.ty)?;
             let op = match op {
@@ -6197,6 +6206,53 @@ mod tests {
             "expected InternalInvariantViolation for wrong assert_eq arity, got: {:?}",
             err
         );
+    }
+
+    #[test]
+    fn assert_eq_with_numeric_binary_lhs_lowers_correctly() {
+        // assert_eq(1 + 1, 2) — both args have SemanticType::Numeric.
+        // Prior to CX-218 this returned UnsupportedSemanticType("Numeric")
+        // because lower_binary called lower_type(Numeric) for arithmetic ops.
+        // After the fix, Numeric resolves to I64 (on 64-bit targets) and the
+        // entire assert_eq lowers to Compare(Eq) + Branch/Trap.
+        let add_expr = SemanticExpr {
+            ty: SemanticType::Numeric,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(int_expr(1, SemanticType::Numeric)),
+                op: Op::Plus,
+                pos: 0,
+                rhs: Box::new(int_expr(1, SemanticType::Numeric)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(add_expr),
+                    SemanticCallArg::Expr(int_expr(2, SemanticType::Numeric)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let all_insts: Vec<_> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+        let has_add = all_insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Add, ty: IrType::I64, .. }));
+        assert!(has_add, "expected Binary(Add, I64) for Numeric 1+1");
+        let has_eq = all_insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Compare { op: CompareOp::Eq, .. }));
+        assert!(has_eq, "expected Compare(Eq) for assert_eq");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected Trap block for failing assert_eq path");
     }
 
     #[test]

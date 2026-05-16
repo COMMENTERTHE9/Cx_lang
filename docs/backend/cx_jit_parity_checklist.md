@@ -102,24 +102,15 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `stokowski/CX-196` (submain as of CX-196 merge window, 2026-05-15).
-Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
-CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
-exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
-(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
-CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
-dispatch to cx_printn, CX-187 CompoundAssign DotAccess and Index exit-code
-fixtures (t152_compound_assign_dotaccess_exit, t153_compound_assign_index_exit)
-plus parser support for `arr:[i] op= value` compound assign on array elements,
-and CX-182 integration multi-function PassWithOutput fixture
-(t154_integration_multifn) rebased onto submain via CX-196.
+Run on branch `stokowski/CX-218` (submain as of CX-218 merge window, 2026-05-16).
+Includes all baselines from CX-196 plus CX-218 Numeric type resolution in
+`lower_binary` for arithmetic operators, which converts t117–t121
+(assert_eq-based arithmetic parity fixtures) from SKIP to PASS.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
-Arithmetic                8      9            0
+Arithmetic               13      4            0
 VariableDecl              5      3            0
 IfElse                    4      2            0
 WhileLoop                 5      3            0
@@ -160,6 +151,16 @@ handles, and other Phase 14+ constructs). As subsequent phases land, SKIP
 counts will continue to decrease and PASS counts will increase.
 
 **PARITY_FAIL = 0** across all 16 categories. The gate holds.
+
+**Arithmetic parity coverage (CX-218):** t117–t121 are exit-code-verified fixtures
+for the five integer arithmetic operators (+, -, *, /, %). They were previously SKIP
+because `lower_binary` called `lower_type(SemanticType::Numeric)` for the result type
+of unresolved numeric expressions, which returned an `UnsupportedSemanticType` error.
+CX-218 fixes this by resolving `SemanticType::Numeric` to the target's native integer
+width (I64 on 64-bit) in `lower_binary`, matching the existing behaviour in `lower_value`.
+The 13 PASS reflect t01, t89–t95 (print-based originals), t103 (expected-fail),
+t114–t116 (eval-order fixtures), and t117–t121 (arithmetic exit-code fixtures).
+The 4 remaining SKIP are print-based originals not yet supported by the JIT.
 
 **IfElse parity coverage (CX-102/CX-111/CX-136):** t129 mirrors t44 (basic if/else),
 t130 mirrors t45 (if/else in function), t131 mirrors t46 (negated conditions,
