@@ -3085,6 +3085,83 @@ mod determinism_tests {
         );
     }
 
+    /// Build a two-block if/else module that compares two F64 constants via fcmp.
+    ///
+    /// ```text
+    /// main() -> I32 {
+    ///   block0:
+    ///     v0 = const lhs : F64
+    ///     v1 = const rhs : F64
+    ///     v2 = compare op(v0, v1)   // I8 via fcmp (ordered)
+    ///     branch v2, block1[], block2[]
+    ///   block1:          // true path
+    ///     v3 = const true_val : I32
+    ///     return v3
+    ///   block2:          // false path
+    ///     v4 = const false_val : I32
+    ///     return v4
+    /// }
+    /// ```
+    fn float_compare_branch_module(
+        lhs: f64,
+        rhs: f64,
+        op: CompareOp,
+        true_val: i128,
+        false_val: i128,
+    ) -> IrModule {
+        IrModule {
+            debug_name: "det_fcmp_branch".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstFloat { dst: ValueId(0), value: lhs },
+                            IrInst::ConstFloat { dst: ValueId(1), value: rhs },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: true_val,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(3)) },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: false_val,
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(4)) },
+                    },
+                ],
+            }],
+        }
+    }
+
     // ── ConstInt + Return ─────────────────────────────────────────────────────
 
     #[test]
@@ -6687,5 +6764,105 @@ mod determinism_tests {
             }],
         };
         assert_deterministic_with_expected(&module, 30);
+    }
+
+    // ── F64 comparison (fcmp) determinism ─────────────────────────────────────
+
+    #[test]
+    fn jit_determinism_fcmp_eq_true() {
+        // 1.5 == 1.5 → ordered Equal → true path → exit 1
+        let m = float_compare_branch_module(1.5, 1.5, CompareOp::Eq, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_eq_false() {
+        // 1.5 == 2.5 → ordered Equal → false path → exit 0
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Eq, 1, 0);
+        assert_deterministic_with_expected(&m, 0);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_ne_true() {
+        // 1.5 != 2.5 → ordered NotEqual → true path → exit 1
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Ne, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_ne_false() {
+        // 2.5 != 2.5 → ordered NotEqual → false path → exit 0
+        let m = float_compare_branch_module(2.5, 2.5, CompareOp::Ne, 1, 0);
+        assert_deterministic_with_expected(&m, 0);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_lt_true() {
+        // 1.5 < 2.5 → ordered LessThan → true path → exit 1
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Lt, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_lt_false() {
+        // 2.5 < 1.5 → ordered LessThan → false path → exit 0
+        let m = float_compare_branch_module(2.5, 1.5, CompareOp::Lt, 1, 0);
+        assert_deterministic_with_expected(&m, 0);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_le_true() {
+        // 1.5 <= 2.5 → ordered LessThanOrEqual (strict-less case) → true path → exit 1
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Le, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_le_equal() {
+        // 1.5 <= 1.5 → ordered LessThanOrEqual (equal boundary) → true path → exit 1
+        let m = float_compare_branch_module(1.5, 1.5, CompareOp::Le, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_le_false() {
+        // 2.5 <= 1.5 → ordered LessThanOrEqual → false path → exit 0
+        let m = float_compare_branch_module(2.5, 1.5, CompareOp::Le, 1, 0);
+        assert_deterministic_with_expected(&m, 0);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_gt_true() {
+        // 2.5 > 1.5 → ordered GreaterThan → true path → exit 1
+        let m = float_compare_branch_module(2.5, 1.5, CompareOp::Gt, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_gt_false() {
+        // 1.5 > 2.5 → ordered GreaterThan → false path → exit 0
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Gt, 1, 0);
+        assert_deterministic_with_expected(&m, 0);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_ge_true() {
+        // 2.5 >= 1.5 → ordered GreaterThanOrEqual (strict-greater case) → true path → exit 1
+        let m = float_compare_branch_module(2.5, 1.5, CompareOp::Ge, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_ge_equal() {
+        // 1.5 >= 1.5 → ordered GreaterThanOrEqual (equal boundary) → true path → exit 1
+        let m = float_compare_branch_module(1.5, 1.5, CompareOp::Ge, 1, 0);
+        assert_deterministic_with_expected(&m, 1);
+    }
+
+    #[test]
+    fn jit_determinism_fcmp_ge_false() {
+        // 1.5 >= 2.5 → ordered GreaterThanOrEqual → false path → exit 0
+        let m = float_compare_branch_module(1.5, 2.5, CompareOp::Ge, 1, 0);
+        assert_deterministic_with_expected(&m, 0);
     }
 }

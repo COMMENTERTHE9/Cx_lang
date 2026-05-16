@@ -1,5 +1,5 @@
 # Cx JIT Determinism Guarantee
-v1.2 — 2026-05-09
+v1.3 — 2026-05-16
 
 ---
 
@@ -135,6 +135,20 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_logical_and_short_circuit_lhs_false` | AND short-circuit CFG — LHS false, sc_false block taken (RHS unreachable); exit 0 |
 | `jit_determinism_logical_or_lhs_false_rhs_true` | OR short-circuit CFG — LHS false, RHS block taken; path tokens (TOKEN_TRUE=42, TOKEN_RHS=7) + `Compare::Eq` + `Cast` I8→I32 verify branch identity; exit 1 |
 | `jit_determinism_logical_or_short_circuit_lhs_true` | OR short-circuit CFG — LHS true, sc_true block taken (RHS unreachable); exit 1 |
+| `jit_determinism_fcmp_eq_true` | `fcmp` `Equal` — 1.5 == 1.5 → true path; exit 1 |
+| `jit_determinism_fcmp_eq_false` | `fcmp` `Equal` — 1.5 == 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_ne_true` | `fcmp` `NotEqual` — 1.5 != 2.5 → true path; exit 1 |
+| `jit_determinism_fcmp_ne_false` | `fcmp` `NotEqual` — 2.5 != 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_lt_true` | `fcmp` `LessThan` — 1.5 < 2.5 → true path; exit 1 |
+| `jit_determinism_fcmp_lt_false` | `fcmp` `LessThan` — 2.5 < 1.5 → false path; exit 0 |
+| `jit_determinism_fcmp_le_true` | `fcmp` `LessThanOrEqual` — 1.5 <= 2.5 (strict-less) → true path; exit 1 |
+| `jit_determinism_fcmp_le_equal` | `fcmp` `LessThanOrEqual` — 1.5 <= 1.5 (equal boundary) → true path; exit 1 |
+| `jit_determinism_fcmp_le_false` | `fcmp` `LessThanOrEqual` — 2.5 <= 1.5 → false path; exit 0 |
+| `jit_determinism_fcmp_gt_true` | `fcmp` `GreaterThan` — 2.5 > 1.5 → true path; exit 1 |
+| `jit_determinism_fcmp_gt_false` | `fcmp` `GreaterThan` — 1.5 > 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_ge_true` | `fcmp` `GreaterThanOrEqual` — 2.5 >= 1.5 (strict-greater) → true path; exit 1 |
+| `jit_determinism_fcmp_ge_equal` | `fcmp` `GreaterThanOrEqual` — 1.5 >= 1.5 (equal boundary) → true path; exit 1 |
+| `jit_determinism_fcmp_ge_false` | `fcmp` `GreaterThanOrEqual` — 1.5 >= 2.5 → false path; exit 0 |
 
 ### Running the Tests
 
