@@ -156,6 +156,8 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_f64_binary_mul` | F64 `Binary::Mul` — 3.5 × 2.0 = 7.0 → exit 7 |
 | `jit_determinism_f64_binary_div` | F64 `Binary::Div` — 21.0 ÷ 3.0 = 7.0 → exit 7 |
 | `jit_determinism_f64_binary_rem` | F64 `Binary::Rem` — 10.0 % 3.0 = 1.0 via fmod libcall → exit 1 |
+| `jit_determinism_call_f64_return_value` | F64 call boundary — no-arg callee returns F64 42.0; main casts F64→I32; exit 42 |
+| `jit_determinism_call_f64_with_args` | F64 call boundary — callee takes two F64 params (20.0, 22.0), adds them, returns F64; main casts F64→I32; exit 42 |
 
 ### Running the Tests
 
