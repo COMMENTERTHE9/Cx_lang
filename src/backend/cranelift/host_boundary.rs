@@ -6575,6 +6575,172 @@ mod determinism_tests {
         );
     }
 
+    // ── If/else conditional branch merge (CX-204) ────────────────────────────
+
+    #[test]
+    fn jit_determinism_if_else_merge_true_path() {
+        // if 5 == 5 { result = 42 } else { result = 7 }; return result
+        // Condition true → then block taken → value 42 passed to merge block.
+        //
+        // main() -> I32 {
+        //   block0: v0=5(I32); v1=5(I32); v2=Compare(v0 Eq v1)→Bool; branch v2, block1, block2
+        //   block1 (then, taken):     v3=42(I32); jump block3(v3)
+        //   block2 (else, not taken): v4=7(I32);  jump block3(v4)
+        //   block3(v5: I32): return v5
+        // }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_if_else_merge_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 7,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(5),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_if_else_merge_false_path() {
+        // if 3 == 5 { result = 42 } else { result = 7 }; return result
+        // Condition false → else block taken → value 7 passed to merge block.
+        //
+        // main() -> I32 {
+        //   block0: v0=3(I32); v1=5(I32); v2=Compare(v0 Eq v1)→Bool; branch v2, block1, block2
+        //   block1 (then, not taken): v3=42(I32); jump block3(v3)
+        //   block2 (else, taken):     v4=7(I32);  jump block3(v4)
+        //   block3(v5: I32): return v5
+        // }
+        // Expected: 7
+        let module = IrModule {
+            debug_name: "det_if_else_merge_false".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 3 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 5 },
+                            IrInst::Compare {
+                                dst: ValueId(2),
+                                op: CompareOp::Eq,
+                                lhs: ValueId(0),
+                                rhs: ValueId(1),
+                            },
+                        ],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(2),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(3),
+                            ty: IrType::I32,
+                            value: 42,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(3)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(4),
+                            ty: IrType::I32,
+                            value: 7,
+                        }],
+                        term: IrTerminator::Jump {
+                            target: BlockId(3),
+                            args: vec![ValueId(4)],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![BlockParam {
+                            value: ValueId(5),
+                            ty: IrType::I32,
+                            read_only: false,
+                        }],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: Some(ValueId(5)) },
+                    },
+                ],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 7);
+    }
+
     // ── CompoundAssign DotAccess and Index lvalue targets (CX-191) ───────────
 
     #[test]

@@ -135,6 +135,8 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_logical_and_short_circuit_lhs_false` | AND short-circuit CFG — LHS false, sc_false block taken (RHS unreachable); exit 0 |
 | `jit_determinism_logical_or_lhs_false_rhs_true` | OR short-circuit CFG — LHS false, RHS block taken; path tokens (TOKEN_TRUE=42, TOKEN_RHS=7) + `Compare::Eq` + `Cast` I8→I32 verify branch identity; exit 1 |
 | `jit_determinism_logical_or_short_circuit_lhs_true` | OR short-circuit CFG — LHS true, sc_true block taken (RHS unreachable); exit 1 |
+| `jit_determinism_if_else_merge_true_path` | If/else conditional merge — `Compare::Eq` + `Branch`; condition true → then arm → value 42 via `Jump` block param to merge block; exit 42 |
+| `jit_determinism_if_else_merge_false_path` | If/else conditional merge — `Compare::Eq` + `Branch`; condition false → else arm → value 7 via `Jump` block param to merge block; exit 7 |
 
 ### Running the Tests
 
