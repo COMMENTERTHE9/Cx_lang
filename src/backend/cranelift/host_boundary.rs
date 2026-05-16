@@ -3026,6 +3026,269 @@ mod jit_tests {
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
         assert_eq!(result.unwrap().exit_code.raw(), 1); // 10 > 3 = true
     }
+
+    #[test]
+    fn jit_eval_order_div_lhs_is_dividend() {
+        // Binary{Div, lhs=20, rhs=4} must yield 20/4=5, not 4/20=0.
+        // A backend that swaps lhs/rhs would compute 4/20=0 (integer division).
+        let module = IrModule {
+            debug_name: "test_eval_order_div".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 20 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 4 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Div,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 5); // 20 / 4
+    }
+
+    #[test]
+    fn jit_eval_order_rem_lhs_is_dividend() {
+        // Binary{Rem, lhs=10, rhs=3} must yield 10%3=1, not 3%10=3.
+        // A backend that swaps lhs/rhs would compute 3%10=3.
+        let module = IrModule {
+            debug_name: "test_eval_order_rem".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 3 },
+                        IrInst::Binary {
+                            dst: ValueId(2),
+                            op: BinaryOp::Rem,
+                            ty: IrType::I32,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 10 % 3
+    }
+
+    #[test]
+    fn jit_eval_order_compare_lt_lhs_is_left_operand() {
+        // Compare{Lt, lhs=3, rhs=10} must yield 1 (3 < 10 = true).
+        // A backend that swaps lhs/rhs would compute 10 < 3 = false → 0.
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_eval_order_compare_lt".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 3 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Lt,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 3 < 10 = true
+    }
+
+    #[test]
+    fn jit_eval_order_compare_le_lhs_is_left_operand() {
+        // Compare{Le, lhs=3, rhs=10} must yield 1 (3 <= 10 = true).
+        // A backend that swaps lhs/rhs would compute 10 <= 3 = false → 0.
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_eval_order_compare_le".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 3 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Le,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 3 <= 10 = true
+    }
+
+    #[test]
+    fn jit_eval_order_compare_ge_lhs_is_left_operand() {
+        // Compare{Ge, lhs=10, rhs=3} must yield 1 (10 >= 3 = true).
+        // A backend that swaps lhs/rhs would compute 3 >= 10 = false → 0.
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_eval_order_compare_ge".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 3 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Ge,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 10 >= 3 = true
+    }
+
+    #[test]
+    fn jit_eval_order_compare_ne_lhs_rhs_unequal() {
+        // Compare{Ne, lhs=5, rhs=10} must yield 1 (5 != 10 = true).
+        // Ne is symmetric so operand swap cannot be detected via result;
+        // this test verifies that Ne semantics are implemented correctly.
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_eval_order_compare_ne".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 5 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 10 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Ne,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 5 != 10 = true
+    }
+
+    #[test]
+    fn jit_eval_order_compare_eq_lhs_rhs_equal() {
+        // Compare{Eq, lhs=7, rhs=7} must yield 1 (7 == 7 = true).
+        // Eq is symmetric so operand swap cannot be detected via result;
+        // this test verifies that Eq semantics are implemented correctly.
+        use crate::ir::instr::CompareOp;
+        let module = IrModule {
+            debug_name: "test_eval_order_compare_eq".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 7 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 7 },
+                        IrInst::Compare {
+                            dst: ValueId(2),
+                            op: CompareOp::Eq,
+                            lhs: ValueId(0),
+                            rhs: ValueId(1),
+                        },
+                        IrInst::Cast {
+                            dst: ValueId(3),
+                            from: IrType::I8,
+                            to: IrType::I32,
+                            value: ValueId(2),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert_eq!(result.unwrap().exit_code.raw(), 1); // 7 == 7 = true
+    }
 }
 
 // ── JIT determinism tests (require the `jit` feature) ────────────────────────
