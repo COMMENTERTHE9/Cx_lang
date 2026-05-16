@@ -143,6 +143,14 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_unary_bool_not_false` | `BoolNot` lowered as `x == 0` — `ConstInt(Bool)` + `Compare::Eq` + `Cast` Bool→I32; NOT false → 1; exit 1 |
 | `jit_determinism_builtin_assert_pass` | `BuiltinAssert` pass path — `Compare::Eq` + `Branch` to pass/trap blocks; pass block taken (1==1); `Trap` block compiled but unreachable; exit 0 |
 | `jit_determinism_builtin_assert_abort_on_failure` | `BuiltinAssert` abort-on-failure CFG — `ConstInt(Bool 1)` + `Branch`; `Trap` instruction in compiled CFG; forced-true condition keeps Trap unreachable at runtime; exit 0 |
+| `jit_determinism_struct_two_fields_write_and_read` | Struct construction — `Alloca(8,4)` + `PtrOffset` × 2 + `Store` × 2 + `Load` × 2 + `Binary::Add`; field[0]+field[1]=42 |
+| `jit_determinism_struct_field_isolation` | Struct field isolation — write field[0]=7, write field[1]=13; load field[1] → 13; verifies no cross-field corruption |
+| `jit_determinism_compound_assign_add` | CompoundAssign Var-target `+=` — `Alloca` + `Store` + `Load` + `Binary::Add` + `Store` + `Load`; 37+5=42 |
+| `jit_determinism_compound_assign_sub` | CompoundAssign Var-target `-=` — same pattern with `Binary::Sub`; 50-8=42 |
+| `jit_determinism_compound_assign_mul` | CompoundAssign Var-target `*=` — same pattern with `Binary::Mul`; 6×7=42 |
+| `jit_determinism_tbool_false_call_boundary` | TBool call-boundary — TBool(0=false) survives `Call` + `Cast TBool→I32`; exit 0 |
+| `jit_determinism_tbool_true_call_boundary` | TBool call-boundary — TBool(1=true) survives `Call` + `Cast TBool→I32`; exit 1 |
+| `jit_determinism_tbool_unknown_call_boundary` | TBool call-boundary — TBool(2=unknown) survives `Call` + `Cast TBool→I32`; exit 2 (third state) |
 
 ### Running the Tests
 

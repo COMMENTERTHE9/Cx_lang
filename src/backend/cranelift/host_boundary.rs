@@ -6854,4 +6854,311 @@ mod determinism_tests {
         };
         assert_deterministic_with_expected(&module, 30);
     }
+
+    // ── Struct construction (CX-188) ──────────────────────────────────────────
+    //
+    // Struct construction at the IR level is modelled as:
+    //   Alloca(total_size, align) → PtrOffset(base, field_offset) → Store → Load
+    //
+    // These tests verify that a two-field I32 struct (8 bytes, align 4) is
+    // written and read back deterministically across two independent JIT runs.
+
+    #[test]
+    fn jit_determinism_struct_two_fields_write_and_read() {
+        // Construct a two-field struct { a: I32, b: I32 } on the stack.
+        // Write a=10, b=32; read back a+b → 42.
+        //
+        // main() -> I32 {
+        //   slot = alloca(8, 4)
+        //   p0   = ptr_offset(slot, 0)   // &field[0]
+        //   p1   = ptr_offset(slot, 4)   // &field[1]
+        //   store(p0, 10i32)
+        //   store(p1, 32i32)
+        //   f0   = load(I32, p0)
+        //   f1   = load(I32, p1)
+        //   result = f0 + f1
+        //   return result                 // → 42
+        // }
+        let module = IrModule {
+            debug_name: "det_struct_two_fields".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 4 },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 0 },
+                        IrInst::PtrOffset { dst: ValueId(2), base: ValueId(0), offset: 4 },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 10 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(3) },
+                        IrInst::ConstInt { dst: ValueId(4), ty: IrType::I32, value: 32 },
+                        IrInst::Store { ptr: ValueId(2), value: ValueId(4) },
+                        IrInst::Load { dst: ValueId(5), ty: IrType::I32, ptr: ValueId(1) },
+                        IrInst::Load { dst: ValueId(6), ty: IrType::I32, ptr: ValueId(2) },
+                        IrInst::Binary {
+                            dst: ValueId(7),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(5),
+                            rhs: ValueId(6),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(7)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_struct_field_isolation() {
+        // Writing field[0] must not corrupt field[1].
+        // Write a=7, b=13; read back only b → 13.
+        //
+        // main() -> I32 {
+        //   slot = alloca(8, 4)
+        //   p1   = ptr_offset(slot, 4)   // &field[1]
+        //   store(slot, 7i32)            // field[0] = 7
+        //   store(p1, 13i32)             // field[1] = 13
+        //   result = load(I32, p1)
+        //   return result                 // → 13
+        // }
+        let module = IrModule {
+            debug_name: "det_struct_field_isolation".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 8, align: 4 },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 4 },
+                        IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 7 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(2) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 13 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(3) },
+                        IrInst::Load { dst: ValueId(4), ty: IrType::I32, ptr: ValueId(1) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(4)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 13);
+    }
+
+    // ── CompoundAssign Var-target (CX-188) ────────────────────────────────────
+    //
+    // CompoundAssign on a variable target lowers to:
+    //   Load(slot) → BinaryOp(old, delta) → Store(slot, new) → Load(slot)
+    //
+    // Each test verifies one operator deterministically.
+
+    #[test]
+    fn jit_determinism_compound_assign_add() {
+        // x = 37; x += 5; return x  → 42
+        //
+        // main() -> I32 {
+        //   slot = alloca(4, 4)
+        //   store(slot, 37i32)
+        //   v_old   = load(I32, slot)
+        //   v_delta = 5i32
+        //   v_new   = v_old + v_delta
+        //   store(slot, v_new)
+        //   result  = load(I32, slot)
+        //   return result
+        // }
+        let module = IrModule {
+            debug_name: "det_compound_assign_add".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 4, align: 4 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 37 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(0) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 5 },
+                        IrInst::Binary {
+                            dst: ValueId(4),
+                            op: BinaryOp::Add,
+                            ty: IrType::I32,
+                            lhs: ValueId(2),
+                            rhs: ValueId(3),
+                        },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(4) },
+                        IrInst::Load { dst: ValueId(5), ty: IrType::I32, ptr: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(5)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_compound_assign_sub() {
+        // x = 50; x -= 8; return x  → 42
+        let module = IrModule {
+            debug_name: "det_compound_assign_sub".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 4, align: 4 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 50 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(0) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 8 },
+                        IrInst::Binary {
+                            dst: ValueId(4),
+                            op: BinaryOp::Sub,
+                            ty: IrType::I32,
+                            lhs: ValueId(2),
+                            rhs: ValueId(3),
+                        },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(4) },
+                        IrInst::Load { dst: ValueId(5), ty: IrType::I32, ptr: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(5)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_compound_assign_mul() {
+        // x = 6; x *= 7; return x  → 42
+        let module = IrModule {
+            debug_name: "det_compound_assign_mul".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::Alloca { dst: ValueId(0), size: 4, align: 4 },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 6 },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(1) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(0) },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 7 },
+                        IrInst::Binary {
+                            dst: ValueId(4),
+                            op: BinaryOp::Mul,
+                            ty: IrType::I32,
+                            lhs: ValueId(2),
+                            rhs: ValueId(3),
+                        },
+                        IrInst::Store { ptr: ValueId(0), value: ValueId(4) },
+                        IrInst::Load { dst: ValueId(5), ty: IrType::I32, ptr: ValueId(0) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(5)) },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    // ── TBool call-boundary determinism (CX-188) ─────────────────────────────
+    //
+    // These tests verify that all three TBool values (0=false, 1=true, 2=unknown)
+    // survive a function call boundary deterministically across two JIT runs.
+    //
+    // Each test materialises a TBool value via Alloca+Store+Load (ConstInt rejects
+    // IrType::TBool), then passes it to a helper that casts TBool→I32 and returns
+    // the integer.  The Cast uses zero-extension, so 0/1/2 round-trip unchanged.
+    //
+    // Module shape for all three tests:
+    //   pass_tbool_as_i32(t: TBool) -> I32:
+    //     B0(v0: TBool): v1 = Cast(TBool→I32, v0); return v1
+    //   main() -> I32:
+    //     B0: v10=ConstInt(I8,<n>); v11=Alloca(1,1); Store(v11,v10);
+    //         v12=Load(TBool,v11); v13=Call(pass_tbool_as_i32,[v12])->I32; return v13
+
+    fn det_tbool_call_module(raw_value: i128) -> IrModule {
+        IrModule {
+            debug_name: format!("det_tbool_call_{}", raw_value),
+            functions: vec![
+                IrFunction {
+                    name: "pass_tbool_as_i32".to_string(),
+                    params: vec![IrParam { name: "t".to_string(), ty: IrType::TBool }],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![BlockParam {
+                            value: ValueId(0),
+                            ty: IrType::TBool,
+                            read_only: true,
+                        }],
+                        insts: vec![IrInst::Cast {
+                            dst: ValueId(1),
+                            from: IrType::TBool,
+                            to: IrType::I32,
+                            value: ValueId(0),
+                        }],
+                        term: IrTerminator::Return { value: Some(ValueId(1)) },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(10), ty: IrType::I8, value: raw_value },
+                            IrInst::Alloca { dst: ValueId(11), size: 1, align: 1 },
+                            IrInst::Store { ptr: ValueId(11), value: ValueId(10) },
+                            IrInst::Load { dst: ValueId(12), ty: IrType::TBool, ptr: ValueId(11) },
+                            IrInst::Call {
+                                dst: Some(ValueId(13)),
+                                callee: "pass_tbool_as_i32".to_string(),
+                                args: vec![ValueId(12)],
+                                return_ty: Some(IrType::I32),
+                            },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(13)) },
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn jit_determinism_tbool_false_call_boundary() {
+        // TBool(0 = false) survives a call boundary deterministically.
+        let module = det_tbool_call_module(0);
+        assert_deterministic_with_expected(&module, 0);
+    }
+
+    #[test]
+    fn jit_determinism_tbool_true_call_boundary() {
+        // TBool(1 = true) survives a call boundary deterministically.
+        let module = det_tbool_call_module(1);
+        assert_deterministic_with_expected(&module, 1);
+    }
+
+    #[test]
+    fn jit_determinism_tbool_unknown_call_boundary() {
+        // TBool(2 = unknown) survives a call boundary deterministically.
+        // This is the critical case: the third state has no Bool equivalent.
+        let module = det_tbool_call_module(2);
+        assert_deterministic_with_expected(&module, 2);
+    }
 }
