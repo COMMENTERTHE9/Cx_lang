@@ -1,0 +1,12 @@
+// CX-209: exit-code-based JIT parity — unary f64 negation.
+// Negation lowers to ConstFloat(0.0) + Binary(Sub, F64).
+// Results cast to t32 for assert_eq (f64 not yet supported by assert_eq).
+a: f64 = 5.0
+neg: f64 = -a
+n: t32 = neg
+assert_eq(n, -5)
+
+b: f64 = 3.0
+neg2: f64 = -b
+m: t32 = neg2
+assert_eq(m, -3)
