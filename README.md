@@ -55,9 +55,9 @@ The tree-walk interpreter is the reference implementation. All 0.1 language cons
 
 The Cranelift JIT backend compiles Cx programs to native machine code. It is the 0.1 backend target and is in active development.
 
-- 155 fixtures run through the differential harness
+- 158 fixtures run through the differential harness
 - **0 PARITY_FAILs** — every supported construct produces output identical to the interpreter
-- 67 PASS / 88 SKIP across 16 feature categories
+- 71 PASS / 87 SKIP across 16 feature categories
 - ABI and data layout locked for x86-64 (scalar types, struct alignment, calling convention)
 - Determinism tested and guaranteed on valid IR
 
@@ -68,20 +68,20 @@ The Cranelift JIT backend compiles Cx programs to native machine code. It is the
 | Arithmetic     | 8    | 9    | 0           |
 | VariableDecl   | 5    | 3    | 0           |
 | IfElse         | 4    | 2    | 0           |
-| WhileLoop      | 5    | 3    | 0           |
+| WhileLoop      | 7    | 1    | 0           |
 | ForLoop        | 4    | 0    | 0           |
 | InfiniteLoop   | 2    | 1    | 0           |
 | DirectCall     | 7    | 4    | 0           |
 | Struct         | 6    | 5    | 0           |
 | Array          | 3    | 2    | 0           |
-| CompoundAssign | 2    | 2    | 0           |
+| CompoundAssign | 4    | 2    | 0           |
 | Unary          | 0    | 1    | 0           |
 | Cast           | 0    | 2    | 0           |
 | FloatOps       | 0    | 5    | 0           |
 | BuiltinAssert  | 2    | 2    | 0           |
 | LogicalOps     | 2    | 0    | 0           |
-| Other          | 16   | 48   | 0           |
-| **Total**      | **66** | **89** | **0** |
+| Other          | 17   | 48   | 0           |
+| **Total**      | **71** | **87** | **0** |
 
 SKIP means the construct is not yet lowered to JIT codegen — it exits cleanly with an unsupported-construct error rather than producing wrong output. PARITY_FAIL (semantic divergence from the interpreter) is the hard gate: it must stay at zero.
 
@@ -89,7 +89,7 @@ SKIP means the construct is not yet lowered to JIT codegen — it exits cleanly 
 - Integer arithmetic, comparisons, compound assign (`+=`, `-=`, `*=`, `/=`, `%=`)
 - Logical AND/OR with short-circuit
 - Variable declarations, typed and inferred
-- Control flow: `if`/`else`, `while`, `for` ranges (`0..n`, `1..=n`), `loop`/`break`/`continue`
+- Control flow: `if`/`else`, `while`, `for` ranges (`0..n`, `1..=n`), `loop`/`break`/`continue`, `while in arr:[slot], start..end`
 - Direct function calls — arity/type validation, return value handling
 - Struct literals, field read/write, struct-in-function
 - Fixed-size arrays: stack allocation (`ArrayAlloca`), element read/write, array-in-function

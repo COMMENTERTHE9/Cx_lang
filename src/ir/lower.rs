@@ -866,7 +866,40 @@ fn lower_stmt(
         }),
         SemanticStmt::EnumDef { .. } => { unsupported!("EnumDef") },
 SemanticStmt::Block { .. } => { unsupported!("Block") },
-        SemanticStmt::WhileIn { .. } => { unsupported!("WhileIn") },
+        SemanticStmt::WhileIn {
+            arr_binding,
+            arr_ty,
+            start_slot,
+            range_start,
+            range_end,
+            inclusive,
+            body,
+            then_chains,
+            result,
+            ..
+        } => {
+            let mut active = match lower_while_in_single(
+                *arr_binding, arr_ty, *start_slot, range_start, range_end, *inclusive, body,
+                ctx, current, spec, loop_ctx,
+            )? {
+                Some(exit) => exit,
+                None => return Ok(None),
+            };
+            for chain in then_chains {
+                active = match lower_while_in_single(
+                    chain.arr_binding, &chain.arr_ty, chain.start_slot,
+                    &chain.range_start, &chain.range_end, chain.inclusive, &chain.body,
+                    ctx, active, spec, loop_ctx,
+                )? {
+                    Some(exit) => exit,
+                    None => return Ok(None),
+                };
+            }
+            if let Some(result_expr) = result {
+                lower_expr(result_expr, ctx, &mut active)?;
+            }
+            return Ok(Some(active));
+        },
         SemanticStmt::While { cond, body, .. } => {
     return match lower_while(cond, body, ctx, current, spec, loop_ctx)? {
         Some(new_active) => Ok(Some(new_active)),
@@ -1530,6 +1563,217 @@ fn lower_for(
     Ok(Some(exit_block))
 }
 
+fn lower_while_in_single(
+    arr_binding: BindingId,
+    arr_ty: &SemanticType,
+    start_slot: usize,
+    range_start: &SemanticExpr,
+    range_end: &SemanticExpr,
+    inclusive: bool,
+    body: &[SemanticStmt],
+    ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+    spec: &FunctionLoweringSpec,
+    _outer_loop_ctx: Option<&LoopContext>,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let mut current = current;
+
+    let start_val = lower_expr(range_start, ctx, &mut current)?;
+    let end_val = lower_expr(range_end, ctx, &mut current)?;
+
+    let (arr_count, elem_sem_ty) = match arr_ty {
+        SemanticType::Array(count, elem_ty) => (*count, elem_ty.as_ref()),
+        _ => {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!("while-in array has non-Array type: {:?}", arr_ty),
+            })
+        }
+    };
+    let elem_ir_ty = if matches!(elem_sem_ty, SemanticType::Numeric | SemanticType::Unknown) {
+        ctx.target.numeric_literal_ir_type()
+    } else {
+        lower_type(elem_sem_ty)?
+    };
+    let layout = compute_array_layout(&elem_ir_ty, arr_count);
+
+    let incoming = current.bindings.clone();
+    let mut ordered_bindings: Vec<_> = incoming.keys().copied().collect();
+    ordered_bindings.sort_by_key(|b| b.0);
+
+    // Synthetic BindingId for the hidden loop counter (for continue/break support).
+    let counter_binding = BindingId(
+        ordered_bindings.iter().map(|b| b.0).max().map_or(0, |m| m + 1),
+    );
+
+    // Header: [counter, ...all_incoming_bindings] as params
+    let mut header_params = Vec::new();
+    let mut header_bindings = HashMap::new();
+    let mut entry_args = Vec::new();
+
+    let counter_param = ctx.fresh_value();
+    header_params.push(BlockParam { value: counter_param, ty: start_val.ty.clone(), read_only: true });
+    entry_args.push(start_val.value);
+
+    for b in &ordered_bindings {
+        let val = incoming.get(b).unwrap();
+        let pv = ctx.fresh_value();
+        header_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
+        header_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
+        entry_args.push(val.value);
+    }
+
+    let mut header = ctx.start_block(header_params, header_bindings.clone());
+    let header_id = header.id();
+
+    current.terminate(IrTerminator::Jump { target: header_id, args: entry_args })?;
+    ctx.seal_block(current)?;
+
+    // Increment block: [counter, ...bindings] params; counter+1; back-edge to header
+    let inc_counter_param = ctx.fresh_value();
+    let mut inc_params = vec![BlockParam { value: inc_counter_param, ty: start_val.ty.clone(), read_only: true }];
+    let mut inc_bindings = HashMap::new();
+    for b in &ordered_bindings {
+        let val = incoming.get(b).unwrap();
+        let pv = ctx.fresh_value();
+        inc_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
+        inc_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
+    }
+    let mut inc_block = ctx.start_block(inc_params, inc_bindings);
+    let inc_id = inc_block.id();
+
+    let one = ctx.fresh_value();
+    inc_block.emit(IrInst::ConstInt { dst: one, ty: start_val.ty.clone(), value: 1 })?;
+    let next_counter = ctx.fresh_value();
+    inc_block.emit(IrInst::Binary {
+        dst: next_counter,
+        op: BinaryOp::Add,
+        ty: start_val.ty.clone(),
+        lhs: inc_counter_param,
+        rhs: one,
+    })?;
+    let mut inc_jump_args = vec![next_counter];
+    for b in &ordered_bindings {
+        inc_jump_args.push(inc_block.bindings.get(b).unwrap().value);
+    }
+    inc_block.terminate(IrTerminator::Jump { target: header_id, args: inc_jump_args })?;
+    ctx.seal_block(inc_block)?;
+
+    // Compare counter vs end on header
+    let cmp = ctx.fresh_value();
+    header.emit(IrInst::Compare {
+        dst: cmp,
+        op: if inclusive { CompareOp::Le } else { CompareOp::Lt },
+        lhs: counter_param,
+        rhs: end_val.value,
+    })?;
+
+    // Body block: no params; bindings = header_bindings + synthetic counter binding
+    let mut body_bindings = header_bindings.clone();
+    body_bindings.insert(counter_binding, LoweredValue { value: counter_param, ty: start_val.ty.clone() });
+    let mut body_block = ctx.start_block(vec![], body_bindings);
+    let body_id = body_block.id();
+
+    // Exit block: all incoming bindings as params
+    let mut exit_params = Vec::new();
+    let mut exit_bindings = HashMap::new();
+    for b in &ordered_bindings {
+        let val = incoming.get(b).unwrap();
+        let pv = ctx.fresh_value();
+        exit_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
+        exit_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
+    }
+    let exit_block = ctx.start_block(exit_params, exit_bindings);
+    let exit_id = exit_block.id();
+
+    let mut else_args = Vec::new();
+    for b in &ordered_bindings {
+        else_args.push(header.bindings.get(b).unwrap().value);
+    }
+    header.terminate(IrTerminator::Branch {
+        cond: cmp,
+        then_block: body_id,
+        then_args: vec![],
+        else_block: exit_id,
+        else_args,
+    })?;
+    ctx.seal_block(header)?;
+
+    // Body: load arr[counter] → store arr[start_slot], then execute body stmts
+    let arr_ptr = body_block.bindings.get(&arr_binding).cloned().ok_or_else(|| {
+        LoweringError::InternalInvariantViolation {
+            detail: format!("while-in: array binding {} not found in body block", arr_binding.0),
+        }
+    })?;
+
+    // Compute byte offset for arr[counter]: cast counter to I64, multiply by stride
+    let idx_i64 = if start_val.ty == IrType::I64 {
+        counter_param
+    } else {
+        let cast_dst = ctx.fresh_value();
+        body_block.emit(IrInst::Cast {
+            dst: cast_dst,
+            from: start_val.ty.clone(),
+            to: IrType::I64,
+            value: counter_param,
+        })?;
+        cast_dst
+    };
+    let stride_val = ctx.fresh_value();
+    body_block.emit(IrInst::ConstInt { dst: stride_val, ty: IrType::I64, value: layout.stride as i128 })?;
+    let byte_offset = ctx.fresh_value();
+    body_block.emit(IrInst::Binary {
+        dst: byte_offset,
+        op: BinaryOp::Mul,
+        ty: IrType::I64,
+        lhs: idx_i64,
+        rhs: stride_val,
+    })?;
+    let elem_ptr = ctx.fresh_value();
+    body_block.emit(IrInst::PtrAdd { dst: elem_ptr, base: arr_ptr.value, offset: byte_offset })?;
+    let loaded = ctx.fresh_value();
+    body_block.emit(IrInst::Load { dst: loaded, ty: elem_ir_ty, ptr: elem_ptr })?;
+
+    // Store loaded element into arr[start_slot]
+    let slot_ptr = if start_slot == 0 {
+        arr_ptr.value
+    } else {
+        let fp = ctx.fresh_value();
+        body_block.emit(IrInst::PtrOffset {
+            dst: fp,
+            base: arr_ptr.value,
+            offset: start_slot * layout.stride,
+        })?;
+        fp
+    };
+    body_block.emit(IrInst::Store { ptr: slot_ptr, value: loaded })?;
+
+    // LoopContext: continue → increment, break → exit
+    let loop_context = LoopContext {
+        header_id: inc_id,
+        exit_id,
+        ordered_bindings: {
+            let mut v = vec![counter_binding];
+            v.extend(ordered_bindings.iter().copied());
+            v
+        },
+        exit_ordered_bindings: ordered_bindings.clone(),
+    };
+
+    let body_result = lower_stmt_sequence(body.iter(), ctx, Some(body_block), spec, Some(&loop_context))?;
+
+    if let Some(mut body_active) = body_result {
+        // Natural fallthrough: jump to increment with [counter, ...bindings]
+        let mut args = vec![body_active.bindings.get(&counter_binding).unwrap().value];
+        for b in &ordered_bindings {
+            args.push(body_active.bindings.get(b).unwrap().value);
+        }
+        body_active.terminate(IrTerminator::Jump { target: inc_id, args })?;
+        ctx.seal_block(body_active)?;
+    }
+
+    Ok(Some(exit_block))
+}
+
 fn finalize_active_block(
     ctx: &mut LoweringCtx,
     mut active: ActiveBlock,
@@ -1764,6 +2008,23 @@ fn lower_expr(
                 rhs: zero,
             })?;
             Ok(LoweredValue { value: dst, ty: IrType::Bool })
+        }
+        Op::Mul => {
+            // Cursor deref: `*arr` loads arr[0] from the array's base pointer.
+            // The interpreter always returns elems[0] for (Op::Mul, Array(_)).
+            match &expr.ty {
+                SemanticType::Array(_, elem_ty) => {
+                    let elem_ir_ty = if matches!(elem_ty.as_ref(), SemanticType::Numeric | SemanticType::Unknown) {
+                        ctx.target.numeric_literal_ir_type()
+                    } else {
+                        lower_type(elem_ty)?
+                    };
+                    let dst = ctx.fresh_value();
+                    active.emit(IrInst::Load { dst, ty: elem_ir_ty.clone(), ptr: lowered.value })?;
+                    Ok(LoweredValue { value: dst, ty: elem_ir_ty })
+                }
+                _ => Ok(lowered),
+            }
         }
         _ => {
             return Err(LoweringError::UnsupportedSemanticConstruct {
@@ -4032,16 +4293,12 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement() {
+        // `When` is still unsupported; use it to verify unsupported-construct
+        // error propagation from a top-level statement.
         let program = SemanticProgram {
-            stmts: vec![SemanticStmt::WhileIn {
-                arr: "arr".to_string(),
-                start_slot: 0,
-                range_start: int_expr(0, SemanticType::I64),
-                range_end: int_expr(10, SemanticType::I64),
-                inclusive: false,
-                body: vec![],
-                then_chains: vec![],
-                result: None,
+            stmts: vec![SemanticStmt::When {
+                expr: bool_expr(true),
+                arms: vec![],
                 pos: 0,
             }],
             enums: vec![],
@@ -4050,27 +4307,22 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "WhileIn".to_string()
+                construct: "When".to_string()
             }
         );
     }
 
     #[test]
     fn rejects_unsupported_statement_inside_function() {
+        // `When` is still unsupported; verify propagation from inside a function body.
         let program = SemanticProgram {
             stmts: vec![semantic_function(
                 "bad",
                 vec![],
                 None,
-                vec![SemanticStmt::WhileIn {
-                    arr: "arr".to_string(),
-                    start_slot: 0,
-                    range_start: int_expr(0, SemanticType::I64),
-                    range_end: int_expr(10, SemanticType::I64),
-                    inclusive: false,
-                    body: vec![],
-                    then_chains: vec![],
-                    result: None,
+                vec![SemanticStmt::When {
+                    expr: bool_expr(true),
+                    arms: vec![],
                     pos: 0,
                 }],
                 None,
@@ -4081,7 +4333,7 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "WhileIn".to_string()
+                construct: "When".to_string()
             }
         );
     }
@@ -4629,18 +4881,13 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement_inside_if_branch() {
+        // `When` is still unsupported; verify propagation from inside an if-branch.
         let program = SemanticProgram {
             stmts: vec![if_stmt(
                 bool_expr(true),
-                vec![SemanticStmt::WhileIn {
-                    arr: "arr".to_string(),
-                    start_slot: 0,
-                    range_start: int_expr(0, SemanticType::I64),
-                    range_end: int_expr(10, SemanticType::I64),
-                    inclusive: false,
-                    body: vec![],
-                    then_chains: vec![],
-                    result: None,
+                vec![SemanticStmt::When {
+                    expr: bool_expr(true),
+                    arms: vec![],
                     pos: 0,
                 }],
                 vec![],
@@ -4652,7 +4899,7 @@ mod tests {
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "WhileIn".to_string()
+                construct: "When".to_string()
             }
         );
     }
@@ -4926,6 +5173,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_unary_op() {
+        // Op::Div is not a valid unary operator; verify the error path is reached.
         let program = SemanticProgram {
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
@@ -4934,7 +5182,7 @@ mod tests {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
                     kind: SemanticExprKind::Unary {
-                        op: Op::Mul,
+                        op: Op::Div,
                         expr: Box::new(int_expr(5, SemanticType::I64)),
                         pos: 0,
                     },
