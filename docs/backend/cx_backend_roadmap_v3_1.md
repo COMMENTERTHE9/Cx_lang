@@ -1,5 +1,5 @@
 # Cx Compiler Backend Roadmap
-v4.5 — 2026-05-17
+v4.6 — 2026-05-17
 
 ---
 
@@ -199,13 +199,13 @@ See Up Next section for details.
 
 **Phase 12 — Differential Backend Harness** *(in progress)*
 
-Per-feature parity classification harness landed (CX-69). Loop fixtures (CX-68) and exit-code-based arithmetic/variable-decl fixtures (CX-92) added. 158 fixtures, 0 PARITY_FAILs. CompoundAssign DotAccess and Index parity fixtures (CX-187, t152/t153), integration multifn PassWithOutput fixture (CX-196/CX-182, t154), and ForLoop parity rebased (CX-181/CX-61) all landed. CX-34 Cancelled — construct coverage expansion distributed across per-category fixture tickets (CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131; all in Human Review).
+Per-feature parity classification harness landed (CX-69). Loop fixtures (CX-68) and exit-code-based arithmetic/variable-decl fixtures (CX-92) added. 171 fixtures, 0 PARITY_FAILs. CompoundAssign DotAccess and Index parity fixtures (CX-187, t152/t153), integration multifn PassWithOutput fixture (CX-196/CX-182, t154), and ForLoop parity rebased (CX-181/CX-61) all landed. Float/cast exit-code parity fixtures t155–t158 (CX-223) added 4 fixtures (162 total). Print/runtime intrinsic type dispatch fixtures t155_print_int–t163_print_t64_variable (CX-225) added 9 PassWithOutput fixtures (171 total). CX-34 Cancelled — construct coverage expansion distributed across per-category fixture tickets (CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131; all in Human Review).
 
 ---
 
 **Phase 15 — Cranelift JIT — 0.1 Target** *(in progress)*
 
-No-panic guarantee (CX-50), float comparison (CX-52), exit-code propagation (CX-74), PtrOffset/PtrAdd JIT (CX-78), reserved intrinsic name rejection (CX-85), numeric literal cast corrections (CX-88/CX-90), and exit-code-based parity fixtures (CX-92) all landed. Cast JIT coverage (CX-91), F64 Rem libcall (CX-93), DotAccess JIT lowering (CX-94), ArrayAlloca JIT emit (CX-121/CX-129), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool calling convention (CX-127), IR dump on failure (CX-123), CompoundAssign DotAccess/Index parity fixtures (CX-187), integration multifn PassWithOutput fixture (CX-196/CX-182), and ForLoop parity rebased (CX-181/CX-61) all Done. Remaining: full parity fixture coverage (CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131 in HR), CI gate (CX-133 in HR).
+No-panic guarantee (CX-50), float comparison (CX-52), exit-code propagation (CX-74), PtrOffset/PtrAdd JIT (CX-78), reserved intrinsic name rejection (CX-85), numeric literal cast corrections (CX-88/CX-90), and exit-code-based parity fixtures (CX-92) all landed. Cast JIT coverage (CX-91), F64 Rem libcall (CX-93), DotAccess JIT lowering (CX-94), ArrayAlloca JIT emit (CX-121/CX-129), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool calling convention (CX-127), IR dump on failure (CX-123), CompoundAssign DotAccess/Index parity fixtures (CX-187), integration multifn PassWithOutput fixture (CX-196/CX-182), ForLoop parity rebased (CX-181/CX-61), print/runtime intrinsic type dispatch for T32/T64/F64/Bool/TBool (CX-225), and while-in JIT lowering (CX-226) all Done. Remaining: full parity fixture coverage (CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131 in HR), CI gate (CX-133 in HR).
 
 ---
 
@@ -385,7 +385,9 @@ This phase should be treated as a mini-system in its own right — not just a ph
 - CompoundAssign DotAccess/Index exit-code parity fixtures t152/t153 — all five operators on struct field and array element targets; parser support for `arr:[i] op= value` (CX-187) ✅
 - Integration multifn PassWithOutput fixture t154 — two user-defined functions, while loop, if/else, three print calls verified against expected output; crosses DirectCall + WhileLoop + IfElse + Arithmetic categories (CX-196/CX-182) ✅
 - ForLoop parity fixtures rebased onto current submain (CX-181/CX-61) ✅
-- 158 fixtures total; 0 PARITY_FAILs — gate holds ✅
+- Float/cast exit-code parity fixtures t155_float_arith_mod_exit, t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit, t158_cast_t64_to_f64_exit — all four SKIP (exits 127; float/cast lowering not yet landed) (CX-223) ✅
+- Print/runtime intrinsic type dispatch PassWithOutput fixtures t155_print_int through t163_print_t64_variable — 9 new fixtures; unified lower_print_stmt for I64, F64, Bool, TBool (CX-225) ✅
+- 171 fixtures total; 0 PARITY_FAILs — gate holds ✅
 
 **Still open:**
 - Fixture coverage expansion to full supported 0.1 construct set — distributed across CX-59 (IfElse/WhileLoop), CX-63 (DirectCall), CX-64 (Struct), CX-66 (Array), CX-114–118, CX-131 (stale fixture PR reconciliation); all in Human Review
@@ -673,8 +675,8 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Active**
 - Surface area reduction (Phase 11) — all original open items closed; when-block structured rejection satisfied (CX-113/CX-50); remaining: method call actual lowering
 - ABI and data layout Round 2 (Phase 8) — TBool calling convention LOCKED (CX-127); str/strref layout, Handle<T>, unknown propagation still open
-- Differential backend harness (Phase 12) — harness running, 158 fixtures, 0 PARITY_FAILs; CX-34 Cancelled; CX-187 (CompoundAssign DotAccess/Index t152/t153), CX-196/CX-182 (integration t154), CX-181/CX-61 (ForLoop rebase) all landed; coverage expansion distributed across CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131 (all HR); CI gate CX-133 (HR)
-- Cranelift JIT — 0.1 target (Phase 15) — cast JIT (CX-91), F64 Rem (CX-93), DotAccess lowering (CX-94), ArrayAlloca JIT (CX-121/CX-129), IR dump on failure (CX-123), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool CC (CX-127), fixture rename (CX-128), CompoundAssign DotAccess/Index parity (CX-187), integration multifn fixture (CX-196/CX-182), ForLoop parity rebase (CX-181/CX-61) all Done; remaining: full parity fixture coverage (multiple HR tickets, 0 PARITY_FAILs), CI integration (CX-133 HR)
+- Differential backend harness (Phase 12) — harness running, 171 fixtures, 0 PARITY_FAILs; CX-34 Cancelled; CX-187 (CompoundAssign DotAccess/Index t152/t153), CX-196/CX-182 (integration t154), CX-181/CX-61 (ForLoop rebase), CX-223 (float/cast parity t155–t158), CX-225 (print intrinsics t155_print_int–t163) all landed; coverage expansion distributed across CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131 (all HR); CI gate CX-133 (HR)
+- Cranelift JIT — 0.1 target (Phase 15) — cast JIT (CX-91), F64 Rem (CX-93), DotAccess lowering (CX-94), ArrayAlloca JIT (CX-121/CX-129), IR dump on failure (CX-123), CompoundAssign JIT (CX-119/CX-122), ForLoop parity fixtures (CX-124/CX-125), TBool CC (CX-127), fixture rename (CX-128), CompoundAssign DotAccess/Index parity (CX-187), integration multifn fixture (CX-196/CX-182), ForLoop parity rebase (CX-181/CX-61), print/runtime intrinsic type dispatch (CX-225), while-in JIT lowering (CX-226) all Done; remaining: full parity fixture coverage (multiple HR tickets, 0 PARITY_FAILs), CI integration (CX-133 HR)
 
 **Next — 0.1 Path**
 - Runtime intrinsics boundary sub-packet 4 (Phase 9) — read/input lowering blocked on str/strref layout decision from Phase 8
@@ -693,6 +695,16 @@ Nothing in the post-0.1 compiler targets should start until Phase 15 closes.
 **Separate Roadmap**
 - GPU layer — Cx Platform and GPU Roadmap
 - Window and screen system — Cx Platform and GPU Roadmap
+
+---
+
+## Key Changes — v4.6 (2026-05-17)
+
+- Phase 12 Landed: Float/cast exit-code parity fixtures t155_float_arith_mod_exit, t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit, t158_cast_t64_to_f64_exit (CX-223); print intrinsics PassWithOutput fixtures t155_print_int through t163_print_t64_variable (CX-225); fixture total 158 → 162 → 171
+- Phase 15 Landed: Print/runtime intrinsic type dispatch for T32/T64/F64/Bool/TBool via unified lower_print_stmt — cx_printf, cx_printb, cx_printn_i128, cx_print_tbool shims registered (CX-225); while-in JIT lowering lower_while_in_single + Op::Mul cursor-deref unary (CX-226)
+- Phase 15 Still open: CX-225/CX-226 removed from open list (both Done on train); remaining coverage CX-59, CX-63, CX-64, CX-66, CX-114–118, CX-131 (all HR)
+- Progress Board: fixture count updated 158 → 171; Active Phase 12 and Phase 15 sections updated
+- Parity checklist: baseline recaptured at 171 fixtures (Arithmetic 14 PASS, Unary 1 PASS/0 SKIP, FloatOps 4 PASS, Other 23 PASS); 0 PARITY_FAILs
 
 ---
 

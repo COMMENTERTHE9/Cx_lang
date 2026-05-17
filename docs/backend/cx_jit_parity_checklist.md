@@ -19,7 +19,7 @@ set:
 | Category       | Description                                  | Key fixtures |
 |----------------|----------------------------------------------|--------------|
 | Arithmetic     | Integer arithmetic, overflow, eval order     | t01, t89–t95, t103, t114_eval_order_binary_arith, t115_eval_order_compare, t116–t121 |
-| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124 |
+| VariableDecl   | Variable/const declarations, scope, type errors | t15, t56, t57, t101, t102, t122–t124, t163_print_t64_variable |
 | IfElse         | Conditional branches                         | t44, t45, t46 (output-verified); t129, t130, t131 (exit-code-verified, CX-102/CX-111) |
 | WhileLoop      | While loops and while-in construct           | t23, t34, t35, t105, t107, t108 (output-verified); t132, t133 (exit-code-verified, CX-102) |
 | ForLoop        | For-in loops                                 | t48, t104 (output-verified); t149, t150 (exit-code-verified, CX-124) |
@@ -30,10 +30,10 @@ set:
 | CompoundAssign | Compound assignment operators (+=, etc.)     | t26, t41, t128, t151, t152, t153 (mixed output/exit-code fixtures; CX-119, CX-187) |
 | Unary          | Unary operators (negation, etc.)             | t96 |
 | Cast           | Explicit type casts                          | t139, t140, t157, t158 |
-| FloatOps       | f64 operations                               | t55, t135–t138, t155–t156 |
+| FloatOps       | f64 operations                               | t55, t135–t138, t155_float_arith_mod_exit, t156_float_neg_exit, t160_float_print_basic, t161_float_print_add, t162_float_print_neg |
 | BuiltinAssert  | `assert` and `assert_eq` builtins            | t77–t80 |
 | LogicalOps     | Logical AND/OR short-circuit operators       | t141, t142 |
-| Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113); integration: t154_integration_multifn (CX-182) |
+| Other          | Enums, generics, when-blocks, handles, macros, imports, Result/try, string interp, semicolons, copy semantics, and any fixture not matching a named category | t09–t22, t24, t27–t32, t37–t38, t42, t47, t49, t51–t54, t58–t76, t81–t88, t97–t100, t111; exit-code-verified: t143–t145 (CX-113); integration: t154_integration_multifn (CX-182); print intrinsics: t155_print_int, t156_println_int, t157_printn_int, t158_print_computed, t159_print_multi (CX-225) |
 
 Fixtures not explicitly listed in `feature_of()` fall into `Other`.
 
@@ -102,16 +102,19 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `train/master-backend-cleanup` (submain as of CX-226 merge window, 2026-05-17).
-Includes all prior baselines through CX-196, plus CX-226 while-in JIT lowering
-(`lower_while_in_single` in IR lowering + `Op::Mul` cursor-deref unary support),
-which moves t34 (while-in exclusive) and t35 (while-in-then) from SKIP to PASS.
+Run on branch `train/master-backend-cleanup` (submain as of CX-227 docs-reconcile window, 2026-05-17).
+Includes all prior baselines through CX-196, plus CX-223 float/cast determinism parity fixtures
+(t155_float_arith_mod_exit, t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit, t158_cast_t64_to_f64_exit),
+CX-225 print/runtime intrinsic type dispatch (t155_print_int through t163_print_t64_variable, 9 new
+PassWithOutput fixtures), and CX-226 while-in JIT lowering (`lower_while_in_single` in IR lowering +
+`Op::Mul` cursor-deref unary support), which moves t34 (while-in exclusive) and t35 (while-in-then)
+from SKIP to PASS.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
 ------------------------------------------------
-Arithmetic                8      9            0
-VariableDecl              5      3            0
+Arithmetic               14      3            0
+VariableDecl              6      3            0
 IfElse                    4      2            0
 WhileLoop                 7      1            0
 ForLoop                   4      0            0
@@ -120,14 +123,14 @@ DirectCall                7      4            0
 Struct                    6      5            0
 Array                     3      2            0
 CompoundAssign            4      2            0
-Unary                     0      1            0
+Unary                     1      0            0
 Cast                      0      4            0
-FloatOps                  0      7            0
+FloatOps                  4      6            0
 BuiltinAssert             2      2            0
 LogicalOps                2      0            0
-Other                    17     48            0
+Other                    23     47            0
 ------------------------------------------------
-Total: 162 fixtures, 0 PARITY_FAILs
+Total: 171 fixtures, 0 PARITY_FAILs
 ```
 
 ### Interpretation
@@ -146,9 +149,10 @@ Total: 162 fixtures, 0 PARITY_FAILs
 
 **SKIP fixtures** are those where IR lowering or JIT codegen has not yet been
 implemented for the construct used. The primary remaining gaps are constructs
-not yet JIT-lowerable (when-blocks, float ops, casts, unary, enums, generics,
-handles, and other Phase 14+ constructs). As subsequent phases land, SKIP
-counts will continue to decrease and PASS counts will increase.
+not yet JIT-lowerable (when-blocks, remaining float ops, casts, enums, generics,
+handles, and other Phase 14+ constructs). Unary is now fully covered (0 SKIP).
+As subsequent phases land, SKIP counts will continue to decrease and PASS counts
+will increase.
 
 **PARITY_FAIL = 0** across all 16 categories. The gate holds.
 
@@ -202,7 +206,14 @@ F64)`), casting the result to t32. t157_cast_neg_t32_to_f64_exit exercises negat
 widening, verifying sign preservation through the round-trip t32→f64→t32. t158_cast_t64_to_f64_exit
 exercises t64→f64 widening (the `fcvt` path for 64-bit integers), including negative values.
 All four are SKIP (float ops and cast constructs not yet JIT-lowerable; exits 127). Cast SKIP count
-rises from 2 to 4; FloatOps SKIP count rises from 5 to 7; total fixture count rises from 158 to 162.
+rises from 2 to 4; FloatOps SKIP count rises from 5 to 7; fixture count after CX-223 rises from 158 to 162.
+
+**Print intrinsics parity fixtures (CX-225):** t155_print_int, t156_println_int, t157_printn_int,
+t158_print_computed, t159_print_multi, t160_float_print_basic, t161_float_print_add, t162_float_print_neg,
+and t163_print_t64_variable add 9 PassWithOutput fixtures for the unified `lower_print_stmt` type dispatch.
+The first five (unmapped, fall into Other) exercise `print`, `println`, and `printn` for I64 integer
+arguments. t160–t162 (FloatOps) exercise `print` for F64 arguments including arithmetic and negation.
+t163 (VariableDecl) exercises `print` with a T64 variable. Fixture count rises from 162 to 171.
 
 **Integration fixture (CX-182, rebased CX-196):** t154_integration_multifn is a
 PassWithOutput fixture exercising two user-defined functions (`sum_up_to` using a while loop,
