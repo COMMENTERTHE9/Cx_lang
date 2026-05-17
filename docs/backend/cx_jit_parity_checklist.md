@@ -102,7 +102,7 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `train/backend-determinism` (submain as of CX-217 merge window, 2026-05-17).
+Run on branch `train/backend-determinism` (submain as of CX-230 merge window, 2026-05-17).
 Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
 fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
 CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
@@ -115,9 +115,11 @@ fixtures (t152_compound_assign_dotaccess_exit, t153_compound_assign_index_exit)
 plus parser support for `arr:[i] op= value` compound assign on array elements,
 CX-182 integration multi-function PassWithOutput fixture
 (t154_integration_multifn) rebased onto submain via CX-196,
-and CX-117/CX-209 FloatOps/Cast parity fixtures (t155_float_arith_mod_exit,
+CX-117/CX-209 FloatOps/Cast parity fixtures (t155_float_arith_mod_exit,
 t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit, t158_cast_t64_to_f64_exit)
-rebased onto submain via CX-217.
+rebased onto submain via CX-217, and CX-152/CX-218 Numeric/Unknown type fallbacks
+in IR lowering (VarRef, Assign, CompoundAssign, and arithmetic binary expressions
+now resolve placeholder types to the stored binding or target-native integer width).
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -125,13 +127,13 @@ Feature                PASS   SKIP  PARITY_FAIL
 Arithmetic                8      9            0
 VariableDecl              5      3            0
 IfElse                    4      2            0
-WhileLoop                 5      3            0
+WhileLoop                 6      2            0
 ForLoop                   4      0            0
 InfiniteLoop              2      1            0
 DirectCall                7      4            0
 Struct                    6      5            0
 Array                     3      2            0
-CompoundAssign            4      2            0
+CompoundAssign            5      1            0
 Unary                     0      1            0
 Cast                      0      4            0
 FloatOps                  0      7            0
@@ -170,26 +172,32 @@ including bool-variable negation added in CX-111). The 4 PASS reflect the
 3 exit-code-verified fixtures plus one print-based original now passing via
 CX-136 print dispatch; the 2 SKIP are the remaining print-based originals.
 
-**WhileLoop parity coverage (CX-102/CX-136):** t132 covers basic while loops and
-top-level while at file scope; t133 covers while in a function. The 5 PASS
-reflect the 2 exit-code-verified fixtures plus 3 print-based originals now
-passing via CX-136 print dispatch; the 3 SKIP are while-in/while-in-then
-constructs not yet JIT-lowerable.
+**WhileLoop parity coverage (CX-102/CX-136/CX-152):** t132 covers basic while loops and
+top-level while at file scope; t133 covers while in a function. The 6 PASS
+reflect the 2 exit-code-verified fixtures (t132, t133) plus 4 print-based originals
+(t23, t105, t107, t108) now passing via CX-136 print dispatch and CX-152 Numeric
+type fallback in Assign/VarRef lowering; the 2 SKIP are t34 (while-in range-based)
+and t35 (while-in-then), which use the `while in arr:...` construct not yet
+lowerable from source through the full IR pipeline.
 
 **WhenBlock parity coverage (CX-113):** t143 mirrors t19 (numeric pattern), t144
 mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
 in JIT (when-block lowering not yet implemented; exits 127). Once when-block
 lowering lands, these fixtures will transition from SKIP to PASS without changes.
 
-**CompoundAssign parity (CX-119/CX-187):** t151 tests all five compound-assign
+**CompoundAssign parity (CX-119/CX-187/CX-152):** t151 tests all five compound-assign
 operators (+=, -=, *=, /=, %=) on a typed t64 plain variable, verified by exit
 code (CX-119). t152 tests all five operators on a struct field (DotAccess target),
 extending t128 which only covered `-=`. t153 tests all five operators on an array
 element (Index target), enabled by CX-187 parser support for `arr:[i] op= value`
 (added `AssignTarget::Index` to the AST and a new `index_compound_assign` parser
-rule). The 4 PASS reflect t128 (struct field -=), t151 (plain variable), t152
-(struct field all operators), and t153 (array element all operators); the 2 SKIP
-are t26 and t41 (print-based originals that remain SKIP).
+rule). t26 (`let i; i = 0; while (i < 6) { print(i); i += 2 }`) uses a
+let-bound plain variable with an unresolved Numeric type: CX-152's Assign and
+CompoundAssign Numeric fallbacks enable `i = 0` and `i += 2` to lower correctly
+to I64 instead of returning UnsupportedSemanticType. The 5 PASS reflect t26,
+t128 (struct field -=), t151 (typed plain variable, all operators), t152 (struct
+field, all operators), and t153 (array element, all operators); the 1 SKIP is
+t41 (print-based struct compound assign that remains SKIP).
 
 **ForLoop parity coverage (CX-124/CX-136):** t149 mirrors t48 (top-level for loop at file scope),
 covering exclusive range (`0..5`), empty range (`3..3`, 0 iterations), and inclusive range

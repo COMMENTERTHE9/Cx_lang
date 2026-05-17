@@ -608,7 +608,13 @@ fn lower_stmt(
             let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
                 SemanticLValue::Binding { binding, ty, .. } => {
-                    let target_ty = lower_type(ty)?;
+                    // Numeric/Unknown: binding type is a placeholder; use the
+                    // lowered expression's concrete type as authoritative.
+                    let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
+                        lowered.ty.clone()
+                    } else {
+                        lower_type(ty)?
+                    };
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
                     let dst = ctx.fresh_value();
                     current.emit(IrInst::SsaBind {
@@ -742,12 +748,18 @@ fn lower_stmt(
         SemanticStmt::CompoundAssign { target, op, operand, .. } => {
     match target {
         SemanticLValue::Binding { binding, ty, .. } => {
-            let target_ty = lower_type(ty)?;
             let current_val = current.bindings.get(binding).ok_or_else(|| {
                 LoweringError::UnresolvedSemanticArtifact {
                     artifact: format!("compound assign binding {:?}", binding),
                 }
             })?.clone();
+            // Numeric/Unknown: binding type is a placeholder; use the stored
+            // concrete type from the SSA bindings map as authoritative.
+            let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
+                current_val.ty.clone()
+            } else {
+                lower_type(ty)?
+            };
             let rhs = lower_expr(operand, ctx, &mut current)?;
             let bin_op = match op {
                 Op::Plus => BinaryOp::Add,
@@ -1549,7 +1561,6 @@ fn lower_expr(
     match &expr.kind {
         SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx, active),
         SemanticExprKind::VarRef { binding, name } => {
-            let ty = lower_type(&expr.ty)?;
             let lowered = active.bindings.get(binding).cloned().ok_or_else(|| {
                 LoweringError::InternalInvariantViolation {
                     detail: format!(
@@ -1558,8 +1569,15 @@ fn lower_expr(
                     ),
                 }
             })?;
-            ensure_type_match("var ref", ty, lowered.ty.clone())?;
-            Ok(lowered)
+            if matches!(expr.ty, SemanticType::Numeric | SemanticType::Unknown) {
+                // Placeholder type: the stored binding type (set at first assignment)
+                // is authoritative. Mirrors the fallback in lower_array_lit/lower_index.
+                Ok(lowered)
+            } else {
+                let ty = lower_type(&expr.ty)?;
+                ensure_type_match("var ref", ty, lowered.ty.clone())?;
+                Ok(lowered)
+            }
         }
         SemanticExprKind::Binary { lhs, op, rhs, .. } => {
             lower_binary(lhs, *op, rhs, &expr.ty, ctx, active)
@@ -1986,7 +2004,16 @@ fn lower_binary(
 
     match op {
         Op::Plus | Op::Minus | Op::Mul | Op::Div | Op::Mod => {
-            let ty = lower_type(result_ty)?;
+            // SemanticType::Numeric is an unresolved placeholder for integer
+            // literals without an explicit type annotation.  Resolve it to the
+            // target's native integer width (I64 on 64-bit) so that expressions
+            // like `0 + 0` or `3 * 4` lower successfully instead of returning
+            // an UnsupportedSemanticType error (which propagates as JIT SKIP).
+            let ty = if *result_ty == SemanticType::Numeric {
+                ctx.target.numeric_literal_ir_type()
+            } else {
+                lower_type(result_ty)?
+            };
             ensure_type_match("binary lhs", ty.clone(), lhs.ty)?;
             ensure_type_match("binary rhs", ty.clone(), rhs.ty)?;
             let op = match op {
@@ -3359,6 +3386,64 @@ mod tests {
             LoweringError::UnsupportedSemanticType {
                 ty: "Numeric".to_string()
             }
+        );
+    }
+
+    // VarRef with SemanticType::Numeric falls back to the stored binding type
+    // (I64 on 64-bit) rather than calling lower_type(Numeric) which would fail.
+    // Mirrors the fallback introduced for array element lowering in CX-121/CX-129.
+    #[test]
+    fn varref_numeric_type_falls_back_to_binding_type() {
+        let binding = BindingId(1);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(
+                    binding,
+                    "i",
+                    SemanticType::I64,
+                    int_expr(0, SemanticType::I64),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(binding, "i", SemanticType::Numeric),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(
+            insts.iter().any(|inst| matches!(inst, IrInst::SsaBind { ty: IrType::I64, .. })),
+            "expected SsaBind(I64) for VarRef with Numeric placeholder type"
+        );
+    }
+
+    // VarRef with SemanticType::Unknown also falls back to the stored binding type.
+    #[test]
+    fn varref_unknown_type_falls_back_to_binding_type() {
+        let binding = BindingId(2);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(
+                    binding,
+                    "j",
+                    SemanticType::I64,
+                    int_expr(5, SemanticType::I64),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(binding, "j", SemanticType::Unknown),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(
+            insts.iter().any(|inst| matches!(inst, IrInst::SsaBind { ty: IrType::I64, .. })),
+            "expected SsaBind(I64) for VarRef with Unknown placeholder type"
         );
     }
 
@@ -6202,6 +6287,53 @@ mod tests {
     #[test]
     fn builtin_read_produces_unsupported_construct_not_unresolved_artifact() {
         assert_builtin_structured_error("read");
+    }
+
+    #[test]
+    fn assert_eq_with_numeric_binary_lhs_lowers_correctly() {
+        // assert_eq(1 + 1, 2) — both args have SemanticType::Numeric.
+        // Prior to CX-218 this returned UnsupportedSemanticType("Numeric")
+        // because lower_binary called lower_type(Numeric) for arithmetic ops.
+        // After the fix, Numeric resolves to I64 (on 64-bit targets) and the
+        // entire assert_eq lowers to Compare(Eq) + Branch/Trap.
+        let add_expr = SemanticExpr {
+            ty: SemanticType::Numeric,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(int_expr(1, SemanticType::Numeric)),
+                op: Op::Plus,
+                pos: 0,
+                rhs: Box::new(int_expr(1, SemanticType::Numeric)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(add_expr),
+                    SemanticCallArg::Expr(int_expr(2, SemanticType::Numeric)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let all_insts: Vec<_> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+        let has_add = all_insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Add, ty: IrType::I64, .. }));
+        assert!(has_add, "expected Binary(Add, I64) for Numeric 1+1");
+        let has_eq = all_insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Compare { op: CompareOp::Eq, .. }));
+        assert!(has_eq, "expected Compare(Eq) for assert_eq");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected Trap block for failing assert_eq path");
     }
 
     #[test]
