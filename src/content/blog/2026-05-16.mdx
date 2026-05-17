@@ -1,0 +1,56 @@
+---
+title: "Cx Dev Log — 2026-05-16"
+date: 2026-05-16
+description: "Eight determinism test PRs merged to submain, a real code fix unblocked arithmetic JIT parity, and the site got a polish pass."
+---
+
+The biggest concrete win today was CX-218: a fix in `lower_binary` that moved arithmetic JIT parity from 8 PASS / 9 SKIP to 13 PASS / 4 SKIP. That single change unblocked five more arithmetic operations that had been silently skipping due to an unresolved type placeholder. The rest of the day was a systematic push on determinism test coverage and site preparation.
+
+## The CX-218 fix: SemanticType::Numeric in lower_binary
+
+When the lowering pass encounters an arithmetic expression like `0 + 0` or `3 * 4`, the result type can be `SemanticType::Numeric` -- a placeholder that means "some numeric type, not yet resolved." The `lower_value` path already handled this by resolving Numeric to the target's `numeric_literal_ir_type()` (I64 on 64-bit), but `lower_binary` didn't. It called `lower_type(result_ty)` directly, which returned `UnsupportedSemanticType`, and every `assert_eq(arith_expr, literal)` test case silently exited with code 127 (SKIP) instead of actually running.
+
+The fix mirrors what `lower_value` already does: resolve `SemanticType::Numeric` to `ctx.target.numeric_literal_ir_type()` in the arithmetic arm of `lower_binary`. This is a pragmatic duplication rather than a centralized resolution -- given the current lowering architecture, each lowering path resolves the placeholder independently. More Numeric-resolution fixes in other lowering paths wouldn't be surprising as parity coverage expands.
+
+The net effect: arithmetic JIT parity tests that were invisible (SKIP) are now running and passing. Zero PARITY_FAIL across the board.
+
+## Determinism test wave
+
+Eight PRs merged to submain today, all part of the Phase 12 differential harness effort:
+
+- **CX-197** (PR #238) -- determinism coverage
+- **CX-199** (PR #240) -- CompoundAssign determinism tests, rebased from CX-191
+- **CX-200** (PR #241) -- Unary determinism tests, rebased from CX-190
+- **CX-202** (PR #243) -- CodeRabbit path-token fix on CX-198 logical OR determinism
+- **CX-203** (PR #244) -- while-in loop determinism tests, rebased from CX-201
+- **CX-204** (PR #245) -- if/else conditional branch merge pattern determinism
+- **CX-213** (PR #255) -- determinism doc coverage rows after latest submain moves
+- **CX-214** (PR #256) -- PtrOffset/ArrayAlloca/Cast/F64 determinism tests, rebased from CX-206
+
+The pattern is consistent now: each JIT instruction category gets a dedicated determinism test suite in `host_boundary.rs` that must pass before the corresponding implementation PR merges to submain. Today's wave covered if/else branching, while-in loops, compound assignment, unary ops, pointer/array/cast operations, and F64 comparisons. Most of these are rebases of earlier branches onto the current submain state, which keeps moving fast.
+
+There are ten more branch-local commits (CX-215 through CX-222) that aren't merged yet -- seven rebases plus the CX-218 code fix. Those are likely the next merge batch.
+
+## Submain gap keeps growing
+
+Submain is now 164 commits ahead of main, up from 40 on May 9. That's a significant jump in one week. Main has only received daily log merges. The test matrix on main shows 111 PASS / 6 FAIL out of 117 total, with the failures concentrated in Result/try semantics and loops-in-functions. Submain likely passes all 117 based on the roadmap state, but the merge hasn't happened.
+
+The longer this gap stays open, the harder the eventual integration becomes. It's the same structural issue noted in prior logs -- no new information on when or whether a submain-to-main merge is planned.
+
+## Site polish
+
+Five commits landed on the site branch in a single day:
+
+- Docs rewrite aligned with the current interpreter/JIT truth table, covering arrays, control-flow, error-handling, and backend-status pages
+- Homepage status and voice update
+- Mobile accessibility and font loading fixes
+- SEO feeds and social metadata
+- Final copy voice tightening
+
+That's a lot of surface area for one day. The docs rewrite is notable because it brings the public documentation in line with actual Cx capabilities rather than aspirational descriptions. The SEO and accessibility work suggests the site is being prepared for real public traffic.
+
+## What's next
+
+The immediate queue is merging CX-215 through CX-222 into submain. CX-218 is the most impactful of those since it's an actual code fix, not a test rebase. After that, the Phase 12/15 cycle continues: add determinism tests for an instruction category, then land the implementation once the tests pass.
+
+The submain-to-main merge remains the biggest open question. At 164 commits of divergence, it's not a trivial merge anymore. The site looks close to launch-ready after today's polish pass, but whether that's gated on the main branch catching up is unclear from the log alone.
