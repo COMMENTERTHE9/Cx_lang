@@ -5471,6 +5471,230 @@ mod determinism_tests {
     }
 
     #[test]
+    fn jit_determinism_call_void_with_args() {
+        // Call a void function that takes two I32 arguments; caller returns a constant.
+        // Exercises arg-passing into a void callee where the return value is absent.
+        //
+        // sink(x: I32, y: I32) { return }
+        // main() -> I32 { v0=10; v1=32; call sink(v0, v1); v2=42; return v2 }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_call_void_args".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "sink".to_string(),
+                    params: vec![
+                        IrParam { name: "x".to_string(), ty: IrType::I32 },
+                        IrParam { name: "y".to_string(), ty: IrType::I32 },
+                    ],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![
+                            BlockParam { value: ValueId(0), ty: IrType::I32, read_only: true },
+                            BlockParam { value: ValueId(1), ty: IrType::I32, read_only: true },
+                        ],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 10 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 32 },
+                            IrInst::Call {
+                                dst: None,
+                                callee: "sink".to_string(),
+                                args: vec![ValueId(0), ValueId(1)],
+                                return_ty: None,
+                            },
+                            IrInst::ConstInt { dst: ValueId(2), ty: IrType::I32, value: 42 },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(2)) },
+                    }],
+                },
+            ],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_call_void_multiple() {
+        // Two sequential calls to different void functions; verifies that multiple
+        // void-callee declarations in the same caller are stable across runs.
+        //
+        // noop_a() { return }
+        // noop_b() { return }
+        // main() -> I32 { call noop_a(); call noop_b(); v0=42; return v0 }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_call_void_multi".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "noop_a".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+                IrFunction {
+                    name: "noop_b".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::Call {
+                                dst: None,
+                                callee: "noop_a".to_string(),
+                                args: vec![],
+                                return_ty: None,
+                            },
+                            IrInst::Call {
+                                dst: None,
+                                callee: "noop_b".to_string(),
+                                args: vec![],
+                                return_ty: None,
+                            },
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        ],
+                        term: IrTerminator::Return { value: Some(ValueId(0)) },
+                    }],
+                },
+            ],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_call_void_in_branch() {
+        // Void call inside a branch arm; verifies void-call emission in a non-entry block.
+        //
+        // side_effect() { return }
+        // main() -> I32 {
+        //   block0: v0=1; v1=1; v2=cmp Eq(v0,v1); branch v2 → block1[], block2[]
+        //   block1: call side_effect(); v3=42; return v3   ← taken (1==1)
+        //   block2: v4=7; return v4
+        // }
+        // Expected: 42
+        let module = IrModule {
+            debug_name: "det_call_void_branch".to_string(),
+            functions: vec![
+                IrFunction {
+                    name: "side_effect".to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    }],
+                },
+                IrFunction {
+                    name: "main".to_string(),
+                    params: vec![],
+                    return_ty: Some(IrType::I32),
+                    blocks: vec![
+                        IrBlock {
+                            id: BlockId(0),
+                            params: vec![],
+                            insts: vec![
+                                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 1 },
+                                IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 1 },
+                                IrInst::Compare {
+                                    dst: ValueId(2),
+                                    op: CompareOp::Eq,
+                                    lhs: ValueId(0),
+                                    rhs: ValueId(1),
+                                },
+                            ],
+                            term: IrTerminator::Branch {
+                                cond: ValueId(2),
+                                then_block: BlockId(1),
+                                then_args: vec![],
+                                else_block: BlockId(2),
+                                else_args: vec![],
+                            },
+                        },
+                        IrBlock {
+                            id: BlockId(1),
+                            params: vec![],
+                            insts: vec![
+                                IrInst::Call {
+                                    dst: None,
+                                    callee: "side_effect".to_string(),
+                                    args: vec![],
+                                    return_ty: None,
+                                },
+                                IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 42 },
+                            ],
+                            term: IrTerminator::Return { value: Some(ValueId(3)) },
+                        },
+                        IrBlock {
+                            id: BlockId(2),
+                            params: vec![],
+                            insts: vec![IrInst::ConstInt {
+                                dst: ValueId(4),
+                                ty: IrType::I32,
+                                value: 7,
+                            }],
+                            term: IrTerminator::Return { value: Some(ValueId(4)) },
+                        },
+                    ],
+                },
+            ],
+        };
+        assert_deterministic_with_expected(&module, 42);
+    }
+
+    #[test]
+    fn jit_determinism_void_main() {
+        // Void main entry point: main has return_ty=None and is dispatched as fn().
+        // JitOutcome::success() (exit 0) is returned without reading any register.
+        //
+        // main() { return }
+        // Expected: 0
+        let module = IrModule {
+            debug_name: "det_void_main".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_deterministic_with_expected(&module, 0);
+    }
+
+    #[test]
     fn jit_determinism_call_with_args() {
         // Call a function that takes two I32 arguments and adds them.
         //

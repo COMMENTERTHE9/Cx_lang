@@ -125,6 +125,10 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_while_in_loop_carried_binding` | `sum += arr[0]` across iterations — counter + accumulator threaded as two header block params; exit code 60 |
 | `jit_determinism_call_return_value` | `Call` — value-returning callee; result used as exit code |
 | `jit_determinism_call_void` | `Call` — void callee (no return value); caller returns a constant |
+| `jit_determinism_call_void_with_args` | `Call` — void callee with two `I32` args; exercises arg-passing into a void-return function |
+| `jit_determinism_call_void_multiple` | `Call` — two sequential void calls (`noop_a`, `noop_b`); verifies repeated void-callee declaration stability |
+| `jit_determinism_call_void_in_branch` | `Call` — void callee inside a non-entry branch arm; exercises void-call emission in conditional code |
+| `jit_determinism_void_main` | Void `main` entry point — `return_ty: None`; dispatched as `fn()` → exit 0 |
 | `jit_determinism_call_with_args` | `Call` — callee takes two `I32` arguments; exercises argument passing |
 | `jit_determinism_call_chained` | `Call` — three-function chain; verifies forward-reference resolution |
 | `jit_determinism_call_in_branch` | `Call` inside a non-entry block (branch arm); verifies block-local call emission |
