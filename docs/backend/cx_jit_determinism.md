@@ -1,5 +1,5 @@
 # Cx JIT Determinism Guarantee
-v1.2 — 2026-05-09
+v1.3 — 2026-05-17
 
 ---
 
