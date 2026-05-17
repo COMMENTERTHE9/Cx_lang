@@ -1,5 +1,5 @@
 # Cx JIT Determinism Guarantee
-v1.2 — 2026-05-09
+v1.3 — 2026-05-17
 
 ---
 
@@ -123,12 +123,20 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_while_in_inclusive` | `while in arr:[0], 0..=2 {}` — inclusive `Le` bound; same array iteration pattern; exit code 30 |
 | `jit_determinism_while_in_zero_iterations` | `while in arr:[0], 3..0 {}` — `Lt` false on first check; body/increment unreachable; arr[0] unchanged; exit code 10 |
 | `jit_determinism_while_in_loop_carried_binding` | `sum += arr[0]` across iterations — counter + accumulator threaded as two header block params; exit code 60 |
+| `jit_determinism_while_loop_zero_iterations` | `while (false) {}` — 4-block while-loop CFG; `Lt` false on first check; body block unreachable (back-edge structurally present); exit code 7 |
+| `jit_determinism_while_loop_accumulator` | `while i<=5 { sum+=i; i+=1 }` — two header params (counter + accumulator); inclusive `Le` bound; 5 iterations; exit code 15 |
 | `jit_determinism_call_return_value` | `Call` — value-returning callee; result used as exit code |
 | `jit_determinism_call_void` | `Call` — void callee (no return value); caller returns a constant |
+| `jit_determinism_call_void_with_args` | `Call` — void callee with two `I32` args; exercises arg-passing into a void-return function |
+| `jit_determinism_call_void_multiple` | `Call` — two sequential void calls (`noop_a`, `noop_b`); verifies repeated void-callee declaration stability |
+| `jit_determinism_call_void_in_branch` | `Call` — void callee inside a non-entry branch arm; exercises void-call emission in conditional code |
+| `jit_determinism_void_main` | Void `main` entry point — `return_ty: None`; dispatched as `fn()` → exit 0 |
 | `jit_determinism_call_with_args` | `Call` — callee takes two `I32` arguments; exercises argument passing |
 | `jit_determinism_call_chained` | `Call` — three-function chain; verifies forward-reference resolution |
 | `jit_determinism_call_in_branch` | `Call` inside a non-entry block (branch arm); verifies block-local call emission |
 | `jit_determinism_call_multiple` | Two calls to the same callee; verifies repeated `declare_func_in_func` stability |
+| `jit_determinism_call_i64_return_value` | `Call` — no-arg callee returns `I64` constant; result `ireduce`d to `I32` for exit code |
+| `jit_determinism_call_i64_with_args` | `Call` — callee takes two `I64` arguments and adds them; `ireduce` result to `I32` for exit code |
 | `jit_determinism_compound_assign_dot_access` | `CompoundAssign` DotAccess lvalue — `PtrOffset` + `Load` + `Binary::Add` + `Store` on a non-first struct field |
 | `jit_determinism_compound_assign_index` | `CompoundAssign` Index lvalue — `ArrayAlloca` + `PtrAdd` + `Load` + `Binary::Add` + `Store` on an array element |
 | `jit_determinism_logical_and_lhs_true_rhs_true` | AND short-circuit CFG — LHS true, RHS block taken; `ConstInt(Bool)` + `Branch` + `Jump` with block param; exit 1 |
@@ -143,6 +151,14 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_unary_bool_not_false` | `BoolNot` lowered as `x == 0` — `ConstInt(Bool)` + `Compare::Eq` + `Cast` Bool→I32; NOT false → 1; exit 1 |
 | `jit_determinism_builtin_assert_pass` | `BuiltinAssert` pass path — `Compare::Eq` + `Branch` to pass/trap blocks; pass block taken (1==1); `Trap` block compiled but unreachable; exit 0 |
 | `jit_determinism_builtin_assert_abort_on_failure` | `BuiltinAssert` abort-on-failure CFG — `ConstInt(Bool 1)` + `Branch`; `Trap` instruction in compiled CFG; forced-true condition keeps Trap unreachable at runtime; exit 0 |
+| `jit_determinism_struct_two_fields_write_and_read` | Struct construction — `Alloca(8,4)` + `PtrOffset` × 2 + `Store` × 2 + `Load` × 2 + `Binary::Add`; field[0]+field[1]=42 |
+| `jit_determinism_struct_field_isolation` | Struct field isolation — write field[0]=7, write field[1]=13; load field[1] → 13; verifies no cross-field corruption |
+| `jit_determinism_compound_assign_add` | CompoundAssign Var-target `+=` — `Alloca` + `Store` + `Load` + `Binary::Add` + `Store` + `Load`; 37+5=42 |
+| `jit_determinism_compound_assign_sub` | CompoundAssign Var-target `-=` — same pattern with `Binary::Sub`; 50-8=42 |
+| `jit_determinism_compound_assign_mul` | CompoundAssign Var-target `*=` — same pattern with `Binary::Mul`; 6×7=42 |
+| `jit_determinism_tbool_false_call_boundary` | TBool call-boundary — TBool(0=false) survives `Call` + `Cast TBool→I32`; exit 0 |
+| `jit_determinism_tbool_true_call_boundary` | TBool call-boundary — TBool(1=true) survives `Call` + `Cast TBool→I32`; exit 1 |
+| `jit_determinism_tbool_unknown_call_boundary` | TBool call-boundary — TBool(2=unknown) survives `Call` + `Cast TBool→I32`; exit 2 (third state) |
 | `jit_determinism_ptr_offset_zero_aliases_base` | `PtrOffset` offset=0 aliases base — store via alias, load via base; exit 99 |
 | `jit_determinism_ptr_offset_nonzero_advances_ptr` | `PtrOffset` offset=4 addresses bytes [4..8] of 8-byte slot; exit 77 |
 | `jit_determinism_array_alloca_store_load` | `ArrayAlloca` 4-element I32 — store 55 at element[0], load back; exit 55 |
@@ -156,6 +172,22 @@ This is sufficient to verify the guarantee: if the JIT pipeline were non-determi
 | `jit_determinism_f64_binary_mul` | F64 `Binary::Mul` — 3.5 × 2.0 = 7.0 → exit 7 |
 | `jit_determinism_f64_binary_div` | F64 `Binary::Div` — 21.0 ÷ 3.0 = 7.0 → exit 7 |
 | `jit_determinism_f64_binary_rem` | F64 `Binary::Rem` — 10.0 % 3.0 = 1.0 via fmod libcall → exit 1 |
+| `jit_determinism_call_f64_return_value` | F64 call boundary — no-arg callee returns F64 42.0; main casts F64→I32; exit 42 |
+| `jit_determinism_call_f64_with_args` | F64 call boundary — callee takes two F64 params (20.0, 22.0), adds them, returns F64; main casts F64→I32; exit 42 |
+| `jit_determinism_fcmp_eq_true` | `fcmp` `Equal` — 1.5 == 1.5 → true path; exit 1 |
+| `jit_determinism_fcmp_eq_false` | `fcmp` `Equal` — 1.5 == 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_ne_true` | `fcmp` `NotEqual` — 1.5 != 2.5 → true path; exit 1 |
+| `jit_determinism_fcmp_ne_false` | `fcmp` `NotEqual` — 2.5 != 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_lt_true` | `fcmp` `LessThan` — 1.5 < 2.5 → true path; exit 1 |
+| `jit_determinism_fcmp_lt_false` | `fcmp` `LessThan` — 2.5 < 1.5 → false path; exit 0 |
+| `jit_determinism_fcmp_le_true` | `fcmp` `LessThanOrEqual` — 1.5 <= 2.5 (strict-less) → true path; exit 1 |
+| `jit_determinism_fcmp_le_equal` | `fcmp` `LessThanOrEqual` — 1.5 <= 1.5 (equal boundary) → true path; exit 1 |
+| `jit_determinism_fcmp_le_false` | `fcmp` `LessThanOrEqual` — 2.5 <= 1.5 → false path; exit 0 |
+| `jit_determinism_fcmp_gt_true` | `fcmp` `GreaterThan` — 2.5 > 1.5 → true path; exit 1 |
+| `jit_determinism_fcmp_gt_false` | `fcmp` `GreaterThan` — 1.5 > 2.5 → false path; exit 0 |
+| `jit_determinism_fcmp_ge_true` | `fcmp` `GreaterThanOrEqual` — 2.5 >= 1.5 (strict-greater) → true path; exit 1 |
+| `jit_determinism_fcmp_ge_equal` | `fcmp` `GreaterThanOrEqual` — 1.5 >= 1.5 (equal boundary) → true path; exit 1 |
+| `jit_determinism_fcmp_ge_false` | `fcmp` `GreaterThanOrEqual` — 1.5 >= 2.5 → false path; exit 0 |
 
 ### Running the Tests
 

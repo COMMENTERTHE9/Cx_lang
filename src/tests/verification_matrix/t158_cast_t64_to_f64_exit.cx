@@ -1,0 +1,12 @@
+// CX-117/CX-209: exit-code-based JIT parity — t64→f64 widening cast (fcvt path).
+// Exercises 64-bit integer to float conversion, then narrows back to t32
+// for assert_eq verification.
+a: t64 = 42
+b: f64 = a
+c: t32 = b
+assert_eq(c, 42)
+
+x: t64 = -100
+y: f64 = x
+z: t32 = y
+assert_eq(z, -100)
