@@ -1,0 +1,14 @@
+// CX-228: exit-code-based JIT parity — t128 arithmetic (SKIP in JIT).
+// t128 multi-word Cranelift lowering not yet implemented; exits 127 in JIT.
+// Verified by exit code only (0 = all asserts held).
+a: t128 = 100
+b: t128 = 200
+
+c: t128 = a + b
+assert_eq(c, 300)
+
+d: t128 = b - a
+assert_eq(d, 100)
+
+e: t128 = a * 3
+assert_eq(e, 300)

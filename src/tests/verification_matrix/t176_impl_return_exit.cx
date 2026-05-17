@@ -1,0 +1,23 @@
+// CX-228: exit-code-based JIT parity — MethodCall with return value (SKIP in JIT).
+// MethodCall/ImplBlock lowering not yet implemented; exits 127 in JIT.
+// Mirrors t40_impl_return without print; verified by exit code only.
+struct Counter {
+    value: t32,
+}
+
+counter_methods: impl (c: Counter) {
+    fnc: increment() {
+        c.value = c.value + 1
+    }
+
+    fnc: t32 get() {
+        c.value
+    }
+}
+
+let c;
+c = Counter { value: 0 }
+c.increment()
+c.increment()
+c.increment()
+assert_eq(c.get(), 3)

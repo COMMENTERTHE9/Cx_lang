@@ -1,0 +1,12 @@
+// CX-228: exit-code-based JIT parity — DirectCall recursive function.
+// Mirrors t113_recursive_fib without print; verified by exit code only.
+fnc: t64 fib(n: t64) {
+    if n < 2 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+assert_eq(fib(0), 0)
+assert_eq(fib(1), 1)
+assert_eq(fib(7), 13)

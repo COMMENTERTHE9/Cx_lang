@@ -1,0 +1,31 @@
+// CX-228: exit-code-based JIT parity — MethodCall multi-alias impl (SKIP in JIT).
+// MethodCall/ImplBlock lowering not yet implemented; exits 127 in JIT.
+// Mirrors t43_multi_alias_impl without print; verified by exit code only.
+struct Player {
+    health: t32,
+    position: t32,
+}
+
+struct World {
+    origin: t32,
+    gravity: t32,
+}
+
+world_sync: impl (p: Player, w: World) {
+    fnc: sync_position() {
+        p.position = w.origin
+    }
+
+    fnc: apply_gravity() {
+        p.health -= w.gravity
+    }
+}
+
+let p;
+p = Player { health: 100, position: 0 }
+let w;
+w = World { origin: 50, gravity: 10 }
+p.sync_position(w)
+p.apply_gravity(w)
+assert_eq(p.position, 50)
+assert_eq(p.health, 90)

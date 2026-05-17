@@ -142,6 +142,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t119_arith_mul_exit"
         | "t120_arith_div_exit"
         | "t121_arith_mod_exit"
+        | "t172_arith_t128_exit"
             => FeatureCategory::Arithmetic,
 
         // ── VariableDecl ──────────────────────────────────────────────────────
@@ -153,6 +154,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t122_vardecl_int_exit"
         | "t123_vardecl_reassign_exit"
         | "t124_vardecl_arith_exit"
+        | "t173_const_decl_exit"
+        | "t174_block_scope_shadow_exit"
             => FeatureCategory::VariableDecl,
 
         // ── IfElse ────────────────────────────────────────────────────────────
@@ -186,6 +189,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         "t25_loop_break"
         | "t106_loop_break_in_func"
         | "t134_loop_break_exit"
+        | "t167_infinite_loop_counter_exit"
+        | "t168_infinite_loop_countdown_exit"
             => FeatureCategory::InfiniteLoop,
 
         // ── DirectCall ────────────────────────────────────────────────────────
@@ -200,6 +205,12 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t29_forward_decl"
         | "t50_nested_func_no_leak"
         | "t113_recursive_fib"
+        | "t159_direct_call_implicit_return_exit"
+        | "t160_direct_call_explicit_return_exit"
+        | "t161_direct_call_no_args_exit"
+        | "t162_direct_call_chained_exit"
+        | "t163_direct_call_forward_decl_exit"
+        | "t164_direct_call_recursive_exit"
             => FeatureCategory::DirectCall,
 
         // ── Struct ────────────────────────────────────────────────────────────
@@ -214,6 +225,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t125_struct_field_read_exit"
         | "t126_struct_second_field_read_exit"
         | "t127_struct_field_write_exit"
+        | "t175_impl_basic_exit"
+        | "t176_impl_return_exit"
+        | "t177_multi_alias_impl_exit"
             => FeatureCategory::Struct,
 
         // ── Array ─────────────────────────────────────────────────────────────
@@ -231,10 +245,13 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t151_var_compound_assign_exit"
         | "t152_compound_assign_dotaccess_exit"
         | "t153_compound_assign_index_exit"
+        | "t169_compound_assign_func_exit"
             => FeatureCategory::CompoundAssign,
 
         // ── Unary ─────────────────────────────────────────────────────────────
         "t96_overflow_t8_unary_neg"
+        | "t165_unary_neg_int_exit"
+        | "t166_unary_not_bool_exit"
             => FeatureCategory::Unary,
 
         // ── Cast ─────────────────────────────────────────────────────────────
@@ -259,6 +276,8 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t78_assert_eq_strings"
         | "t79_assert_false_reject"
         | "t80_assert_eq_mismatch_reject"
+        | "t170_assert_pass_exit"
+        | "t171_assert_eq_pass_exit"
             => FeatureCategory::BuiltinAssert,
 
         // ── LogicalOps ────────────────────────────────────────────────────────

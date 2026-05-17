@@ -1,0 +1,26 @@
+// CX-228: exit-code-based JIT parity — BuiltinAssert assert() pass conditions.
+// Tests assert(cond) where cond is always true; no Trap path triggered at runtime.
+// Verified by exit code only (0 = all asserts held).
+
+// Literal true
+assert(true)
+
+// Comparison expression
+x: t64 = 5
+assert(x > 0)
+assert(x == 5)
+
+// Variable values
+y: t64 = 10
+assert(y > x)
+
+// Post-mutation value
+x = 42
+assert(x == 42)
+assert(x > 0)
+
+// Computed condition
+a: t64 = 3
+b: t64 = 7
+assert(a + b == 10)
+assert(b - a == 4)

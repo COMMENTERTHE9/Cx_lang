@@ -1,0 +1,17 @@
+// CX-228: exit-code-based JIT parity — CompoundAssign on function-local variables.
+// Exercises +=, -=, *= on typed t64 variables inside a function body.
+// Verified by exit code only (0 = all asserts held).
+fnc: t64 accumulate(start: t64) {
+    x: t64 = start
+    x += 5
+    x -= 2
+    x *= 3
+    return x
+}
+
+// start=10: 10+5=15, 15-2=13, 13*3=39
+assert_eq(accumulate(10), 39)
+// start=0: 0+5=5, 5-2=3, 3*3=9
+assert_eq(accumulate(0), 9)
+// start=1: 1+5=6, 6-2=4, 4*3=12
+assert_eq(accumulate(1), 12)

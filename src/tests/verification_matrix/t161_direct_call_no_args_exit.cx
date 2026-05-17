@@ -1,0 +1,13 @@
+// CX-228: exit-code-based JIT parity — DirectCall zero-argument function.
+// Verified by exit code only (0 = all asserts held).
+fnc: t64 forty_two() {
+    42
+}
+
+fnc: t64 zero() {
+    0
+}
+
+assert_eq(forty_two(), 42)
+assert_eq(zero(), 0)
+assert_eq(forty_two() + zero(), 42)
