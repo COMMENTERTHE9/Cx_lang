@@ -567,6 +567,7 @@ pub fn parity_by_feature(
                 }
             };
             if is_parity_fail {
+                emit_parity_fail_diagnostic(cat, fixture, &outcome, binary);
                 entry.2 += 1; // PARITY_FAIL
             } else {
                 entry.0 += 1; // pass
@@ -575,6 +576,98 @@ pub fn parity_by_feature(
     }
 
     map
+}
+
+// ── PARITY_FAIL diagnostic ────────────────────────────────────────────────────
+
+/// Emit a diagnostic to stderr when `parity_by_feature` detects a PARITY_FAIL.
+///
+/// Prints the fixture name, feature category, expected vs actual outcome, and
+/// a full IR dump produced by running `<binary> --backend=validate <fixture>`
+/// as a subprocess. The IR dump subprocess is bounded by [`JIT_TIMEOUT`]; if
+/// it times out the diagnostic says so and returns without hanging the test.
+#[cfg(feature = "jit")]
+fn emit_parity_fail_diagnostic(
+    category: FeatureCategory,
+    fixture: &TestFixture,
+    outcome: &InterpOutcome,
+    binary: &Path,
+) {
+    use std::io::Read;
+    use wait_timeout::ChildExt;
+
+    eprintln!("\nPARITY_FAIL: {} [{}]", fixture.name, category);
+
+    let expected_desc = match &fixture.expectation {
+        TestExpectation::Fail => "exit non-zero (expected-fail)".to_string(),
+        TestExpectation::PassAny => "exit 0".to_string(),
+        TestExpectation::PassWithOutput(s) => {
+            format!(
+                "exit 0, stdout = {:?}",
+                s.lines().next().unwrap_or("(empty)")
+            )
+        }
+    };
+    eprintln!("  expected:  {}", expected_desc);
+    eprintln!("  exit code: {}", outcome.exit_code);
+    eprintln!(
+        "  stdout:    {}",
+        outcome.stdout.lines().next().unwrap_or("(empty)")
+    );
+    eprintln!(
+        "  stderr:    {}",
+        outcome.stderr.lines().next().unwrap_or("(empty)")
+    );
+
+    eprintln!("  IR dump:");
+    let child = Command::new(binary)
+        .arg("--backend=validate")
+        .arg(&fixture.path)
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("    (IR dump failed: {})", e);
+            return;
+        }
+    };
+
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
+
+    match child.wait_timeout(JIT_TIMEOUT) {
+        Ok(Some(_status)) => {
+            let mut ir_bytes = Vec::new();
+            let mut err_bytes = Vec::new();
+            stdout_pipe.read_to_end(&mut ir_bytes).unwrap_or(0);
+            stderr_pipe.read_to_end(&mut err_bytes).unwrap_or(0);
+            let ir_text = String::from_utf8_lossy(&ir_bytes);
+            let err_text = String::from_utf8_lossy(&err_bytes);
+            if !ir_text.is_empty() {
+                for line in ir_text.lines() {
+                    eprintln!("    {}", line);
+                }
+            } else if !err_text.is_empty() {
+                eprintln!(
+                    "    (validation error: {})",
+                    err_text.lines().next().unwrap_or("")
+                );
+            } else {
+                eprintln!("    (no IR output)");
+            }
+        }
+        Ok(None) => {
+            let _ = child.kill();
+            eprintln!("    (IR dump timed out after {}s)", JIT_TIMEOUT.as_secs());
+        }
+        Err(e) => {
+            eprintln!("    (IR dump failed: {})", e);
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
