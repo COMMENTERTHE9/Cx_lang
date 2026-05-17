@@ -1,0 +1,5 @@
+// CX-146/CX-225: f64 argument support for print — arithmetic result.
+a: f64 = 1.5
+b: f64 = 1.0
+c: f64 = a + b
+print(c)

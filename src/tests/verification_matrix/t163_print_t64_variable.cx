@@ -1,0 +1,8 @@
+// CX-154/CX-225: print/println/printn with T64 variable references — JIT parity PassWithOutput.
+x: t64 = 10
+y: t64 = 20
+z: t64 = x + y
+print(x)
+print(y)
+println(z)
+printn(x)

@@ -74,12 +74,49 @@ struct ValidatorFunctionSig {
 /// though it has no `IrFunction` entry in the module.
 fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
     let mut sigs = HashMap::new();
-    // cx_printn(n: I64) -> void — Phase 9 sub-packet 2 print-integer intrinsic.
+    // cx_printn(n: I64) -> void — print integer with newline.
     sigs.insert(
         "cx_printn".to_string(),
         ValidatorFunctionSig {
             param_count: 1,
             param_types: vec![IrType::I64],
+            has_return: false,
+        },
+    );
+    // cx_printf(x: F64) -> void — print f64 with newline (CX-146).
+    sigs.insert(
+        "cx_printf".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::F64],
+            has_return: false,
+        },
+    );
+    // cx_printb(b: Bool) -> void — print boolean as "true"/"false" with newline (CX-155).
+    sigs.insert(
+        "cx_printb".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::Bool],
+            has_return: false,
+        },
+    );
+    // cx_printn_i128(n: I128) -> void — print 128-bit integer with newline (CX-172).
+    // The JIT backend splits I128 into (lo: I64, hi: I64) via isplit before the call.
+    sigs.insert(
+        "cx_printn_i128".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::I128],
+            has_return: false,
+        },
+    );
+    // cx_print_tbool(n: TBool) -> void — print ternary bool as "false"/"true"/"?" (CX-178).
+    sigs.insert(
+        "cx_print_tbool".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::TBool],
             has_return: false,
         },
     );
@@ -1747,6 +1784,135 @@ mod tests {
                 if detail.contains("Call to 'cx_printn': callee returns void")
             )),
             "expected void-return shape error for cx_printn, got: {:?}",
+            errors
+        );
+    }
+
+    // ── CX-146: cx_printf intrinsic (F64 print) ──────────────────────────────
+
+    #[test]
+    fn validator_accepts_cx_printf_call_with_f64_arg() {
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 2.5 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printf".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    // ── CX-172: cx_printn_i128 intrinsic (I128 print) ────────────────────────
+
+    #[test]
+    fn validator_accepts_cx_printn_i128_call_with_i128_arg() {
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn_i128".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    // ── CX-178/CX-179: cx_print_tbool intrinsic (TBool print) ────────────────
+
+    #[test]
+    fn validator_accepts_cx_print_tbool_call_with_tbool_arg() {
+        // TBool cannot be created via ConstInt; materialize via ConstInt(I8) → Alloca → Store → Load(TBool).
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: 0 },
+                        IrInst::Alloca { dst: ValueId(1), size: 1, align: 1 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(0) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::TBool, ptr: ValueId(1) },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_print_tbool".to_string(),
+                            args: vec![ValueId(2)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    #[test]
+    fn validator_rejects_cx_print_tbool_call_with_wrong_arg_type() {
+        // cx_print_tbool expects TBool; passing I64 must produce a type-mismatch error.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_print_tbool".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject wrong-type arg to cx_print_tbool");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                if detail.contains("Call to 'cx_print_tbool'") && detail.contains("TBool")
+            )),
+            "expected type-mismatch error for cx_print_tbool, got: {:?}",
             errors
         );
     }

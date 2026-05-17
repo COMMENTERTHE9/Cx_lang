@@ -87,9 +87,9 @@ correct and contains the builtin name.
 
 | Builtin      | Category            | Return  | Backend mechanism                         | Status |
 |--------------|---------------------|---------|-------------------------------------------|--------|
-| `print`      | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
-| `println`    | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
-| `printn`     | I/O — stdout        | void    | `IrInst::Call` to `cx_printn`             | DONE (I64 only) |
+| `print`      | I/O — stdout        | void    | `IrInst::Call` to `cx_printn` / `cx_printf` / `cx_printb` / `cx_printn_i128` / `cx_print_tbool` | DONE (I8/I16/I32/I64/I128/F64/Bool/TBool) |
+| `println`    | I/O — stdout        | void    | same type-dispatch as `print`             | DONE (I8/I16/I32/I64/I128/F64/Bool/TBool) |
+| `printn`     | I/O — stdout        | void    | same type-dispatch as `print`             | DONE (I8/I16/I32/I64/I128/F64/Bool/TBool) |
 | `read`       | I/O — stdin         | str     | runtime call to `cx_read`                 | BLOCKED — str/strref layout (Phase 8) |
 | `input`      | I/O — stdin         | str     | runtime call to `cx_input`                | BLOCKED — str/strref layout (Phase 8) |
 | `assert`     | Debug / assertion   | void    | inline `Branch` + `IrTerminator::Trap`    | DONE — abort semantics |
@@ -99,25 +99,48 @@ correct and contains the builtin name.
 
 `print`, `println`, `printn` are stdout I/O.  They do not return a value.
 
-**Implementation (sub-packet 2 — COMPLETE):**
+**Implementation (sub-packet 2 — COMPLETE; CX-225 train integrates all type dispatch):**
 
-All three lower to `IrInst::Call { callee: "cx_printn", args: [i64_value], return_ty: None }`.
-Neither `cx_print` nor `cx_println` exist as distinct symbols — both `print` and `println`
-route through `cx_printn`.
+All three builtins route through `lower_print_stmt` in `src/ir/lower.rs`, which
+dispatches by argument `IrType`:
 
-- `lower_printn_stmt` — handles `printn(n)` directly.
-- `lower_print_stmt` — handles both `print(n)` and `println(n)`; emits the same
-  `cx_printn` call for both (newline is always appended by the runtime shim).
+| Argument type       | Intrinsic         | Notes                                 |
+|---------------------|-------------------|---------------------------------------|
+| `I64`               | `cx_printn`       | direct                                |
+| `I8`, `I16`, `I32`  | `cx_printn`       | widened to I64 via Cast (CX-153)      |
+| `F64`               | `cx_printf`       | CX-146                                |
+| `Bool`              | `cx_printb`       | CX-155                                |
+| `I128`              | `cx_printn_i128`  | CX-172; JIT backend issues isplit     |
+| `TBool`             | `cx_print_tbool`  | CX-178                                |
 
-Argument constraint: only `I64` arguments are accepted.  Non-I64 arguments
-(e.g. strings) produce a structured `UnsupportedSemanticConstruct` error, as
-string printing requires string ABI support not yet available.
+Neither `cx_print` nor `cx_println` exist as distinct symbols — all three print
+builtins route through the same per-type intrinsic.  The `builtin_name` parameter
+is preserved for error messages only.
 
 The `cx_printn` symbol is:
 - Implemented in `src/backend/cranelift/host_boundary.rs` as `extern "C" fn cx_printn(n: i64)`.
 - Registered in every JIT module via `jit_builder.symbol("cx_printn", cx_printn as *const u8)`.
 - Pre-declared as an imported C-ABI function in the Cranelift module before any
   user function is compiled.
+
+The `cx_printf` symbol is:
+- Implemented as `extern "C" fn cx_printf(x: f64)`.
+- Prints the f64 value with Rust's `{}` format followed by a newline.
+
+The `cx_printb` symbol is:
+- Implemented as `extern "C" fn cx_printb(b: i8)`.
+- Prints `"false"` for b=0, `"true"` for any other value.
+
+The `cx_printn_i128` symbol is:
+- Implemented as `extern "C" fn cx_printn_i128(lo: i64, hi: i64)`.
+- Cranelift 0.115 x64 ABI does not support I128 call params; the JIT backend
+  issues `isplit` to split the I128 into `(lo, hi)` before the call.
+- Reconstructs the i128 as `((hi as i128) << 64) | (lo as u64 as i128)`.
+
+The `cx_print_tbool` symbol is:
+- Implemented as `extern "C" fn cx_print_tbool(n: i8)`.
+- Prints `"false"` for n=0, `"true"` for n=1, `"?"` for any other value.
+- Matches the interpreter's `value_to_string()` output for `Value::TBool(b)`.
 
 ### I/O builtins — read / input
 
@@ -191,17 +214,22 @@ Deferred until `str` and `strref` layout is locked in Phase 8.
 
 Stable C-ABI symbols that JIT-compiled Cx code may call:
 
-| Symbol         | Signature (C)                     | Provided by                          | Status |
-|----------------|-----------------------------------|--------------------------------------|--------|
-| `cx_printn`    | `void cx_printn(int64_t n)`       | `host_boundary.rs` (`extern "C"`)    | LIVE   |
-| `cx_read`      | TBD — blocked on str layout       | —                                    | BLOCKED |
-| `cx_input`     | TBD — blocked on str layout       | —                                    | BLOCKED |
+| Symbol            | Signature (C)                                | Provided by                       | Status  |
+|-------------------|----------------------------------------------|-----------------------------------|---------|
+| `cx_printn`       | `void cx_printn(int64_t n)`                  | `host_boundary.rs` (`extern "C"`) | LIVE    |
+| `cx_printf`       | `void cx_printf(double x)`                   | `host_boundary.rs` (`extern "C"`) | LIVE    |
+| `cx_printb`       | `void cx_printb(int8_t b)`                   | `host_boundary.rs` (`extern "C"`) | LIVE    |
+| `cx_printn_i128`  | `void cx_printn_i128(int64_t lo, int64_t hi)` | `host_boundary.rs` (`extern "C"`) | LIVE    |
+| `cx_print_tbool`  | `void cx_print_tbool(int8_t n)`              | `host_boundary.rs` (`extern "C"`) | LIVE    |
+| `cx_read`         | TBD — blocked on str layout                  | —                                 | BLOCKED |
+| `cx_input`        | TBD — blocked on str layout                  | —                                 | BLOCKED |
 
 Notes:
-- `cx_print` and `cx_println` do not exist as separate symbols.  Both `print`
-  and `println` lower to calls to `cx_printn`.
-- `cx_printn` always appends a newline (`writeln!`), matching the expected
-  behaviour of all three stdout builtins for I64 values.
+- `cx_print` and `cx_println` do not exist as separate symbols.  All three print
+  builtins route through the same per-type intrinsic as `printn`.
+- All print intrinsics always append a newline (`writeln!`).
+- `cx_printn_i128` takes (lo, hi) because Cranelift 0.115 x64 ABI does not support
+  I128 call parameters; the JIT backend issues `isplit` before the call.
 - All string pointers passed to future I/O shims will be read-only; the shim
   will not take ownership and will not free.
 

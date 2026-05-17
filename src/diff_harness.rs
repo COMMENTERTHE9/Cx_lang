@@ -153,6 +153,7 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t122_vardecl_int_exit"
         | "t123_vardecl_reassign_exit"
         | "t124_vardecl_arith_exit"
+        | "t163_print_t64_variable"
             => FeatureCategory::VariableDecl,
 
         // ── IfElse ────────────────────────────────────────────────────────────
@@ -252,6 +253,9 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
         | "t138_float_arith_div_exit"
         | "t155_float_arith_mod_exit"
         | "t156_float_neg_exit"
+        | "t160_float_print_basic"
+        | "t161_float_print_add"
+        | "t162_float_print_neg"
             => FeatureCategory::FloatOps,
 
         // ── BuiltinAssert ─────────────────────────────────────────────────────

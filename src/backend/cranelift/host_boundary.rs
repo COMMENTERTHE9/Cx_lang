@@ -275,6 +275,58 @@ extern "C" fn cx_printn(n: i64) {
     let _ = writeln!(stdout, "{n}");
 }
 
+/// Runtime intrinsic: print an f64 to stdout followed by a newline (CX-146).
+///
+/// Exported as `cx_printf` in the JIT symbol table. JIT-compiled Cx code calls this
+/// via `IrInst::Call { callee: "cx_printf", args: [f64_value] }`.
+extern "C" fn cx_printf(x: f64) {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let _ = writeln!(stdout, "{x}");
+}
+
+/// Runtime intrinsic: print a boolean to stdout followed by a newline (CX-155).
+///
+/// Exported as `cx_printb` in the JIT symbol table. JIT-compiled Cx code calls this
+/// via `IrInst::Call { callee: "cx_printb", args: [bool_value] }`.
+/// `b == 0` prints `"false"`, any other value prints `"true"`.
+extern "C" fn cx_printb(b: i8) {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let s = if b == 0 { "false" } else { "true" };
+    let _ = writeln!(stdout, "{s}");
+}
+
+/// Runtime intrinsic: print a 128-bit integer to stdout followed by a newline (CX-172).
+///
+/// Exported as `cx_printn_i128` in the JIT symbol table.
+/// Cranelift 0.115 x64 ABI does not support I128 call parameters, so the JIT backend
+/// splits the I128 SSA value with `isplit` before the call and passes two I64 halves:
+/// `lo` (bits 63:0) and `hi` (bits 127:64). This function reconstructs the signed i128.
+extern "C" fn cx_printn_i128(lo: i64, hi: i64) {
+    let n: i128 = ((hi as i128) << 64) | (lo as u64 as i128);
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let _ = writeln!(stdout, "{n}");
+}
+
+/// Runtime intrinsic: print a ternary boolean to stdout followed by a newline (CX-178).
+///
+/// Exported as `cx_print_tbool` in the JIT symbol table. JIT-compiled Cx code calls this
+/// via `IrInst::Call { callee: "cx_print_tbool", args: [tbool_value] }`.
+/// TBool values are stored as i8: 0 = false, 1 = true, any other value = unknown ("?").
+/// Output matches the interpreter's `value_to_string()` for `Value::TBool(b)`.
+extern "C" fn cx_print_tbool(n: i8) {
+    use std::io::{self, Write};
+    let mut stdout = io::stdout().lock();
+    let s = match n {
+        0 => "false",
+        1 => "true",
+        _ => "?",
+    };
+    let _ = writeln!(stdout, "{s}");
+}
+
 /// Backend-private symbol name for the F64 remainder host helper.
 ///
 /// Using a mangled name (double-underscore prefix) keeps it out of the user-visible namespace.
@@ -340,6 +392,10 @@ impl HostBoundary {
         let mut jit_builder =
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         jit_builder.symbol("cx_printn", cx_printn as *const u8);
+        jit_builder.symbol("cx_printf", cx_printf as *const u8);
+        jit_builder.symbol("cx_printb", cx_printb as *const u8);
+        jit_builder.symbol("cx_printn_i128", cx_printn_i128 as *const u8);
+        jit_builder.symbol("cx_print_tbool", cx_print_tbool as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         let mut module = JITModule::new(jit_builder);
 
@@ -348,7 +404,7 @@ impl HostBoundary {
         // needs the complete map so that IrInst::Call can resolve all callees.
         let mut func_id_map: HashMap<String, FuncId> = HashMap::new();
 
-        // Pre-declare runtime intrinsics as imported symbols.
+        // Pre-declare cx_printn(i64) -> void — integer print.
         {
             use cranelift_codegen::ir::AbiParam;
             let call_conv = module.target_config().default_call_conv;
@@ -360,6 +416,65 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert("cx_printn".to_string(), id);
+        }
+
+        // Pre-declare cx_printf(f64) -> void — f64 print (CX-146).
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::F64));
+            let id = module
+                .declare_function("cx_printf", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_printf".to_string(), id);
+        }
+
+        // Pre-declare cx_printb(i8) -> void — boolean print (CX-155).
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I8));
+            let id = module
+                .declare_function("cx_printb", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_printb".to_string(), id);
+        }
+
+        // Pre-declare cx_printn_i128(lo: i64, hi: i64) -> void — i128 print (CX-172).
+        // Cranelift 0.115 x64 ABI does not support I128 call params; the JIT backend
+        // issues isplit to split the I128 into two I64 halves before the call.
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("cx_printn_i128", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_printn_i128".to_string(), id);
+        }
+
+        // Pre-declare cx_print_tbool(i8) -> void — ternary-bool print (CX-178).
+        {
+            use cranelift_codegen::ir::{AbiParam, types};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I8));
+            let id = module
+                .declare_function("cx_print_tbool", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_print_tbool".to_string(), id);
         }
 
         // Pre-declare __cx_fmod(f64, f64) -> f64 for F64 Rem lowering.
@@ -845,19 +960,36 @@ fn compile_ir_function(
                         }
                     })?;
                     let func_ref = module.declare_func_in_func(callee_id, builder.func);
-                    let cl_args: Vec<cranelift_codegen::ir::Value> = args
-                        .iter()
-                        .map(|vid| {
-                            val_map.get(vid).copied().ok_or_else(|| {
+                    // cx_printn_i128 receives its I128 IR argument as two I64 halves (lo, hi)
+                    // because Cranelift 0.115 x64 ABI does not support I128 call parameters.
+                    // isplit produces (lo, hi) matching the (i64, i64) C-ABI signature.
+                    let cl_args: Vec<cranelift_codegen::ir::Value> =
+                        if callee == "cx_printn_i128" && args.len() == 1 {
+                            let i128_val = *val_map.get(&args[0]).ok_or_else(|| {
                                 JitExecutionError::CodegenFailure {
                                     detail: format!(
-                                        "undefined value {:?} used as call arg",
-                                        vid
+                                        "undefined value {:?} used as cx_printn_i128 arg",
+                                        args[0]
                                     ),
                                 }
-                            })
-                        })
-                        .collect::<Result<_, _>>()?;
+                            })?;
+                            let (lo, hi) = builder.ins().isplit(i128_val);
+                            vec![lo, hi]
+                        } else {
+                            args
+                                .iter()
+                                .map(|vid| {
+                                    val_map.get(vid).copied().ok_or_else(|| {
+                                        JitExecutionError::CodegenFailure {
+                                            detail: format!(
+                                                "undefined value {:?} used as call arg",
+                                                vid
+                                            ),
+                                        }
+                                    })
+                                })
+                                .collect::<Result<_, _>>()?
+                        };
                     let call_inst = builder.ins().call(func_ref, &cl_args);
                     if let Some(dst_vid) = dst {
                         let results = builder.inst_results(call_inst);
@@ -7116,6 +7248,190 @@ mod determinism_tests {
         };
         let result = HostBoundary::new().execute(&module);
         assert!(result.is_ok(), "JIT failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    // ── CX-146: cx_printf intrinsic (F64 print) ──────────────────────────────
+
+    #[test]
+    fn jit_call_cx_printf_executes_without_error() {
+        // Verify that JIT-compiled code can call cx_printf with an F64 value.
+        let module = IrModule {
+            debug_name: "test_cx_printf".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstFloat { dst: ValueId(0), value: 2.5 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printf".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT cx_printf failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    // ── CX-155: cx_printb intrinsic (Bool print) ─────────────────────────────
+
+    #[test]
+    fn jit_call_cx_printb_true_executes_without_error() {
+        // Verify that JIT-compiled code can call cx_printb with b=1 (true).
+        let module = IrModule {
+            debug_name: "test_cx_printb_true".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: 1 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printb".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT cx_printb(true) failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_call_cx_printb_false_executes_without_error() {
+        // Verify that JIT-compiled code can call cx_printb with b=0 (false).
+        let module = IrModule {
+            debug_name: "test_cx_printb_false".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: 0 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printb".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT cx_printb(false) failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    // ── CX-172: cx_printn_i128 intrinsic (I128 print) ────────────────────────
+
+    #[test]
+    fn jit_call_cx_printn_i128_executes_without_error() {
+        // Verify that JIT-compiled code can call cx_printn_i128 with an I128 value.
+        // The backend automatically issues isplit to pass (lo, hi) to the C ABI.
+        let module = IrModule {
+            debug_name: "test_cx_printn_i128".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn_i128".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(1), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        };
+        let result = HostBoundary::new().execute(&module);
+        assert!(result.is_ok(), "JIT cx_printn_i128 failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    // ── CX-178: cx_print_tbool intrinsic (TBool print) ───────────────────────
+
+    fn cx_print_tbool_module(raw_value: i128) -> IrModule {
+        // TBool cannot be created via ConstInt; materialize via ConstInt(I8) → Alloca → Store → Load(TBool).
+        IrModule {
+            debug_name: format!("test_cx_print_tbool_{}", raw_value),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I8, value: raw_value },
+                        IrInst::Alloca { dst: ValueId(1), size: 1, align: 1 },
+                        IrInst::Store { ptr: ValueId(1), value: ValueId(0) },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::TBool, ptr: ValueId(1) },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_print_tbool".to_string(),
+                            args: vec![ValueId(2)],
+                            return_ty: None,
+                        },
+                        IrInst::ConstInt { dst: ValueId(3), ty: IrType::I32, value: 0 },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(3)) },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn jit_cx_print_tbool_false_executes_without_error() {
+        let result = HostBoundary::new().execute(&cx_print_tbool_module(0));
+        assert!(result.is_ok(), "JIT cx_print_tbool(false) failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_cx_print_tbool_true_executes_without_error() {
+        let result = HostBoundary::new().execute(&cx_print_tbool_module(1));
+        assert!(result.is_ok(), "JIT cx_print_tbool(true) failed: {:?}", result.unwrap_err());
+        assert!(result.unwrap().exit_code.is_success());
+    }
+
+    #[test]
+    fn jit_cx_print_tbool_unknown_executes_without_error() {
+        let result = HostBoundary::new().execute(&cx_print_tbool_module(2));
+        assert!(result.is_ok(), "JIT cx_print_tbool(unknown) failed: {:?}", result.unwrap_err());
         assert!(result.unwrap().exit_code.is_success());
     }
 

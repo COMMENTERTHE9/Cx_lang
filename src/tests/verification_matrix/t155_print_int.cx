@@ -1,0 +1,3 @@
+// CX-137/CX-225: print(i64) lowers to cx_printn — JIT parity PassWithOutput.
+x: t64 = 42
+print(x)

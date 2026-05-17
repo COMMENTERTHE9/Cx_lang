@@ -1,0 +1,3 @@
+// CX-137/CX-225: printn(i64) PassWithOutput — verifies integer stdout against expected_output.
+x: t64 = 7
+printn(x)
