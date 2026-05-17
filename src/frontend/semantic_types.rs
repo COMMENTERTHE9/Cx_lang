@@ -268,6 +268,8 @@ pub struct SemanticFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticWhileInChain {
     pub arr: String,
+    pub arr_binding: BindingId,
+    pub arr_ty: SemanticType,
     pub start_slot: usize,
     pub range_start: SemanticExpr,
     pub range_end: SemanticExpr,
@@ -354,6 +356,8 @@ ExprStmt {
     },
     WhileIn {
         arr: String,
+        arr_binding: BindingId,
+        arr_ty: SemanticType,
         start_slot: usize,
         range_start: SemanticExpr,
         range_end: SemanticExpr,

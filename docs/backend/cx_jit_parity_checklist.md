@@ -102,22 +102,10 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `train/backend-determinism` (submain as of CX-217 merge window, 2026-05-17).
-Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
-CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
-exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
-(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
-CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
-dispatch to cx_printn, CX-187 CompoundAssign DotAccess and Index exit-code
-fixtures (t152_compound_assign_dotaccess_exit, t153_compound_assign_index_exit)
-plus parser support for `arr:[i] op= value` compound assign on array elements,
-CX-182 integration multi-function PassWithOutput fixture
-(t154_integration_multifn) rebased onto submain via CX-196,
-and CX-117/CX-209 FloatOps/Cast parity fixtures (t155_float_arith_mod_exit,
-t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit, t158_cast_t64_to_f64_exit)
-rebased onto submain via CX-217.
+Run on branch `train/master-backend-cleanup` (submain as of CX-226 merge window, 2026-05-17).
+Includes all prior baselines through CX-196, plus CX-226 while-in JIT lowering
+(`lower_while_in_single` in IR lowering + `Op::Mul` cursor-deref unary support),
+which moves t34 (while-in exclusive) and t35 (while-in-then) from SKIP to PASS.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -125,7 +113,7 @@ Feature                PASS   SKIP  PARITY_FAIL
 Arithmetic                8      9            0
 VariableDecl              5      3            0
 IfElse                    4      2            0
-WhileLoop                 5      3            0
+WhileLoop                 7      1            0
 ForLoop                   4      0            0
 InfiniteLoop              2      1            0
 DirectCall                7      4            0
@@ -170,11 +158,13 @@ including bool-variable negation added in CX-111). The 4 PASS reflect the
 3 exit-code-verified fixtures plus one print-based original now passing via
 CX-136 print dispatch; the 2 SKIP are the remaining print-based originals.
 
-**WhileLoop parity coverage (CX-102/CX-136):** t132 covers basic while loops and
-top-level while at file scope; t133 covers while in a function. The 5 PASS
-reflect the 2 exit-code-verified fixtures plus 3 print-based originals now
-passing via CX-136 print dispatch; the 3 SKIP are while-in/while-in-then
-constructs not yet JIT-lowerable.
+**WhileLoop parity coverage (CX-102/CX-136/CX-226):** t132 covers basic while loops and
+top-level while at file scope; t133 covers while in a function. CX-226 added
+`lower_while_in_single` (5-block CFG with counter param, array load/store, and
+`Op::Mul` cursor-deref unary lowering), which moves t34 (while-in exclusive) and
+t35 (while-in-then with `then in` chain) from SKIP to PASS. The 7 PASS reflect
+the 2 exit-code-verified fixtures plus 5 print-based originals; the 1 remaining
+SKIP is t23 (`let i;` untyped variable — Numeric type not yet JIT-lowerable).
 
 **WhenBlock parity coverage (CX-113):** t143 mirrors t19 (numeric pattern), t144
 mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
