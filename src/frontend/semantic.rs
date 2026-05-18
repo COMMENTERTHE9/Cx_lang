@@ -703,6 +703,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 result,
                 pos,
             } => {
+                let (arr_binding, arr_ty) = {
+                    let arr_info = self.lookup_var(arr).ok_or_else(|| sem_err!(*pos, "use of undeclared array '{}'", arr))?;
+                    (arr_info.binding, binding_type(arr_info, &self.current_type_params))
+                };
                 let sem_start = self.analyze_expr(range_start)?;
                 let sem_end = self.analyze_expr(range_end)?;
                 let sem_body = body
@@ -712,6 +716,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let sem_chains = then_chains
                     .iter()
                     .map(|chain| {
+                        let (chain_arr_binding, chain_arr_ty) = {
+                            let info = self.lookup_var(&chain.arr).ok_or_else(|| sem_err!(*pos, "use of undeclared array '{}'", chain.arr))?;
+                            (info.binding, binding_type(info, &self.current_type_params))
+                        };
                         let cs = self.analyze_expr(&chain.range_start)?;
                         let ce = self.analyze_expr(&chain.range_end)?;
                         let cb = chain
@@ -721,6 +729,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             .collect::<Result<Vec<_>, _>>()?;
                         Ok(SemanticWhileInChain {
                             arr: chain.arr.clone(),
+                            arr_binding: chain_arr_binding,
+                            arr_ty: chain_arr_ty,
                             start_slot: chain.start_slot,
                             range_start: cs,
                             range_end: ce,
@@ -735,6 +745,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 };
                 Ok(SemanticStmt::WhileIn {
                     arr: arr.clone(),
+                    arr_binding,
+                    arr_ty,
                     start_slot: *start_slot,
                     range_start: sem_start,
                     range_end: sem_end,

@@ -102,29 +102,11 @@ Captured from:
 cargo build --features jit && cargo test --features jit jit_parity_by_feature -- --nocapture
 ```
 
-Run on branch `train/backend-determinism` (submain as of CX-230 merge window, 2026-05-17).
-Includes exit-code-verified fixtures added in CX-102 (t129–t134), CX-105/CX-107 LogicalOps
-fixtures (t141–t142), the CX-111 bool-variable negation extension to t131,
-CX-113 when-block exit-code fixtures (t143–t145), CX-119 var compound assign
-exit-code fixture (t151_var_compound_assign_exit), CX-121 Array exit-code fixtures
-(t146_array_read_exit, t147_array_write_exit, t148_array_in_func_exit),
-CX-124 ForLoop exit-code fixtures (t149–t150), CX-121 ArrayAlloca JIT emit
-(IrInst::ArrayAlloca Cranelift lowering), CX-136 print/println intrinsic
-dispatch to cx_printn, CX-187 CompoundAssign DotAccess and Index exit-code
-fixtures (t152_compound_assign_dotaccess_exit, t153_compound_assign_index_exit)
-plus parser support for `arr:[i] op= value` compound assign on array elements,
-CX-182 integration multi-function PassWithOutput fixture
-(t154_integration_multifn) rebased onto submain via CX-196,
-CX-117/CX-209 FloatOps/Cast parity fixtures (t155_float_arith_mod_exit,
-t156_float_neg_exit, t157_cast_neg_t32_to_f64_exit, t158_cast_t64_to_f64_exit)
-rebased onto submain via CX-217, CX-152/CX-218 Numeric/Unknown type fallbacks
-in IR lowering (VarRef, Assign, CompoundAssign, and arithmetic binary expressions
-now resolve placeholder types to the stored binding or target-native integer width),
-and CX-228 parity fixture backlog audit adding 19 fixtures (t159–t177): DirectCall
-exit-code (t159–t164), Unary exit-code (t165–t166), InfiniteLoop additional
-(t167–t168), CompoundAssign in-func (t169), BuiltinAssert pass-condition
-(t170–t171), Arithmetic t128 (t172), VariableDecl const/block-scope (t173–t174),
-and Struct/MethodCall SKIP (t175–t177).
+Run on branch `stokowski/CX-233` (submain as of CX-233 merge window, 2026-05-18).
+Includes all prior baselines through CX-230, plus CX-233 while-in source-to-IR
+lowering (`lower_while_in_single` in `src/ir/lower.rs` + `Op::Mul` cursor-deref
+unary support), which moves t34 (while-in exclusive) and t35 (while-in-then)
+from SKIP to PASS.
 
 ```text
 Feature                PASS   SKIP  PARITY_FAIL
@@ -132,7 +114,7 @@ Feature                PASS   SKIP  PARITY_FAIL
 Arithmetic                8     10            0
 VariableDecl              5      5            0
 IfElse                    4      2            0
-WhileLoop                 6      2            0
+WhileLoop                 8      0            0
 ForLoop                   4      0            0
 InfiniteLoop              4      1            0
 DirectCall               12      5            0
@@ -178,13 +160,13 @@ including bool-variable negation added in CX-111). The 4 PASS reflect the
 3 exit-code-verified fixtures plus one print-based original now passing via
 CX-136 print dispatch; the 2 SKIP are the remaining print-based originals.
 
-**WhileLoop parity coverage (CX-102/CX-136/CX-152):** t132 covers basic while loops and
-top-level while at file scope; t133 covers while in a function. The 6 PASS
-reflect the 2 exit-code-verified fixtures (t132, t133) plus 4 print-based originals
-(t23, t105, t107, t108) now passing via CX-136 print dispatch and CX-152 Numeric
-type fallback in Assign/VarRef lowering; the 2 SKIP are t34 (while-in range-based)
-and t35 (while-in-then), which use the `while in arr:...` construct not yet
-lowerable from source through the full IR pipeline.
+**WhileLoop parity coverage (CX-102/CX-136/CX-152/CX-233):** t132 covers basic while
+loops and top-level while at file scope; t133 covers while in a function. CX-233
+added `lower_while_in_single` (5-block CFG with counter param, array load/store, and
+`Op::Mul` cursor-deref unary lowering), which moves t34 (while-in range-based) and
+t35 (while-in-then with `then in` chain) from SKIP to PASS. The 8 PASS reflect the
+2 exit-code-verified fixtures (t132, t133) plus 6 print-based originals (t23, t34,
+t35, t105, t107, t108) now passing. No remaining SKIP in this category.
 
 **WhenBlock parity coverage (CX-113):** t143 mirrors t19 (numeric pattern), t144
 mirrors t20 (TBool three-way), t145 mirrors t21 (range pattern). All 3 are SKIP
