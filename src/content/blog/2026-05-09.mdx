@@ -1,0 +1,56 @@
+---
+title: "Cx Dev Log — 2026-05-09"
+date: 2026-05-09
+description: "Nine PRs merged to submain covering exit-code propagation, assert lowering, void returns, and float comparison, while ten new branches pushed JIT instruction coverage toward F64 remainder, I128, short-circuit logic, direct calls, and pointer operations."
+---
+
+Nine PRs into submain and ten new feature branches created in a single day. The headline is CX-74: exit-code propagation through the backend trait. Six silent `return;` paths in `main.rs` where backend errors would exit 0 are now replaced with structured `BackendError { message, exit_code }` propagation. This directly fixes a problem where the differential harness misclassified failures as SKIPs because the CLI was swallowing error exits. The `Backend` trait now owns exit-code semantics: 127 means the JIT can't handle the program, 126 means runtime panic, anything else is the Cx program's own return value.
+
+## What merged
+
+**CX-74 (PR #117): Exit-code propagation.** The highest-impact change of the day. The `Backend` trait gained a `BackendError` return type so exit codes flow from JIT to CLI without string parsing. Three new exit-code tests. This was driven by CX-69's parity harness producing false SKIPs when backends exited 0 on error.
+
+**CX-73 (PR #115): Assert/assert_eq lowering.** A new `IrTerminator::Trap` unconditional-abort terminator. `assert(cond)` lowers to Branch + Trap on failure. `assert_eq(a, b)` lowers via Compare(Eq) + Branch + Trap. Both builtins were removed from `is_cx_builtin()`, making them the first to graduate from runtime intrinsic dispatch to native Cranelift codegen. Updates across 6 files including the IR printer, validator, and JIT skeleton.
+
+**CX-53 (PR #106): IrType::Void and void-return function lowering.** Adds `IrType::Void` (size=0, align=1), maps `SemanticType::Void` through to IR, and canonicalizes `Some(IrType::Void)` to `None` in the signature table and function lowering. Cranelift has no void type, so void functions use an empty return list. Six new tests.
+
+**CX-52 (PR #105): Float comparison and ConstFloat in JIT.** Adds `fcmp` float comparison and `ConstFloat` handling to the Cranelift emit path.
+
+**CX-54 (PR #104): Gate IR dump behind --debug-trace.** Removes IR `println!` pollution from the Cranelift dispatch path. The dump now only appears when `--debug-trace` is passed.
+
+**CX-55 (PR #107): Determinism test rebase.** Rebases 12 JIT determinism tests onto current submain with tightened naming.
+
+**CX-67 (PR #109): CodeRabbit integration.** Adds `.coderabbit.yaml` to the repo root, configuring automated review targeting submain and main with per-directory review instructions and path filters suppressing noise from Cargo.lock, daily_log, and examples.
+
+**CX-70 (PR #112) and CX-71 (PR #113): CodeRabbit-driven fixes.** CX-70 replaces `assert_deterministic` with `assert_deterministic_with_expected` in four loop fixtures. CX-71 adds a 30-second timeout to `run_jit_subprocess` so hanging fixtures surface as PARITY_FAIL instead of blocking CI indefinitely.
+
+## Ten branches in flight
+
+The day's other half was creating ten new feature branches (CX-57 through CX-66), none yet merged to submain but all single-commit and review-ready:
+
+- **CX-57:** F64 remainder via `fmod` libcall in Cranelift
+- **CX-58:** Logical AND/OR lowered to short-circuit IR branches
+- **CX-60:** I128 ConstInt support in the JIT emit path
+- **CX-63:** `IrInst::Call` implementation with direct-call determinism tests
+- **CX-64 and CX-66:** PtrOffset, PtrAdd, and Cast lowering with struct field access and array-access fixtures
+- **CX-59, CX-61, CX-62:** Differential and determinism test fixtures for if/else, while, for-loop, and AND/OR short-circuit CFG
+
+Once these merge, the JIT will cover most IR instructions. The parity fixture pass count should jump significantly from its current baseline.
+
+## Decisions and direction
+
+**Exit-code semantics formalized.** CX-74 isn't just a bug fix. It establishes a contract in the `BackendError` struct that all backends must follow. Exit 127 is SKIP (unsupported construct), exit 126 is runtime panic, everything else passes through. This is the canonical interface between backends and the CLI.
+
+**Assert/assert_eq leave the builtin gate.** These are the first builtins to graduate from runtime intrinsic dispatch to native codegen. The Branch+Trap CFG pattern they use is clean and doesn't require any runtime support. The remaining builtins (print, println, printn, read, input) will need actual runtime dispatch wiring, which is a different problem.
+
+**CodeRabbit is now an active reviewer.** CX-70 and CX-71 are direct responses to its automated feedback. Two of today's merge commits carry CodeRabbit co-authored-by lines. This is the first automated review infrastructure in the project.
+
+**JIT harness gets a timeout.** The 30-second `wait-timeout` addition in CX-71 is a small change with outsized CI impact. Hanging JIT processes were blocking the harness silently; now they fail fast with a clear classification.
+
+## Where things stand
+
+Submain is 40 commits ahead of main. Every daily log since May 6 has predicted a submain-to-main merge, and every day it hasn't happened. The gap is now large enough to be a real risk for conflict resolution.
+
+JIT test suite on submain: 243 passed, 0 failed. Matrix status on the audit branch: 111/117 (6 failures are a CRLF artifact, not regressions). Zero parity failures.
+
+The likely next moves are merging the ten new branches into submain (pushing it past 50 commits ahead of main), followed by the increasingly overdue submain-to-main merge. Phase 9's remaining builtins (print, println, printn, read, input) and Phase 11's deferred items (method call, when block, DotAccess) are still waiting.
