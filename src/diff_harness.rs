@@ -458,8 +458,9 @@ pub fn run_interpreter(binary: &Path, fixture: &TestFixture) -> InterpOutcome {
 /// Resolution order:
 /// 1. `CARGO_BIN_EXE_Cx_0V` environment variable (set by cargo for integration
 ///    tests — not available for inline `#[test]` functions).
-/// 2. `<manifest_dir>/target/debug/Cx_0V[.exe]` — the default debug build
-///    produced by `cargo build --features jit`.
+/// 2. `<manifest_dir>/target/debug/Cx_0V[.exe]` — whatever the LAST `cargo build`
+///    wrote there; feature set is NOT guaranteed. Callers running JIT must gate
+///    on `assert_jit_capable`.
 pub fn cx_binary_path() -> PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_Cx_0V") {
         return PathBuf::from(p);
@@ -470,6 +471,101 @@ pub fn cx_binary_path() -> PathBuf {
         .join("target")
         .join("debug")
         .join(exe)
+}
+
+/// Minimal Cx program known to lower cleanly and exit 0 under the JIT
+/// backend (mirrors fixture t159). Used only by [`assert_jit_capable`] to
+/// detect a binary built WITHOUT `--features jit`. If the language changes
+/// so this no longer lowers, the guard fails loud rather than silently
+/// disabling itself.
+#[cfg(feature = "jit")]
+const JIT_CAPABILITY_PROBE_SRC: &str = "\
+fnc: t64 add(a: t64, b: t64) {
+    a + b
+}
+assert_eq(add(10, 20), 30)
+";
+
+/// Abort fast if `binary` was not built with `--features jit`.
+///
+/// `cx_binary_path()` resolves a shared on-disk path whose contents are
+/// whatever the last `cargo build` wrote. A plain `cargo build` (no
+/// features) leaves a non-JIT binary there; running it with
+/// `--backend=cranelift` exits 1 with a fixed stderr, which the classifier
+/// turns into a false PARITY_FAIL for every pass fixture. This converts that
+/// silent multi-failure run into one loud, actionable panic before the loop.
+#[cfg(feature = "jit")]
+fn assert_jit_capable(binary: &Path) {
+    use std::io::Read;
+
+    let mut probe = std::env::temp_dir();
+    probe.push(format!("cx_jit_probe_{}.cx", std::process::id()));
+    std::fs::write(&probe, JIT_CAPABILITY_PROBE_SRC).unwrap_or_else(|e| {
+        panic!("failed to write JIT capability probe to {:?}: {}", probe, e)
+    });
+
+    let mut child = Command::new(binary)
+        .arg("--backend=cranelift")
+        .arg(&probe)
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| {
+            let _ = std::fs::remove_file(&probe);
+            panic!(
+                "failed to spawn binary {:?} for JIT capability probe: {}",
+                binary, e
+            )
+        });
+
+    let mut stderr_bytes = Vec::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_end(&mut stderr_bytes);
+    }
+    let status = child.wait().unwrap_or_else(|e| {
+        let _ = std::fs::remove_file(&probe);
+        panic!("failed to wait on JIT capability probe child: {}", e)
+    });
+    let _ = std::fs::remove_file(&probe);
+
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+    let code = status.code().unwrap_or(-1);
+
+    // The non-JIT cranelift arm (src/backend/cranelift/mod.rs) emits exactly
+    // this prefix. The JIT arm never does. ASCII-only substring on purpose.
+    if stderr.contains("Cranelift backend requires the") {
+        panic!(
+            "\n==================================================================\n\
+             JIT PARITY ABORTED — wrong binary.\n\
+             {:?} was NOT built with `--features jit`.\n\
+             stderr: {}\n\
+             A plain `cargo build` overwrote target/debug/Cx_0V with a non-JIT\n\
+             build. Rebuild and run together:\n\n    \
+             cargo build --features jit && cargo test --features jit \
+             jit_parity_by_feature -- --nocapture\n\n\
+             Refusing to run the fixture matrix against a non-JIT binary (it\n\
+             would report every pass fixture as a false PARITY_FAIL).\n\
+             ==================================================================",
+            binary,
+            stderr.trim()
+        );
+    }
+
+    // On a JIT binary this probe MUST exit 0. Anything else means the probe
+    // program has rotted (or the env is broken) — fail loud so the guard can
+    // never silently no-op and let a bad binary through.
+    if code != 0 {
+        panic!(
+            "JIT capability probe unreliable: probe did not exit 0 on {:?} \
+             (exit {}, stderr: {:?}). The probe must lower and run cleanly \
+             under the JIT backend; update JIT_CAPABILITY_PROBE_SRC in \
+             src/diff_harness.rs.",
+            binary,
+            code,
+            stderr.trim()
+        );
+    }
 }
 
 // ── JIT subprocess runner ─────────────────────────────────────────────────────
@@ -521,6 +617,7 @@ pub fn run_jit_subprocess(binary: &Path, fixture: &TestFixture) -> InterpOutcome
         }
         None => {
             let _ = child.kill();
+            let _ = child.wait();
             InterpOutcome {
                 stdout: String::new(),
                 stderr: format!(
@@ -883,13 +980,21 @@ mod tests {
         let binary = cx_binary_path();
 
         if !binary.exists() {
-            eprintln!(
-                "SKIP jit_parity_by_feature — binary not found at {:?}.\n\
-                 Build with `cargo build --features jit` then re-run tests.",
+            panic!(
+                "\n==================================================================\n\
+                 JIT PARITY ABORTED — binary not found.\n\
+                 No Cx_0V binary at {:?}.\n\
+                 The parity gate cannot pass without a JIT-built binary to test.\n\
+                 Build and run together:\n\n    \
+                 cargo build --features jit && cargo test --features jit \
+                 jit_parity_by_feature -- --nocapture\n\n\
+                 Refusing to report a green gate when no binary was exercised.\n\
+                 ==================================================================",
                 binary
             );
-            return;
         }
+
+        assert_jit_capable(&binary);
 
         let results = parity_by_feature(&binary);
 
