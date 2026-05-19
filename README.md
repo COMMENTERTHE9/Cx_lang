@@ -74,14 +74,14 @@ The Cranelift JIT backend compiles Cx programs to native machine code. It is the
 | DirectCall     | 7    | 4    | 0           |
 | Struct         | 6    | 5    | 0           |
 | Array          | 3    | 2    | 0           |
-| CompoundAssign | 2    | 2    | 0           |
+| CompoundAssign | 6    | 1    | 0           |
 | Unary          | 0    | 1    | 0           |
 | Cast           | 0    | 2    | 0           |
 | FloatOps       | 0    | 5    | 0           |
 | BuiltinAssert  | 2    | 2    | 0           |
 | LogicalOps     | 2    | 0    | 0           |
-| Other          | 16   | 48   | 0           |
-| **Total**      | **66** | **89** | **0** |
+| Other          | 18   | 48   | 0           |
+| **Total**      | **71** | **88** | **0** |
 
 SKIP means the construct is not yet lowered to JIT codegen — it exits cleanly with an unsupported-construct error rather than producing wrong output. PARITY_FAIL (semantic divergence from the interpreter) is the hard gate: it must stay at zero.
 

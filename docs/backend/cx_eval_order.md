@@ -40,10 +40,10 @@ evaluated first, then `B`, then `C`.
 | `A == B`, `A != B`, `A < B`, `A <= B`, `A > B`, `A >= B` | A then B | comparison |
 | `f(A, B, …)` | A then B then … | argument list, left-to-right |
 | `(A ⊕ B) ⊕ C` | A then B then C | nested, outermost rule applied recursively |
+| `A && B`, `A || B` | A then B (B skipped on short-circuit) | short-circuit logical; lowered via `lower_logical()` in `src/ir/lower.rs` (decision/rhs/sc/merge CFG), fixtures t141/t142 |
 
 **Not covered in 0.1** (unsupported in IR lowering, structured error returned):
 
-- `A && B`, `A || B` — short-circuit logical operators are post-0.1
 - `when` expressions — three-way branch design not finalised for 0.1
 
 ---

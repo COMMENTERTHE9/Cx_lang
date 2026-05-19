@@ -123,7 +123,7 @@ All Cx expressions are evaluated strictly left-to-right. Authoritative specifica
 
 ABI impact: the IR instruction stream produced by `lower_binary` and the call argument-lowering loop encodes evaluation order structurally. Instructions for the left operand are emitted before instructions for the right operand within the same basic block. All backends must preserve this instruction order — no reordering of side-effecting instructions across operand boundaries is permitted.
 
-Covered expression forms: binary arithmetic (`+`, `-`, `*`, `/`, `%`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), and function call argument lists. Short-circuit operators (`&&`, `||`) and `when` expressions are post-0.1.
+Covered expression forms: binary arithmetic (`+`, `-`, `*`, `/`, `%`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), function call argument lists, and short-circuit operators (`&&`, `||` — lhs evaluated first, rhs only on non-short-circuit path; implemented in `lower_logical()` at `src/ir/lower.rs` via a decision/rhs/sc/merge CFG and covered by the LogicalOps parity category, fixtures t141–t142). `when` expressions are post-0.1.
 
 JIT conformance tests in `src/backend/cranelift/host_boundary.rs` (`jit_eval_order_*`) verify that `IrInst::Binary { lhs, rhs }` and `IrInst::Compare { lhs, rhs }` map `lhs` as the left operand and `rhs` as the right operand in emitted Cranelift instructions.
 
