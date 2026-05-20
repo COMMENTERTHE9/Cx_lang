@@ -1,0 +1,57 @@
+---
+title: "Cx Dev Log — 2026-05-07"
+date: 2026-05-07
+description: "The JIT backend now carries a no-panic guarantee on valid IR, assert/assert_eq lower natively through Cranelift, and the first JIT-vs-interpreter parity baseline is in place."
+---
+
+The day after merging 10 PRs into submain, the focus shifted entirely to JIT correctness infrastructure. One PR landed (CX-50), six new branches were created, and the JIT test count climbed from 194 to 207 across branch tips. The interpreter matrix holds steady at 117/117.
+
+The theme: instead of continuing the merge backlog, the work went toward answering a harder question -- can the JIT actually run real Cx programs correctly, and can we prove it?
+
+## No-panic guarantee on valid IR
+
+CX-50 (PR #101, merged to submain) establishes a contract: if IR passes `validate_module`, the JIT backend will not panic. Three unsafe paths were closed:
+
+1. **Back-edge sealing panic.** Cranelift previously panicked when a loop jump targeted a block that was sealed before its back-edge predecessor was registered. The fix replaces per-block `seal_block()` with a deferred `seal_all_blocks()` call after all instructions are emitted.
+2. **Float arithmetic on integer ops.** Binary operations on F64 were being passed to integer-only `iadd/isub/imul/sdiv/srem`. Now returns `UnsupportedConstruct` instead.
+3. **Float comparison guard.** Compare on F64 now checks `builder.func.dfg.value_type()` before emitting `icmp`.
+
+The patch also fixed three `BlockParam` struct literals that were missing the `read_only` field introduced by CX-40. The result: 197 tests passing, +258 lines to `host_boundary.rs`.
+
+This is a real correctness property. It means the JIT can be safely invoked on any validated program without risk of uncontrolled abort.
+
+## Assert and assert_eq lower natively
+
+CX-48 (branch-local, not yet merged) removes `assert` and `assert_eq` from the builtin gate and lowers them through IR and Cranelift directly.
+
+The implementation adds `IrTerminator::Trap` as a new unconditional-abort terminator. `assert(cond)` lowers to a two-branch CFG: branch on condition, trap on failure. `assert_eq(a, b)` lowers via `Compare(Eq)` plus the same branch-and-trap pattern. Both builtins are now fully representable in IR, which means they compile natively through Cranelift rather than requiring runtime intrinsic dispatch.
+
+`Trap` is notable as the first IR terminator that does not transfer control -- it halts execution unconditionally. +588 lines across 6 files, 204 tests on that branch.
+
+## First JIT parity baseline
+
+CX-51 (branch-local) adds a differential harness that runs each interpreter test fixture through the JIT and compares exit codes. The baseline result: 23 pass, 97 skip (unsupported construct), 0 parity failures out of 120 fixtures.
+
+The zero parity failures number is the important one. It means the JIT agrees with the interpreter on every program it can currently handle. The 97 skips exit with code 127 (IR lowering failure or unsupported JIT instruction), which is expected -- those fixtures use constructs the JIT does not yet support.
+
+This scoreboard will track JIT coverage as more instructions get wired up. The harness also fixes an issue where JIT errors were silently exiting 0 instead of propagating failure codes.
+
+## Determinism testing
+
+CX-49 (branch-local) adds 12 tests that compile the same `IrModule` twice and assert identical exit codes. The coverage spans ConstInt, all five binary ops, Alloca/Store/Load, Compare+Branch (eq-true, eq-false, lt), Jump with block params, and multi-function modules. A spec doc at `docs/backend/cx_jit_determinism.md` formalizes the guarantee.
+
+This is a minimal but useful property: JIT behavior is predictable within a single session. It rules out a class of nondeterminism bugs that would be extremely hard to debug later.
+
+## Branch management at scale
+
+CX-45 and CX-44 handled rebasing and verifying six older Human Review branches (CX-30, CX-32, CX-33, CX-34, CX-36, CX-38) onto current submain. Five of the six had conflicts in `host_boundary.rs` requiring additive merge resolution. All six build and pass tests independently, with per-branch test counts ranging from 196 to 201.
+
+The fact that rebasing six branches requires dedicated branches with 200+ line audit docs reflects where things are: 12+ active `stokowski/*` branches in flight, and the gap between submain and main continues to grow (16+ non-merge commits ahead, with no submain-to-main merge for the third consecutive day).
+
+## What's next
+
+The immediate priority is merging the six rebased Human Review branches into submain, which would close out Phase 14 sub-packet 4, most of Phase 15, Phase 12 sub-packets 2-3, and Phase 9 sub-packet 2. After that, the four new branches from today (CX-47, CX-48, CX-49, CX-51) are ready for integration.
+
+The submain-to-main merge keeps getting deferred. The gap is now large enough that it carries its own risk. On the language side, method call lowering and `when` block support (Phase 11) continue to sit untouched in favor of JIT backend work. With assert/assert_eq now lowered natively, only `print`, `println`, `printn`, `read`, and `input` remain as runtime intrinsics.
+
+The parity baseline gives a concrete metric to track: 23/120 fixtures passing through the JIT today, with a clear path to increasing that number as each pending branch lands.
