@@ -1,3 +1,110 @@
+<!-- RE-AUDIT-START -->
+## Re-audit 2026-05-19 (submain @ d4e419a)
+
+Verdict: **NOT 0.1-READY** (H1 and H2 closed since previous audit; H3 + H4 + new H5 remain).
+
+Audited roadmap: `docment/ROADMAP.md` (Living Summary). HEAD d4e419a, branch submain, working tree clean. Five commits since the previous audit's c67c5c2 baseline: 8e7143d (H1 closure), 0ab7e9b (H2 + literal-width family), 930d84d (doc spot-fixes), 1036fd8 (previous audit annotations), d4e419a (test-assertion fix for the A3 drift the previous audit attempt caught).
+
+Build: debug `cargo build` ok, 21 warn | debug `cargo build --features jit` ok, 20 warn | release `cargo build --release --features jit` ok, 20 warn. No clippy gate in CI; pre-existing `src/ir/printer.rs:10` clippy error untouched by recent commits.
+Tests: `cargo test --features jit` **411 passed / 0 failed / 0 ignored** — this is the full-suite gate that was missing from the previous task chain and that surfaced d4e419a's necessary fix. `cargo test` (no features) not re-run this audit but unchanged from previous audit's 236/0/0.
+Parity matrix: `jit_parity_by_feature` 182 fixtures, **0 PARITY_FAIL** across all 16 categories.
+
+### Hard blockers
+- **H3** `when` block lowering — still rejection-only at `src/ir/lower.rs:1072` (stmt) and `:2039` (expr). t143/t144/t145 still SKIP via exit-127. Cheapest fix unchanged from previous audit: ship the lowering or reword the roadmap line to drop "or lowering". Sizing: **S** if rewrite, **M** if actually lower.
+- **H4-CX-91** Cast instruction JIT coverage — feature-branch, not landed on submain. Matrix shows Cast 4/0/0 (full PASS), but that PASS came from the Stage-3 narrowing ride-along, NOT from the actual CX-91 Cast IR lowering work. The Cast category appearing green in the matrix is **misleading relative to roadmap intent**; CX-91 the work-item remains open. Sizing: **M**.
+- **H4-CX-94** DotAccess JIT parity fixtures — feature-branch, not landed on submain. Sizing: **M**.
+- **H4-CX-34** Full parity fixture coverage — feature-branch, not landed on submain. Sizing: **L**.
+- **H5 (NEW)** Commit-message metric drift — all four landed commits (8e7143d/0ab7e9b/930d84d/d4e419a) state parity matrix totals of **94 PASS / 88 SKIP / 0 PARITY_FAIL / 182**. The actual table sums to **99 PASS / 83 SKIP / 0 PARITY_FAIL / 182** (per per-category-row summation this run; `cargo test --features jit jit_parity_by_feature | awk` reproduces the 99/83 totals exactly). The 94/88 number was an arithmetic error that propagated through four consecutive commit messages without anyone re-summing the rows. **Not a code regression** — the matrix table itself is correct; the prose claims about it are wrong. Sizing: **S**. Cheapest fix: add a single `println!` at the bottom of the `jit_parity_by_feature` test that emits the actual `total_pass`/`total_skip` totals computed from `results.values().map(|(p, s, _)| ...).sum()`, removing the manual-sum trap forever. (One change in `src/diff_harness.rs`, ~5 lines.)
+
+### Soft blockers
+- **S5** README headline still drifted — `README.md:49,58` say "155 verification matrix tests"; actual is 182. The chore(docs) commit 930d84d spot-fixed per-category rows + Total but left the headline. Same class of finding as the previous audit's S1.
+- **S6** `docs/backend/cx_jit_parity_checklist.md` §3 line 149 still reads "Total: 181 fixtures, 0 PARITY_FAILs"; t178 addition not reflected. Stale by 1.
+- **S7** `README.md:60` `67 PASS / 88 SKIP` mismatches both its own Total row at line 84 (71/88) and the matrix (99/83). Internal inconsistency carried from previous audit's S1 + the partial 930d84d fix.
+- **S8** Print-family stub blocks 15 matrix fixtures (`t01_arith_eq_mod`, `t39_impl_basic`, `t40_impl_return`, `t41_compound_assign_dot`, `t43_multi_alias_impl`, `t45_if_else_in_func`, `t55_f64_basic`, `t76_block_comments`, `t90_overflow_t8_mul`, `t93_overflow_t16_wrap`, `t94_overflow_mixed_widths`, `t95_overflow_t128_unchanged`, `t96_overflow_t8_unary_neg`, `t109_struct_field_overflow`, `t115_eval_order_compare`) across 6 categories (Arithmetic, IfElse, Struct, CompoundAssign, FloatOps, plus Other-ish edge cases). Enumerated this run by spawning each SKIP fixture and grepping stderr for `"print argument must be I64"`. Sizing: **M**. High leverage: closes 15 SKIPs with one focused unit of work (widen `cx_printn` intrinsic, or sign/zero-extend at the print-arg lowering boundary, or per-width intrinsics).
+- **S4** (carried) Frontend CI gate at `.github/workflows/ci.yml:38–89` still exit-code-only, no stdout comparison. Unchanged since previous audit.
+- **S5** (carried) No clippy / format / Windows / macOS CI. Unchanged.
+
+### Top risks
+- **R1** Metric-vs-reality drift in commit messages (H5 above) — observed in 4-of-4 recent commits. The audit prompt was explicitly written to catch this failure mode; the failure mode recurred inside the work that closed the previous instance of it. Blast radius: future reviewers reading the commit log will believe matrix totals are 94/88 even though the running test reports 99/83. Cheapest retire: H5 fix.
+- **R2** Of the 83 SKIPs, 15 (18%) are print-stub-blocked, **68 (82%) are blocked by other things** — genuinely-missing features (when, enums, generics, Result/try, handles, string interp, Cast-JIT feature-branch, DotAccess feature-branch). The print stub is high-leverage but **not dominant**. Choosing "next loop = print stub" closes 15; choosing "next loop = when lowering" closes 3 (t143–t145). The honest-largest-lever item is the H4 feature-branch closure (CX-91/94/34) — that's where the remaining 68 SKIPs sit, but the work is L-sized and lives on feature branches that aren't on submain.
+- **R3** (carried) Pre-existing clippy error in `src/ir/printer.rs:10` (`if i > 0 || true`). Untouched by the five recent commits. Will block any future clippy-gate adoption.
+- **R4** (carried) No Windows/macOS CI. The audit ran on Windows; CI runs Linux only.
+- **R5** (NEW) Test-assertion-vs-current-contract drift class — d4e419a was the first instance the project has fixed. Lookahead: any time a lowering arm changes shape (rejection→synthesizing, or err-variant→ok, etc.), every test in the surrounding module that pattern-matches the old shape becomes a candidate for the same A3-style drift. Cheapest mitigation: when `cargo test --features jit` becomes a release gate alongside `jit_parity_by_feature`, the class is contained — the gate will fail loudly. This was implicit in the previous chain but never run. Now run, now caught.
+
+### Status changes vs previous audit (c67c5c2 → d4e419a)
+
+| Item | Was | Now | Source |
+|---|---|---|---|
+| H1 (parity-binary fragility) | hard blocker | **CLOSED** | 8e7143d; kill-test verifies 0.05s panic with `"JIT PARITY ABORTED — wrong binary"` |
+| H2 (method-call lowering) | hard blocker | **CLOSED** | 0ab7e9b; t175/176/177 PASS direct JIT + interpreter exit 0 this run |
+| Phase 11 — Method call actual lowering | `[ ]` open | **delivered** but roadmap checkbox still shows `[ ]` | `src/ir/lower.rs:1936` no longer rejection-only |
+| Literal-width narrowing — 6 sites | partial (3 sites: Decl/Assign/Return; gaps in MethodCall, assert_eq, Lt/Gt) | **complete** (12 callsites of `insert_cast_if_needed` visible in semantic.rs, including the 3 new sites at lines 1421, 1573/1581, 1809–1811) | 0ab7e9b; verified by `t178_compare_narrow_int_numeric_exit.cx` PASS |
+| Cast category in matrix | 0 PASS / 4 SKIP | **4 PASS / 0 SKIP** | But the underlying CX-91 Cast JIT work is unchanged on submain; the category went PASS via Stage-3 narrowing ride-along (assert_eq peer-narrowing on cast fixtures), NOT via CX-91. **Roadmap drift** — Cast category looks done, CX-91 work-item isn't. |
+| Validator backstops | partial (Void in ArrayAlloca only) | **centralised** (`ensure_storable_type` at 8 sites; `cx_printn` in reserved-name gate) | 0ab7e9b |
+| Full-suite test gate | not run in any verification step | **green now** (411/0/0) | d4e419a closed the missing-gate drift; now an effective check |
+| Commit-message metric reliability | not flagged | **DRIFTED** (94/88 vs actual 99/83) | New finding H5 |
+
+---
+
+### Phase annotations (terser than previous audit — only items whose status moved since c67c5c2)
+
+**Phase 0** — ground truth unchanged: canonical roadmap is this file; HEAD d4e419a.
+
+**Phase 1** — build clean across debug/jit/release/no-features. Same 20-warning baseline. No clippy/format/Windows CI added.
+
+**Phase 2** — three gates now: `cargo test --features jit` (411/0/0, **newly-effective**), `jit_parity_by_feature` (182, 0 PARITY_FAIL), `cargo test` no-feature (236/0/0 per previous audit, not re-run). Effective real test count now 411 (up from 400 last audit). Zero `#[ignore]`, zero `#[should_panic]` in `src/` (re-verified by grep this run).
+
+**Phase 3** — production panics still all in `#[cfg(test)]` modules. The d4e419a fix is the first observed case of a test that compiles, "passes" through field-shape A3 cleanup, but asserts a stale contract — flagged as a recurring risk class (R5). No new `todo!()`/`unimplemented!()`/`panic!()` in production paths from the five recent commits.
+
+**Phase 4** — frontend re-verified at sample level: 8/8 examples still PASS (`bash examples/run_all.sh`), interpreter t175/176/177 exit 0 (new method-call paths work in interpreter, not just JIT). No locked-language-decision negative-test census this run.
+
+**Phase 5** — IR/lowering changes from 0ab7e9b verified inline:
+- `mangle_method` helper at `src/ir/lower.rs:113` — single source of `{Struct}${method}` scheme.
+- Sibling sig-table arm at `:215` registers methods under mangled names.
+- `lower_program_inner` arm at `:489` emits IR per method with reconstructed `[alias_params, ..., user_params]`.
+- Statement-level void-method detection at `:826–837` synthesizes void Call and recurses into `lower_void_call`.
+- Value-position MethodCall at `:1936–1954` synthesizes Call and recurses into the existing Call arm.
+- Stage-1's `method_alias_params` parallel-indexed with methods on `SemanticStmt::ImplBlock` (frontend/semantic_types.rs).
+- Stage-3's `method_alias_counts` table on `Analyzer` populated alongside `method_registry`.
+- 5 narrowing sites verified by grep: MethodCall args (semantic.rs:1421), assert_eq peer (1573/1581), Binary arith (1732–1734), EqEq/NotEq (1759–1761), Lt/Gt/LtEq/GtEq (1809–1811). All call `insert_cast_if_needed` on both lhs and rhs (or against the typed peer where one side is bare-Numeric).
+- Validator backstops at `src/ir/validate.rs`: `ensure_storable_type` at 8 sites, `cx_printn` in the reserved-name gate.
+- **SKIP-cause breakdown** of the 83 SKIPs: 15 print-stub (S8 above), 68 other. The "other" 68 are dominated by the long tail of unsupported constructs (when, enums, generics, Result/try, handles, string interp, plus the H4 feature-branch items). Enumerated by `for f in src/tests/verification_matrix/t*.cx; do ... grep "print argument must be I64" stderr; done` — verbatim output in temp file `b5uz1zcyc.output`.
+
+**Phase 6** — examples 8/8 PASS, all eight files match the README's example table.
+
+**Phase 7** — cross-doc drift catalogue:
+- `README.md:49,58` "155 verification matrix tests" — actual 182. Same drift class as previous audit's S1; commit 930d84d fixed table rows but left the headline.
+- `README.md:60` "67 PASS / 88 SKIP" — disagrees with its own Total at line 84 (71/88) and with the matrix (99/83).
+- `docs/backend/cx_jit_parity_checklist.md:149` "Total: 181 fixtures" — stale by 1.
+- Four-commit body claims (94/88) drift from observable matrix (99/83). **NEW finding H5.**
+- `docment/ROADMAP.md` Working Notes "120 fixtures" (2026-05-10 entry) and "243 tests" (2026-05-09 entry) — pre-existing drift, unchanged since previous audit; both flagged as historical snapshots there.
+
+**Phase 8** — CI config unchanged since c67c5c2 (verified via `git log c67c5c2..HEAD -- .github/workflows/ci.yml`, empty). Backend job runs `cargo test --features jit` which would have caught the d4e419a-fixed test on CI — confirming the gate works *if* the push reaches CI. Note: the four commits in this sequence were pushed directly to submain per the prior task; CI runs on push events and the failing test would surface in the workflow run for 0ab7e9b. (Worth checking the GitHub Actions status for that commit.)
+
+**Phase 9** — taxonomy update (only items whose tag moved):
+- Phase 11 "Method call actual lowering" `[ ]` — was CLAIMED-NOT-DONE / Hard Blocker H2; now **DELIVERED** (checkbox in roadmap still reads `[ ]` — recommend flipping to `[x]` in a follow-up).
+- Phase 12 "CI gate on every PR" `[ ]` — was DRIFTED. Backend job's effectiveness now verified by d4e419a; recommend re-tagging as **VERIFIED** with anchor.
+- Phase 15 "Cast instruction JIT coverage (CX-91)" `[ ]` — Cast matrix category went 0→4 PASS, but **the underlying CX-91 work is still on a feature branch**. Tag: **DRIFTED** — the matrix-PASS overstates the work-item completion.
+- Phase 15 "Reserved intrinsic names rejected in validator (CX-85)" `[x]` — was VERIFIED; now **strictly more VERIFIED** since `cx_printn` added to gate + new test for it landed in 0ab7e9b.
+
+### Untracked (implemented, not in roadmap)
+- `mangle_method` helper at `src/ir/lower.rs:113` — the `{Struct}${method}` mangling scheme. Single source of truth for both sig-table registration and call-site mangling. Not surfaced in roadmap text.
+- `method_alias_params` field on `SemanticStmt::ImplBlock` and `method_alias_counts` map on `Analyzer` — Stage 1 + Stage 3 plumbing. Not in roadmap.
+- `assert_jit_capable` probe in `src/diff_harness.rs` (H1 closure machinery) — not in roadmap.
+- `t178_compare_narrow_int_numeric_exit.cx` — the Lt/Gt narrowing regression fixture. Not in roadmap.
+- The two `jit_probe_ptr_arg_*_across_call` tests in `host_boundary.rs` — verify Ptr-across-Call by-reference semantics, supporting MethodCall lowering's correctness.
+
+### Could not verify
+- The `cargo test` (no-features) gate was not re-run this audit (relied on previous audit's 236/0/0). Cheap to re-run if the no-jit suite has changed.
+- The full classification of the 68 non-print-stub SKIPs into per-blocker buckets (when, enums, generics, Cast-feature-branch, DotAccess-feature-branch, internal-error fixtures, etc.). Sampled rather than exhaustively enumerated; the audit estimated by category but did not run every fixture-by-fixture.
+- GitHub Actions status for commits 8e7143d / 0ab7e9b / 930d84d / 1036fd8 — would confirm whether CI caught d4e419a-style red on any of them at push time. Out of scope from local-only audit.
+- Windows-specific JIT execution edge cases. Audit ran on Windows; no Windows CI to corroborate.
+- `unwrap()` / `expect()` exhaustive non-test census — same gap as previous audit's "Could not verify."
+
+<!-- RE-AUDIT-END -->
+
+> **Superseded by re-audit 2026-05-19.** Annotations below kept for history.
+
 <!-- AUDIT-START -->
 ## 0.1 Readiness Audit — 2026-05-18 — c67c5c2 — submain
 
