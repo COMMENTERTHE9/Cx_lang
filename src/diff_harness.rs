@@ -1007,8 +1007,18 @@ mod tests {
         }
         println!("{}", "-".repeat(48));
 
-        let total: usize = results.values().map(|(p, s, f)| p + s + f).sum();
+        // Single source of truth for all four totals — summed directly from
+        // the same `results` accumulator the per-category table above uses.
+        // The H5 finding in the 2026-05-19 re-audit identified that prior
+        // reports (across four commit messages) gave 94/88 for PASS/SKIP when
+        // the table summed to 99/83; that drift came from manual summation of
+        // the printed table rather than from any accumulator inconsistency.
+        // Emitting an authoritative line directly from `results` closes that
+        // class of report-vs-reality drift.
+        let total_pass: usize = results.values().map(|(p, _, _)| *p).sum();
+        let total_skip: usize = results.values().map(|(_, s, _)| *s).sum();
         let total_fail: usize = results.values().map(|(_, _, f)| *f).sum();
+        let total: usize = total_pass + total_skip + total_fail;
 
         assert_eq!(
             total_fail,
@@ -1021,6 +1031,10 @@ mod tests {
             "jit_parity_by_feature: {} fixtures checked across {} feature categories, 0 PARITY_FAILs",
             total,
             results.len()
+        );
+        eprintln!(
+            "AUTHORITATIVE TOTALS: {} PASS / {} SKIP / {} PARITY_FAIL across {} fixtures",
+            total_pass, total_skip, total_fail, total
         );
     }
 }
