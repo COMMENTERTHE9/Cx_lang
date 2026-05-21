@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-21
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -51,8 +51,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [ ] Method call actual lowering
-  - [ ] `when` block lowering or structured rejection
+  - [x] Method call actual lowering (0ab7e9b on submain)
+  - [x] `when` block lowering — Literal/Range/Bool/Catchall + TBool wire-value (bed71c1 on submain; EnumVariant arms deferred post-0.1)
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
@@ -89,6 +89,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-21:** `when` block IR lowering landed on submain (bed71c1) — closes H3 for Option A scope. Literal/Range/Bool/Catchall patterns lower via chained-decision CFG. EnumVariant arms deferred. Compound-assign narrow-int fix (e4c9202) closed 2 more SKIPs. JIT parity: 120/62/0 across 182 fixtures. Submain 181 commits ahead of main.
+
+**2026-05-20:** Method-call lowering (0ab7e9b), print-widening (08fa2f9), diff-harness hardening (8e7143d, 4c43362). Closed H1, H2, H5. JIT parity moved 99/83 → 110/72. Submain 179 ahead.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
