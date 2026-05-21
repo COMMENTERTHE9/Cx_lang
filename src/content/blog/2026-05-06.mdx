@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-05-06"
+date: 2026-05-06
+description: "Ten PRs merged into submain in one day, delivering the first real JIT-compiled arithmetic and memory operations via Cranelift, runtime intrinsics boundary auditing, loop variable read-only enforcement, and control flow terminators."
+---
+
+The JIT backend went from a scaffold to actually executing Cx programs. Ten PRs merged into submain covering CX-21 through CX-41, and the highlights are concrete: Cranelift compiles and runs arithmetic, stack allocation, loads, stores, jumps, and branches. The interpreter matrix is still at 117/117, but JIT-specific tests grew from around 169 to 191 across the day. This was the biggest single-day backend sprint since the project started.
+
+## First real JIT execution
+
+CX-25 (PR #78) replaced the Phase 14 stub in `HostBoundary::execute` with a working Cranelift JIT pipeline. Native ISA setup, function declaration and definition, and Cranelift IR emission for `ConstInt`, `Binary` (iadd, isub, imul, sdiv, srem), and `Return`. Nine new integration tests. +527 lines to `host_boundary.rs`. This is the first time a Cx program has compiled through Cranelift and produced a correct result.
+
+CX-26 (PR #79) followed immediately with stack memory: `Alloca` via `create_sized_stack_slot`, pointer materialization via `stack_addr`, and `load`/`store` with `MemFlags::new()`. Four new tests covering i32 roundtrip, i8 alignment edge cases, overwrite semantics, and independent slot isolation. +216 lines. With CX-25 and CX-26 together, the JIT path handles values, arithmetic, and memory.
+
+CX-41 (PR #92) fixed a regression from CX-27. CX-27 had added Compare plus 11 tests but left Jump and Branch terminator emission unimplemented, so all 11 tests failed. CX-41 added unconditional Jump (with block-param argument forwarding) and two-way Branch (brif with full argument support on both edges). Test count jumped from 180 to 191.
+
+## Runtime intrinsics boundary
+
+CX-35 (PR #86) audited all builtins and drew the boundary line. A new `is_cx_builtin()` guard in `lower.rs` makes builtins produce `UnsupportedSemanticConstruct` instead of a generic `UnresolvedSemanticArtifact`. The PR also created `docs/backend/cx_runtime_intrinsics_v0.1.md`, a full boundary spec with classification table and the planned sub-packet path for dispatch implementation. Seven new tests. This sets up CX-38 (currently in review), which implements the actual dispatch: `printn` routing through a two-pass compilation model where intrinsics are declared as Cranelift imports and linked to extern "C" shims. That will be the first Cx code producing visible output through the JIT path.
+
+## Loop variable safety and evaluation order
+
+CX-40 (PR #91) added read-only enforcement for loop variables in the IR validator. `BlockParam` gained a `read_only: bool` field, for-loop counter params get marked accordingly in `lower_for`, and a new `IrValidationError::LoopVariableReassignment` rejects any `SsaBind` result targeting a read-only param. +228 lines across 5 IR files. The invariant that `for i in range` counters cannot be reassigned inside the loop body is now enforced at the IR level, not just semantically.
+
+CX-37 (PR #88) formalized expression evaluation order. A new `docs/backend/cx_eval_order.md` specifies left-to-right evaluation for binary ops, comparisons, and call arguments. Three verification matrix tests (t114 through t116) confirm the order through observable print side effects.
+
+## Catching up: CX-21 through CX-24
+
+The four branch-local commits from May 5th all merged today (PRs #71 through #74): MethodCall structured error (CX-21), Cranelift lowering skeleton with IrType mapping (CX-22, Phase 13), differential harness shell (CX-23, Phase 12 sub-packet 1), and JIT host boundary scaffold (CX-24). Collectively +1226 lines. These were the prerequisites that yesterday's log flagged as "ready for integration," and they landed first thing before the new work began.
+
+## Submain diverges again
+
+PR #76 merged submain into main early in the day, but submain immediately pulled ahead with 8 new non-merge commits (CX-25 through CX-41). The gap is structural at this point: submain is the integration staging branch, main is the stable tip, and the rate of new work on submain consistently outpaces the merge cadence.
+
+CX-39 rebased 8 Human Review branches onto the current submain tip. Three of those (cx-27, cx-30, cx-38) had genuine conflicts requiring semantic merge resolution, not just line-level fixups.
+
+## What's in review
+
+Eight branches are sitting in Human Review. Together they represent near-complete coverage for Phase 14 (control flow, function calls), Phase 15 (pointer ops, floats, casts), Phase 12 sub-packets 2 and 3 (differential harness JIT execution and full construct set), and Phase 9 sub-packet 2 (runtime intrinsics dispatch). If these all land, the JIT backend covers arithmetic, memory, control flow, function calls, pointer operations, floating point, casts, and runtime intrinsics.
+
+## What's next
+
+Merging those 8 review branches is the highest-leverage near-term action. After that, submain needs to sync to main again. Phase 11 remaining items (method call lowering, `when` block) and Phase 8 Round 2 (str/strref layout) are still open and didn't get any attention today. The string layout question in particular is blocking string-dependent features like `print`/`println`, but the execution pipeline work took priority.
+
+Matrix status: 117 PASS / 0 FAIL / 117 total (interpreter). JIT tests at 191.
