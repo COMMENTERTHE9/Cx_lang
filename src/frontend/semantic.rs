@@ -882,10 +882,31 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         }
                     }
                 };
+                // Narrow the operand against the target's type when both are
+                // numeric — mirrors the regular assign-to-field narrowing at
+                // ~semantic.rs:444 (`insert_cast_if_needed(semantic_expr, &field_ty)`)
+                // and the Stage-3 narrowing closures (MethodCall args,
+                // assert_eq peer, Lt/Gt/LtEq/GtEq). Without this the operand
+                // keeps its bare Numeric type, lowers as the target-native
+                // width (I64 on 64-bit), and produces Binary instructions
+                // whose rhs type mismatches the declared ty — Verifier errors
+                // at the IR-validation layer. Covers Binding, DotAccess, and
+                // Index target variants uniformly.
+                let sem_operand = self.analyze_expr(operand)?;
+                let target_ty = match &sem_target {
+                    SemanticLValue::Binding { ty, .. } => ty.clone(),
+                    SemanticLValue::DotAccess { ty, .. } => ty.clone(),
+                    SemanticLValue::Index { elem_ty, .. } => elem_ty.clone(),
+                };
+                let narrowed_operand = if is_numeric(&target_ty) && is_numeric(&sem_operand.ty) {
+                    insert_cast_if_needed(sem_operand, &target_ty)
+                } else {
+                    sem_operand
+                };
                 Ok(SemanticStmt::CompoundAssign {
                     target: sem_target,
                     op: *op,
-                    operand: self.analyze_expr(operand)?,
+                    operand: narrowed_operand,
                     pos: *pos,
                 })
             },
