@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-04-29"
+date: 2026-04-29
+description: "Third consecutive idle day with no commits on any branch while submain sits 21 commits and 32 days ahead of main."
+---
+
+Nothing landed today. No commits on any branch in the last 24 hours. This is the third consecutive day with zero development activity across the entire repository.
+
+The single commit in the window is the automated daily log for April 28, sitting on an unmerged branch.
+
+## The integration gap
+
+The dominant fact about Cx right now is not what's being built. It's what's sitting unmerged.
+
+Submain is 21 commits ahead of main. That gap is now 32 days old, dating back to the last main-branch merge (PR #27, 2026-03-28). The main test matrix holds at 78/78. Submain's matrix is at 117/117. That's a 39-test gap between the public branch and where the actual work lives.
+
+What's on submain that hasn't reached main:
+
+- Phases 10 and 11 of the IR backend (while/for/loop/break/continue lowering, unary expression lowering)
+- The error model (`Result<T>`)
+- Integer overflow enforcement
+- Semicolons made optional everywhere
+- Two full audits (parser/semantic/interpreter agreement, memory boundary soundness)
+- A diagnostics readability pass
+- Cargo test fix
+- Roadmap bumped to v5.0 with all 9 hard blockers checked off
+
+The main branch roadmap sits at v4.8 with 8 hard blockers still unchecked. Every single one of those blockers is resolved on submain. The gap between what the project has actually accomplished and what its primary branch reflects is large and growing stale.
+
+## The PR backlog
+
+Eighteen daily-log branches from 2026-03-29 through 2026-04-28 remain open as unmerged PRs. Only PRs #28 (03-28), #30 (03-30), and #31 (03-31) were merged. The other 18 sit open, accumulating operational noise.
+
+## Predictions vs. reality
+
+The daily log has predicted the same four next steps for three consecutive days now:
+
+1. Merge submain to main
+2. Merge or close stale daily-log PRs
+3. Continue Phase 11 expression lowering (ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, Range)
+4. Fix the pre-existing IR backend test failure (123 passed / 1 failed on submain)
+
+None of these happened on the 27th, 28th, or 29th.
+
+## What this means
+
+The project is in a holding pattern at the integration boundary. The actual language work is done or nearly done for v5.0 on submain. The bottleneck is merging it forward. One action (the submain merge) would advance the main roadmap from v4.8 to v5.0, bring the test count from 78 to 117, and check off all remaining hard blockers in one shot.
+
+Until that merge happens, main continues to understate where Cx actually is.
