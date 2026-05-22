@@ -11,9 +11,14 @@ Parity matrix: `jit_parity_by_feature` 182 fixtures, **0 PARITY_FAIL** across al
 
 ### Hard blockers
 - **H3** `when` block lowering — still rejection-only at `src/ir/lower.rs:1072` (stmt) and `:2039` (expr). t143/t144/t145 still SKIP via exit-127. Cheapest fix unchanged from previous audit: ship the lowering or reword the roadmap line to drop "or lowering". Sizing: **S** if rewrite, **M** if actually lower.
-- **H4-CX-91** Cast instruction JIT coverage — feature-branch, not landed on submain. Matrix shows Cast 4/0/0 (full PASS), but that PASS came from the Stage-3 narrowing ride-along, NOT from the actual CX-91 Cast IR lowering work. The Cast category appearing green in the matrix is **misleading relative to roadmap intent**; CX-91 the work-item remains open. Sizing: **M**.
-- **H4-CX-94** DotAccess JIT parity fixtures — feature-branch, not landed on submain. Sizing: **M**.
-- **H4-CX-34** Full parity fixture coverage — feature-branch, not landed on submain. Sizing: **L**.
+- **H4 — RESOLVED (was a false-positive at audit time).** The three sub-items the audit
+  flagged are all settled: CX-91 landed at submain commit e8d31fc (Cast + F64 binary
+  arithmetic, predates audit baseline); CX-94 landed via PR #137 at submain commit
+  cb36c8f (DotAccess parity fixtures, predates audit baseline); CX-34 was canceled
+  2026-05-10 with scope superseded by CX-30/51/59/62/66/69/94 (all landed). The
+  audit's "feature branch not on submain" claim was doc-text drift, not work-state —
+  the original roadmap items at lines 231–233 had not been updated to reflect the
+  landed work or the cancellation. Roadmap entries below corrected.
 - **H5 (NEW)** Commit-message metric drift — all four landed commits (8e7143d/0ab7e9b/930d84d/d4e419a) state parity matrix totals of **94 PASS / 88 SKIP / 0 PARITY_FAIL / 182**. The actual table sums to **99 PASS / 83 SKIP / 0 PARITY_FAIL / 182** (per per-category-row summation this run; `cargo test --features jit jit_parity_by_feature | awk` reproduces the 99/83 totals exactly). The 94/88 number was an arithmetic error that propagated through four consecutive commit messages without anyone re-summing the rows. **Not a code regression** — the matrix table itself is correct; the prose claims about it are wrong. Sizing: **S**. Cheapest fix: add a single `println!` at the bottom of the `jit_parity_by_feature` test that emits the actual `total_pass`/`total_skip` totals computed from `results.values().map(|(p, s, _)| ...).sum()`, removing the manual-sum trap forever. (One change in `src/diff_harness.rs`, ~5 lines.)
 
 ### Soft blockers
@@ -26,7 +31,7 @@ Parity matrix: `jit_parity_by_feature` 182 fixtures, **0 PARITY_FAIL** across al
 
 ### Top risks
 - **R1** Metric-vs-reality drift in commit messages (H5 above) — observed in 4-of-4 recent commits. The audit prompt was explicitly written to catch this failure mode; the failure mode recurred inside the work that closed the previous instance of it. Blast radius: future reviewers reading the commit log will believe matrix totals are 94/88 even though the running test reports 99/83. Cheapest retire: H5 fix.
-- **R2** Of the 83 SKIPs, 15 (18%) are print-stub-blocked, **68 (82%) are blocked by other things** — genuinely-missing features (when, enums, generics, Result/try, handles, string interp, Cast-JIT feature-branch, DotAccess feature-branch). The print stub is high-leverage but **not dominant**. Choosing "next loop = print stub" closes 15; choosing "next loop = when lowering" closes 3 (t143–t145). The honest-largest-lever item is the H4 feature-branch closure (CX-91/94/34) — that's where the remaining 68 SKIPs sit, but the work is L-sized and lives on feature branches that aren't on submain.
+- **R2** Of the 83 SKIPs, 15 (18%) are print-stub-blocked, **68 (82%) are blocked by other things** — genuinely-missing features (when, enums, generics, Result/try, handles, string interp). The print stub is high-leverage but **not dominant**. Choosing "next loop = print stub" closes 15; choosing "next loop = when lowering" closes 3 (t143–t145). H4 (CX-91/94/34) was resolved doc-side this cycle — those were not actually open work items, so the previous audit's "L-sized feature-branch closure" framing was wrong.
 - **R3** (carried) Pre-existing clippy error in `src/ir/printer.rs:10` (`if i > 0 || true`). Untouched by the five recent commits. Will block any future clippy-gate adoption.
 - **R4** (carried) No Windows/macOS CI. The audit ran on Windows; CI runs Linux only.
 - **R5** (NEW) Test-assertion-vs-current-contract drift class — d4e419a was the first instance the project has fixed. Lookahead: any time a lowering arm changes shape (rejection→synthesizing, or err-variant→ok, etc.), every test in the surrounding module that pattern-matches the old shape becomes a candidate for the same A3-style drift. Cheapest mitigation: when `cargo test --features jit` becomes a release gate alongside `jit_parity_by_feature`, the class is contained — the gate will fail loudly. This was implicit in the previous chain but never run. Now run, now caught.
@@ -39,7 +44,7 @@ Parity matrix: `jit_parity_by_feature` 182 fixtures, **0 PARITY_FAIL** across al
 | H2 (method-call lowering) | hard blocker | **CLOSED** | 0ab7e9b; t175/176/177 PASS direct JIT + interpreter exit 0 this run |
 | Phase 11 — Method call actual lowering | `[ ]` open | **delivered** but roadmap checkbox still shows `[ ]` | `src/ir/lower.rs:1936` no longer rejection-only |
 | Literal-width narrowing — 6 sites | partial (3 sites: Decl/Assign/Return; gaps in MethodCall, assert_eq, Lt/Gt) | **complete** (12 callsites of `insert_cast_if_needed` visible in semantic.rs, including the 3 new sites at lines 1421, 1573/1581, 1809–1811) | 0ab7e9b; verified by `t178_compare_narrow_int_numeric_exit.cx` PASS |
-| Cast category in matrix | 0 PASS / 4 SKIP | **4 PASS / 0 SKIP** | But the underlying CX-91 Cast JIT work is unchanged on submain; the category went PASS via Stage-3 narrowing ride-along (assert_eq peer-narrowing on cast fixtures), NOT via CX-91. **Roadmap drift** — Cast category looks done, CX-91 work-item isn't. |
+| Cast category in matrix | 0 PASS / 4 SKIP | **4 PASS / 0 SKIP** | Both CX-91 (Cast + F64 binary arithmetic JIT, at submain commit e8d31fc, predating audit baseline) and Stage-3's narrowing ride-along contributed. The previous audit's "Stage 3 ride-along not CX-91" framing was wrong — both were active. |
 | Validator backstops | partial (Void in ArrayAlloca only) | **centralised** (`ensure_storable_type` at 8 sites; `cx_printn` in reserved-name gate) | 0ab7e9b |
 | Full-suite test gate | not run in any verification step | **green now** (411/0/0) | d4e419a closed the missing-gate drift; now an effective check |
 | Commit-message metric reliability | not flagged | **DRIFTED** (94/88 vs actual 99/83) | New finding H5 |
@@ -84,7 +89,7 @@ Parity matrix: `jit_parity_by_feature` 182 fixtures, **0 PARITY_FAIL** across al
 **Phase 9** — taxonomy update (only items whose tag moved):
 - Phase 11 "Method call actual lowering" `[ ]` — was CLAIMED-NOT-DONE / Hard Blocker H2; now **DELIVERED** (checkbox in roadmap still reads `[ ]` — recommend flipping to `[x]` in a follow-up).
 - Phase 12 "CI gate on every PR" `[ ]` — was DRIFTED. Backend job's effectiveness now verified by d4e419a; recommend re-tagging as **VERIFIED** with anchor.
-- Phase 15 "Cast instruction JIT coverage (CX-91)" `[ ]` — Cast matrix category went 0→4 PASS, but **the underlying CX-91 work is still on a feature branch**. Tag: **DRIFTED** — the matrix-PASS overstates the work-item completion.
+- Phase 15 "Cast instruction JIT coverage (CX-91)" `[ ]` — landed at submain commit e8d31fc (predates audit baseline); Cast matrix category went 0→4 PASS. Tag: **DELIVERED** — checkbox in roadmap still reads `[ ]`, flipped to `[x]` in this commit.
 - Phase 15 "Reserved intrinsic names rejected in validator (CX-85)" `[x]` — was VERIFIED; now **strictly more VERIFIED** since `cx_printn` added to gate + new test for it landed in 0ab7e9b.
 
 ### Untracked (implemented, not in roadmap)
@@ -228,9 +233,9 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Reserved intrinsic names rejected in validator (CX-85) <!-- audit: **VERIFIED** — `src/ir/validate.rs::is_reserved_runtime_intrinsic:123` (with `cx_printn` added this session, plus `rejects_function_named_cx_printn` test); upstream gate at `src/ir/lower.rs:385` via `runtime_intrinsic_names()`. -->
   - [x] Numeric literal cast lowering target-aware (CX-88/CX-89/CX-90) <!-- audit: **VERIFIED** — `TargetConfig::numeric_literal_ir_type` at `src/ir/lower.rs:216`; threaded through `LoweringCtx.target`. -->
   - [x] Exit-code-based parity fixtures (CX-92) <!-- audit: **VERIFIED** — same anchor as Phase 12 sub-item above. -->
-  - [ ] Cast instruction JIT coverage (CX-91 on feature branch) <!-- audit: **VERIFIED** (still-open is accurate) — Cast category 0 PASS / 4 SKIP / 0 PARITY_FAIL (checklist §3 line 143). **Hard Blocker H4.** -->
-  - [ ] DotAccess JIT parity fixtures (CX-94 on feature branch) <!-- audit: **VERIFIED** (still-open is accurate) — feature branch not on submain. **Hard Blocker H4.** -->
-  - [ ] Full parity fixture coverage (CX-34 on feature branch) <!-- audit: **VERIFIED** (still-open is accurate) — same feature branch. **Hard Blocker H4.** -->
+  - [x] Cast instruction JIT coverage (CX-91) <!-- audit: **DELIVERED** — landed at submain commit e8d31fc (Cast + F64 binary arithmetic JIT, predates audit baseline); Cast category now 4 PASS / 0 SKIP / 0 PARITY_FAIL. H4 resolved. -->
+  - [x] DotAccess JIT parity fixtures (CX-94) <!-- audit: **DELIVERED** — landed via PR #137 at submain commit cb36c8f (predates audit baseline); H4 resolved. -->
+  - [x] Full parity fixture coverage (CX-34) — canceled 2026-05-10, scope superseded by CX-30/51/59/62/66/69/94 (all landed) <!-- audit: **CANCELED** — Linear ticket CX-34 closed 2026-05-10 with scope superseded by CX-30/51/59/62/66/69/94 (all merged). H4 resolved. -->
   - [ ] Differential harness in CI <!-- audit: **DRIFTED** — same as Phase 12 "CI gate on every PR" above; backend job runs it but frontend matrix gate is weak. Two roadmap items pointing at one situation. -->
 
 ### Post-0.1
