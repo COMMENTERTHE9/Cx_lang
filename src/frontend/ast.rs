@@ -45,6 +45,7 @@ pub enum Type {
     StrRef,
     Container,
     Char,
+    Void,
     Enum(String),
     Unknown,
     Handle(Box<Type>),

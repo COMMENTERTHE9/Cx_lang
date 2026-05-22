@@ -1952,6 +1952,7 @@ fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
         Type::StrRef => SemanticType::StrRef,
         Type::Container => SemanticType::Container,
         Type::Char => SemanticType::Char,
+        Type::Void => SemanticType::Void,
         Type::Enum(name) => SemanticType::Enum(name),
         Type::Unknown => SemanticType::Unknown,
         Type::Handle(inner) => SemanticType::Handle(Box::new(semantic_type_from_decl(*inner, type_params))),
@@ -2510,5 +2511,73 @@ mod tests {
 
         let errors = analyze_program(&program).expect_err("analysis should fail");
         assert_eq!(errors.len(), 2);
+    }
+
+    #[test]
+    fn void_returning_function_allows_trailing_void_call() {
+        // Guards `fnc: void main() { print("hi") }`. The lexer emits
+        // Token::TypeVoid, the parser maps it to Type::Void, and the
+        // semantic mapper lowers that to SemanticType::Void — so the
+        // trailing print() (typed Void) matches the declared return type.
+        let program = Program {
+            stmts: vec![Stmt::FuncDef {
+                name: "main".to_string(),
+                type_params: vec![],
+                params: vec![],
+                ret_ty: Some(Type::Void),
+                body: vec![],
+                ret_expr: Some(Expr::Call(
+                    "print".to_string(),
+                    vec![CallArg::Expr(Expr::Val(AstValue::Str("hi".to_string())))],
+                    0,
+                )),
+                pos: 0,
+                is_pub: false,
+                macros: vec![],
+            }],
+        };
+
+        let semantic = analyze_program(&program).expect("void main with trailing print should analyse");
+        match &semantic.stmts[0] {
+            SemanticStmt::FuncDef(func) => {
+                assert_eq!(func.return_ty, Some(SemanticType::Void));
+                let ret_expr = func.ret_expr.as_ref().expect("trailing expr preserved");
+                assert_eq!(ret_expr.ty, SemanticType::Void);
+            }
+            other => panic!("unexpected stmt: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parser_emits_type_void_for_void_keyword() {
+        use crate::frontend::lexer::Token;
+        use crate::frontend::parser;
+        use chumsky::input::Stream;
+        use chumsky::prelude::*;
+        use logos::Logos;
+
+        let source = "fnc: void main() {}";
+        let mut tokens = Vec::new();
+        let mut lex = Token::lexer(source);
+        while let Some(tok_result) = lex.next() {
+            let span = lex.span();
+            if let Ok(token) = tok_result {
+                tokens.push((token, (span.start..span.end).into()));
+            }
+        }
+        let eoi: SimpleSpan = (source.len()..source.len()).into();
+        let input = Stream::from_iter(tokens).map(eoi, |(token, span): (_, _)| (token, span));
+        let program = parser::program_parser()
+            .parse(input)
+            .into_result()
+            .expect("source should parse");
+
+        match &program.stmts[0] {
+            Stmt::FuncDef { name, ret_ty, .. } => {
+                assert_eq!(name, "main");
+                assert_eq!(ret_ty, &Some(Type::Void));
+            }
+            other => panic!("unexpected stmt: {:?}", other),
+        }
     }
 }

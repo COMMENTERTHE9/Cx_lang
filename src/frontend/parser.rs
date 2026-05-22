@@ -47,6 +47,7 @@ where
             Token::TypeStr    => Type::Str,
             Token::TypeStrRef => Type::StrRef,
             Token::TypeChar   => Type::Char,
+            Token::TypeVoid   => Type::Void,
         };
 
         let named_type = select! { Token::Identifier(s) => Type::Struct(s) };
