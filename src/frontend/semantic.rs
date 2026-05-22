@@ -1378,42 +1378,62 @@ Expr::Unary(op, inner, pos) => {
                     }
                 }
 
-                // Look up instance type
-                let instance_ty = self.lookup_var(instance)
-                    .map(|info| info.inferred.clone().or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))).unwrap_or(SemanticType::Unknown))
+                // Look up instance binding + type. Reject unresolved receivers
+                // at analysis time rather than deferring to the IR layer's
+                // mangled-callee miss (which surfaces as UnresolvedSemanticArtifact
+                // and is less actionable for the user).
+                let instance_info = match self.lookup_var(instance) {
+                    Some(info) => info,
+                    None => return Err(sem_err!(*pos, "method call receiver '{}' is not in scope", instance)),
+                };
+                let instance_binding = instance_info.binding;
+                let instance_ty = instance_info.inferred.clone()
+                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
                     .unwrap_or(SemanticType::Unknown);
 
-                let struct_name = if let SemanticType::Struct(tn) = &instance_ty {
-                    tn.clone()
-                } else {
-                    String::new()
-                };
-                let instance_binding = self.lookup_var(instance)
-                    .map(|i| i.binding)
-                    .unwrap_or(BindingId(u32::MAX));
-
-                // Look up return type from method registry
-                let ret_ty = if !struct_name.is_empty() {
-                    self.method_registry
-                        .get(&(struct_name.clone(), method.clone()))
-                        .and_then(|f| f.return_ty.clone())
-                        .unwrap_or(SemanticType::Void)
-                } else {
-                    SemanticType::Unknown
+                let struct_name = match &instance_ty {
+                    SemanticType::Struct(tn) => tn.clone(),
+                    other => return Err(sem_err!(
+                        *pos,
+                        "method call on '{}': receiver has non-struct type {}, method calls are only supported on struct values",
+                        instance, type_name(other)
+                    )),
                 };
 
-                let method_fn = if !struct_name.is_empty() {
-                    self.method_registry
-                        .get(&(struct_name.clone(), method.clone()))
-                        .cloned()
-                } else {
-                    None
+                // Look up the method on the registry. A missing entry means the
+                // method isn't defined on this struct (or no impl block has been
+                // analyzed for the receiver's struct).
+                let method_fn = match self.method_registry.get(&(struct_name.clone(), method.clone())) {
+                    Some(f) => f.clone(),
+                    None => return Err(sem_err!(
+                        *pos,
+                        "method '{}.{}' is not defined on struct '{}'",
+                        instance, method, struct_name
+                    )),
                 };
+                let ret_ty = method_fn.return_ty.clone().unwrap_or(SemanticType::Void);
+
                 let alias_count = self.method_alias_counts
                     .get(&(struct_name.clone(), method.clone()))
                     .copied()
                     .unwrap_or(1);
                 let extra_alias_count = alias_count.saturating_sub(1);
+
+                // Enforce arity. Mirrors the free-fn precedent at semantic.rs:1624.
+                // method_fn.params already excludes the alias params (stripped at
+                // semantic.rs:309) so it represents only user-declared params.
+                let expected_user_arg_count = method_fn.params.len();
+                let expected_total = extra_alias_count + expected_user_arg_count;
+                if args.len() != expected_total {
+                    return Err(sem_err!(
+                        *pos,
+                        "method '{}.{}' expects {} argument{} ({} extra-alias + {} user), got {}",
+                        instance, method,
+                        expected_total, if expected_total == 1 { "" } else { "s" },
+                        extra_alias_count, expected_user_arg_count,
+                        args.len()
+                    ));
+                }
 
                 // analyze args
                 let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
@@ -1424,11 +1444,11 @@ Expr::Unary(op, inner, pos) => {
                             let sem_expr = if index >= extra_alias_count {
                                 // user-typed arg: narrow against the method's
                                 // declared param type, mirroring the free-fn
-                                // call path (~semantic.rs:1574).
+                                // call path (~semantic.rs:1624).
                                 let user_idx = index - extra_alias_count;
                                 let expected = method_fn
-                                    .as_ref()
-                                    .and_then(|f| f.params.get(user_idx))
+                                    .params
+                                    .get(user_idx)
                                     .and_then(|p| p.ty.clone());
                                 if let Some(expected) = expected {
                                     if !types_compatible(&expected, &sem_expr.ty) {
