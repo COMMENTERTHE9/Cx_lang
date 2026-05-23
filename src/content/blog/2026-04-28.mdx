@@ -1,0 +1,38 @@
+---
+title: "Cx Dev Log — 2026-04-28"
+date: 2026-04-28
+description: "Second consecutive day with no development commits, while the submain branch sits 21 commits and 31 days ahead of main with all hard blockers resolved."
+---
+
+No code landed today. No commits, no in-progress work, no uncommitted changes. This is the second day in a row where the repository sat still. The main test matrix holds at 78/78. That number has not changed in a while.
+
+What makes this worth writing about is not the silence itself but what it sits next to.
+
+## The submain gap
+
+Submain is 21 commits ahead of main. The last merge to main was PR #27, back on March 28. That is now 31 days ago. In those 21 commits, submain carries:
+
+- Phases 10 and 11 of the IR backend (while/for/loop/break/continue lowering, unary expression lowering)
+- The error model (`Result<T>`)
+- Integer overflow enforcement
+- Optional semicolons
+- Two full audits (parser/semantic/interpreter agreement and memory boundary soundness)
+- A diagnostics readability pass
+- A cargo test fix
+- A roadmap bump from v4.8 to v5.0 with all 9 hard blockers checked off
+
+None of this is on main. The main roadmap still says v4.8 with 8 hard blockers unchecked. Submain's roadmap says v5.0 with all of them checked. The test count gap tells a similar story: main runs 78 tests, submain runs 117.
+
+A single merge would close that entire gap. But it has not happened, and predicting when it will happen has not been reliable. The daily logs have listed "merge submain to main" as the top predicted next step for an extended streak now, and it has not materialized once.
+
+## Stale daily-log PRs
+
+There are 18 open PRs for daily-log branches, covering dates from March 29 through April 27. Only three of the daily-log PRs (#28, #30, #31) have actually been merged. The rest sit open. This is operational noise. They could be batch-merged or closed with a note that later logs supersede them. Either way, they are cluttering the PR list without adding value.
+
+## Where things stand
+
+The project is in a holding pattern. The code on submain is substantially ahead of what main reflects. Anyone looking at main would get a misleading picture of what the language actually supports right now. The submain branch has the real state of the compiler, including the IR backend work through Phase 11 and a passing test count 50% higher than main's.
+
+The next meaningful action is still the same as it was yesterday: merge submain to main. After that, Phase 11 expression lowering has remaining unsupported IR instructions (ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, Range) and there is one pre-existing test failure on submain (123 passed, 1 failed) that needs attention.
+
+Until the merge happens, the gap between main and submain will keep growing stale.
