@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-23
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -8,11 +8,11 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ---
 
-## Frontend — Release Candidate
+## Frontend — v0.1.0 Released
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 released (tagged at 9fc0d24, PR #266 merged 2026-05-22). No known soundness holes. Syntax frozen.
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -51,17 +51,17 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [ ] Method call actual lowering
-  - [ ] `when` block lowering or structured rejection
+  - [x] Method call actual lowering (0ab7e9b, landed on main via v0.1.0 merge)
+  - [x] `when` block lowering — Literal/Range/Bool/Catchall + TBool wire-value (bed71c1, landed on main via v0.1.0 merge; EnumVariant arms deferred post-0.1)
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
-### Merged to submain (not yet on main)
+### Landed (integrated to main via v0.1.0 merge)
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
 - [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; more fixtures in flight)
-- [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
+- [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; exit() builtin on submain 4d612df; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
 - [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; CX-57/58/60/63/64/66 instruction coverage in flight)
 
@@ -89,6 +89,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-23:** Type::Void AST variant merged to main via PR #278 (f3c2856). exit() builtin landed on submain (4d612df) — 25 files, 276 insertions, 7 new matrix fixtures, RuntimeError::Exit control-flow signal, --test mode integration. Submain 1 commit ahead of main. Matrix 182/182 stable.
+
+**2026-05-22:** PR #266 merged submain → main and tagged v0.1.0. 109 files changed, 16,325 insertions. Submain gap closed from 181 to 0. Main verification matrix jumped 117 → 182 (all passing). README rewritten for v0.1.0 release framing.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
