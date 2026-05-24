@@ -1,0 +1,8 @@
+// BUG A7 [interp robustness]: deep recursion overflows the 64MB stack and
+// ABORTS (SIGABRT exit 134) instead of a catchable "recursion too deep" error.
+// JIT: succeeds (exit 0, prints 100000) — native frames are far smaller.
+fnc: t64 rec(n: t64) {
+    if n <= 0 { return 0 }
+    return 1 + rec(n - 1)
+}
+print(rec(100000))

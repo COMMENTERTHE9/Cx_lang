@@ -1,0 +1,5 @@
+// BUG B4 [interp type soundness]: array element types are NOT checked against
+// the declared element type (str in a t64 array prints "two"). Array LENGTH is
+// checked; element type is not. Expected: semantic type-mismatch error.
+a: [3: t64] = [1, "two", 3]
+print(a:[1])

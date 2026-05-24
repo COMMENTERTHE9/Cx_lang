@@ -1,0 +1,6 @@
+// BUG B2 [interp type soundness]: struct field declared t64 accepts a str
+// with no type check (prints "hello"). Expected: semantic type-mismatch error.
+struct P { a: t64, b: t64 }
+let p;
+p = P { a: 1, b: "hello" }
+print(p.b)

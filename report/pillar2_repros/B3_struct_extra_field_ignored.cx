@@ -1,0 +1,6 @@
+// BUG B3 [laxness, both backends]: unknown field 'c' in struct literal is
+// silently ignored (exit 0, prints 1). Expected: semantic error "no field 'c' on P".
+struct P { a: t64 }
+let p;
+p = P { a: 1, c: 99 }
+print(p.a)

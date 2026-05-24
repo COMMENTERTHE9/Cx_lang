@@ -1,0 +1,4 @@
+// EDGE C1 [design]: `if <unknown>` silently takes the else branch (prints "no")
+// rather than erroring or requiring `when`. Possible footgun.
+b: bool = ?
+if b { print("yes") } else { print("no") }

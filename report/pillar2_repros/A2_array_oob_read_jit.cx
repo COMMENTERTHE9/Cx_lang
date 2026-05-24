@@ -1,0 +1,4 @@
+// BUG A2 [JIT soundness]: out-of-bounds read returns garbage (exit 0, no check).
+// INTERP: exit 1 (caught). JIT: prints garbage memory. Expected: bounds-checked trap/error.
+a: [3: t64] = [10, 20, 30]
+print(a:[5])

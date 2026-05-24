@@ -1,0 +1,8 @@
+// BUG B1 [interp type soundness]: struct literal with a MISSING field is
+// silently accepted by semantic analysis (exit 0). Accessing the missing
+// field later gives a misleading "p.b not declared" error.
+// Expected: semantic error "struct 'P' literal missing field 'b'".
+struct P { a: t64, b: t64 }
+let p;
+p = P { a: 1 }
+print(p.a)

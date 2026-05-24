@@ -1,0 +1,5 @@
+// BUG A3 [JIT soundness/crash]: out-of-bounds write SIGSEGVs (exit 139).
+// INTERP: exit 1 (caught). JIT: memory corruption -> segfault.
+a: [3: t64] = [10, 20, 30]
+a:[5] = 99
+print(a:[0])

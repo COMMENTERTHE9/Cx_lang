@@ -1,0 +1,6 @@
+// BUG A5 [JIT crash]: INT_MIN / -1 raises SIGFPE (exit 136).
+// INTERP: -9223372036854775808 (wrapping_neg guard). JIT: hardware divide-overflow trap.
+x: t64 = 0 - 9223372036854775807
+y: t64 = x - 1
+z: t64 = y / (0 - 1)
+print(z)

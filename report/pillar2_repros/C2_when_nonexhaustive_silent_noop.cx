@@ -1,0 +1,7 @@
+// EDGE C2 [design]: a `when` with no matching arm and no `_` silently does
+// nothing (prints only "after"). No exhaustiveness check / no warning.
+x: t64 = 5
+when x {
+    1..=3 => { print("low") },
+}
+print("after")

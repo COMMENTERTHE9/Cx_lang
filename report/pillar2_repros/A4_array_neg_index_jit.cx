@@ -1,0 +1,5 @@
+// BUG A4 [JIT soundness]: negative index returns garbage (exit 0).
+// INTERP: exit 1 (caught). JIT: prints garbage memory.
+a: [3: t64] = [10, 20, 30]
+i: t64 = 0 - 1
+print(a:[i])

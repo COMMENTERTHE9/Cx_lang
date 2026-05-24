@@ -1,0 +1,6 @@
+// BUG A1 [JIT crash]: f64 -> t8/t16 cast panics Cranelift codegen (exit 2).
+// INTERP: 127 (saturating). JIT: panic "dst_size.is_one_of(...)" in cranelift.
+// Expected: JIT should lower via f64->i32->i8, matching interp saturation.
+x: f64 = 300.9
+y: t8 = x
+print(y)

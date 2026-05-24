@@ -1,0 +1,5 @@
+// BUG A6 [JIT crash]: runtime integer div-by-zero raises SIGILL (exit 132).
+// INTERP: exit 1 clean DivByZero. JIT: unguarded sdiv traps.
+a: t64 = 10
+b: t64 = 0
+print(a / b)

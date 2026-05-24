@@ -1,0 +1,5 @@
+// MSG D3: an integer literal one past i128::MAX reports "this character is not
+// valid in Cx" — misleading; it is a valid token that is out of range.
+// Proposed: "integer literal exceeds the range of t128 (max 1701...727)".
+x: t128 = 170141183460469231731687303715884105728
+print(x)
