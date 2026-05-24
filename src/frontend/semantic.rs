@@ -1143,19 +1143,48 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
             Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs)) => {
-                // Check if the struct definition has any strref fields — reject at instantiation
-                if let Some(struct_fields) = self.structs.get(type_name) {
-                    for (fname, ftype) in struct_fields {
-                        let sem_ty = semantic_type_from_decl(ftype.clone(), &self.current_type_params);
+                let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
+                if let Some(struct_fields) = self.structs.get(type_name).cloned() {
+                    // The struct's own generic parameters must be in scope when
+                    // resolving its field types, so e.g. `first: T` resolves to a
+                    // type parameter (which unifies with anything) rather than a
+                    // concrete struct named "T".
+                    let mut field_type_params = self.struct_type_params.get(type_name).cloned().unwrap_or_default();
+                    field_type_params.extend(self.current_type_params.iter().cloned());
+                    // strref fields cannot be stored in a struct — reject at instantiation
+                    for (fname, ftype) in &struct_fields {
+                        let sem_ty = semantic_type_from_decl(ftype.clone(), &field_type_params);
                         if sem_ty == SemanticType::StrRef {
                             return Err(sem_err!(0, "struct '{}' has a strref field '{}' — StrRef cannot be stored in struct fields because it does not outlive the struct", type_name, fname));
                         }
                     }
-                }
-                let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
-                for (fname, fexpr) in field_exprs {
-                    let sem_expr = self.analyze_expr(fexpr)?;
-                    semantic_fields.push((fname.clone(), sem_expr));
+                    // Each provided field must exist on the struct, and its value's
+                    // type must unify with the declared field type.
+                    for (fname, fexpr) in field_exprs {
+                        let sem_expr = self.analyze_expr(fexpr)?;
+                        match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
+                            None => return Err(sem_err!(0, "unknown field '{}' in struct literal of type '{}'", fname, type_name)),
+                            Some((_, decl_ty)) => {
+                                let decl_sem = semantic_type_from_decl(decl_ty.clone(), &field_type_params);
+                                if !types_compatible(&decl_sem, &sem_expr.ty) {
+                                    return Err(sem_err!(0, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
+                                }
+                            }
+                        }
+                        semantic_fields.push((fname.clone(), sem_expr));
+                    }
+                    // Every declared field must be supplied.
+                    for (decl_name, _) in &struct_fields {
+                        if !field_exprs.iter().any(|(fname, _)| fname == decl_name) {
+                            return Err(sem_err!(0, "missing field '{}' in struct literal of type '{}'", decl_name, type_name));
+                        }
+                    }
+                } else {
+                    // Unknown struct type — analyze field values without struct-aware checks.
+                    for (fname, fexpr) in field_exprs {
+                        let sem_expr = self.analyze_expr(fexpr)?;
+                        semantic_fields.push((fname.clone(), sem_expr));
+                    }
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::Struct(type_name.clone()),
@@ -1280,6 +1309,13 @@ Expr::Unary(op, inner, pos) => {
                 let elem_ty = semantic_elems.first()
                     .map(|e| e.ty.clone())
                     .unwrap_or(SemanticType::Unknown);
+                // The first element fixes the array's element type; every later
+                // element must unify with it.
+                for (i, e) in semantic_elems.iter().enumerate().skip(1) {
+                    if !types_compatible(&elem_ty, &e.ty) {
+                        return Err(sem_err!(0, "array element at index {} expects type '{}' but got '{}'", i, type_name(&elem_ty), type_name(&e.ty)));
+                    }
+                }
                 Ok(SemanticExpr {
                     ty: SemanticType::Array(semantic_elems.len(), Box::new(elem_ty)),
                     kind: SemanticExprKind::ArrayLit {
