@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-05-23"
+date: 2026-05-23
+description: "The void keyword got its own AST type variant and merged to main, and a full exit() builtin landed on submain with test-mode integration and seven new verification fixtures."
+---
+
+Two real features landed today, both in the type system and runtime layers: `void` became a first-class AST type, and `exit()` arrived as a proper control-flow builtin.
+
+## Type::Void -- no longer an identifier
+
+Up until now, `void` in function signatures was parsed as an identifier and resolved through the struct-type path. That always felt like a shortcut, and it introduced a class of edge-case bugs where `void` could shadow or collide with user-defined types. PR #278 fixed this by giving `void` its own representation at every layer: `Token::TypeVoid` in the lexer, `Type::Void` in the AST enum, direct mapping in the parser, and `SemanticType::Void` routing in the semantic phase.
+
+Two new unit tests verify the round trip. One confirms at the parser level that `fnc: void main() {}` produces `Type::Void`. The other confirms at the semantic level that a void-returning function with a trailing void call (like `print()`) passes analysis. The change touched four files with 74 insertions. Clean, self-contained, merged to main as `2a2e1b2`.
+
+This is the kind of post-release cleanup that matters. The parser's type resolution path is now explicit for `void`, and there is no ambiguity about what kind of thing `void` is. It is a keyword with its own token, not a name that happens to resolve.
+
+## exit() as a control-flow signal
+
+The bigger feature today is `exit()`, which landed on submain in commit `4d612df`. This one touched 25 files across four layers of the compiler: types, semantic analysis, runtime, and main loop.
+
+The core design decision was to make `exit()` propagate as a `RuntimeError::Exit(i32)` signal rather than calling `process::exit` directly at the call site. This is significant because it means `exit()` composes correctly with the rest of the runtime's control-flow model. `Exit` sits alongside `EarlyReturn`, `BreakSignal`, and `ContinueSignal` as a RuntimeError variant. They all use the same propagation mechanism.
+
+In normal interpreter mode, the `Exit` signal is caught in `main.rs` before error rendering. Stdout is flushed before `process::exit(code)` runs, which prevents lost piped output (since `process::exit` skips Drop). In `--test` mode, the behavior is different and more interesting: `exit(0)` counts as PASS and `exit(n!=0)` counts as FAIL, with the test runner continuing to the next test. Without this, a `#[test]` function calling `exit(1)` would kill the entire test suite silently.
+
+Semantic analysis enforces that `exit()` accepts 0 or 1 argument, and arity is checked at analysis time. The runtime evaluates the optional integer argument, validates it fits i32, and surfaces out-of-range values as `TypeMismatch`. A never-render arm was added in `diagnostics.rs` for `RuntimeError::Exit` as a safety net.
+
+## Seven new matrix fixtures
+
+The matrix harness got extended with `.expected_exit` file support, so fixtures can now assert specific exit codes and optionally verify stdout. Seven new tests cover the expected surface area:
+
+- `t_exit_default` -- no-arg defaults to exit code 0
+- `t_exit_zero_explicit` -- explicit `exit(0)`
+- `t_exit_nonzero` -- `exit(3)`
+- `t_exit_before_output` -- exit before any print runs
+- `t_exit_after_partial` -- exit after partial output, verifying stdout flush
+- `t_exit_in_branch` -- exit from an if-branch
+- `t_exit_in_function` -- exit propagates past a function-call boundary
+
+Two additional integration tests in `diff_harness.rs` verify the `--test` mode behavior: `exit(1)` in a `#[test]` function records as FAIL and the runner continues, `exit(0)` records as PASS and the runner continues.
+
+## Matrix status and a line-ending note
+
+Main is at 172 PASS / 10 FAIL out of 182 total. The 10 failures are all output-verification tests where expected and actual output are visually identical, but the `.expected_output` files have CRLF line endings while the interpreter outputs LF-only on Windows. This is a platform-specific mismatch, not a code regression. The matrix harness needs CRLF-tolerant comparison on Windows.
+
+## What's next
+
+Submain is only 1 commit ahead of main (the exit() builtin). That merge is the obvious next step. Beyond that, DotAccess in compound forms is still the last unchecked Phase 11 sub-item blocking that phase's completion. The exit() commit also demonstrated the full pattern for adding runtime builtins with semantic analysis, runtime implementation, and matrix fixtures, which is the same pattern needed for extending print/println/printn with f64 and narrow-int formatting.
