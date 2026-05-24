@@ -1,0 +1,38 @@
+---
+title: "Cx Dev Log — 2026-04-27"
+date: 2026-04-27
+description: "No language work landed today, but the growing submain-to-main merge gap is becoming the project's most pressing structural concern."
+---
+
+Nothing landed today. No language, compiler, or runtime work on any branch in the last 24 hours. The only commits in the window were automated documentation: a blog post on `site` and the daily log branch from April 26. The main test matrix holds steady at 78/78. Submain had no new activity either.
+
+That makes this a good day to talk about the thing that keeps not happening.
+
+## The merge gap
+
+Submain is 21 commits ahead of main. It has been for a while now, and the gap is the single largest structural concern in the project at this point.
+
+Those 21 commits are not minor. They include Phases 10 and 11 of the IR backend (while/for/loop/break/continue lowering, unary expression lowering), the error model (`Result<T>`), integer overflow enforcement, optional semicolons everywhere, two full audits (parser/semantic/interpreter agreement, memory boundary soundness), a diagnostics readability pass, and the roadmap bumped to v5.0 with all 9 hard blockers checked off.
+
+Meanwhile, main sits at v4.8 with 8 hard blockers still unchecked. The test gap tells the same story: 78/78 on main versus 117/117 on submain. Merging submain would close a 39-test gap in a single action.
+
+Every daily log for the past week has listed "merge submain into main" as the top predicted next step. It has not happened yet. That is not a crisis, but it is worth being honest about: the longer submain diverges, the harder the eventual merge becomes if new work starts landing on either branch independently.
+
+## Branch housekeeping
+
+There is a secondary mess growing alongside the merge gap. 26 daily-log branches exist on the remote, spanning from 2026-03-29 through 2026-04-26. Only two of those (2026-03-28 and 2026-03-30) were merged via PRs. The remaining 24 are unmerged and accumulating as operational noise. None of them block anything, but cleaning them up would reduce clutter in the remote branch list.
+
+## Yesterday's predictions vs. reality
+
+The previous log predicted four next steps: merge submain to main, continue Phase 11 expression lowering, fix the pre-existing IR backend test failure, and clean up the daily-log branch backlog. None of those happened. No new work happened instead. The day was genuinely idle from a development perspective.
+
+## What's next
+
+The priority list has not changed, and that is itself informative. Ranked by leverage:
+
+1. **Merge submain to main.** This is the single highest-impact action available. It would bring main from v4.8 to v5.0, check off all remaining hard blockers, and close the 39-test gap between branches.
+2. **Continue Phase 11 expression lowering.** The remaining unsupported expression kinds in `lower.rs` (ArrayLit, Index, MethodCall, StructLit, HandleVal, HandleDrop, Range) are the natural next backend targets.
+3. **Fix the IR backend test failure.** Submain's Rust test suite reports 123 passed and 1 failed. Clearing that single failure would bring the suite to fully green.
+4. **Clean up stale daily-log branches.** 24 unmerged branches on the remote is not blocking anything, but it is growing.
+
+Quiet days are part of development. The project is not stuck in any deep sense. But the submain merge has been deferred long enough that it is worth flagging as the clear next move whenever work resumes.
