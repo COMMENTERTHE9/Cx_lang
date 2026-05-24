@@ -1,0 +1,17 @@
+// A 3x3 grid stored as a flat 9-element array (Cx has no 2D arrays), with
+// manual row*W+col indexing — the pattern any grid/tile/image code needs.
+grid: [9: t64] = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+w: t64 = 3
+
+// sum each cell's row to show 2D-via-1D indexing
+r: t64 = 0
+while (r < 3) {
+    rowsum: t64 = 0
+    c: t64 = 0
+    while (c < 3) {
+        rowsum += grid:[r * w + c]
+        c += 1
+    }
+    print(rowsum)
+    r += 1
+}

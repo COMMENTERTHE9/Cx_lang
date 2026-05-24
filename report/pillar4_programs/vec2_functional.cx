@@ -1,0 +1,16 @@
+struct Vec2 { x: f64, y: f64 }
+
+fnc: Vec2 vadd(a: Vec2, b: Vec2) {
+    let r;
+    r = Vec2 { x: a.x + b.x, y: a.y + b.y }
+    return r
+}
+
+let a;
+a = Vec2 { x: 1.0, y: 2.0 }
+let b;
+b = Vec2 { x: 10.0, y: 20.0 }
+let c;
+c = vadd(a, b)
+print(c.x)
+print(c.y)

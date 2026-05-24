@@ -1,0 +1,28 @@
+// A 2D vector type with the operations a game engine actually needs.
+struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+vec2_methods: impl (v: Vec2) {
+    fnc: add(other: Vec2) {
+        v.x += other.x
+        v.y += other.y
+    }
+    fnc: scale(s: f64) {
+        v.x *= s
+        v.y *= s
+    }
+    fnc: f64 dot(other: Vec2) {
+        return v.x * other.x + v.y * other.y
+    }
+}
+
+let a;
+a = Vec2 { x: 3.0, y: 4.0 }
+let b;
+b = Vec2 { x: 1.0, y: 2.0 }
+a.add(b)
+print(a.x)
+print(a.y)
+print(a.dot(b))

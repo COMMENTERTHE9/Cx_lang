@@ -1,0 +1,20 @@
+// A stack backed by a fixed array — Cx has no dynamic/growable collections,
+// so capacity is hard-coded and the literal must fill every slot.
+cap: t64 = 8
+data: [8: t64] = [0, 0, 0, 0, 0, 0, 0, 0]
+top: t64 = 0
+
+data:[top] = 10
+top += 1
+data:[top] = 20
+top += 1
+data:[top] = 30
+top += 1
+
+// pop and sum
+sum: t64 = 0
+while (top > 0) {
+    top -= 1
+    sum += data:[top]
+}
+print(sum)

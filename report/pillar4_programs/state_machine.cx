@@ -1,0 +1,18 @@
+// Traffic-light cycle. NOTE: enums cannot be used as function parameter or
+// return types (annotation `Light` does not unify with value type
+// `enum Light`, and `enum Light` will not parse), so the transition logic
+// must be inlined rather than factored into `fnc next(s: Light)`.
+enum Light { Red, Green, Yellow }
+
+let s;
+s = Light::Red
+i: t64 = 0
+while (i < 4) {
+    print(s)
+    when s {
+        Light::Red    => { s = Light::Green },
+        Light::Green  => { s = Light::Yellow },
+        Light::Yellow => { s = Light::Red },
+    }
+    i += 1
+}
