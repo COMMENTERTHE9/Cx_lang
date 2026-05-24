@@ -1,0 +1,27 @@
+// Iterative Fibonacci called in a loop. Contrast with fib_recursive.cx:
+// same arithmetic work, but loop-based instead of call-based. The delta
+// between the two isolates Cx function-call overhead.
+fnc: t64 fib(n: t64) {
+    a: t64 = 0
+    b: t64 = 1
+    tmp: t64 = 0
+    i: t64 = 2
+    while (i <= n) {
+        tmp = a + b
+        a = b
+        b = tmp
+        i += 1
+    }
+    if n < 2 {
+        return n
+    }
+    return b
+}
+
+sum: t64 = 0
+r: t64 = 0
+while (r < 200000) {
+    sum += fib(30)
+    r += 1
+}
+print(sum)

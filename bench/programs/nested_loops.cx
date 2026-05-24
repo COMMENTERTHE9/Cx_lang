@@ -1,0 +1,13 @@
+// Nested O(n^2) integer loop. Stresses loop setup/teardown and scope
+// handling for the inner loop body. 2000 x 2000 = 4M inner iterations.
+total: t64 = 0
+i: t64 = 0
+while (i < 2000) {
+    j: t64 = 0
+    while (j < 2000) {
+        total += i * j
+        j += 1
+    }
+    i += 1
+}
+print(total)

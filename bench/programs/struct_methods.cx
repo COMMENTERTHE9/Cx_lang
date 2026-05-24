@@ -1,0 +1,25 @@
+// Struct method dispatch in a loop. Stresses impl-method lookup
+// (semantic_impls map), aliasing, and field mutation. ~1M method calls.
+struct Counter {
+    value: t64,
+    step: t64,
+}
+
+counter_methods: impl (c: Counter) {
+    fnc: bump() {
+        c.value += c.step
+    }
+
+    fnc: t64 get() {
+        return c.value
+    }
+}
+
+let c;
+c = Counter { value: 0, step: 3 }
+i: t64 = 0
+while (i < 1000000) {
+    c.bump()
+    i += 1
+}
+print(c.get())

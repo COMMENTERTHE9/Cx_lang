@@ -1,0 +1,40 @@
+// Realistic mixed workload: a tiny particle-update loop combining
+// structs, methods, arrays, arithmetic, and conditionals — closer to a
+// game-engine update tick than a microbenchmark. Stresses the whole
+// interpreter end to end.
+struct Particle {
+    x: t64,
+    v: t64,
+    alive: t64,
+}
+
+particle_methods: impl (p: Particle) {
+    fnc: step() {
+        p.x += p.v
+        if p.x > 1000 {
+            p.v = 0 - p.v
+        }
+        if p.x < 0 {
+            p.v = 0 - p.v
+        }
+    }
+    fnc: t64 pos() {
+        return p.x
+    }
+}
+
+let p;
+p = Particle { x: 0, v: 7, alive: 1 }
+
+checksum: t64 = 0
+tick: t64 = 0
+while (tick < 1000000) {
+    p.step()
+    if tick % 2 == 0 {
+        checksum += p.pos()
+    } else {
+        checksum -= 1
+    }
+    tick += 1
+}
+print(checksum)

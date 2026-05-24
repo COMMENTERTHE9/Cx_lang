@@ -1,0 +1,70 @@
+--------------------------------------------------------------------------------
+Profile data file '/tmp/cg_fib.out' (creator: callgrind-3.22.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 3868920623
+Trigger: Program termination
+Profiled target:  ./target/release/Cx_0V /tmp/fib_small.cx (PID 4753, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       99.5
+Include dirs:     
+User annotated:   
+Auto-annotation:  on
+
+--------------------------------------------------------------------------------
+Ir                     
+--------------------------------------------------------------------------------
+4,210,260,227 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                      file:function
+--------------------------------------------------------------------------------
+3,806,635,641 (90.41%)  ./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S:__memset_avx2_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   37,945,003 ( 0.90%)  ???:Cx_0V::runtime::runtime::RunTime::eval_semantic_expr'2 [/home/user/Cx_lang/target/release/Cx_0V]
+   29,393,125 ( 0.70%)  ./malloc/./malloc/malloc.c:_int_free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   29,092,060 ( 0.69%)  ???:core::hash::BuildHasher::hash_one [/home/user/Cx_lang/target/release/Cx_0V]
+   22,065,796 ( 0.52%)  ???:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write [/home/user/Cx_lang/target/release/Cx_0V]
+   21,520,195 ( 0.51%)  ./malloc/./malloc/malloc.c:_int_malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   20,573,483 ( 0.49%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   19,916,194 ( 0.47%)  ???:Cx_0V::runtime::runtime::RunTime::call_semantic_func'2 [/home/user/Cx_lang/target/release/Cx_0V]
+   14,644,288 ( 0.35%)  ./malloc/./malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   14,241,389 ( 0.34%)  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:__memcpy_avx_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+   13,150,771 ( 0.31%)  ???:core::ptr::drop_in_place<Cx_0V::frontend::types::Value> [/home/user/Cx_lang/target/release/Cx_0V]
+   12,802,902 ( 0.30%)  ???:Cx_0V::runtime::runtime::RunTime::get_var [/home/user/Cx_lang/target/release/Cx_0V]
+   12,775,153 ( 0.30%)  ???:hashbrown::raw::RawTable<T,A>::reserve_rehash [/home/user/Cx_lang/target/release/Cx_0V]
+   11,730,149 ( 0.28%)  ???:hashbrown::map::HashMap<K,V,S,A>::insert [/home/user/Cx_lang/target/release/Cx_0V]
+   10,741,322 ( 0.26%)  ???:Cx_0V::runtime::runtime::RunTime::apply_op [/home/user/Cx_lang/target/release/Cx_0V]
+   10,361,687 ( 0.25%)  ???:Cx_0V::runtime::runtime::RunTime::pop_scope [/home/user/Cx_lang/target/release/Cx_0V]
+    8,884,098 ( 0.21%)  ???:Cx_0V::runtime::runtime::RunTime::set_var_typed [/home/user/Cx_lang/target/release/Cx_0V]
+    8,825,037 ( 0.21%)  ???:Cx_0V::runtime::runtime::RunTime::run_semantic_stmt'2 [/home/user/Cx_lang/target/release/Cx_0V]
+    8,448,240 ( 0.20%)  ???:Cx_0V::runtime::runtime::apply_numeric_cast [/home/user/Cx_lang/target/release/Cx_0V]
+    7,679,430 ( 0.18%)  ???:<alloc::string::String as core::clone::Clone>::clone [/home/user/Cx_lang/target/release/Cx_0V]
+    7,023,782 ( 0.17%)  ???:core::ptr::drop_in_place<Cx_0V::runtime::runtime::ScopeFrame> [/home/user/Cx_lang/target/release/Cx_0V]
+    6,909,616 ( 0.16%)  ???:<Cx_0V::frontend::types::Value as core::clone::Clone>::clone [/home/user/Cx_lang/target/release/Cx_0V]
+    6,559,809 ( 0.16%)  ???:hashbrown::raw::RawTableInner::drop_inner_table [/home/user/Cx_lang/target/release/Cx_0V]
+    5,753,054 ( 0.14%)  ./malloc/./malloc/arena.c:free
+    5,110,403 ( 0.12%)  ./malloc/./malloc/malloc.c:calloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    4,876,555 ( 0.12%)  ???:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter::SpecFromIter<T,I>>::from_iter [/home/user/Cx_lang/target/release/Cx_0V]
+    4,819,515 ( 0.11%)  ???:Cx_0V::runtime::runtime::RunTime::push_function_scope [/home/user/Cx_lang/target/release/Cx_0V]
+    4,186,404 ( 0.10%)  ???:__rustc::__rdl_alloc [/home/user/Cx_lang/target/release/Cx_0V]
+    4,088,261 ( 0.10%)  ./malloc/./malloc/malloc.c:malloc_consolidate [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    4,056,193 ( 0.10%)  ./malloc/./malloc/malloc.c:_int_free_merge_chunk [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    3,512,859 ( 0.08%)  ./malloc/./malloc/malloc.c:unlink_chunk.isra.0 [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    3,483,990 ( 0.08%)  ???:Cx_0V::runtime::runtime::RunTime::semantic_value_to_runtime [/home/user/Cx_lang/target/release/Cx_0V]
+    2,816,367 ( 0.07%)  ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S:__memcmp_avx2_movbe [/usr/lib/x86_64-linux-gnu/libc.so.6]
+    2,556,242 ( 0.06%)  ???:alloc::raw_vec::RawVecInner<A>::finish_grow [/home/user/Cx_lang/target/release/Cx_0V]
+    2,263,898 ( 0.05%)  ???:core::ptr::drop_in_place<alloc::vec::into_iter::IntoIter<(usize,alloc::string::String,Cx_0V::frontend::types::Value)>> [/home/user/Cx_lang/target/release/Cx_0V]
+
+--------------------------------------------------------------------------------
+The following files chosen for auto-annotation could not be found:
+--------------------------------------------------------------------------------
+  ./malloc/./malloc/arena.c
+  ./malloc/./malloc/malloc.c
+  ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S
+  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S
+  ./string/../sysdeps/x86_64/multiarch/memset-vec-unaligned-erms.S
+

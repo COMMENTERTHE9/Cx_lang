@@ -1,0 +1,11 @@
+// String interpolation + print path. Exercises the {var} format
+// substitution and stdout write path. Note: this benchmark is partly
+// I/O-bound; run with stdout redirected to /dev/null to isolate the
+// formatting cost. 50k interpolated prints.
+i: t64 = 0
+while (i < 50000) {
+    name: str = "entity"
+    val: t64 = i * 7
+    print("item {name} #{i} value={val}")
+    i += 1
+}

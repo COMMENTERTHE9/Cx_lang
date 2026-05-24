@@ -1,0 +1,64 @@
+--------------------------------------------------------------------------------
+Profile data file '/tmp/cg_arith.out' (creator: callgrind-3.22.0)
+--------------------------------------------------------------------------------
+I1 cache: 
+D1 cache: 
+LL cache: 
+Timerange: Basic block 0 - 156520017
+Trigger: Program termination
+Profiled target:  ./target/release/Cx_0V /tmp/arith_small.cx (PID 9843, part 1)
+Events recorded:  Ir
+Events shown:     Ir
+Event sort order: Ir
+Thresholds:       99
+Include dirs:     
+User annotated:   
+Auto-annotation:  on
+
+--------------------------------------------------------------------------------
+Ir                     
+--------------------------------------------------------------------------------
+1,126,336,921 (100.0%)  PROGRAM TOTALS
+
+--------------------------------------------------------------------------------
+Ir                    file:function
+--------------------------------------------------------------------------------
+164,701,807 (14.62%)  ???:core::hash::BuildHasher::hash_one [/home/user/Cx_lang/target/release/Cx_0V]
+127,801,310 (11.35%)  ???:<core::hash::sip::Hasher<S> as core::hash::Hasher>::write [/home/user/Cx_lang/target/release/Cx_0V]
+124,200,000 (11.03%)  ???:Cx_0V::runtime::runtime::RunTime::set_var [/home/user/Cx_lang/target/release/Cx_0V]
+ 82,800,174 ( 7.35%)  ???:Cx_0V::runtime::runtime::RunTime::get_var [/home/user/Cx_lang/target/release/Cx_0V]
+ 68,400,263 ( 6.07%)  ???:core::ptr::drop_in_place<Cx_0V::frontend::types::Value> [/home/user/Cx_lang/target/release/Cx_0V]
+ 64,800,000 ( 5.75%)  ???:Cx_0V::runtime::runtime::RunTime::run_semantic_stmt'2 [/home/user/Cx_lang/target/release/Cx_0V]
+ 55,050,074 ( 4.89%)  ???:Cx_0V::runtime::runtime::RunTime::apply_op [/home/user/Cx_lang/target/release/Cx_0V]
+ 52,500,289 ( 4.66%)  ???:Cx_0V::runtime::runtime::RunTime::eval_semantic_expr [/home/user/Cx_lang/target/release/Cx_0V]
+ 49,200,265 ( 4.37%)  ???:Cx_0V::runtime::runtime::RunTime::eval_semantic_expr'2 [/home/user/Cx_lang/target/release/Cx_0V]
+ 45,900,170 ( 4.08%)  ???:<Cx_0V::frontend::types::Value as core::clone::Clone>::clone [/home/user/Cx_lang/target/release/Cx_0V]
+ 39,150,129 ( 3.48%)  ???:Cx_0V::runtime::runtime::apply_numeric_cast [/home/user/Cx_lang/target/release/Cx_0V]
+ 27,450,135 ( 2.44%)  ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S:__memcmp_avx2_movbe [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 24,341,768 ( 2.16%)  ./malloc/./malloc/malloc.c:_int_free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 18,929,535 ( 1.68%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 17,850,000 ( 1.58%)  ???:Cx_0V::runtime::runtime::RunTime::pop_scope [/home/user/Cx_lang/target/release/Cx_0V]
+ 16,874,383 ( 1.50%)  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S:__memcpy_avx_unaligned_erms [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 14,867,490 ( 1.32%)  ???:<alloc::string::String as core::clone::Clone>::clone [/home/user/Cx_lang/target/release/Cx_0V]
+ 14,400,064 ( 1.28%)  ???:Cx_0V::runtime::runtime::RunTime::resolve_assigned_value [/home/user/Cx_lang/target/release/Cx_0V]
+ 13,500,090 ( 1.20%)  ???:Cx_0V::runtime::runtime::RunTime::semantic_value_to_runtime [/home/user/Cx_lang/target/release/Cx_0V]
+ 12,618,680 ( 1.12%)  ./malloc/./malloc/malloc.c:free [/usr/lib/x86_64-linux-gnu/libc.so.6]
+ 12,600,140 ( 1.12%)  ???:core::ptr::drop_in_place<Cx_0V::frontend::ast::Type> [/home/user/Cx_lang/target/release/Cx_0V]
+ 12,450,349 ( 1.11%)  ???:Cx_0V::runtime::runtime::RunTime::run_semantic_stmt [/home/user/Cx_lang/target/release/Cx_0V]
+  8,550,247 ( 0.76%)  ???:<Cx_0V::frontend::ast::Type as core::clone::Clone>::clone [/home/user/Cx_lang/target/release/Cx_0V]
+  8,400,366 ( 0.75%)  ???:<alloc::vec::Vec<T> as alloc::vec::spec_from_iter::SpecFromIter<T,I>>::from_iter [/home/user/Cx_lang/target/release/Cx_0V]
+  8,100,036 ( 0.72%)  ???:Cx_0V::runtime::runtime::type_of_value [/home/user/Cx_lang/target/release/Cx_0V]
+  7,500,002 ( 0.67%)  ???:Cx_0V::runtime::runtime::RunTime::push_scope [/home/user/Cx_lang/target/release/Cx_0V]
+  6,750,030 ( 0.60%)  ???:Cx_0V::runtime::runtime::value_matches_type [/home/user/Cx_lang/target/release/Cx_0V]
+  5,700,096 ( 0.51%)  ???:core::ptr::drop_in_place<Cx_0V::runtime::runtime::ScopeFrame> [/home/user/Cx_lang/target/release/Cx_0V]
+  5,400,436 ( 0.48%)  ???:hashbrown::raw::RawTableInner::drop_inner_table [/home/user/Cx_lang/target/release/Cx_0V]
+  4,957,184 ( 0.44%)  ./malloc/./malloc/arena.c:free
+
+--------------------------------------------------------------------------------
+The following files chosen for auto-annotation could not be found:
+--------------------------------------------------------------------------------
+  ./malloc/./malloc/arena.c
+  ./malloc/./malloc/malloc.c
+  ./string/../sysdeps/x86_64/multiarch/memcmp-avx2-movbe.S
+  ./string/../sysdeps/x86_64/multiarch/memmove-vec-unaligned-erms.S
+

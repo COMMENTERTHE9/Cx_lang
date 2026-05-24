@@ -1,0 +1,3614 @@
+// AUTO-GENERATED compile-time stress source: 400 functions.
+// Purpose: measure lexer/parser/semantic scaling, not runtime.
+fnc: t64 func0(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 1
+    if d > 0 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func1(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 2
+    if d > 1 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func2(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 3
+    if d > 2 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func3(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 4
+    if d > 3 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func4(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 5
+    if d > 4 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func5(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 6
+    if d > 5 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func6(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 7
+    if d > 6 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func7(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 8
+    if d > 7 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func8(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 9
+    if d > 8 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func9(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 10
+    if d > 9 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func10(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 11
+    if d > 10 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func11(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 12
+    if d > 11 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func12(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 13
+    if d > 12 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func13(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 14
+    if d > 13 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func14(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 15
+    if d > 14 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func15(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 16
+    if d > 15 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func16(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 17
+    if d > 16 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func17(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 18
+    if d > 17 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func18(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 19
+    if d > 18 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func19(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 20
+    if d > 19 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func20(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 21
+    if d > 20 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func21(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 22
+    if d > 21 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func22(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 23
+    if d > 22 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func23(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 24
+    if d > 23 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func24(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 25
+    if d > 24 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func25(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 26
+    if d > 25 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func26(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 27
+    if d > 26 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func27(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 28
+    if d > 27 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func28(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 29
+    if d > 28 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func29(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 30
+    if d > 29 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func30(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 31
+    if d > 30 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func31(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 32
+    if d > 31 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func32(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 33
+    if d > 32 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func33(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 34
+    if d > 33 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func34(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 35
+    if d > 34 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func35(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 36
+    if d > 35 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func36(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 37
+    if d > 36 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func37(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 38
+    if d > 37 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func38(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 39
+    if d > 38 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func39(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 40
+    if d > 39 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func40(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 41
+    if d > 40 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func41(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 42
+    if d > 41 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func42(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 43
+    if d > 42 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func43(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 44
+    if d > 43 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func44(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 45
+    if d > 44 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func45(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 46
+    if d > 45 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func46(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 47
+    if d > 46 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func47(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 48
+    if d > 47 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func48(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 49
+    if d > 48 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func49(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 50
+    if d > 49 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func50(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 51
+    if d > 50 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func51(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 52
+    if d > 51 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func52(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 53
+    if d > 52 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func53(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 54
+    if d > 53 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func54(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 55
+    if d > 54 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func55(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 56
+    if d > 55 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func56(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 57
+    if d > 56 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func57(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 58
+    if d > 57 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func58(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 59
+    if d > 58 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func59(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 60
+    if d > 59 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func60(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 61
+    if d > 60 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func61(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 62
+    if d > 61 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func62(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 63
+    if d > 62 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func63(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 64
+    if d > 63 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func64(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 65
+    if d > 64 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func65(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 66
+    if d > 65 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func66(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 67
+    if d > 66 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func67(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 68
+    if d > 67 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func68(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 69
+    if d > 68 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func69(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 70
+    if d > 69 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func70(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 71
+    if d > 70 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func71(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 72
+    if d > 71 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func72(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 73
+    if d > 72 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func73(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 74
+    if d > 73 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func74(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 75
+    if d > 74 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func75(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 76
+    if d > 75 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func76(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 77
+    if d > 76 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func77(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 78
+    if d > 77 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func78(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 79
+    if d > 78 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func79(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 80
+    if d > 79 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func80(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 81
+    if d > 80 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func81(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 82
+    if d > 81 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func82(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 83
+    if d > 82 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func83(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 84
+    if d > 83 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func84(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 85
+    if d > 84 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func85(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 86
+    if d > 85 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func86(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 87
+    if d > 86 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func87(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 88
+    if d > 87 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func88(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 89
+    if d > 88 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func89(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 90
+    if d > 89 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func90(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 91
+    if d > 90 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func91(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 92
+    if d > 91 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func92(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 93
+    if d > 92 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func93(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 94
+    if d > 93 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func94(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 95
+    if d > 94 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func95(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 96
+    if d > 95 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func96(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 97
+    if d > 96 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func97(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 98
+    if d > 97 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func98(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 99
+    if d > 98 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func99(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 100
+    if d > 99 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func100(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 101
+    if d > 100 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func101(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 102
+    if d > 101 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func102(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 103
+    if d > 102 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func103(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 104
+    if d > 103 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func104(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 105
+    if d > 104 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func105(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 106
+    if d > 105 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func106(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 107
+    if d > 106 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func107(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 108
+    if d > 107 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func108(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 109
+    if d > 108 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func109(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 110
+    if d > 109 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func110(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 111
+    if d > 110 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func111(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 112
+    if d > 111 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func112(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 113
+    if d > 112 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func113(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 114
+    if d > 113 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func114(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 115
+    if d > 114 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func115(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 116
+    if d > 115 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func116(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 117
+    if d > 116 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func117(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 118
+    if d > 117 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func118(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 119
+    if d > 118 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func119(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 120
+    if d > 119 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func120(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 121
+    if d > 120 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func121(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 122
+    if d > 121 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func122(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 123
+    if d > 122 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func123(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 124
+    if d > 123 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func124(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 125
+    if d > 124 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func125(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 126
+    if d > 125 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func126(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 127
+    if d > 126 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func127(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 128
+    if d > 127 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func128(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 129
+    if d > 128 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func129(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 130
+    if d > 129 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func130(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 131
+    if d > 130 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func131(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 132
+    if d > 131 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func132(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 133
+    if d > 132 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func133(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 134
+    if d > 133 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func134(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 135
+    if d > 134 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func135(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 136
+    if d > 135 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func136(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 137
+    if d > 136 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func137(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 138
+    if d > 137 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func138(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 139
+    if d > 138 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func139(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 140
+    if d > 139 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func140(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 141
+    if d > 140 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func141(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 142
+    if d > 141 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func142(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 143
+    if d > 142 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func143(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 144
+    if d > 143 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func144(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 145
+    if d > 144 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func145(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 146
+    if d > 145 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func146(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 147
+    if d > 146 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func147(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 148
+    if d > 147 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func148(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 149
+    if d > 148 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func149(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 150
+    if d > 149 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func150(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 151
+    if d > 150 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func151(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 152
+    if d > 151 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func152(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 153
+    if d > 152 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func153(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 154
+    if d > 153 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func154(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 155
+    if d > 154 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func155(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 156
+    if d > 155 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func156(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 157
+    if d > 156 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func157(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 158
+    if d > 157 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func158(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 159
+    if d > 158 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func159(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 160
+    if d > 159 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func160(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 161
+    if d > 160 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func161(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 162
+    if d > 161 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func162(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 163
+    if d > 162 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func163(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 164
+    if d > 163 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func164(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 165
+    if d > 164 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func165(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 166
+    if d > 165 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func166(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 167
+    if d > 166 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func167(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 168
+    if d > 167 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func168(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 169
+    if d > 168 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func169(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 170
+    if d > 169 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func170(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 171
+    if d > 170 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func171(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 172
+    if d > 171 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func172(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 173
+    if d > 172 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func173(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 174
+    if d > 173 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func174(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 175
+    if d > 174 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func175(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 176
+    if d > 175 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func176(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 177
+    if d > 176 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func177(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 178
+    if d > 177 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func178(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 179
+    if d > 178 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func179(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 180
+    if d > 179 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func180(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 181
+    if d > 180 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func181(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 182
+    if d > 181 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func182(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 183
+    if d > 182 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func183(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 184
+    if d > 183 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func184(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 185
+    if d > 184 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func185(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 186
+    if d > 185 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func186(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 187
+    if d > 186 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func187(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 188
+    if d > 187 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func188(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 189
+    if d > 188 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func189(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 190
+    if d > 189 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func190(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 191
+    if d > 190 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func191(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 192
+    if d > 191 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func192(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 193
+    if d > 192 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func193(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 194
+    if d > 193 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func194(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 195
+    if d > 194 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func195(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 196
+    if d > 195 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func196(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 197
+    if d > 196 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func197(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 198
+    if d > 197 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func198(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 199
+    if d > 198 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func199(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 200
+    if d > 199 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func200(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 201
+    if d > 200 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func201(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 202
+    if d > 201 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func202(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 203
+    if d > 202 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func203(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 204
+    if d > 203 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func204(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 205
+    if d > 204 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func205(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 206
+    if d > 205 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func206(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 207
+    if d > 206 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func207(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 208
+    if d > 207 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func208(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 209
+    if d > 208 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func209(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 210
+    if d > 209 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func210(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 211
+    if d > 210 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func211(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 212
+    if d > 211 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func212(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 213
+    if d > 212 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func213(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 214
+    if d > 213 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func214(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 215
+    if d > 214 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func215(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 216
+    if d > 215 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func216(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 217
+    if d > 216 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func217(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 218
+    if d > 217 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func218(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 219
+    if d > 218 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func219(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 220
+    if d > 219 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func220(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 221
+    if d > 220 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func221(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 222
+    if d > 221 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func222(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 223
+    if d > 222 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func223(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 224
+    if d > 223 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func224(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 225
+    if d > 224 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func225(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 226
+    if d > 225 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func226(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 227
+    if d > 226 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func227(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 228
+    if d > 227 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func228(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 229
+    if d > 228 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func229(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 230
+    if d > 229 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func230(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 231
+    if d > 230 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func231(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 232
+    if d > 231 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func232(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 233
+    if d > 232 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func233(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 234
+    if d > 233 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func234(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 235
+    if d > 234 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func235(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 236
+    if d > 235 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func236(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 237
+    if d > 236 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func237(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 238
+    if d > 237 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func238(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 239
+    if d > 238 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func239(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 240
+    if d > 239 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func240(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 241
+    if d > 240 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func241(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 242
+    if d > 241 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func242(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 243
+    if d > 242 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func243(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 244
+    if d > 243 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func244(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 245
+    if d > 244 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func245(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 246
+    if d > 245 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func246(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 247
+    if d > 246 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func247(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 248
+    if d > 247 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func248(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 249
+    if d > 248 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func249(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 250
+    if d > 249 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func250(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 251
+    if d > 250 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func251(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 252
+    if d > 251 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func252(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 253
+    if d > 252 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func253(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 254
+    if d > 253 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func254(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 255
+    if d > 254 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func255(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 256
+    if d > 255 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func256(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 257
+    if d > 256 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func257(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 258
+    if d > 257 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func258(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 259
+    if d > 258 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func259(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 260
+    if d > 259 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func260(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 261
+    if d > 260 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func261(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 262
+    if d > 261 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func262(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 263
+    if d > 262 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func263(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 264
+    if d > 263 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func264(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 265
+    if d > 264 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func265(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 266
+    if d > 265 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func266(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 267
+    if d > 266 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func267(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 268
+    if d > 267 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func268(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 269
+    if d > 268 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func269(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 270
+    if d > 269 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func270(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 271
+    if d > 270 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func271(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 272
+    if d > 271 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func272(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 273
+    if d > 272 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func273(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 274
+    if d > 273 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func274(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 275
+    if d > 274 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func275(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 276
+    if d > 275 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func276(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 277
+    if d > 276 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func277(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 278
+    if d > 277 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func278(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 279
+    if d > 278 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func279(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 280
+    if d > 279 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func280(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 281
+    if d > 280 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func281(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 282
+    if d > 281 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func282(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 283
+    if d > 282 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func283(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 284
+    if d > 283 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func284(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 285
+    if d > 284 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func285(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 286
+    if d > 285 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func286(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 287
+    if d > 286 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func287(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 288
+    if d > 287 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func288(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 289
+    if d > 288 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func289(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 290
+    if d > 289 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func290(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 291
+    if d > 290 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func291(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 292
+    if d > 291 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func292(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 293
+    if d > 292 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func293(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 294
+    if d > 293 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func294(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 295
+    if d > 294 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func295(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 296
+    if d > 295 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func296(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 297
+    if d > 296 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func297(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 298
+    if d > 297 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func298(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 299
+    if d > 298 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func299(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 300
+    if d > 299 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func300(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 301
+    if d > 300 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func301(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 302
+    if d > 301 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func302(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 303
+    if d > 302 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func303(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 304
+    if d > 303 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func304(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 305
+    if d > 304 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func305(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 306
+    if d > 305 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func306(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 307
+    if d > 306 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func307(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 308
+    if d > 307 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func308(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 309
+    if d > 308 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func309(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 310
+    if d > 309 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func310(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 311
+    if d > 310 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func311(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 312
+    if d > 311 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func312(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 313
+    if d > 312 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func313(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 314
+    if d > 313 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func314(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 315
+    if d > 314 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func315(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 316
+    if d > 315 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func316(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 317
+    if d > 316 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func317(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 318
+    if d > 317 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func318(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 319
+    if d > 318 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func319(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 320
+    if d > 319 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func320(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 321
+    if d > 320 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func321(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 322
+    if d > 321 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func322(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 323
+    if d > 322 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func323(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 324
+    if d > 323 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func324(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 325
+    if d > 324 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func325(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 326
+    if d > 325 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func326(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 327
+    if d > 326 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func327(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 328
+    if d > 327 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func328(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 329
+    if d > 328 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func329(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 330
+    if d > 329 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func330(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 331
+    if d > 330 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func331(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 332
+    if d > 331 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func332(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 333
+    if d > 332 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func333(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 334
+    if d > 333 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func334(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 335
+    if d > 334 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func335(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 336
+    if d > 335 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func336(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 337
+    if d > 336 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func337(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 338
+    if d > 337 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func338(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 339
+    if d > 338 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func339(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 340
+    if d > 339 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func340(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 341
+    if d > 340 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func341(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 342
+    if d > 341 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func342(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 343
+    if d > 342 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func343(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 344
+    if d > 343 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func344(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 345
+    if d > 344 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func345(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 346
+    if d > 345 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func346(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 347
+    if d > 346 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func347(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 348
+    if d > 347 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func348(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 349
+    if d > 348 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func349(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 350
+    if d > 349 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func350(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 351
+    if d > 350 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func351(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 352
+    if d > 351 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func352(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 353
+    if d > 352 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func353(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 354
+    if d > 353 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func354(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 355
+    if d > 354 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func355(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 356
+    if d > 355 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func356(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 357
+    if d > 356 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func357(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 358
+    if d > 357 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func358(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 359
+    if d > 358 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func359(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 360
+    if d > 359 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func360(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 361
+    if d > 360 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func361(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 362
+    if d > 361 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func362(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 363
+    if d > 362 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func363(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 364
+    if d > 363 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func364(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 365
+    if d > 364 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func365(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 366
+    if d > 365 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func366(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 367
+    if d > 366 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func367(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 368
+    if d > 367 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func368(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 369
+    if d > 368 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func369(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 370
+    if d > 369 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func370(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 371
+    if d > 370 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func371(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 372
+    if d > 371 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func372(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 373
+    if d > 372 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func373(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 374
+    if d > 373 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func374(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 375
+    if d > 374 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func375(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 376
+    if d > 375 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func376(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 377
+    if d > 376 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func377(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 378
+    if d > 377 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func378(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 379
+    if d > 378 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func379(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 380
+    if d > 379 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func380(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 381
+    if d > 380 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func381(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 382
+    if d > 381 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func382(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 383
+    if d > 382 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func383(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 384
+    if d > 383 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func384(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 385
+    if d > 384 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func385(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 386
+    if d > 385 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func386(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 387
+    if d > 386 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func387(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 388
+    if d > 387 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func388(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 389
+    if d > 388 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func389(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 390
+    if d > 389 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func390(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 391
+    if d > 390 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func391(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 392
+    if d > 391 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func392(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 393
+    if d > 392 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func393(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 394
+    if d > 393 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func394(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 395
+    if d > 394 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func395(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 396
+    if d > 395 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func396(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 397
+    if d > 396 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func397(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 398
+    if d > 397 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func398(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 399
+    if d > 398 {
+        return d - a
+    }
+    return d + b
+}
+
+fnc: t64 func399(a: t64, b: t64) {
+    c: t64 = a + b
+    d: t64 = c * 400
+    if d > 399 {
+        return d - a
+    }
+    return d + b
+}
+
+total: t64 = 0
+total += func0(0, 1)
+total += func40(40, 41)
+total += func80(80, 81)
+total += func120(120, 121)
+total += func160(160, 161)
+total += func200(200, 201)
+total += func240(240, 241)
+total += func280(280, 281)
+total += func320(320, 321)
+total += func360(360, 361)
+print(total)

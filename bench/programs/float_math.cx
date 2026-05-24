@@ -1,0 +1,12 @@
+// Floating-point arithmetic loop. Stresses f64 binops and the numeric
+// coercion path. ~3M iterations.
+acc: f64 = 0.0
+x: f64 = 1.0
+i: t64 = 0
+while (i < 3000000) {
+    acc += x * 1.5
+    acc -= x * 0.5
+    x += 0.25
+    i += 1
+}
+print(acc)

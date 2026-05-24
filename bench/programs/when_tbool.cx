@@ -1,0 +1,15 @@
+// when-block range matching in a loop. Stresses the when lowering /
+// pattern dispatch and integer range comparison. ~2M matches.
+total: t64 = 0
+i: t64 = 0
+while (i < 2000000) {
+    bucket: t64 = i % 30
+    when bucket {
+        0..=9   => { total += 1 },
+        10..=19 => { total += 2 },
+        20..=29 => { total += 3 },
+        _       => { total += 0 },
+    }
+    i += 1
+}
+print(total)

@@ -1,0 +1,10 @@
+// Tight integer-arithmetic loop. Stresses the interpreter eval loop,
+// integer binops, and compound assignment. ~5M iterations.
+acc: t64 = 0
+i: t64 = 0
+while (i < 5000000) {
+    acc += i * 2
+    acc -= i
+    i += 1
+}
+print(acc)

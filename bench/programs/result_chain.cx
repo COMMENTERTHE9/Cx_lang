@@ -1,0 +1,25 @@
+// Result construction + `?` propagation in a loop. Stresses Ok/Err
+// allocation, the try operator's unwrap/early-return, and error paths.
+// ~1M Result round-trips.
+fnc: Result<t64> checked_add(a: t64, b: t64) {
+    if b == 0 {
+        return Err("zero addend")
+    }
+    return Ok(a + b)
+}
+
+fnc: Result<t64> accumulate(n: t64) {
+    let v;
+    v = checked_add(n, 1)?
+    return Ok(v * 2)
+}
+
+total: t64 = 0
+i: t64 = 1
+while (i <= 1000000) {
+    let r;
+    r = accumulate(i)
+    total += 1
+    i += 1
+}
+print(total)
