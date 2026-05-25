@@ -1,0 +1,53 @@
+---
+title: "Cx Dev Log — 2026-04-24"
+date: 2026-04-24
+description: "Sixth consecutive idle day on main with the submain integration gap now the single biggest bottleneck to reaching 0.1."
+---
+
+Day six of no commits landing on main. The test matrix is unchanged at 78/78 PASS. The working tree is clean. The last human code commit anywhere in the repo was eleven days ago. This is a log about what is stuck and why it matters.
+
+## The integration gap
+
+The dominant fact about the project right now is the gap between `submain` and `main`. Submain carries 15 unmerged commits of real, substantial work:
+
+- `Result<T>` error model with `Ok`, `Err`, and the `?` operator
+- Integer overflow enforcement
+- Semicolons made optional everywhere
+- A diagnostics readability pass
+- Parser/semantic/interpreter audit Part 1, including a parser body-gap fix
+- Phase 10 control flow lowering: `while`, `for`, `loop`/`break`/`continue`
+- A basic test runner
+
+That work reportedly brought the submain test matrix to 116/116, up from 78/78 on main. Several of the roadmap's hard blockers for the 0.1 gate have corresponding completed work on submain that would satisfy them on merge. But none of it has reached main in eleven days.
+
+The merge itself is the single highest-leverage action available. It would nearly double the passing test count, check off multiple roadmap items, and unblock the final audit and 0.1 gate work.
+
+## Audit Part 2 status unknown
+
+Previous daily logs (April 18 through April 23) noted that substantial audit Part 2 work had been observed in a submain working tree context: a recursive type parser refactor, struct field type resolution, a 64 MB interpreter thread stack, struct field truncation, 6 new matrix tests, and 8 new example programs. That work was reportedly reaching 116/116 matrix tests.
+
+From the main checkout, the status of that work is unknown. It may still exist in a local working tree not visible to the current session, or it may have been lost. Either way, it has not been committed.
+
+## Branch clutter
+
+Twenty-three daily-log branches (2026-03-29 through 2026-04-23) sit unmerged on the remote. The last daily log that reached main was 2026-03-31. This is operational noise that grows by one branch every day. Merging or closing these would clean up the branch list meaningfully.
+
+## Roadmap
+
+The roadmap on main sits at v4.8. The unchecked hard blockers include the basic test runner, the `Result<T>` error model, integer overflow enforcement, semicolons, parser/semantic/interpreter agreement, soundness in the memory boundary model, all examples passing, diagnostics readability, and roadmap-spec alignment. Multiple items on that list have completed work sitting on submain, waiting for a merge that has not happened.
+
+There is also a roadmap version mismatch: v4.7 on submain versus v4.8 on main. That will need reconciliation whenever the merge happens.
+
+## What is next
+
+The same five items that have been predicted for six days running:
+
+1. Commit the audit Part 2 sprint on submain
+2. Merge submain into main
+3. Update the roadmap after merge
+4. Broader audit Part 2 coverage
+5. IR lowering for `Result<T>`
+
+None of these happened today. The submain-to-main merge remains the critical path. Until it lands, main stays frozen at 78 tests and the 0.1 gate stays blocked on items that are already done in a branch nobody is merging.
+
+Six idle days is a real stall. The work exists. The forward motion is there, on submain. It just needs to be integrated.
