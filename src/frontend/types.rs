@@ -91,6 +91,19 @@ pub enum RuntimeError {
     StaleHandle {
         pos: usize,
     },
+    // `index` is i64 because Cx permits negative indices and the diagnostic
+    // should echo the actual value the user wrote; `length` is usize because an
+    // array length is non-negative; `pos` preserves the source location of the
+    // offending index expression (two of the three #002 target sites carry a
+    // real position today). Constructed by tracker #002 in a later commit (the
+    // three UndefinedVar mis-routings at runtime.rs:391/:739/:875); unused until
+    // then.
+    #[allow(dead_code)] // constructed by tracker #002 in the next commit
+    IndexOutOfBounds {
+        pos: usize,
+        index: i64,
+        length: usize,
+    },
     BreakSignal,
     ContinueSignal,
     #[allow(dead_code)] // frontend-level variant; IR layer currently enforces via IrValidationError::LoopVariableReassignment

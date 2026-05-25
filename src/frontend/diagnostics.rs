@@ -187,7 +187,11 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             "stale handle access - handle was already dropped".to_string(),
             *pos,
         ),
-        RuntimeError::BreakSignal => ("unhandled 'break' outside of a loop -- this may be a compiler bug".to_string(), 0),
+        RuntimeError::IndexOutOfBounds { pos, index, length } => (
+            format!("array index {} out of bounds for array of length {}", index, length),
+            *pos,
+        ),
+        RuntimeError::BreakSignal =>("unhandled 'break' outside of a loop -- this may be a compiler bug".to_string(), 0),
         RuntimeError::ContinueSignal => ("unhandled 'continue' outside of a loop -- this may be a compiler bug".to_string(), 0),
         RuntimeError::ReadOnlyLoopVar { pos, name } => (
             format!("loop variable '{}' is read-only", name),
