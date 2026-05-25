@@ -385,6 +385,7 @@ ExprStmt {
         pos: usize,
     },
     ConstDecl {
+        binding: BindingId,
         name: String,
         ty: SemanticType,
         value: SemanticExpr,

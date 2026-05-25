@@ -303,7 +303,7 @@ fn run() {
 }
 
 fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
-    use frontend::semantic_types::{SemanticStmt, SemanticType};
+    use frontend::semantic_types::{BindingId, SemanticStmt, SemanticType};
 
     for stmt in &program.stmts {
         match stmt {
@@ -314,8 +314,26 @@ fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
                 rt.register_semantic_func(sem_func.clone());
             }
             SemanticStmt::EnumDef { .. } => {}
-            SemanticStmt::ImplBlock { aliases, methods, .. } => {
-                for sem_func in methods {
+            SemanticStmt::ImplBlock { aliases, methods, method_alias_params, .. } => {
+                for (mi, sem_func) in methods.iter().enumerate() {
+                    // Carry per-method alias BindingIds (#009), parallel to `aliases`.
+                    let method_aliases: Vec<(BindingId, String, SemanticType)> = method_alias_params
+                        .get(mi)
+                        .map(|params| {
+                            params
+                                .iter()
+                                .enumerate()
+                                .map(|(ai, p)| {
+                                    let ty = aliases
+                                        .get(ai)
+                                        .map(|(_, t)| t.clone())
+                                        .or_else(|| p.ty.clone())
+                                        .unwrap_or(SemanticType::Unknown);
+                                    (p.binding, p.name.clone(), ty)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     for (_, alias_type) in aliases {
                         let type_key = match alias_type {
                             SemanticType::Struct(n) => n.clone(),
@@ -323,7 +341,7 @@ fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
                         };
                         rt.semantic_impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.clone(), Arc::new(sem_func.clone())),
+                            (method_aliases.clone(), Arc::new(sem_func.clone())),
                         );
                     }
                 }

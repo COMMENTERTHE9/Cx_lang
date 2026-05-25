@@ -22,8 +22,42 @@ pub enum ScopeEvent {
     ArenaReset { bytes: usize, chunks: usize },
 }
 
+/// Identity hasher for `BindingId` (tracker #009). `BindingId` is a dense u32
+/// produced by the semantic phase; hashing it with SipHash (the default) was
+/// ~26% of bare-loop runtime (Pillar 1 callgrind). This hasher returns the id
+/// directly — no mixing — which is sound because the keys are already unique
+/// dense integers. `write` is a non-panicking fallback; for `BindingId` keys
+/// only `write_u32` is ever called.
+#[derive(Default)]
+pub struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ b as u64;
+        }
+    }
+    fn write_u32(&mut self, n: u32) {
+        self.0 = n as u64;
+    }
+}
+
+pub type BuildIdHasher = std::hash::BuildHasherDefault<IdHasher>;
+
+/// Per-frame variable storage keyed by `BindingId` (identity-hashed).
+pub type VarMap = HashMap<BindingId, VarEntry, BuildIdHasher>;
+
 pub struct ScopeFrame {
-    pub vars: HashMap<String, VarEntry>,
+    /// Variable storage keyed by `BindingId` — the hot lookup path.
+    pub vars: VarMap,
+    /// name -> BindingId index, used ONLY by name-based cold paths (string
+    /// interpolation, container/array name resolution, `.copy` bleed-back).
+    /// The hot path (VarRef / Assign / CompoundAssign / For var / params) goes
+    /// straight through `vars` by BindingId and never touches this.
+    pub by_name: HashMap<String, BindingId>,
     pub freed: HashSet<String>,
     pub bleed_back: HashMap<String, (usize, String)>,
     pub arena: Option<Arena>,
@@ -31,11 +65,46 @@ pub struct ScopeFrame {
     // inner param name -> (outer scope index, outer var name)
 }
 
+impl ScopeFrame {
+    fn new(arena: Option<Arena>) -> Self {
+        ScopeFrame {
+            vars: VarMap::default(),
+            by_name: HashMap::new(),
+            freed: HashSet::new(),
+            bleed_back: HashMap::new(),
+            arena,
+            seen: HashSet::new(),
+        }
+    }
+
+    /// Resolve a variable entry in this frame by name (cold path).
+    fn get_by_name(&self, name: &str) -> Option<&VarEntry> {
+        self.by_name.get(name).and_then(|b| self.vars.get(b))
+    }
+
+    /// Mutable resolve by name (cold path).
+    fn get_by_name_mut(&mut self, name: &str) -> Option<&mut VarEntry> {
+        let binding = *self.by_name.get(name)?;
+        self.vars.get_mut(&binding)
+    }
+
+    /// Whether a name is declared in this frame.
+    fn contains_name(&self, name: &str) -> bool {
+        self.by_name.contains_key(name)
+    }
+
+    /// Insert a fresh variable keyed by its BindingId, with its name indexed.
+    fn insert_var(&mut self, binding: BindingId, name: &str, entry: VarEntry) {
+        self.vars.insert(binding, entry);
+        self.by_name.insert(name.to_string(), binding);
+    }
+}
+
 pub struct RunTime {
     pub string_arena: Vec<u8>,
     pub handles: HandleRegistry<Value>,
     pub structs: HashMap<String, Vec<(String, Type)>>,
-    pub semantic_impls: HashMap<(String, String), (Vec<(String, SemanticType)>, Arc<SemanticFunction>)>,
+    pub semantic_impls: HashMap<(String, String), (Vec<(BindingId, String, SemanticType)>, Arc<SemanticFunction>)>,
     scopes: Vec<ScopeFrame>,
     pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
@@ -90,14 +159,7 @@ impl RunTime {
             handles: HandleRegistry::new(),
             structs: HashMap::new(),
             semantic_impls: HashMap::new(),
-            scopes: vec![ScopeFrame {
-                vars: HashMap::new(),
-                freed: HashSet::new(),
-                bleed_back: HashMap::new(),
-
-                arena: None, // top level is not a function scope
-                seen: HashSet::new(),
-            }],
+            scopes: vec![ScopeFrame::new(None)], // top level is not a function scope
             semantic_funcs: HashMap::new(),
             debug_scope: false,
             consts: HashMap::new(),
@@ -105,13 +167,7 @@ impl RunTime {
     }
 
     pub fn push_scope(&mut self) {
-        self.scopes.push(ScopeFrame {
-            vars: HashMap::new(),
-            freed: HashSet::new(),
-            bleed_back: HashMap::new(),
-            arena: None, // block scope - no arena
-            seen: HashSet::new(),
-        });
+        self.scopes.push(ScopeFrame::new(None)); // block scope - no arena
         if self.debug_scope {
             diagnostics::print_scope_event(&ScopeEvent::Open(format!(
                 "scope#{}",
@@ -121,13 +177,7 @@ impl RunTime {
     }
 
     pub fn push_function_scope(&mut self) {
-        self.scopes.push(ScopeFrame {
-            vars: HashMap::new(),
-            freed: HashSet::new(),
-            bleed_back: HashMap::new(),
-            arena: Some(Arena::new()), // function scope - gets its own arena
-            seen: HashSet::new(),
-        });
+        self.scopes.push(ScopeFrame::new(Some(Arena::new()))); // function scope - gets its own arena
         if self.debug_scope {
             diagnostics::print_scope_event(&ScopeEvent::Open(format!(
                 "scope#{}",
@@ -156,7 +206,7 @@ impl RunTime {
             let bleed_values: Vec<(usize, String, Value)> = bleeds
                 .iter()
                 .filter_map(|(param_name, outer_idx, outer_name)| {
-                    frame.vars.get(param_name)
+                    frame.get_by_name(param_name)
                         .and_then(|entry| entry.val.clone())
                         .map(|val| (*outer_idx, outer_name.clone(), val))
                 })
@@ -166,12 +216,12 @@ impl RunTime {
                 let bleed_events: Vec<(String, Value)> = bleeds
                     .iter()
                     .filter_map(|(param_name, _, outer_name)| {
-                        frame.vars.get(param_name)
+                        frame.get_by_name(param_name)
                             .and_then(|entry| entry.val.clone())
                             .map(|val| (outer_name.clone(), val))
                     })
                     .collect();
-                let free_names: Vec<String> = frame.vars.keys()
+                let free_names: Vec<String> = frame.by_name.keys()
                     .filter(|name| !frame.freed.contains(*name))
                     .cloned()
                     .collect();
@@ -190,7 +240,7 @@ impl RunTime {
 
         for (outer_idx, outer_name, val) in bleed_values {
             if let Some(outer_frame) = self.scopes.get_mut(outer_idx) {
-                if let Some(entry) = outer_frame.vars.get_mut(&outer_name) {
+                if let Some(entry) = outer_frame.get_by_name_mut(&outer_name) {
                     entry.val = Some(val);
                 }
             }
@@ -212,68 +262,102 @@ impl RunTime {
 
     pub fn declare(
         &mut self,
+        binding: BindingId,
         name: String,
         ty: Option<Type>,
         pos: usize,
     ) -> Result<(), RuntimeError> {
         let frame = self.scopes.last_mut().unwrap();
 
-        if frame.vars.contains_key(&name) {
+        if frame.contains_name(&name) {
             return Err(RuntimeError::AlreadyDeclared { pos, name });
         }
 
         frame.seen.insert(name.clone());
-        frame.vars.insert(name, VarEntry { ty, val: None });
+        frame.insert_var(binding, &name, VarEntry { ty, val: None });
         Ok(())
     }
 
-    pub fn set_var(&mut self, name: String, value: Value, pos: usize) -> Result<(), RuntimeError> {
-        if self.consts.contains_key(&name) {
+    /// Shared write path: type-check `value` against the entry at `binding` in
+    /// frame `i`, write it, track arena usage, emit debug events. The caller has
+    /// already located the owning frame (by binding on the hot path, by name on
+    /// the cold path).
+    fn write_var_at(
+        &mut self,
+        i: usize,
+        binding: BindingId,
+        name: &str,
+        value: Value,
+        pos: usize,
+    ) -> Result<(), RuntimeError> {
+        let tracked_value;
+        {
+            let frame = &mut self.scopes[i];
+            let entry = frame.vars.get_mut(&binding).unwrap();
+
+            let was_initialized = entry.val.is_some();
+            if entry.ty.is_none() {
+                entry.ty = Some(type_of_value(&value));
+            }
+
+            let expected = entry.ty.clone().unwrap();
+            let got = type_of_value(&value);
+            if !value_matches_type(&value, &expected) {
+                return Err(RuntimeError::TypeMismatch { pos, expected, got });
+            }
+
+            entry.val = Some(value);
+            tracked_value = entry.val.clone();
+
+            if self.debug_scope {
+                let logged = entry.val.clone().unwrap();
+                if was_initialized {
+                    diagnostics::print_scope_event(&ScopeEvent::Mutate(name.to_string(), logged));
+                } else {
+                    diagnostics::print_scope_event(&ScopeEvent::Add(name.to_string(), logged));
+                }
+            }
+        }
+
+        if let Some(v) = tracked_value.as_ref() {
+            self.track_in_arena(v);
+        }
+        Ok(())
+    }
+
+    /// Hot-path write: assign to the variable identified by `binding`. `name` is
+    /// used only for the const-protection check and diagnostics.
+    pub fn set_var_by_id(
+        &mut self,
+        binding: BindingId,
+        name: &str,
+        value: Value,
+        pos: usize,
+    ) -> Result<(), RuntimeError> {
+        if !self.consts.is_empty() && self.consts.contains_key(name) {
             return Err(RuntimeError::BadAssignTarget { pos });
         }
         let value = self.resolve_assigned_value(value, pos)?;
-        let mut target_idx = None;
         for i in (0..self.scopes.len()).rev() {
-            if self.scopes[i].vars.contains_key(&name) {
-                target_idx = Some(i);
-                break;
+            if self.scopes[i].vars.contains_key(&binding) {
+                return self.write_var_at(i, binding, name, value, pos);
             }
         }
+        let was_seen = self.scopes.last().unwrap().seen.contains(name);
+        Err(diagnostics::unresolved_var_error(pos, name.to_string(), was_seen))
+    }
 
-        if let Some(i) = target_idx {
-            let tracked_value;
-            {
-                let frame = &mut self.scopes[i];
-                let entry = frame.vars.get_mut(&name).unwrap();
-
-                let was_initialized = entry.val.is_some();
-                if entry.ty.is_none() {
-                    entry.ty = Some(type_of_value(&value));
-                }
-
-                let expected = entry.ty.clone().unwrap();
-                let got = type_of_value(&value);
-                if !value_matches_type(&value, &expected) {
-                    return Err(RuntimeError::TypeMismatch { pos, expected, got });
-                }
-
-                entry.val = Some(value);
-                tracked_value = entry.val.clone();
-
-                if self.debug_scope {
-                    let logged = entry.val.clone().unwrap();
-                    if was_initialized {
-                        diagnostics::print_scope_event(&ScopeEvent::Mutate(name.clone(), logged));
-                    } else {
-                        diagnostics::print_scope_event(&ScopeEvent::Add(name.clone(), logged));
-                    }
-                }
+    /// Cold-path write by name (string-interp targets, while-in arrays, method
+    /// write-back). Resolves name -> BindingId via the per-frame index.
+    pub fn set_var(&mut self, name: String, value: Value, pos: usize) -> Result<(), RuntimeError> {
+        if !self.consts.is_empty() && self.consts.contains_key(&name) {
+            return Err(RuntimeError::BadAssignTarget { pos });
+        }
+        let value = self.resolve_assigned_value(value, pos)?;
+        for i in (0..self.scopes.len()).rev() {
+            if let Some(&binding) = self.scopes[i].by_name.get(&name) {
+                return self.write_var_at(i, binding, &name, value, pos);
             }
-
-            if let Some(v) = tracked_value.as_ref() {
-                self.track_in_arena(v);
-            }
-            return Ok(());
         }
         let was_seen = self.scopes.last().unwrap().seen.contains(&name);
         Err(diagnostics::unresolved_var_error(pos, name, was_seen))
@@ -281,6 +365,7 @@ impl RunTime {
 
     pub fn set_var_typed(
         &mut self,
+        binding: BindingId,
         name: String,
         ty: Type,
         value: Value,
@@ -299,13 +384,14 @@ impl RunTime {
 
         {
             let frame = self.scopes.last_mut().unwrap();
-            if frame.vars.contains_key(&name) {
+            if frame.contains_name(&name) {
                 return Err(RuntimeError::AlreadyDeclared { pos, name });
             }
 
             frame.seen.insert(name.clone());
-            frame.vars.insert(
-                name.clone(),
+            frame.insert_var(
+                binding,
+                &name,
                 VarEntry {
                     ty: Some(ty),
                     val: Some(value),
@@ -329,7 +415,7 @@ impl RunTime {
     ) -> Result<(), RuntimeError> {
         let logged = value.clone();
         for frame in self.scopes.iter_mut().rev() {
-            if let Some(entry) = frame.vars.get_mut(container) {
+            if let Some(entry) = frame.get_by_name_mut(container) {
                 match &mut entry.val {
                     Some(Value::Container(map)) => {
                         map.insert(field.to_string(), value);
@@ -380,7 +466,7 @@ impl RunTime {
         pos: usize,
     ) -> Result<(), RuntimeError> {
         for frame in self.scopes.iter_mut().rev() {
-            if let Some(entry) = frame.vars.get_mut(arr_name) {
+            if let Some(entry) = frame.get_by_name_mut(arr_name) {
                 match &mut entry.val {
                     Some(Value::Array(elems)) => {
                         if index < elems.len() {
@@ -411,7 +497,7 @@ impl RunTime {
 
     pub fn get_field(&self, container: &str, field: &str, pos: usize) -> Result<Value, RuntimeError> {
         for frame in self.scopes.iter().rev() {
-            if let Some(entry) = frame.vars.get(container) {
+            if let Some(entry) = frame.get_by_name(container) {
                 match &entry.val {
                     Some(Value::Struct(_, map)) | Some(Value::Container(map)) => {
                         return map.get(field).cloned().ok_or_else(|| {
@@ -425,9 +511,12 @@ impl RunTime {
         Err(RuntimeError::UndefinedVar { pos, name: container.to_string() })
     }
 
+    /// Cold-path read by name (string interpolation, container/array name
+    /// resolution, `.copy` args). Resolves name -> BindingId via the per-frame
+    /// index, then reads.
     pub fn get_var(&self, name: &str, pos: usize) -> Result<Value, RuntimeError> {
         for frame in self.scopes.iter().rev() {
-            if let Some(entry) = frame.vars.get(name) {
+            if let Some(entry) = frame.get_by_name(name) {
                 if let Some(value) = &entry.val {
                     return Ok(value.clone());
                 }
@@ -440,6 +529,25 @@ impl RunTime {
         let owned = name.to_string();
         let was_seen = self.scopes.last().unwrap().seen.contains(&owned);
         Err(diagnostics::unresolved_var_error(pos, owned, was_seen))
+    }
+
+    /// Hot-path read by BindingId (VarRef, CompoundAssign read). `name` is used
+    /// only for diagnostics. Walks frames innermost->outermost exactly like the
+    /// name-based path, but matches on the BindingId — no string hashing.
+    pub fn get_var_by_id(&self, binding: BindingId, name: &str, pos: usize) -> Result<Value, RuntimeError> {
+        for frame in self.scopes.iter().rev() {
+            if let Some(entry) = frame.vars.get(&binding) {
+                if let Some(value) = &entry.val {
+                    return Ok(value.clone());
+                }
+                return Err(RuntimeError::UninitializedVar {
+                    pos,
+                    name: name.to_string(),
+                });
+            }
+        }
+        let was_seen = self.scopes.last().unwrap().seen.contains(name);
+        Err(diagnostics::unresolved_var_error(pos, name.to_string(), was_seen))
     }
 
     fn apply_op(
@@ -676,8 +784,8 @@ impl RunTime {
     pub fn eval_semantic_expr(&mut self, expr: &SemanticExpr) -> Result<Value, RuntimeError> {
         match &expr.kind {
             SemanticExprKind::Value(sv) => Ok(self.semantic_value_to_runtime(sv)),
-            SemanticExprKind::VarRef { name, .. } => {
-                self.get_var(name, 0)
+            SemanticExprKind::VarRef { binding, name } => {
+                self.get_var_by_id(*binding, name, 0)
             }
             SemanticExprKind::Unary { op, expr: inner, pos } => {
                 let val = self.eval_semantic_expr(inner)?;
@@ -804,25 +912,25 @@ impl RunTime {
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
             SemanticStmt::Noop => Ok(()),
-SemanticStmt::Decl { name, ty, .. } => {
+SemanticStmt::Decl { binding, name, ty, .. } => {
                 let rt_ty: Option<Type> = ty.as_ref().map(|t| t.clone().into());
-                self.declare(name.clone(), rt_ty, 0)
+                self.declare(*binding, name.clone(), rt_ty, 0)
             }
-            SemanticStmt::TypedAssign { name, ty, expr, .. } => {
+            SemanticStmt::TypedAssign { binding, name, ty, expr, .. } => {
                 let val = self.eval_semantic_expr(expr)?;
                 let rt_ty: Type = ty.clone().into();
                 let val = match (&rt_ty, val) {
                     (Type::Bool, Value::Unknown(_)) => Value::TBool(2),
                     (_, v) => v,
                 };
-                self.set_var_typed(name.clone(), rt_ty, val, 0)
+                self.set_var_typed(*binding, name.clone(), rt_ty, val, 0)
             }
             SemanticStmt::Assign { target, expr, pos_eq } => {
                 let val = self.eval_semantic_expr(expr)?;
                 match target {
-                    SemanticLValue::Binding { name, ty, .. } => {
+                    SemanticLValue::Binding { binding, name, ty } => {
                         let truncated = apply_numeric_cast(val, ty);
-                        self.set_var(name.clone(), truncated, 0)
+                        self.set_var_by_id(*binding, name, truncated, 0)
                     }
                     SemanticLValue::DotAccess { container, field, ty, .. } => {
                         let truncated = apply_numeric_cast(val, ty);
@@ -844,12 +952,12 @@ SemanticStmt::Decl { name, ty, .. } => {
             }
             SemanticStmt::CompoundAssign { target, op, operand, pos } => {
                 match target {
-                    SemanticLValue::Binding { name, ty, .. } => {
-                        let current = self.get_var(name, 0)?;
+                    SemanticLValue::Binding { binding, name, ty } => {
+                        let current = self.get_var_by_id(*binding, name, 0)?;
                         let rhs = self.eval_semantic_expr(operand)?;
                         let result = self.apply_op(current, op.clone(), 0, rhs)?;
                         let truncated = apply_numeric_cast(result, ty);
-                        self.set_var(name.clone(), truncated, 0)
+                        self.set_var_by_id(*binding, name, truncated, 0)
                     }
                     SemanticLValue::DotAccess { container, field, ty, .. } => {
                         let current = self.get_field(container, field, 0)?;
@@ -940,7 +1048,7 @@ SemanticStmt::Decl { name, ty, .. } => {
                 }
                 Ok(())
             }
-            SemanticStmt::For { var, start, end, inclusive, body, .. } => {
+            SemanticStmt::For { binding, var, start, end, inclusive, body, .. } => {
                 let start_val = match self.eval_semantic_expr(start)? {
                     Value::Num(n) => n,
                     _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
@@ -953,8 +1061,8 @@ SemanticStmt::Decl { name, ty, .. } => {
                     if *inclusive {
                         for i in start_val..=end_val {
                             self.push_scope();
-                            self.declare(var.clone(), None, 0)?;
-                            self.set_var(var.clone(), Value::Num(i), 0)?;
+                            self.declare(*binding, var.clone(), None, 0)?;
+                            self.set_var_by_id(*binding, var, Value::Num(i), 0)?;
                             for s in body {
                                 match self.run_semantic_stmt(s) {
                                     Ok(_) => {}
@@ -968,8 +1076,8 @@ SemanticStmt::Decl { name, ty, .. } => {
                     } else {
                         for i in start_val..end_val {
                             self.push_scope();
-                            self.declare(var.clone(), None, 0)?;
-                            self.set_var(var.clone(), Value::Num(i), 0)?;
+                            self.declare(*binding, var.clone(), None, 0)?;
+                            self.set_var_by_id(*binding, var, Value::Num(i), 0)?;
                             for s in body {
                                 match self.run_semantic_stmt(s) {
                                     Ok(_) => {}
@@ -1011,8 +1119,29 @@ SemanticStmt::Decl { name, ty, .. } => {
                 self.structs.insert(name.clone(), fields.iter().map(|(n, t)| (n.clone(), t.clone().into())).collect());
                 Ok(())
             }
-            SemanticStmt::ImplBlock { aliases, methods, .. } => {
-                for sem_func in methods {
+            SemanticStmt::ImplBlock { aliases, methods, method_alias_params, .. } => {
+                for (mi, sem_func) in methods.iter().enumerate() {
+                    // Carry the per-method alias BindingIds (the ids the method
+                    // body's alias VarRefs were resolved against, #009) alongside
+                    // each alias name+type. method_alias_params[mi] is parallel to
+                    // `aliases` (both in declaration order).
+                    let method_aliases: Vec<(BindingId, String, SemanticType)> = method_alias_params
+                        .get(mi)
+                        .map(|params| {
+                            params
+                                .iter()
+                                .enumerate()
+                                .map(|(ai, p)| {
+                                    let ty = aliases
+                                        .get(ai)
+                                        .map(|(_, t)| t.clone())
+                                        .or_else(|| p.ty.clone())
+                                        .unwrap_or(SemanticType::Unknown);
+                                    (p.binding, p.name.clone(), ty)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     for (_, alias_type) in aliases {
                         let type_key = match alias_type {
                             SemanticType::Struct(n) => n.clone(),
@@ -1020,17 +1149,17 @@ SemanticStmt::Decl { name, ty, .. } => {
                         };
                         self.semantic_impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.clone(), Arc::new(sem_func.clone())),
+                            (method_aliases.clone(), Arc::new(sem_func.clone())),
                         );
                     }
                 }
                 Ok(())
             }
-            SemanticStmt::ConstDecl { name, ty, value, .. } => {
+            SemanticStmt::ConstDecl { binding, name, ty, value, .. } => {
                 let val = self.eval_semantic_expr(value)?;
                 self.consts.insert(name.clone(), val.clone());
                 let ast_ty: Type = ty.clone().into();
-                self.set_var_typed(name.clone(), ast_ty, val, 0)?;
+                self.set_var_typed(*binding, name.clone(), ast_ty, val, 0)?;
                 Ok(())
             }
             SemanticStmt::EnumDef { .. } => {
@@ -1464,23 +1593,23 @@ SemanticStmt::Decl { name, ty, .. } => {
             .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: callee.to_string() })?;
 
         let outer_scope_idx = self.scopes.len() - 1;
-        let mut resolved: Vec<(String, Value, Option<String>)> = Vec::new();
-        // (inner param name, value, bleed_back outer name if .copy)
+        let mut resolved: Vec<(BindingId, String, Value, Option<String>)> = Vec::new();
+        // (param binding, inner param name, value, bleed_back outer name if .copy)
 
         for (param, arg) in sem_func.params.iter().zip(args.iter()) {
             match arg {
                 SemanticCallArg::Expr(e) => {
                     let val = self.eval_semantic_expr(e)?;
-                    resolved.push((param.name.clone(), val, None));
+                    resolved.push((param.binding, param.name.clone(), val, None));
                 }
                 SemanticCallArg::Copy { name, .. } => {
                     let val = self.get_var(name, pos)?;
-                    resolved.push((param.name.clone(), val, Some(name.clone())));
+                    resolved.push((param.binding, param.name.clone(), val, Some(name.clone())));
                     // bleed_back registered below after push_function_scope
                 }
                 SemanticCallArg::CopyFree { name, .. } => {
                     let val = self.get_var(name, pos)?;
-                    resolved.push((param.name.clone(), val, None));
+                    resolved.push((param.binding, param.name.clone(), val, None));
                     // no bleed_back — isolated copy
                 }
                 SemanticCallArg::CopyInto(bindings) => {
@@ -1489,7 +1618,7 @@ SemanticStmt::Decl { name, ty, .. } => {
                         let val = self.get_var(&b.name, pos)?;
                         map.insert(b.name.clone(), val);
                     }
-                    resolved.push((param.name.clone(), Value::Container(map), None));
+                    resolved.push((param.binding, param.name.clone(), Value::Container(map), None));
                 }
             }
         }
@@ -1497,9 +1626,9 @@ SemanticStmt::Decl { name, ty, .. } => {
         self.push_function_scope();
 
         let result = (|| -> Result<Value, RuntimeError> {
-            for (pname, val, bleed_outer) in resolved {
+            for (pbinding, pname, val, bleed_outer) in resolved {
                 let ty = type_of_value(&val);
-                self.set_var_typed(pname.clone(), ty, val, pos)?;
+                self.set_var_typed(pbinding, pname.clone(), ty, val, pos)?;
                 if let Some(outer_name) = bleed_outer {
                     if let Some(frame) = self.scopes.last_mut() {
                         frame.bleed_back.insert(pname, (outer_scope_idx, outer_name));
@@ -1544,26 +1673,26 @@ SemanticStmt::Decl { name, ty, .. } => {
         let extra_alias_count = aliases.len().saturating_sub(1);
 
         // Resolve additional alias values from leading args
-        let mut alias_vals: Vec<(String, Type, Value)> = Vec::new();
+        let mut alias_vals: Vec<(BindingId, String, Type, Value)> = Vec::new();
         // First alias is always the dot receiver
-        let (first_alias_name, first_alias_type) = &aliases[0];
-        alias_vals.push((first_alias_name.clone(), first_alias_type.clone().into(), instance_val.clone()));
+        let (first_alias_binding, first_alias_name, first_alias_type) = &aliases[0];
+        alias_vals.push((*first_alias_binding, first_alias_name.clone(), first_alias_type.clone().into(), instance_val.clone()));
 
         // Remaining aliases come from leading call args
         for i in 0..extra_alias_count {
-            let (alias_name, alias_type) = &aliases[i + 1];
+            let (alias_binding, alias_name, alias_type) = &aliases[i + 1];
             let val = match args.get(i) {
                 Some(SemanticCallArg::Expr(e)) => self.eval_semantic_expr(e)?,
                 Some(SemanticCallArg::Copy { name, .. }) => self.get_var(name, pos)?,
                 Some(SemanticCallArg::CopyFree { name, .. }) => self.get_var(name, pos)?,
                 _ => return Err(RuntimeError::UndefinedVar { pos, name: format!("missing alias arg {}", i) }),
             };
-            alias_vals.push((alias_name.clone(), alias_type.clone().into(), val));
+            alias_vals.push((*alias_binding, alias_name.clone(), alias_type.clone().into(), val));
         }
 
         // Resolve regular params from remaining args
         let regular_args = &args[extra_alias_count..];
-        let mut resolved_params: Vec<(String, Value)> = Vec::new();
+        let mut resolved_params: Vec<(BindingId, String, Value)> = Vec::new();
         for (param, arg) in sem_func.params.iter().zip(regular_args.iter()) {
             let val = match arg {
                 SemanticCallArg::Expr(e) => self.eval_semantic_expr(e)?,
@@ -1577,7 +1706,7 @@ SemanticStmt::Decl { name, ty, .. } => {
                     Value::Container(map)
                 }
             };
-            resolved_params.push((param.name.clone(), val));
+            resolved_params.push((param.binding, param.name.clone(), val));
         }
 
         // Push scope
@@ -1585,14 +1714,14 @@ SemanticStmt::Decl { name, ty, .. } => {
 
         let result = (|| -> Result<Value, RuntimeError> {
             // Bind all aliases into scope
-            for (alias_name, alias_ty, val) in &alias_vals {
-                self.set_var_typed(alias_name.clone(), alias_ty.clone(), val.clone(), pos)?;
+            for (alias_binding, alias_name, alias_ty, val) in &alias_vals {
+                self.set_var_typed(*alias_binding, alias_name.clone(), alias_ty.clone(), val.clone(), pos)?;
             }
 
             // Bind regular params
-            for (pname, val) in resolved_params {
+            for (pbinding, pname, val) in resolved_params {
                 let ty = type_of_value(&val);
-                self.set_var_typed(pname, ty, val, pos)?;
+                self.set_var_typed(pbinding, pname, ty, val, pos)?;
             }
 
             // Run semantic body
@@ -1615,7 +1744,7 @@ SemanticStmt::Decl { name, ty, .. } => {
         // Capture all alias mutations before popping scope
         let mut mutated_aliases: Vec<(String, Value)> = Vec::new();
         if result.is_ok() {
-            for (alias_name, _, _) in &alias_vals {
+            for (_, alias_name, _, _) in &alias_vals {
                 if let Ok(mutated) = self.get_var(alias_name, pos) {
                     mutated_aliases.push((alias_name.clone(), mutated));
                 }
@@ -1663,7 +1792,7 @@ SemanticStmt::Decl { name, ty, .. } => {
                 }
                 if closed && !var_name.is_empty() {
                     let val = self.scopes.iter().rev()
-                        .find_map(|frame| frame.vars.get(&var_name))
+                        .find_map(|frame| frame.get_by_name(&var_name))
                         .and_then(|entry| entry.val.clone());
                     match val {
                         Some(v) => result.push_str(&value_to_string(self, v)),

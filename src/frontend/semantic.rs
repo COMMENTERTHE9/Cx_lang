@@ -253,8 +253,9 @@ impl Analyzer {
             Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
                 let semantic_value = self.analyze_expr(value)?;
                 let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
-                self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                let binding = self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
                 Ok(SemanticStmt::ConstDecl {
+                    binding,
                     name: name.clone(),
                     ty: sem_ty,
                     value: semantic_value,
