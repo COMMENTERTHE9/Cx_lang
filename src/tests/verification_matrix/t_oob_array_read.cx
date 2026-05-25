@@ -1,0 +1,6 @@
+// Runtime array out-of-bounds READ. The index is a variable so the read
+// reaches the interpreter rather than being caught at semantic time. Hits the
+// IndexOutOfBounds site at runtime.rs:739 (tracker #002).
+a: [3: t64] = [10, 20, 30]
+i: t64 = 5
+print(a:[i])

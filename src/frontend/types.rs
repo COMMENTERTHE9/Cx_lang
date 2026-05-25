@@ -94,11 +94,8 @@ pub enum RuntimeError {
     // `index` is i64 because Cx permits negative indices and the diagnostic
     // should echo the actual value the user wrote; `length` is usize because an
     // array length is non-negative; `pos` preserves the source location of the
-    // offending index expression (two of the three #002 target sites carry a
-    // real position today). Constructed by tracker #002 in a later commit (the
-    // three UndefinedVar mis-routings at runtime.rs:391/:739/:875); unused until
-    // then.
-    #[allow(dead_code)] // constructed by tracker #002 in the next commit
+    // offending index expression. Constructed at the three array OOB sites in
+    // runtime.rs (array read, array write, compound-assign) by tracker #002.
     IndexOutOfBounds {
         pos: usize,
         index: i64,

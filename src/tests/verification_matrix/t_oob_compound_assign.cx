@@ -1,0 +1,8 @@
+// Runtime array out-of-bounds COMPOUND-ASSIGN. `a:[i] += 1` reads the current
+// element before writing; the OOB read reaches the interpreter rather than
+// being caught at semantic time. Hits the IndexOutOfBounds site at
+// runtime.rs:875 (tracker #002).
+a: [3: t64] = [10, 20, 30]
+i: t64 = 5
+a:[i] += 1
+print(a:[0])

@@ -386,9 +386,10 @@ impl RunTime {
                             elems[index] = value;
                             return Ok(());
                         } else {
-                            return Err(RuntimeError::UndefinedVar {
+                            return Err(RuntimeError::IndexOutOfBounds {
                                 pos,
-                                name: format!("index {} out of bounds for '{}'", index, arr_name),
+                                index: index as i64,
+                                length: elems.len(),
                             });
                         }
                     }
@@ -736,7 +737,8 @@ impl RunTime {
                 let idx = self.eval_semantic_expr(index)?;
                 match (arr, idx) {
                     (Value::Array(elems), Value::Num(i)) => {
-                        elems.get(i as usize).cloned().ok_or_else(|| RuntimeError::UndefinedVar { pos: *pos, name: format!("index {}", i) })
+                        let length = elems.len();
+                        elems.get(i as usize).cloned().ok_or(RuntimeError::IndexOutOfBounds { pos: *pos, index: i as i64, length })
                     }
                     _ => Err(RuntimeError::BadAssignTarget { pos: *pos })
                 }
@@ -814,7 +816,7 @@ SemanticStmt::Decl { name, ty, .. } => {
                 };
                 self.set_var_typed(name.clone(), rt_ty, val, 0)
             }
-            SemanticStmt::Assign { target, expr, .. } => {
+            SemanticStmt::Assign { target, expr, pos_eq } => {
                 let val = self.eval_semantic_expr(expr)?;
                 match target {
                     SemanticLValue::Binding { name, ty, .. } => {
@@ -835,11 +837,11 @@ SemanticStmt::Decl { name, ty, .. } => {
                             _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
                         };
                         let truncated = apply_numeric_cast(val, elem_ty);
-                        self.set_array_element(&arr_name, idx, truncated, 0)
+                        self.set_array_element(&arr_name, idx, truncated, *pos_eq)
                     }
                 }
             }
-            SemanticStmt::CompoundAssign { target, op, operand, .. } => {
+            SemanticStmt::CompoundAssign { target, op, operand, pos } => {
                 match target {
                     SemanticLValue::Binding { name, ty, .. } => {
                         let current = self.get_var(name, 0)?;
@@ -867,13 +869,17 @@ SemanticStmt::Decl { name, ty, .. } => {
                         let current_val = {
                             let arr = self.get_var(&arr_name, 0)?;
                             match arr {
-                                Value::Array(elems) => elems
-                                    .get(idx)
-                                    .cloned()
-                                    .ok_or_else(|| RuntimeError::UndefinedVar {
-                                        pos: 0,
-                                        name: format!("index {} out of bounds for '{}'", idx, arr_name),
-                                    })?,
+                                Value::Array(elems) => {
+                                    let length = elems.len();
+                                    elems
+                                        .get(idx)
+                                        .cloned()
+                                        .ok_or(RuntimeError::IndexOutOfBounds {
+                                            pos: *pos,
+                                            index: idx as i64,
+                                            length,
+                                        })?
+                                }
                                 _ => return Err(RuntimeError::NotAContainer {
                                     pos: 0,
                                     name: arr_name.clone(),
@@ -883,7 +889,7 @@ SemanticStmt::Decl { name, ty, .. } => {
                         let rhs = self.eval_semantic_expr(operand)?;
                         let result = self.apply_op(current_val, op.clone(), 0, rhs)?;
                         let truncated = apply_numeric_cast(result, elem_ty);
-                        self.set_array_element(&arr_name, idx, truncated, 0)
+                        self.set_array_element(&arr_name, idx, truncated, *pos)
                     }
                 }
             }
