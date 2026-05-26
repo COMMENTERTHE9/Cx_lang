@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-26
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -8,11 +8,17 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ---
 
-## Frontend — Release Candidate
+## Frontend — Released
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 released. Syntax frozen.
+
+**Post-release hardening (on submain):**
+- [x] Composite literal type-checking (tracker #001)
+- [x] IndexOutOfBounds error variant + OOB diagnostics (trackers #002, #012, #032)
+- [x] Single-source-of-truth builtin registry (tracker #008)
+- [x] BindingId-indexed per-frame variables — 57% runtime speedup on arithmetic loops (tracker #009)
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -89,6 +95,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-26:** Quiet day — no developer-authored commits. Submain still 7 ahead of main with tracker closures #001–#009. Integration backlog growing: daily-log branches and submain all pending merge. Matrix 182/0 stable.
+
+**2026-05-25:** Four tracker items closed on submain: #012 (IndexOutOfBounds variant), #002+#032 (OOB diagnostics + jit_known_unsound sidecar), #008 (builtin registry), #009 (BindingId-indexed locals, 57% faster arith loops). All motivated by Pillar 1–3 deep-dive findings from 2026-05-24. Submain 7 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
