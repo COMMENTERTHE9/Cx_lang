@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-27
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -8,11 +8,17 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ---
 
-## Frontend — Release Candidate
+## Frontend — Released
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 released. Syntax frozen.
+
+**Post-release hardening (on submain, not yet merged to main):**
+- [x] Composite literal type-checking (tracker #001)
+- [x] IndexOutOfBounds error variant + OOB diagnostics (trackers #002, #012, #032)
+- [x] Single-source-of-truth builtin registry (tracker #008)
+- [x] BindingId-indexed per-frame variables — 57% runtime speedup on arithmetic loops (tracker #009)
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -51,9 +57,9 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [ ] Method call actual lowering
-  - [ ] `when` block lowering or structured rejection
-  - [ ] DotAccess in compound forms
+  - [x] Method call actual lowering
+  - [x] `when` block lowering (Literal/Range/Bool/Catchall + TBool wire-value)
+  - [x] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
 ### Merged to submain (not yet on main)
@@ -89,6 +95,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-27:** Quiet day — no developer-authored commits. Roadmap corrected: Phase 11 fully checked off (when lowering, method call lowering, DotAccess compounds all landed on main previously but were unmarked). Frontend status updated to "v0.1.0 released" with 182/182 matrix. Submain still 7 ahead of main with tracker closures. Integration backlog: 7 daily-log branches pending merge.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
