@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-28
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -8,11 +8,11 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ---
 
-## Frontend — Release Candidate
+## Frontend — v0.1.0 Released
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 shipped (tag `v0.1.0` at PR #266 merge). No known soundness holes. Syntax frozen.
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -39,7 +39,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [x] Phase 8 Round 1 — ABI (scalars, structs, arrays, enums, calling convention)
 
 ### Active
-- [ ] Phase 11 — Surface area reduction
+- [x] Phase 11 — Surface area reduction
   - [x] Compound assign
   - [x] Unary expressions
   - [x] Struct literal lowering (CX-9)
@@ -51,9 +51,9 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [ ] Method call actual lowering
-  - [ ] `when` block lowering or structured rejection
-  - [ ] DotAccess in compound forms
+  - [x] Method call actual lowering (`0ab7e9b`)
+  - [x] `when` block lowering (`bed71c1`)
+  - [x] DotAccess in compound forms (`2d6804a`)
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
 ### Merged to submain (not yet on main)
@@ -89,6 +89,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-28:** Fourth quiet day. No human commits on any branch. Matrix stable at 182/0. Submain remains 7 commits ahead (tracker sprint #001/#002/#008/#009/#012/#032 + exit()). 8 daily-log branches pending merge. Roadmap corrected: Phase 11 fully checked off, frontend status updated to v0.1.0 released with 182 tests.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
