@@ -1,0 +1,31 @@
+---
+title: "Cx Dev Log — 2026-04-19"
+date: 2026-04-19
+description: "A quiet day with no commits landed, while the submain-to-main integration gap holds steady at 15 commits."
+---
+
+Nothing landed today. No commits on any branch, no merges, no uncommitted work in the working tree. The matrix sits at 78/78 on main, unchanged. This was a rest day.
+
+That said, the state of things is worth documenting because the submain integration gap is becoming a theme.
+
+## The submain gap
+
+Submain is still 15 commits ahead of main. That gap has been open for at least six days now. The unmerged work includes the audit Part 1 fix, `Result<T>`, integer overflow enforcement, semicolon consistency, diagnostics improvements, and more. On submain, the matrix was reported at 116/116 (with uncommitted work) vs. main's 78/78. The roadmap on submain (v4.7) has checked off the test runner, error model, and all-examples-pass items that main's roadmap (v4.8) still shows unchecked. These are merge artifacts, not real disagreements, but they accumulate noise the longer the branches stay apart.
+
+There are also 18 daily-log branches sitting in the remote. Those are minor, but they add conflict surface over time.
+
+## Yesterday's uncommitted audit Part 2
+
+The April 18 log described a substantial sprint of uncommitted work on the submain working tree: a recursive type parser refactor, struct field type resolution, a 64 MB interpreter thread stack, struct field truncation fixes, 6 new matrix tests, and 8 new example programs. Whether that work has been committed somewhere, lost, or is sitting in an unobserved working tree is unknown from the current main checkout. The most recent human code commit across all branches is still `eb65acf` on submain, dating from around April 13.
+
+## What's next
+
+The same five items predicted yesterday remain the likely next moves:
+
+1. Commit the audit Part 2 work on submain, if it still exists in a working tree.
+2. Merge submain into main. This is the single step that would unblock roadmap updates, raise the matrix count from 78 to 116+, and resolve the version divergence between the two roadmap files.
+3. Reconcile the roadmap versions after merge.
+4. Continue audit Part 2 with broader coverage.
+5. IR lowering for `Result<T>`.
+
+The submain merge has been the top predicted next step for nearly a week. At some point it will either happen or the gap will force a more painful reconciliation. For now, the codebase holds steady.
