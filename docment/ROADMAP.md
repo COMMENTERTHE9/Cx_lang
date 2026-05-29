@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-29
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -10,9 +10,9 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ## Frontend — Release Candidate
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 released. No known soundness holes. Syntax frozen.
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -39,7 +39,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [x] Phase 8 Round 1 — ABI (scalars, structs, arrays, enums, calling convention)
 
 ### Active
-- [ ] Phase 11 — Surface area reduction
+- [x] Phase 11 — Surface area reduction
   - [x] Compound assign
   - [x] Unary expressions
   - [x] Struct literal lowering (CX-9)
@@ -51,9 +51,9 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [ ] Method call actual lowering
-  - [ ] `when` block lowering or structured rejection
-  - [ ] DotAccess in compound forms
+  - [x] Method call actual lowering (0ab7e9b)
+  - [x] `when` block lowering (bed71c1)
+  - [x] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
 ### Merged to submain (not yet on main)
@@ -89,6 +89,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-29:** 4 commits on submain closing tracker items: #010 (lazy arena — eliminates 64 KB eager allocation per call), #014 (friendly token names in parse errors), #015 (CLI --help/--version), #030 (.gitattributes CRLF fix + matrix harness .expected_exit support). Submain now 10 non-merge commits ahead of main. Matrix 182/182 stable.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
