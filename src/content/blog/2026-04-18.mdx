@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-04-18"
+date: 2026-04-18
+description: "Three audit Part 1 failures fixed in a single sprint: recursive type parsing, struct field overflow truncation, and a 64 MB interpreter stack for deep recursion."
+---
+
+Five days of silence on submain broke today with an audit Part 2 sprint that fixed three of the four failures from the Part 1 audit. Nothing was committed or merged yet, but the uncommitted work is substantial and coherent: the matrix on submain went from 110 passing (committed) to 116/116 with these changes staged.
+
+## Recursive type parser
+
+The `type_parser` in `parser.rs` got a significant refactor. The old implementation used a flat combinator chain where `scalar.clone().or(named_type.clone())` handled the inner type of `Result<T>`. That chain couldn't match the `Result` keyword token recursively, so `Result<Result<t32>>` failed to parse.
+
+The fix replaces the flat chain with Chumsky's `recursive()` combinator. The recursive `ty` reference gets passed into all sub-parsers, which unlocks nested Result types, `Handle<T>` as a first-class type, and arrays of complex types like `[N: Result<T>]`. This is a quiet but important parser architecture change. It means Cx now supports recursive type composition structurally, not just for the handful of cases the old flat chain happened to cover.
+
+## Struct field overflow truncation
+
+The overflow enforcement work that landed in `dc564a7` handled arithmetic expressions, but struct field writes had a gap. If you wrote `c.value += 10` where `value` is a `t8` field, the compound assignment bypassed width truncation entirely and produced a full i128 result.
+
+The fix touches both the semantic pass and the runtime. In `semantic.rs`, the semantic pass now looks up the actual field type from the struct definition for `DotAccess` LValues. It resolves the struct name from the instance variable, finds the field in `self.structs`, and runs `types_compatible` checking with proper type mismatch errors. It also applies `insert_cast_if_needed` for numeric coercion. The same lookup was added for `CompoundAssign` targets on struct fields, so the `ty` field on `SemanticLValue::DotAccess` now carries the real field type instead of `SemanticType::Unknown`.
+
+In `runtime.rs`, both the `Assign` and `CompoundAssign` arms now call `apply_numeric_cast(val, ty)` using the LValue's type field before storing. This closes the truncation gap for struct field writes at both layers.
+
+## 64 MB interpreter thread
+
+`fib(10)` in Cx generates roughly 177 recursive Cx-level calls, each burning multiple KB of Rust stack. On the default 1 MB Windows thread stack, `fib(15)` caused a stack overflow.
+
+The fix is pragmatic: the interpreter now runs on a dedicated thread via `std::thread::Builder::new().stack_size(64 * 1024 * 1024)`. A comment in the code notes that reducing per-frame stack consumption is a post-0.1 optimization. For now, 64 MB of headroom handles any reasonable recursive Cx program. `fib(15)` produces 610 correctly.
+
+## New tests and examples
+
+Six new matrix tests cover the fixes: struct field compound assign overflow (t109), struct field direct assign overflow (t110), nested Result round-trip (t111), array of Result (t112), recursive fib to 610 (t113), and a field type mismatch rejection (t114).
+
+Eight new example programs landed under `examples/`: hello, fibonacci, fizzbuzz, arrays and loops, error handling, generics, structs and methods, and tbool uncertainty. These are well-commented showcase files demonstrating Cx syntax and features.
+
+## What remains
+
+The remaining audit failure (audit_03, audit_05) are by-design untyped-assignment rejections, not bugs. The broader Part 2 audit scope covering arrays, imports with generics, nested generics, and `copy_into` under Result hasn't started yet.
+
+The submain-to-main integration gap is now 15 work commits plus whatever the audit Part 2 commit becomes. Merging, updating the roadmap, and then moving to IR lowering for `Result<T>` (where `lower.rs` still has `unsupported!` arms for `ResultOk`/`ResultErr`/`Try`) are the likely next steps once this work gets committed.
