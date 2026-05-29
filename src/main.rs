@@ -99,8 +99,41 @@ fn main() {
     }
 }
 
+fn print_help() {
+    println!(
+        "\
+{name} {version} — the Cx compiler/interpreter
+
+USAGE:
+    cx [OPTIONS] <file.cx>
+
+OPTIONS:
+    --backend=<interp|cranelift|llvm|validate>
+                       Select the execution backend (default: interp)
+    --test             Run the file's #[test] functions instead of executing it
+    --debug[-<phase>]  Emit debug output; <phase> = tokens|ast|scope|phase|trace
+                       (bare --debug enables all)
+    -h, --help         Print this help and exit
+    -V, --version      Print version information and exit",
+        name = env!("CARGO_PKG_NAME"),
+        version = env!("CARGO_PKG_VERSION"),
+    );
+}
+
 fn run() {
     let args: Vec<String> = env::args().skip(1).collect();
+
+    // --help / --version are handled before any file argument is required, and
+    // take priority over everything else (tracker #015).
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let flags = DebugFlags::from_args(&args);
     let test_mode = args.contains(&"--test".to_string());
     let backend_kind = backend::parse_backend_flag(&args);
