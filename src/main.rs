@@ -443,7 +443,9 @@ fn parse_program_chumsky(tok_list: &[Tok], src: &str) -> Result<Program, Vec<Par
             let mapped = errs
                 .into_iter()
                 .map(|e| ParseError {
-                    msg: format!("{:?}", e.reason()),
+                    // Display (not Debug) so chumsky renders Token via its
+                    // Display impl — friendly names, not enum debug (#014).
+                    msg: format!("{}", e.reason()),
                     pos: e.span().start,
                 })
                 .collect::<Vec<ParseError>>();

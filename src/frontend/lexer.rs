@@ -299,6 +299,100 @@ pub enum Token {
     MacroOuterOpen,
 }
 
+impl std::fmt::Display for Token {
+    /// User-facing name for a token, used in parse-error messages instead of
+    /// the internal enum debug name (tracker #014). Keywords/operators render as
+    /// the source text they match; literals and identifiers render as a category.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s: &str = match self {
+            Token::LineComment => "comment",
+            Token::BlockComment => "comment",
+            // Keywords
+            Token::KeywordLet => "let",
+            Token::KeywordFnc => "fnc",
+            Token::KeywordConst => "const",
+            Token::KeywordPub => "pub",
+            Token::KeywordReturn => "return",
+            Token::KeywordTrue => "true",
+            Token::KeywordFalse => "false",
+            Token::KeywordUnknown => "unknown",
+            Token::KeywordWhen => "when",
+            Token::KeywordWhile => "while",
+            Token::KeywordIf => "if",
+            Token::KeywordElse => "else",
+            Token::KeywordFor => "for",
+            Token::KeywordIn => "in",
+            Token::KeywordLoop => "loop",
+            Token::KeywordBreak => "break",
+            Token::KeywordContinue => "continue",
+            Token::KeywordThen => "then",
+            Token::KeywordEnum => "enum",
+            Token::KeywordGroup => "group",
+            Token::KeywordHandle => "Handle",
+            Token::KeywordStruct => "struct",
+            Token::KeywordImpl => "impl",
+            Token::KeywordResult => "Result",
+            Token::KeywordOk => "Ok",
+            Token::KeywordErr => "Err",
+            // Type keywords
+            Token::TypeT8 => "t8",
+            Token::TypeT16 => "t16",
+            Token::TypeT32 => "t32",
+            Token::TypeT64 => "t64",
+            Token::TypeT128 => "t128",
+            Token::TypeF64 => "f64",
+            Token::TypeBool => "bool",
+            Token::TypeStr => "str",
+            Token::TypeStrRef => "strref",
+            Token::TypeChar => "char",
+            Token::TypeVoid => "void",
+            // Literals & identifiers
+            Token::LiteralString(_) => "string literal",
+            Token::LiteralFloat(_) => "float literal",
+            Token::LiteralInt(_) => "integer literal",
+            Token::LiteralChar(_) => "char literal",
+            Token::Identifier(_) => "identifier",
+            // Operators
+            Token::OpAdd => "+",
+            Token::OpSub => "-",
+            Token::OpMul => "*",
+            Token::OpDiv => "/",
+            Token::OpMod => "%",
+            Token::OpAnd => "&&",
+            Token::OpOr => "||",
+            Token::OpBang => "!",
+            Token::OpEqualEqual => "==",
+            Token::OpNotEqual => "!=",
+            Token::OpLessEq => "<=",
+            Token::OpGreaterEq => ">=",
+            Token::OpGreaterThan => ">",
+            Token::OpLessThan => "<",
+            Token::OpAssign => "=",
+            // Punctuation
+            Token::PunctArrow => "->",
+            Token::PunctColon => ":",
+            Token::PunctSemicolon => ";",
+            Token::PunctComma => ",",
+            Token::QuestionMark => "?",
+            Token::RangeInclusive => "..=",
+            Token::RangeExclusive => "..",
+            Token::PunctFatArrow => "=>",
+            Token::PunctDoubleColon => "::",
+            Token::PunctDot => ".",
+            Token::PunctParenOpen => "(",
+            Token::PunctParenClose => ")",
+            Token::PunctBraceOpen => "{",
+            Token::PunctBraceClose => "}",
+            Token::PunctBracketOpen => "[",
+            Token::PunctBracketClose => "]",
+            // Macros
+            Token::MacroInnerOpen => "#![",
+            Token::MacroOuterOpen => "#[",
+        };
+        f.write_str(s)
+    }
+}
+
 pub struct ParseError {
     pub msg: String,
     pub pos: usize,
