@@ -37,14 +37,27 @@ pub struct Arena {
 }
 
 impl Arena {
+    /// Creates an arena with NO backing chunk (tracker #010). The 64 KB chunk
+    /// is allocated lazily on the first `alloc()`, so a function scope that
+    /// never allocates into the arena — pure arithmetic, recursion without heap
+    /// locals, the common call-heavy case — pays nothing. Previously every
+    /// `push_function_scope` eagerly built and zero-filled a 64 KB chunk,
+    /// measured by Pillar 1 at ~90% of call-heavy workload instructions.
     pub fn new() -> Self {
         Self {
-            chunks: vec![Chunk::new(DEFAULT_CHUNK_SIZE)],
+            chunks: Vec::new(),
             current: 0,
         }
     }
 
     pub fn alloc(&mut self, size: usize, align: usize) -> *mut u8 {
+        // Lazily allocate the first chunk on demand (see `new`).
+        if self.chunks.is_empty() {
+            let new_size = DEFAULT_CHUNK_SIZE.max(size + align);
+            self.chunks.push(Chunk::new(new_size));
+            self.current = 0;
+        }
+
         // try current chunk first
         if let Some(ptr) = self.chunks[self.current].alloc(size, align) {
             return ptr;
@@ -74,9 +87,12 @@ impl Arena {
     }
 
     pub fn reset(&mut self) {
-        // reset all chunks, drop extras, keep only first
+        // reset all chunks, drop extras, keep only first (if any chunk exists —
+        // a lazily-created arena may hold none; #010)
         self.chunks.truncate(1);
-        self.chunks[0].reset();
+        if let Some(first) = self.chunks.first_mut() {
+            first.reset();
+        }
         self.current = 0;
     }
 
