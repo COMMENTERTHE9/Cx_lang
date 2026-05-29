@@ -23,8 +23,8 @@ for test_file in "$MATRIX_DIR"/t*.cx; do
         want_exit=$(cat "${test_file}.expected_exit")
         if [ "$exit_code" -eq "$want_exit" ]; then
             if [ -f "${test_file}.expected_output" ]; then
-                expected=$(cat "${test_file}.expected_output")
-                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null)
+                expected=$(cat "${test_file}.expected_output" | tr -d '\r')
+                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null | tr -d '\r')
                 if [ "$actual" = "$expected" ]; then
                     echo "PASS (exit $want_exit + output) — $test_name"
                     PASS=$((PASS + 1))
@@ -56,8 +56,8 @@ for test_file in "$MATRIX_DIR"/t*.cx; do
     else
         if [ $exit_code -eq 0 ]; then
             if [ -f "${test_file}.expected_output" ]; then
-                expected=$(cat "${test_file}.expected_output")
-                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null)
+                expected=$(cat "${test_file}.expected_output" | tr -d '\r')
+                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null | tr -d '\r')
                 if [ "$actual" = "$expected" ]; then
                     echo "PASS (output verified) — $test_name"
                     PASS=$((PASS + 1))

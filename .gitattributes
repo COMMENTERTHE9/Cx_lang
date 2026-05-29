@@ -1,0 +1,11 @@
+# Test fixtures and their sidecars must have byte-stable LF line endings on
+# every platform. The verification-matrix harness compares program stdout (LF)
+# against these files; a CRLF checkout on Windows produced false "output
+# mismatch" failures and repeated drift-diagnosis confusion (tracker #030).
+# Forcing eol=lf here makes checkout deterministic regardless of core.autocrlf,
+# so no per-clone `git config` workaround is needed.
+src/tests/verification_matrix/** text eol=lf
+
+# Shell scripts (the matrix harness) must stay LF or bash breaks on a fresh
+# clone that lacks the local core.autocrlf workaround (tracker #030).
+*.sh text eol=lf
