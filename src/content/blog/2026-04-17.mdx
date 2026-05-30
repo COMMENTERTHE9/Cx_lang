@@ -1,0 +1,53 @@
+---
+title: "Cx Dev Log — 2026-04-17"
+date: 2026-04-17
+description: "Fourth consecutive day with no new commits as the submain branch sits at 15 work commits ahead of main, carrying four hard-blocker closures waiting to merge."
+---
+
+Day four of no developer commits anywhere in the Cx repo. The test matrix holds at 78/78 on `main`, working tree is clean, and the most recent human commit is still `eb65acf` on `submain` from April 13. The repo is quiet, but the integration debt is not.
+
+## The Submain Pile
+
+`submain` is sitting at 15 work commits, 97 files changed, +1974/-627 ahead of `main`. That is a significant chunk of work that has landed on a branch but not reached the trunk. Here is what it carries:
+
+- Parser/semantic/interpreter audit Part 1, plus a parser body-gap fix
+- Diagnostics readability pass
+- Optional semicolons
+- Integer overflow enforcement at declared width
+- Minimal error model (`Result<T>`, `Ok`, `Err`, `?`)
+- Phase 10 loop lowering for `for`/`while`/`loop`/`break`/`continue`, with tests
+- Basic test runner
+- UTF-8 decision lock
+- Wrapping arithmetic enforcement
+- Agent Operating Doctrine doc
+- Examples/warning/roadmap sprint
+
+Four hard-blocker closures are bundled in there. None of them are on `main` yet.
+
+The merge has been the top predicted next step for four consecutive daily logs now. There is one probable conflict on `docs/frontend/ROADMAP.md` (v4.8 on main vs v4.7-era edits on submain), and the daily-log branch backlog, now 15 unmerged branches from March 29 through April 16, makes the conflict surface slightly larger each day.
+
+## Why It Matters
+
+Integration debt compounds. Every additional day that `submain` diverges from `main` increases the merge surface and the odds of a non-trivial conflict resolution. The 15 unmerged daily-log branches add noise on top of that. Right now the conflict is likely just the roadmap file, which is manageable. But the longer it sits, the less certain that stays true.
+
+From a development standpoint, the hard-blocker closures on `submain` are real progress. The error model (`Result<T>`) is implemented at the interpreter level. Loop lowering with `break`/`continue` is tested. The audit framework exists. But none of that is reflected in the `main` branch state, and anything built on top of `main` right now does not have access to it.
+
+## What Is Queued
+
+The critical path has not changed in days:
+
+1. **Merge `submain` into `main`.** This unblocks everything else. The 15 work commits carry four hard-blocker closures, and the longer it waits, the messier it gets.
+
+2. **Fix audit_09.** Compound assignment on struct fields currently skips width truncation. The fix is adding `apply_numeric_cast` in the `CompoundAssign` arm of `run_semantic_stmt` using the field's declared `SemanticType`.
+
+3. **Convert `result_type` to `recursive()`.** This unlocks `Result<Result<T>>`, `Handle<Result<T>>`, and nested generic composition.
+
+4. **Implement `Result<T>` in IR lowering.** The interpreter path is done on `submain`, but `lower.rs` still has `unsupported!` arms for `ResultOk`/`ResultErr`/`Try`.
+
+5. **Audit Part 2.** Arrays, imports + generics, nested generics, `copy_into` under `Result`.
+
+## State of Things
+
+The roadmap (`docs/frontend/ROADMAP.md`) has not been edited and remains at v4.8 from March 28. No spec or syntax doc changes. No new decisions. The test matrix is stable at 78 PASS / 0 FAIL. The repo is in a holding pattern, waiting for the merge that unblocks the next phase of real work.
+
+This is one of those days where the most useful thing that could happen is a single `git merge submain` on `main`. Everything else follows from that.
