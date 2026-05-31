@@ -62,6 +62,12 @@ pub struct Analyzer {
     next_function_id: u32,
     next_enum_id: u32,
     next_enum_variant_id: u32,
+    /// Declared array element type for the array literal currently being
+    /// analyzed, when one is known from context (e.g. `let a: [N: T] = [...]`).
+    /// Set by the typed-assignment arm before analyzing the initializer and
+    /// consumed (taken) by the ArrayLit arm so element-mismatch errors report
+    /// the DECLARED element type rather than element[0]'s inferred type (#031a).
+    expected_array_elem: Option<SemanticType>,
 }
 
 impl Analyzer {
@@ -83,6 +89,7 @@ impl Analyzer {
             next_function_id: 0,
             next_enum_id: 0,
             next_enum_variant_id: 0,
+            expected_array_elem: None,
         }
     }
 
@@ -491,7 +498,17 @@ impl Analyzer {
                 pos_type,
             } => {
                 let declared_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
-                let mut semantic_expr = self.analyze_expr(expr)?;
+                // Hint the declared element type to the array-literal analysis so
+                // element-mismatch errors name the declared type, not element[0]'s
+                // inferred type (#031a). Save/restore so it never leaks past this
+                // initializer.
+                let prev_expected_elem = self.expected_array_elem.take();
+                if let SemanticType::Array(_, elem) = &declared_ty {
+                    self.expected_array_elem = Some((**elem).clone());
+                }
+                let analyzed = self.analyze_expr(expr);
+                self.expected_array_elem = prev_expected_elem;
+                let mut semantic_expr = analyzed?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_type, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
@@ -1304,16 +1321,25 @@ Expr::Unary(op, inner, pos) => {
             }
             Expr::Bin(lhs, op, op_pos, rhs) => self.analyze_binary(lhs, *op, *op_pos, rhs),
             Expr::ArrayLit(elems) => {
+                // Consume any declared-element-type hint up front (#031a) so the
+                // element sub-analyses below don't inherit it.
+                let declared_elem = self.expected_array_elem.take();
                 let mut semantic_elems = Vec::new();
                 for e in elems {
                     semantic_elems.push(self.analyze_expr(e)?);
                 }
-                let elem_ty = semantic_elems.first()
-                    .map(|e| e.ty.clone())
-                    .unwrap_or(SemanticType::Unknown);
-                // The first element fixes the array's element type; every later
-                // element must unify with it.
-                for (i, e) in semantic_elems.iter().enumerate().skip(1) {
+                // With a declared element type, every element (including index 0)
+                // must unify with the DECLARED type, and mismatches name it. Without
+                // one (untyped array), element[0] fixes the type and later elements
+                // must unify with it.
+                let (elem_ty, check_from) = match &declared_elem {
+                    Some(t) => (t.clone(), 0),
+                    None => (
+                        semantic_elems.first().map(|e| e.ty.clone()).unwrap_or(SemanticType::Unknown),
+                        1,
+                    ),
+                };
+                for (i, e) in semantic_elems.iter().enumerate().skip(check_from) {
                     if !types_compatible(&elem_ty, &e.ty) {
                         return Err(sem_err!(0, "array element at index {} expects type '{}' but got '{}'", i, type_name(&elem_ty), type_name(&e.ty)));
                     }
