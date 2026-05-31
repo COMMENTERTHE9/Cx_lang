@@ -96,8 +96,8 @@ pub struct BuiltinDef {
     /// Return type in registry terms.
     pub ret: BuiltinRet,
     /// Whether the IR validator's reserved-name gate rejects a user-defined
-    /// function of this name. `false` only for `exit` — a deliberately preserved
-    /// asymmetry (every other user builtin is reserved). Tracked as #033.
+    /// function of this name. `true` for all user builtins — `exit` was the lone
+    /// `false` holdout (#008 preserved it) until #033 closed the asymmetry.
     pub validator_reserved: bool,
     /// JIT lowering status (read by the lowerer to derive its `is_cx_builtin`
     /// gate).
@@ -117,7 +117,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
     BuiltinDef { name: "assert",    kind: BuiltinKind::Assert,   arity: Arity::Exact(1),    ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Lowered },
     BuiltinDef { name: "assert_eq", kind: BuiltinKind::AssertEq, arity: Arity::Exact(2),    ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Lowered },
     BuiltinDef { name: "is_known",  kind: BuiltinKind::IsKnown,  arity: Arity::Exact(1),    ret: BuiltinRet::Bool, validator_reserved: true,  jit: JitStatus::Unhandled },
-    BuiltinDef { name: "exit",      kind: BuiltinKind::Exit,     arity: Arity::Range(0, 1), ret: BuiltinRet::Void, validator_reserved: false, jit: JitStatus::Unhandled },
+    BuiltinDef { name: "exit",      kind: BuiltinKind::Exit,     arity: Arity::Range(0, 1), ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Unhandled },
 ];
 
 /// Look up a builtin by its Cx source name. Linear scan over ~9 entries.
