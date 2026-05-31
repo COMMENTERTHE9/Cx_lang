@@ -447,6 +447,7 @@ impl Analyzer {
                             return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a struct field — use an owned str instead"));
                         }
                         if field_ty != SemanticType::Unknown {
+                            check_semantic_num_fits(&semantic_expr, &field_ty, *pos_eq)?;
                             if !types_compatible(&field_ty, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(&field_ty, &semantic_expr.ty, *pos_eq));
                             }
@@ -513,9 +514,7 @@ impl Analyzer {
                     return Err(sem_err!(*pos_type, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
 
-                if let Expr::Val(AstValue::Num(n)) = expr {
-                    check_num_range(ty.clone(), *n, *pos_type)?;
-                }
+                check_literal_fits(expr, &declared_ty, *pos_type)?;
 
                 if !types_compatible(&declared_ty, &semantic_expr.ty) {
                     return Err(type_mismatch_error(
@@ -1069,6 +1068,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
 
         let expr = match (expr, self.current_ret_ty.clone()) {
             (Some(expr), Some(expected)) => {
+                check_literal_fits(expr, &expected, pos)?;
                 let expr = self.analyze_expr(expr)?;
                 if expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
@@ -1185,6 +1185,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             None => return Err(sem_err!(*pos, "unknown field '{}' in struct literal of type '{}'", fname, type_name)),
                             Some((_, decl_ty)) => {
                                 let decl_sem = semantic_type_from_decl(decl_ty.clone(), &field_type_params);
+                                check_literal_fits(fexpr, &decl_sem, *pos)?;
                                 if !types_compatible(&decl_sem, &sem_expr.ty) {
                                     return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
                                 }
@@ -1340,6 +1341,11 @@ Expr::Unary(op, inner, pos) => {
                     ),
                 };
                 for (i, e) in semantic_elems.iter().enumerate().skip(check_from) {
+                    if declared_elem.is_some() {
+                        // Range-check integer literals against the declared element
+                        // type (#028).
+                        check_semantic_num_fits(e, &elem_ty, *pos)?;
+                    }
                     if !types_compatible(&elem_ty, &e.ty) {
                         return Err(sem_err!(*pos, "array element at index {} expects type '{}' but got '{}'", i, type_name(&elem_ty), type_name(&e.ty)));
                     }
@@ -1785,6 +1791,7 @@ Expr::Unary(op, inner, pos) => {
                 CallArg::Expr(expr) => {
                     let expr = self.analyze_expr(expr)?;
                     let expr = if let Some(expected) = expected {
+                        check_semantic_num_fits(&expr, &expected, pos)?;
                         if !types_compatible(&expected, &expr.ty) {
                             return Err(sem_err!(pos, "argument {} to '{}': expected {}, got {}", index + 1, name, type_name(&expected), type_name(&expr.ty)));
                         }
@@ -2024,20 +2031,50 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
     }
 }
 
-fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
-    let bounds: Option<(i128, i128)> = match ty {
-        Type::T8 => Some((0, u8::MAX as i128)),
-        Type::T16 => Some((0, u16::MAX as i128)),
-        Type::T32 => Some((0, u32::MAX as i128)),
-        Type::T64 => Some((0, u64::MAX as i128)),
-        Type::T128 => Some((i128::MIN, i128::MAX)),
+/// Range-check an integer literal against a declared integer width (#028).
+/// Cx integers are SIGNED (the runtime stores them as i8/i16/i32/i64/i128), so
+/// the valid ranges are the signed ones. A literal that statically cannot fit is
+/// a semantic error in both backends, rather than wrapping in the interpreter and
+/// being rejected at JIT lowering. Non-integer types pass through.
+fn check_num_range(ty: &SemanticType, n: i128, pos: usize) -> Result<(), SemanticError> {
+    let bounds: Option<(i128, i128, &str)> = match ty {
+        SemanticType::I8 => Some((i8::MIN as i128, i8::MAX as i128, "t8")),
+        SemanticType::I16 => Some((i16::MIN as i128, i16::MAX as i128, "t16")),
+        SemanticType::I32 => Some((i32::MIN as i128, i32::MAX as i128, "t32")),
+        SemanticType::I64 => Some((i64::MIN as i128, i64::MAX as i128, "t64")),
+        SemanticType::I128 => Some((i128::MIN, i128::MAX, "t128")),
         _ => None,
     };
 
-    if let Some((min, max)) = bounds {
+    if let Some((min, max, name)) = bounds {
         if n < min || n > max {
-            return Err(sem_err!(pos, "value {} overflows type {:?} (range {}..{})", n, ty, min, max));
+            return Err(sem_err!(
+                pos,
+                "integer literal {} out of range for {} (valid range: {}..{})",
+                n, name, min, max
+            ));
         }
+    }
+    Ok(())
+}
+
+/// If `expr` is an integer literal, range-check it against the declared type
+/// `expected` (#028). Negative literals are `Unary(Minus, Num(_))`, not bare
+/// `Num`, so this catches the positive-overflow case the compiler can see
+/// statically (the documented `return 300` → `t8` scenario).
+fn check_literal_fits(expr: &Expr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
+    if let Expr::Val(AstValue::Num(n)) = expr {
+        check_num_range(expected, *n, pos)?;
+    }
+    Ok(())
+}
+
+/// Same as [`check_literal_fits`] but for an already-analyzed expression — used
+/// where only the `SemanticExpr` is in scope (field assignment, array elements,
+/// call arguments). A bare integer literal analyzes to `Value(Num(_))` (#028).
+fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
+    if let SemanticExprKind::Value(SemanticValue::Num(n)) = &sem.kind {
+        check_num_range(expected, *n, pos)?;
     }
     Ok(())
 }

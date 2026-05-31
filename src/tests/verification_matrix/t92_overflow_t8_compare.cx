@@ -1,3 +1,4 @@
-x: t8 = 200
+// Comparison on a t8 value after arithmetic overflow wraps (locked behavior).
+x: t8 = 100
 result: bool = (x + 100) > 50
 print(result)

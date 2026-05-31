@@ -1,3 +1,4 @@
-x: t8 = 200
+// t8 overflow propagated through a chained binding (arithmetic wrap, locked).
+x: t8 = 100
 y: t8 = x + 100
 print(y)
