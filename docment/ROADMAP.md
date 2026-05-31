@@ -39,7 +39,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [x] Phase 8 Round 1 — ABI (scalars, structs, arrays, enums, calling convention)
 
 ### Active
-- [ ] Phase 11 — Surface area reduction
+- [x] Phase 11 — Surface area reduction
   - [x] Compound assign
   - [x] Unary expressions
   - [x] Struct literal lowering (CX-9)
@@ -91,6 +91,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ## Working Notes
 
 **2026-05-30:** Tracker #014 (friendly token names) closed on submain (6dfd06d) — Display impl for Token enum, parse errors now human-readable. Example suite overhaul in progress (8 files, uncommitted). Submain 11 non-merge commits ahead of main.
+
+**2026-05-29:** 4 commits on submain closing tracker items: #010 (lazy arena — eliminates 64 KB eager allocation per call), #014 (friendly token names in parse errors), #015 (CLI --help/--version), #030 (.gitattributes CRLF fix + matrix harness .expected_exit support). Submain now 10 non-merge commits ahead of main.
 
 **2026-05-23:** Type::Void AST variant merged to main (PR #278). exit() builtin committed on submain (4d612df) — interpreter runtime, semantic analysis, --test mode integration, 7 new verification fixtures, extended matrix harness.
 
