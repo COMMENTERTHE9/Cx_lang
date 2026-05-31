@@ -11,6 +11,17 @@ use colored::Colorize;
 pub(crate) const ERR_FAILED_STATEMENT: &str = "failed to parse statement";
 
 pub(crate) fn lexer_error_message(slice: &str) -> String {
+    // An all-digit slice that reaches the lexer error path is an integer literal
+    // that overflowed Cx's widest integer type (i128 / t128): the LiteralInt
+    // regex callback returns None on parse overflow, which Logos surfaces as a
+    // lex error. Report the range rather than the misleading "this character is
+    // not valid" (tracker #016).
+    if !slice.is_empty() && slice.bytes().all(|b| b.is_ascii_digit()) {
+        return format!(
+            "integer literal out of range for i128 (max {})",
+            i128::MAX
+        );
+    }
     format!(
         "unrecognized token {:?} — this character is not valid in Cx",
         slice
