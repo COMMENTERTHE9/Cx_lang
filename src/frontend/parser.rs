@@ -418,8 +418,21 @@ where
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
             .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
+            // Detect a stray initializer: `let` is an uninitialized-declaration
+            // keyword; `let x = v` / `let x: T = v` are not valid. Point users at
+            // the working `x: T = value` form instead of the raw chumsky error
+            // (tracker #013).
+            .then(just(Token::OpAssign).or_not())
             .then_ignore(semi.clone().or_not())
-            .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos })
+            .try_map(|(((pos, name), ty), eq), span| {
+                if eq.is_some() {
+                    return Err(Rich::custom(
+                        span,
+                        "`let` declares an uninitialized binding and cannot have an initializer — to declare with a value use `x: T = value` (without `let`)",
+                    ));
+                }
+                Ok(Stmt::Decl { name, ty, pos })
+            })
             .boxed();
 
         let index_assign = ident

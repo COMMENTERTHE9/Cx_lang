@@ -1,0 +1,4 @@
+// `let x = expr` must be rejected with a directive error pointing at the
+// working `x: T = value` form. `let` is uninitialized-only (tracker #013).
+let x = 5
+print(x)
