@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-05-30
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -10,9 +10,9 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ## Frontend — Release Candidate
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 released (tagged at 9fc0d24). No known soundness holes. Syntax frozen.
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -39,7 +39,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [x] Phase 8 Round 1 — ABI (scalars, structs, arrays, enums, calling convention)
 
 ### Active
-- [ ] Phase 11 — Surface area reduction
+- [x] Phase 11 — Surface area reduction
   - [x] Compound assign
   - [x] Unary expressions
   - [x] Struct literal lowering (CX-9)
@@ -51,12 +51,12 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [ ] Method call actual lowering
-  - [ ] `when` block lowering or structured rejection
+  - [x] Method call actual lowering (0ab7e9b, landed on main via v0.1.0 merge)
+  - [x] `when` block lowering — Literal/Range/Bool/Catchall + TBool wire-value (bed71c1, landed on main via v0.1.0 merge; EnumVariant arms deferred post-0.1)
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
-### Merged to submain (not yet on main)
+### Landed (integrated to main via v0.1.0 merge)
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
@@ -89,6 +89,12 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-05-30:** Tracker #014 (friendly token names) closed on submain (6dfd06d) — Display impl for Token enum, parse errors now human-readable. Example suite overhaul in progress (8 files, uncommitted). Submain 11 non-merge commits ahead of main.
+
+**2026-05-29:** 4 commits on submain closing tracker items: #010 (lazy arena — eliminates 64 KB eager allocation per call), #014 (friendly token names in parse errors), #015 (CLI --help/--version), #030 (.gitattributes CRLF fix + matrix harness .expected_exit support). Submain now 10 non-merge commits ahead of main.
+
+**2026-05-23:** Type::Void AST variant merged to main (PR #278). exit() builtin committed on submain (4d612df) — interpreter runtime, semantic analysis, --test mode integration, 7 new verification fixtures, extended matrix harness.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
