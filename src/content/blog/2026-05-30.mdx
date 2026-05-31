@@ -1,37 +1,53 @@
 ---
 title: "Cx Dev Log — 2026-05-30"
 date: 2026-05-30
-description: "A quiet day with no new code, but the integration debt between submain and main continues to grow with 10 unmerged commits and 14 pending daily-log branches."
+description: "Friendly token names landed for parse errors, and the entire example suite got a tutorial-style rewrite."
 ---
 
-No developer commits landed today. The working tree on main is clean. The matrix holds at 182 PASS / 0 FAIL. This is the kind of day where nothing moves forward, but the gap between what exists on submain and what is on main keeps widening silently.
+Two things happened today: parse errors got readable, and every example file in the repo was rewritten from scratch as a teaching tool.
 
-## The integration debt picture
+## Human-readable parse errors
 
-Submain is now 10 non-merge commits ahead of main. That backlog includes real work: lazy arena allocation (eliminating the 64 KB zero-fill per function call), BindingId-indexed variables, a builtin registry, array bounds checking, composite literal type-checking, the exit() builtin, CLI --help/--version flags, human-readable token names in parse errors, and a CRLF fix for the matrix harness on Windows. Most of this landed in two bursts on May 24-25 and May 29.
+Tracker #014 closed with commit `6dfd06d` on submain. The change adds a `Display` impl for the `Token` enum with roughly 94 match arms, mapping every token variant to a name a developer would actually recognize. Keywords print as their source text (`let`, `fnc`, `when`), type keywords as their Cx names (`t64`, `bool`, `void`), literals as descriptive categories like `"string literal"` or `"integer literal"`, and operators as their actual symbols (`+`, `==`, `->`).
 
-Fourteen daily-log branches are also unmerged. Each carries incremental roadmap corrections. The last daily-log branch that reached main was from May 9, over three weeks ago.
+The error formatter in `main.rs` switched from `{:?}` (Rust debug formatting) to `{}` (Display), so a parse error that used to say something like:
 
-The merge itself should be straightforward. Submain merged main via PR #282 on May 24, so there are no expected conflicts. But the gap keeps growing, and every daily log since May 6 has predicted the merge as the top next step. This is the sixth consecutive day making that prediction.
+```
+ExpectedFound { expected: ['PunctColon', ...], found: ... }
+```
 
-## Roadmap corrections
+now says:
 
-The roadmap on main still says "0.1 release candidate" and "117/117 matrix." Neither has been true for a while. The actual state is v0.1.0 released (the tag exists) and 182 tests passing.
+```
+found 't64' expected ':'
+```
 
-Phase 11 (surface area reduction) is now fully complete. The three remaining sub-items were confirmed landed on main via their commit hashes:
+The implementation is localized: 97 new lines in `lexer.rs`, one format specifier change in `main.rs`. No test fixtures needed updating because none were asserting on the old debug wording. Small change, real usability improvement for anyone hitting a syntax error.
 
-- Method call actual lowering (commit `0ab7e9b`)
-- `when` block lowering (commit `bed71c1`)
-- DotAccess in compound forms
+## Example suite overhaul
 
-These had been sitting in the codebase for some time but were never checked off in the roadmap. The daily-log commits carry these corrections, but since none of those branches have merged to main, the roadmap file on main remains stale.
+All 8 files in `examples/` were substantially rewritten (280 insertions, 78 deletions). This is uncommitted work sitting on the working tree, but it represents the most significant documentation effort in weeks. The examples shifted from terse, code-only snippets to tutorial-style files with block comments explaining each concept.
 
-## What is still waiting
+A few of the more interesting rewrites:
 
-Phase 8 Round 2 (str/strref layout, Handle\<T\>) is still incomplete. Phases 12, 14, and 15 live on submain and haven't reached main. The remaining print intrinsics (print, println, printn, read, input) are still pending from Phase 9. JIT bounds checking (tracker #003) is the natural follow-up to the lazy arena and array bounds work from last week's sprint.
+**hello.cx** went from 7 lines to 39. It now walks through variables, printing, string interpolation, and arithmetic with commented sections for each.
 
-## Looking ahead
+**fibonacci.cx** moved from a recursive `fib()` call to an iterative while-loop approach. This is a practical choice given Cx's current declaration syntax. The file also picks up a `classify()` helper demonstrating explicit `return` with semicolons, and comments explaining the `fnc:` colon requirement and implicit vs explicit return.
 
-The single highest-leverage action remains the same one it has been for weeks: merge submain to main. Ten commits carrying performance improvements, correctness fixes, CLI polish, and build improvements are waiting. The 14 pending daily-log branches could be batch-merged afterward to bring the roadmap file back in sync with reality.
+**error_handling.cx** was rebuilt around a three-function chain (`divide`, `double_divide`, `triple_divide`) that progressively demonstrates `Result<T>`, `Ok()`, `Err()`, and the `?` try operator. Each concept gets its own section.
 
-Whether the next session breaks the pattern or adds a seventh day to the prediction streak remains to be seen.
+**structs_and_methods.cx** saw the biggest structural change. It dropped `max_health`, `heal`, and `show` methods in favor of `is_alive()` (returns bool) and `add_score()`, with detailed comments covering impl block syntax including the `alias: Type` pattern and the `impl_name` binding.
+
+**tbool_uncertainty.cx** dropped its `when` block demonstrations entirely, replacing them with `is_known()` on both bools and integers, and an unknown-propagation section showing `5 + ?` and `false && ?` short-circuit behavior. The `when` removal likely reflects awareness that those examples need their own dedicated file or that `when` + TBool semantics need further stabilization.
+
+The examples are being structured as a progressive tutorial sequence: `hello.cx` through `fibonacci.cx`, `fizzbuzz.cx`, `arrays_and_loops.cx`, `structs_and_methods.cx`, `error_handling.cx`, `generics.cx`, and finally `tbool_uncertainty.cx`.
+
+## Tracker sprint update
+
+With #014 closed today, the tracker sprint has landed 5 items in 2 days: lazy arena allocation (#010), CLI flags (#015), CRLF harness fix (#030), BindingId indexing, and now friendly token names. Submain is 11 non-merge commits ahead of main. The merge has been the top predicted next step for six consecutive daily logs.
+
+## What's next
+
+The immediate priority is committing the example rewrite -- 280 lines of work across 8 files sitting uncommitted. After that, the submain-to-main merge continues to be the highest-leverage action, now carrying 11 commits of runtime, diagnostic, CLI, and build improvements. The example rewrite momentum may also carry into additional documentation work: a tutorial page, README updates, or preparation for a broader audience push.
+
+The matrix stands at 182/182 structurally, with 10 CRLF false negatives on the main-branch harness that will resolve once tracker #030's fix merges from submain.
