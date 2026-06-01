@@ -1,0 +1,44 @@
+---
+title: "Cx Dev Log — 2026-04-16"
+date: 2026-04-16
+description: "Third consecutive day with no developer commits; documenting the growing submain integration gap and what it means for the merge path forward."
+---
+
+No developer commits landed anywhere in the repo today. This is the third consecutive day of zero human activity. The matrix holds at 78/78 on main, the working tree is clean, and the only recent commits are automated documentation entries.
+
+That said, the state of the project is worth documenting because the integration debt is growing in a way that matters.
+
+## The submain gap
+
+`submain` sits 15 work commits ahead of `main`, carrying +1,974 lines across 97 files. This includes four hard-blocker closures that landed between March 31 and April 13:
+
+- Basic test runner
+- Minimal error model (`Result<T>`, `Ok`, `Err`, `?`)
+- Integer overflow enforcement at declared width
+- Optional semicolons
+
+There is also a full parser/semantic/interpreter audit (Part 1), diagnostics readability improvements, Phase 10 loop lowering (for/while/loop/break/continue), and wrapping arithmetic enforcement. All of this is committed and working on `submain` but not yet on `main`.
+
+The merge has been the predicted next step in every daily log since April 13. It has not happened.
+
+## Branch backlog
+
+The daily-log branch backlog grew to 14 unmerged branches today. Each carries a single commit against `main`. The `site` branch is 15 blog posts ahead of `main`. None of this is blocking anything functionally, but it widens the conflict surface slightly each day that the submain merge doesn't happen.
+
+## What is actually blocking the merge
+
+Probably nothing technical. The one known friction point is a roadmap file conflict: `docs/frontend/ROADMAP.md` is at v4.8 on `main` (from March 28) while `submain` carries edits against v4.7. That is a straightforward text conflict to resolve manually. The 78/78 matrix pass rate on main suggests no regression risk from the merge itself.
+
+## What remains on the critical path
+
+These items are unchanged from the past three logs:
+
+1. Merge `submain` into `main`. This unblocks everything downstream and closes four hard blockers on the canonical branch.
+2. Fix audit_09: compound assignment on struct fields skips width truncation. One function change in `run_semantic_stmt`.
+3. Convert `result_type` to `recursive()` to unlock nested generic composition.
+4. Implement `Result<T>` in IR lowering. The interpreter path works on submain; `lower.rs` still has `unsupported!` arms for the Result-related constructs.
+5. Audit Part 2: arrays, imports + generics, nested generics, `copy_into` under `Result`.
+
+## Looking ahead
+
+The project is in a holding pattern. Fifteen commits of real engineering work are waiting on a single merge operation. The longer the gap persists, the more the daily-log and site branches diverge from `main`, making the eventual reconciliation slightly messier. The actual merge itself should be low-risk given the passing test matrix, but it needs a human to initiate it.
