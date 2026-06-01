@@ -2158,6 +2158,122 @@ fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
     }
 }
 
+// ── Tracker #019: enum-annotation normalization ──────────────────────────────
+// The parser cannot distinguish an enum name from a struct name in type-
+// annotation position, so every bare name parses to `Type::Struct(name)`
+// (parser.rs `named_type`). This pass runs before semantic analysis and rewrites
+// `Type::Struct(name) -> Type::Enum(name)` for every `name` that is a declared
+// enum. With that done, enum annotations in parameter types, return types, typed
+// bindings, and struct fields flow through the existing `semantic_type_from_decl`
+// arm (`Type::Enum => SemanticType::Enum`) and unify with enum *values* (which
+// already infer to `SemanticType::Enum`). The parser is left untouched and none
+// of the ~25 `semantic_type_from_decl` call sites change.
+fn normalize_enum_type(ty: Type, enums: &std::collections::HashSet<String>) -> Type {
+    match ty {
+        Type::Struct(name) if enums.contains(&name) => Type::Enum(name),
+        Type::Array(size, elem) => Type::Array(size, Box::new(normalize_enum_type(*elem, enums))),
+        Type::Handle(inner) => Type::Handle(Box::new(normalize_enum_type(*inner, enums))),
+        Type::Result(inner) => Type::Result(Box::new(normalize_enum_type(*inner, enums))),
+        other => other,
+    }
+}
+
+fn normalize_enum_param(p: ParamKind, enums: &std::collections::HashSet<String>) -> ParamKind {
+    match p {
+        ParamKind::Typed(name, ty) => ParamKind::Typed(name, normalize_enum_type(ty, enums)),
+        other => other,
+    }
+}
+
+fn normalize_enum_stmts(stmts: Vec<Stmt>, enums: &std::collections::HashSet<String>) -> Vec<Stmt> {
+    stmts.into_iter().map(|s| normalize_enum_stmt(s, enums)).collect()
+}
+
+fn normalize_enum_when_arm(arm: WhenArm, enums: &std::collections::HashSet<String>) -> WhenArm {
+    WhenArm {
+        pattern: arm.pattern,
+        pos: arm.pos,
+        body: match arm.body {
+            WhenBody::Stmts(stmts) => WhenBody::Stmts(normalize_enum_stmts(stmts, enums)),
+            WhenBody::SuperGroup(handlers) => WhenBody::SuperGroup(
+                handlers.into_iter().map(|h| match h {
+                    SuperGroupHandler::Stmts(stmts) => SuperGroupHandler::Stmts(normalize_enum_stmts(stmts, enums)),
+                    SuperGroupHandler::Placeholder => SuperGroupHandler::Placeholder,
+                }).collect(),
+            ),
+        },
+    }
+}
+
+// Rewrites enum annotations everywhere a `Type` can appear in a statement,
+// recursing through every nested statement body (function/impl bodies, blocks,
+// loop/if/when arms) so a typed binding like `cur: Light = ...` is normalized no
+// matter how deeply nested. Type annotations never appear in expression position
+// (only struct-literal generic args, which enums don't use), so expressions are
+// left untouched.
+fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) -> Stmt {
+    match stmt {
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
+            name, type_params, is_pub, pos,
+            fields: fields.into_iter().map(|(f, t)| (f, normalize_enum_type(t, enums))).collect(),
+        },
+        Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
+            name, is_pub, pos,
+            aliases: aliases.into_iter().map(|(a, t)| (a, normalize_enum_type(t, enums))).collect(),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+                normalize_enum_stmts(body, enums),
+                ret_expr,
+            )).collect(),
+        },
+        Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
+            name, value, is_pub, pos, ty: normalize_enum_type(ty, enums),
+        },
+        Stmt::Decl { name, ty, pos } => Stmt::Decl {
+            name, pos, ty: ty.map(|t| normalize_enum_type(t, enums)),
+        },
+        Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
+            name, expr, pos_type, ty: normalize_enum_type(ty, enums),
+        },
+        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, is_pub, macros, pos,
+            params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+            ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
+            body: normalize_enum_stmts(body, enums),
+            ret_expr,
+        },
+        Stmt::Block { stmts, _pos } => Stmt::Block { stmts: normalize_enum_stmts(stmts, enums), _pos },
+        Stmt::While { cond, body, pos } => Stmt::While { cond, body: normalize_enum_stmts(body, enums), pos },
+        Stmt::For { var, start, end, inclusive, body, pos } => Stmt::For {
+            var, start, end, inclusive, pos, body: normalize_enum_stmts(body, enums),
+        },
+        Stmt::Loop { body, pos } => Stmt::Loop { body: normalize_enum_stmts(body, enums), pos },
+        Stmt::IfElse { condition, then_body, else_ifs, else_body, pos } => Stmt::IfElse {
+            condition, pos,
+            then_body: normalize_enum_stmts(then_body, enums),
+            else_ifs: else_ifs.into_iter().map(|(c, b)| (c, normalize_enum_stmts(b, enums))).collect(),
+            else_body: else_body.map(|b| normalize_enum_stmts(b, enums)),
+        },
+        Stmt::WhileIn { arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
+            arr, start_slot, range_start, range_end, inclusive, result, pos,
+            body: normalize_enum_stmts(body, enums),
+            then_chains: then_chains.into_iter().map(|c| WhileInChain {
+                body: normalize_enum_stmts(c.body, enums),
+                ..c
+            }).collect(),
+        },
+        Stmt::When { expr, arms, pos } => Stmt::When {
+            expr, pos,
+            arms: arms.into_iter().map(|a| normalize_enum_when_arm(a, enums)).collect(),
+        },
+        // No type annotation and no nested statement bodies: ImportBlock, EnumDef,
+        // Assign, CompoundAssign, ExprStmt, Return, Break, Continue.
+        other => other,
+    }
+}
+
 fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
     match ty {
         SemanticType::TypeParam(name) => {
@@ -2227,7 +2343,14 @@ pub(crate) fn type_name(ty: &SemanticType) -> String {
         SemanticType::Numeric => "numeric literal".to_string(),
         SemanticType::Unknown => "unknown".to_string(),
         SemanticType::Void => "void".to_string(),
-        SemanticType::Enum(name) => format!("enum {}", name),
+        // Tracker #019: render an enum type by its bare name (`Light`), not
+        // `enum Light`. The `enum ` prefix was a leaking internal tag — nothing
+        // branches on the rendered string — and it produced the baffling
+        // "expected Light, got enum Light" mismatch (audit F4) where the two
+        // names looked identical. The `SemanticType::Enum` *variant* stays
+        // distinct (it is load-bearing for variant matching); only the
+        // user-facing text is unified with how struct/typeparam names render.
+        SemanticType::Enum(name) => name.clone(),
         SemanticType::Struct(name) => name.clone(),
         SemanticType::TypeParam(name) => name.clone(),
         SemanticType::Handle(inner) => format!("Handle<{}>", type_name(inner)),
@@ -2372,8 +2495,25 @@ pub fn analyze_resolved_program(
         let mut analyzer = Analyzer::new();
         analyzer.module_aliases = alias_exports.clone();
 
+        // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
+        // every `Type::Struct(name)` annotation that names an enum to
+        // `Type::Enum(name)` before any analysis. The parser emits all bare-name
+        // annotations as `Type::Struct`, so without this an enum used in a
+        // parameter/return/typed-binding position would not unify with enum
+        // values. Cross-module (imported) enum annotations stay `Struct` for now;
+        // resolving aliased enum types is a 0.3 follow-up.
+        let enum_names: std::collections::HashSet<String> = file.program.stmts.iter()
+            .filter_map(|s| match s {
+                Stmt::EnumDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let normalized_stmts: Vec<Stmt> = file.program.stmts.iter()
+            .map(|s| normalize_enum_stmt(s.clone(), &enum_names))
+            .collect();
+
         // Struct pre-pass
-        for stmt in &file.program.stmts {
+        for stmt in &normalized_stmts {
             if let Stmt::StructDef { name, fields, type_params, .. } = stmt {
                 analyzer.structs.insert(name.clone(), fields.clone());
                 analyzer.struct_type_params.insert(name.clone(), type_params.clone());
@@ -2381,7 +2521,7 @@ pub fn analyze_resolved_program(
         }
 
         // Function pre-pass
-        for stmt in &file.program.stmts {
+        for stmt in &normalized_stmts {
             if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
                 let placeholders = params.iter()
                     .map(semantic_param_placeholder)
@@ -2399,7 +2539,7 @@ pub fn analyze_resolved_program(
         // Main analysis pass — skip ImportBlock statements
         let mut file_stmts = Vec::new();
         let mut errors = Vec::new();
-        for stmt in &file.program.stmts {
+        for stmt in &normalized_stmts {
             if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
             match analyzer.analyze_stmt(stmt) {
                 Ok(s) => file_stmts.push(s),

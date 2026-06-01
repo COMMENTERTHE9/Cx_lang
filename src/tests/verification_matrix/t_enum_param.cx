@@ -1,0 +1,15 @@
+// Tracker #019: an enum used as a function *parameter* type. Before #019 the
+// annotation `Color` (parsed as Type::Struct) did not unify with the enum value
+// passed in, producing "expected Color, got enum Color".
+enum Color { Red, Green, Blue }
+
+fnc: t32 rank(c: Color) {
+    when c {
+        Color::Red => 10,
+        Color::Green => 20,
+        Color::Blue => 30,
+        _ => 0,
+    }
+}
+
+print(rank(Color::Green))
