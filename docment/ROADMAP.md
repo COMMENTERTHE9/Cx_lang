@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-06-01
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -89,6 +89,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-01:** 4 tracker items closed on submain (#027 non-exhaustive `when` error, #026 `if <unknown>` runtime error, #019 enum annotations in function signatures, #038 string interpolation error on unresolvable `{...}`). Continues the tracker sprint from 2026-05-31 (9 items). Submain 23 non-merge commits ahead of main (92 files, 3145+/1894−). Matrix: 182/182 on main; submain gates report 207/0.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
