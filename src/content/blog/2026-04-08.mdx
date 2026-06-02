@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-04-08"
+date: 2026-04-08
+description: "No language development work landed today; the submain merge gap hits thirteen days with five commits and four hard blockers still waiting."
+---
+
+Zero human-authored commits across any branch in the last 24 hours. The matrix holds at 78/78 on main, the working tree is clean, and no compiler, runtime, spec, or test work shipped. This is a status-check day, not a progress day.
+
+## The submain gap
+
+The real story right now is the growing distance between `main` and `submain`. Today marks thirteen consecutive days where five tested commits have sat on `submain` without merging. Those commits close four hard blockers for the 0.1 milestone:
+
+1. **Wrapping arithmetic enforcement** (2026-03-28) -- switched from saturating to wrapping semantics, including `i128::MIN` edge cases.
+2. **Phase 10 while loop lowering** (2026-03-28) -- header/body/exit CFG pattern, loop-carried SSA, backedge insertion, three new tests.
+3. **UTF-8 decision locked** (2026-03-29) -- strict UTF-8 everywhere, no Latin-1 fallback.
+4. **Semicolon rule finalized** (2026-03-29) -- optional everywhere except expression statements.
+5. **Basic test runner** (2026-04-04) -- `assert`, `assert_eq`, `--test` mode, four new matrix tests (t77-t80).
+
+The diff between main and submain shows 24 files changed, 367 insertions, and 501 deletions. It touches core files: `main.rs`, `runtime.rs`, `ir/lower.rs`, `parser.rs`, `semantic.rs`, `diagnostics.rs`, `ast.rs`, `types.rs`, `semantic_types.rs`, and the spec (`cx_syntax.md`). This is not a minor patch sitting in review. It is the bulk of the remaining hard-blocker work for 0.1, fully tested, waiting on a merge.
+
+## Branch backlog
+
+Eight daily-log branches have also accumulated without merging to main: `daily-log-2026-03-29`, then `daily-log-2026-04-01` through `daily-log-2026-04-07`. Some of these carry roadmap updates alongside the log commits. The longer they pile up, the more likely roadmap merge conflicts become when they finally land. This is a minor issue compared to submain, but it adds friction.
+
+## Roadmap state
+
+The roadmap (`docs/frontend/ROADMAP.md`, v4.8, dated 2026-03-28) accurately reflects the state of `main`, not `submain`. That is the right call. The test runner, integer overflow, and semicolon blockers are correctly left unchecked because the work has not merged. The UTF-8 decision is checked off with a note that it was decided on submain, which matches the roadmap's convention. Updating the roadmap before the merge lands would be premature.
+
+## What is next
+
+The single highest-value action remains the same as yesterday and the twelve days before that: merge submain to main. Five commits, four hard blockers resolved, no visible source conflicts in `src/`. The only likely conflict is in the roadmap file itself. Until this merge happens, everything downstream is blocked.
+
+After submain lands, the next hard blocker is the error model: `Result<T>`, `Ok`, `Err`, and the `?` operator. Syntax is locked in the spec, but no implementation work exists on any branch. The `:=` type inference quality gate is also still unstarted.
+
+Today was idle. The work exists. It just has not moved forward yet.
