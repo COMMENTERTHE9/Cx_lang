@@ -1,0 +1,5 @@
+// #046: an `if`-expression with an unknown condition errors, reusing #026 — an
+// unknown TBool can't choose a value any more than it can choose a branch.
+b: bool = ?
+x: t64 = if b { 1 } else { 2 }
+print(x)

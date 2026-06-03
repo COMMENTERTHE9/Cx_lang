@@ -506,6 +506,10 @@ Expr::Call(name, args, _) => {
             eprintln!("{}WhenExpr({} arms)", pad, arms.len());
             print_expr(match_expr, depth + 1);
         }
+        Expr::If(cond, _then, _els, _) => {
+            eprintln!("{}IfExpr", pad);
+            print_expr(cond, depth + 1);
+        }
         Expr::ResultOk(inner, _) => {
             eprintln!("{}Ok(...)", pad);
             print_expr(inner, depth + 1);

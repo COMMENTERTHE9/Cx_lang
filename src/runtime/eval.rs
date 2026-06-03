@@ -80,6 +80,39 @@ impl RunTime {
                 let result = self.run_semantic_when(val, arms)?;
                 Ok(result)
             }
+            SemanticExprKind::If { condition, then_body, else_body, pos } => {
+                let cond_val = self.eval_semantic_expr(condition)?;
+                let is_true = match &cond_val {
+                    Value::Bool(b) => *b,
+                    Value::TBool(0) => false,
+                    Value::TBool(1) => true,
+                    // #046 reuses #026: an unknown condition can't choose a value.
+                    Value::TBool(2) | Value::Unknown(_) => {
+                        return Err(RuntimeError::UnknownCondition { pos: *pos });
+                    }
+                    Value::Num(n) => *n != 0,
+                    _ => false,
+                };
+                let body = if is_true { then_body } else { else_body };
+                // Run the chosen block; its trailing expression is the value
+                // (mirroring `run_semantic_when` arm-body execution).
+                self.push_scope();
+                let mut last_val = Value::Num(0);
+                for s in body {
+                    let step = match s {
+                        SemanticStmt::ExprStmt { expr, .. } => {
+                            self.eval_semantic_expr(expr).map(|v| last_val = v)
+                        }
+                        _ => self.run_semantic_stmt(s).map(|_| ()),
+                    };
+                    if let Err(e) = step {
+                        self.pop_scope();
+                        return Err(e);
+                    }
+                }
+                self.pop_scope();
+                Ok(last_val)
+            }
             SemanticExprKind::MethodCall { instance, method, args, pos, .. } => {
                 self.call_semantic_method(instance, method, args, *pos)
             }

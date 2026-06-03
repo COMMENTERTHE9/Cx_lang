@@ -1,0 +1,5 @@
+// #046: the README's `is_large` pattern — an `if`/`else` as the implicit return —
+// which was the original casualty of `if` being statement-only.
+fnc: bool is_large(n: t64) { if n > 100 { true } else { false } }
+print(is_large(50))
+print(is_large(200))

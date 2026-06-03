@@ -1405,6 +1405,32 @@ Expr::Unary(op, inner, pos) => {
                     },
                 })
             }
+            Expr::If(cond, then_body, else_body, pos) => {
+                let semantic_cond = self.analyze_expr(cond)?;
+                let then_semantic: Vec<SemanticStmt> = then_body.iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let else_semantic: Vec<SemanticStmt> = else_body.iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // #046: result type mirrors `when` — take the then-branch's
+                // trailing expression type. Branch type-unification is a 0.3
+                // hardening tracked for both `if` and `when` together (W1); doing
+                // it here would make `if` stricter than its sibling.
+                let mut result_ty = SemanticType::Unknown;
+                if let Some(SemanticStmt::ExprStmt { expr, .. }) = then_semantic.last() {
+                    result_ty = expr.ty.clone();
+                }
+                Ok(SemanticExpr {
+                    ty: result_ty,
+                    kind: SemanticExprKind::If {
+                        condition: Box::new(semantic_cond),
+                        then_body: then_semantic,
+                        else_body: else_semantic,
+                        pos: *pos,
+                    },
+                })
+            }
             Expr::MethodCall(instance, method, args, pos) => {
                 // Check if instance is a module alias — if so resolve from ExportTable
                 if let Some(export_table) = self.module_aliases.get(instance.as_str()) {

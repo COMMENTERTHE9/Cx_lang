@@ -141,6 +141,17 @@ pub enum SemanticExprKind {
         arms: Vec<SemanticWhenArm>,
         pos: usize,
     },
+    /// `if` in expression position (tracker #046). `then_body` / `else_body` are
+    /// statement blocks whose trailing expression is the branch value (mirroring
+    /// `When` arm bodies). The else block is always present (the parser requires
+    /// it for the expression form). Evaluated by reusing #026's unknown-condition
+    /// check: an unknown condition errors rather than choosing a branch.
+    If {
+        condition: Box<SemanticExpr>,
+        then_body: Vec<SemanticStmt>,
+        else_body: Vec<SemanticStmt>,
+        pos: usize,
+    },
     ResultOk {
         expr: Box<SemanticExpr>,
     },

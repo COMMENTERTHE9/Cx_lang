@@ -87,6 +87,13 @@ Unary(Op, Box<Expr>, usize),
     Index(Box<Expr>, Box<Expr>, usize),
     MethodCall(String, String, Vec<CallArg>, usize),
     When(Box<Expr>, Vec<WhenArm>, usize),
+    /// `if` in expression position (tracker #046): `if c { a } else { b }` as a
+    /// value. Fields: condition, then-block, else-block, source pos. The else
+    /// block is mandatory for the expression form (a consumed `if` must always
+    /// produce a value); `else if` chains are desugared by the parser into a
+    /// nested `Expr::If` inside the else block. The statement form stays
+    /// `Stmt::IfElse` (else optional) — unchanged.
+    If(Box<Expr>, Vec<Stmt>, Vec<Stmt>, usize),
     ResultOk(Box<Expr>, usize),
     ResultErr(Box<Expr>, usize),
     Try(Box<Expr>, usize),

@@ -1,0 +1,6 @@
+// #046: `if`-expression nested inside other expressions (arithmetic operand and
+// call argument) — the cases the desugar-to-statement strategy could not do.
+x: t64 = 100 + if true { 5 } else { 0 }
+print(x)
+fnc: t64 id(n: t64) { n }
+print(id(if false { 1 } else { 2 }))

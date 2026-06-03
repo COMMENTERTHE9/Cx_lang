@@ -2081,6 +2081,12 @@ fn lower_expr(
         SemanticExprKind::When { expr: scrutinee, arms, .. } => {
             lower_when_expr(scrutinee, arms, &expr.ty, ctx, active)
         },
+        // Tracker #046: `if`-expression lowering is not implemented yet — the JIT
+        // cleanly SKIPs these fixtures (the interpreter is the reference). When
+        // the backend lowers it, this stub is replaced; its `when`-expression
+        // lowering must replicate #046's else-required + #026 unknown-condition
+        // error, or the SKIP becomes a PARITY_FAIL (forward constraint).
+        SemanticExprKind::If { .. } => { unsupported!("If") },
         SemanticExprKind::ResultOk { .. } => { unsupported!("ResultOk") },
         SemanticExprKind::ResultErr { .. } => { unsupported!("ResultErr") },
         SemanticExprKind::Try { .. } => { unsupported!("Try") },

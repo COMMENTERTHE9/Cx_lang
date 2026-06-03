@@ -1,0 +1,6 @@
+// #046: `if` as a value on the right-hand side of an assignment.
+c: bool = true
+x: t64 = if c { 10 } else { 20 }
+print(x)
+y: t64 = if false { 10 } else { 20 }
+print(y)
