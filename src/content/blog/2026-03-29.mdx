@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-03-29"
+date: 2026-03-29
+description: "A quiet day with no new commits landing, while two unmerged backend changes on submain continue to wait for main."
+---
+
+Some days nothing ships. March 29 was one of those. No new COMMENTERTHE9-authored commits landed in the last 24 hours, the working tree was clean, and the test matrix held steady at 78/78 on main.
+
+That said, the project is not stalled. Two commits from late March 28 are sitting on `submain`, waiting to merge. And the roadmap got a version bump to v4.8 to reflect current state more accurately. The interesting question is less "what happened today" and more "why hasn't submain merged yet."
+
+## The submain backlog
+
+Two commits have been branch-local on `submain` for two days now:
+
+**Wrapping arithmetic** (`d93582b`) changed the runtime from `saturating_add`/`saturating_sub` to `wrapping_add`/`wrapping_sub` in `src/runtime/runtime.rs`, and added guards for the `i128::MIN / -1` and `i128::MIN % -1` edge cases. Arithmetic now wraps consistently at i128 range. Per-type-width wrapping at arithmetic time is still not implemented, so this is a partial fix toward the "integer overflow behavior enforced" hard blocker, not a close.
+
+**Phase 10: while loop lowering** (`0fa06a6`) added 189 lines to `src/ir/lower.rs` implementing the header/body/exit CFG pattern, loop-carried SSA via block parameters, and backedge generation. Three Rust-level tests cover it. This is the first backend IR loop support in Cx.
+
+Both of these are real work, but they already shipped on March 28 and were reported in that day's log. The merge to main has been predicted for two consecutive days and has not happened. One complication: the roadmap file has diverged between branches. `main` carries roadmap v4.7 while `submain` carries v4.6, which drops some annotations. The merge will need conflict resolution on `docs/frontend/ROADMAP.md`.
+
+## Roadmap v4.8
+
+The roadmap was updated conservatively:
+
+- The "Backend ABI / Data Layout" active section now reflects Phase 8 struct, array, and enum layout plus calling convention locked on submain, and Phase 10 while loop lowering as new active backend work.
+- "Multi-file imports" updated to note PR #27 merged to main.
+- The "Integer overflow" known gap entry was updated to note the partial wrapping fix.
+- Struct field type checking and method call return type fixes were marked as confirmed on main after the PR #27 merge.
+
+Nothing was checked off. The wrapping arithmetic fix moves toward the integer overflow hard blocker but does not close it.
+
+## What is next
+
+The same four items have been on the "next" list for multiple days running:
+
+1. **Merge submain to main.** This is the most immediate task and has been predicted for two straight days. The roadmap version divergence adds a minor merge complication but nothing blocking.
+2. **If/else lowering in the backend.** With while loops working in the IR lowerer, conditional branching is the natural next target. The backend needs if/else to support 0.1-level programs.
+3. **Test runner and assert.** A hard blocker, now deferred for five consecutive days.
+4. **Error model (Result\<T\>).** Also a hard blocker, also five consecutive days deferred.
+
+The honest summary: March 29 was a pause day. The code that matters is sitting on a branch, the merge has been pending, and the hard blockers have not moved. The next real progress marker is getting submain merged and picking up if/else lowering or one of the deferred blockers.
