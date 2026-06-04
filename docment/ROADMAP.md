@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-09
+Last updated: 2026-06-04
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -10,7 +10,7 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ## Frontend — Release Candidate
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
 **Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
 
@@ -89,6 +89,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-04:** 4 commits on submain: string concatenation with `+` (#020), `len` builtin (#021), README docs for concat/len (#020/#021) and if-as-expression (#047). Submain 31 non-merge commits ahead of main (142 files, +3942/−2051). Matrix 182/182 on main; submain 230 fixtures, 140/90/0 parity. No merges.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
