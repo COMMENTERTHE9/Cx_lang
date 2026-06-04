@@ -62,12 +62,12 @@ cargo run -- --backend=validate examples/fibonacci.cx
 
 ## Current Verification Status
 
-As of `submain` at `0c03555`:
+As of `submain` at `c3506c6`:
 
 - **243 unit tests passing** (`cargo test`)
 - **418 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **219 verification fixtures**
-- **JIT parity: 137 PASS / 82 SKIP / 0 PARITY_FAIL** across all 219 fixtures
+- **230 verification fixtures**
+- **JIT parity: 140 PASS / 90 SKIP / 0 PARITY_FAIL** across all 230 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -236,6 +236,24 @@ print("{f(2)}")                // error: string interpolation supports bare
                                // variable first
 ```
 
+### Strings: concatenation and length
+
+Concatenate strings with `+`. Get a string's **byte** length — or an array's element count — with `len`.
+
+```cx
+greeting: str = "Hello, " + "Cx"
+print(greeting)                // Hello, Cx
+print(len(greeting))           // 9
+```
+
+`len` is a byte count, not a character count: `len("é")` is `2` (one character, two UTF-8 bytes). Mixing types in a concatenation is a compile error, not an implicit conversion — use interpolation instead:
+
+```cx
+n: t32 = 3
+s: str = "v" + n               // error: cannot concatenate `str` and `t32` with
+                               // `+` — use string interpolation, e.g. "v{n}"
+```
+
 ### Results and the `?` operator
 
 Fallible functions return `Result<T>` with `Ok` / `Err`, and the postfix `?` operator propagates errors. See `examples/error_handling.cx`.
@@ -267,7 +285,7 @@ print(compute(10, 0))          // Err(division by zero)
 - signed integer types: `t8`, `t16`, `t32`, `t64`, `t128`, with declared-width wrapping and compile-time range checking
 - `f64`
 - three-state `bool` (`true` / `false` / unknown via `?`)
-- `char`, `str` (with `{var}` interpolation of bare variables)
+- `char`, `str` (with `{var}` interpolation of bare variables, and `+` concatenation)
 - enums — variants, `::` access, and use in function signatures
 - structs and `impl` methods
 - fixed-size arrays (`arr:[i]` indexing)
@@ -277,7 +295,7 @@ print(compute(10, 0))          // Err(division by zero)
 - `when` matching (literals, positive ranges, enum variants, bool/TBool, catch-all) — usable as an expression
 - `Result<T>` with `Ok` / `Err` and the `?` propagation operator
 - comparisons, logical short-circuiting, compound assignment, dot access
-- built-ins: `print`, `println`, `printn`, `assert`, `assert_eq`, `read`, `input`, `exit`
+- built-ins: `print`, `println`, `printn`, `assert`, `assert_eq`, `read`, `input`, `exit`, `len`
 
 ### Memory Model
 
@@ -314,14 +332,14 @@ All currently JIT-lowered fixtures match interpreter behavior (0 PARITY_FAIL). A
 
 ### JIT Parity Baseline
 
-As of `0c03555`:
+As of `c3506c6`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 137 |
-| SKIP | 82 |
+| PASS | 140 |
+| SKIP | 90 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **219** |
+| **Total fixtures** | **230** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 
