@@ -1,0 +1,3 @@
+// #020: chained concatenation, left-to-right.
+s: str = "foo" + "-" + "bar"
+print(s)

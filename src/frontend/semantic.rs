@@ -1908,6 +1908,31 @@ Expr::Unary(op, inner, pos) => {
                         },
                     });
                 }
+                // Tracker #020: `+` on strings is concatenation, producing a new
+                // `str`. Only `str + str` is allowed — a mixed operand (either
+                // order) is rejected with a pointer at string interpolation,
+                // never an implicit value->string coercion (the silent-coercion
+                // class the soundness arc closed). Only `+` concatenates; the
+                // other arithmetic ops fall through to the numeric requirement.
+                if op == Op::Plus {
+                    let lhs_str = matches!(lhs.ty, SemanticType::Str | SemanticType::StrRef);
+                    let rhs_str = matches!(rhs.ty, SemanticType::Str | SemanticType::StrRef);
+                    if lhs_str && rhs_str {
+                        return Ok(SemanticExpr {
+                            ty: SemanticType::Str,
+                            kind: SemanticExprKind::Binary {
+                                lhs: Box::new(lhs),
+                                op,
+                                pos: op_pos,
+                                rhs: Box::new(rhs),
+                            },
+                        });
+                    }
+                    if lhs_str || rhs_str {
+                        let other = if lhs_str { &rhs.ty } else { &lhs.ty };
+                        return Err(sem_err!(op_pos, "cannot concatenate `str` and `{}` with `+` — Cx does not implicitly convert values to strings; use string interpolation instead, e.g. \"total {{x}}\"", type_name(other)));
+                    }
+                }
                 if !is_numeric(&lhs.ty) || !is_numeric(&rhs.ty) {
                     return Err(sem_err!(op_pos, "arithmetic requires numeric operands, got {} and {}", type_name(&lhs.ty), type_name(&rhs.ty)));
                 }

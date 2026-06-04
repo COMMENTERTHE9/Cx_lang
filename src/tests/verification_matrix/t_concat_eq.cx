@@ -1,0 +1,3 @@
+// #020 content-equality pin: concat makes a NEW arena slice at a different
+// offset than the literal "ab", so `==` must compare contents, not (offset,len).
+print(("a" + "b") == "ab")

@@ -1,0 +1,5 @@
+// #020 edge: empty-string concatenation.
+s: str = "" + "a"
+print(s)
+e: str = "a" + ""
+print(e)

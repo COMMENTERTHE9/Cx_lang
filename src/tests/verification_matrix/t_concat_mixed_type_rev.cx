@@ -1,0 +1,3 @@
+// #020: the rejection is symmetric — `num + str` errors the same way.
+s: str = 5 + "count"
+print(s)

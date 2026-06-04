@@ -2,8 +2,11 @@ use super::runtime::*;
 use crate::frontend::{ast::*, types::*};
 
 impl RunTime {
+    // `&mut self` (tracker #020): string concatenation interns the result into
+    // `string_arena` via `alloc_str`, which needs mutable access. All callers
+    // (eval.rs, exec.rs compound-assign) are already in `&mut self` contexts.
     pub(crate) fn apply_op(
-        &self,
+        &mut self,
         left: Value,
         op: Op,
         pos: usize,
@@ -28,6 +31,18 @@ impl RunTime {
         match op {
             Op::Plus => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Num(a.wrapping_add(*b))),
+                // Tracker #020: string concatenation. The semantic layer only
+                // types `str + str` (str + non-str is rejected with the
+                // interpolation pointer), so reaching here with two strings is
+                // always a concat. Resolve both to owned bytes first (the borrow
+                // of `string_arena` must end before `alloc_str` mutates it), then
+                // intern the joined result as a fresh arena slice.
+                (Value::Str(a_off, a_len), Value::Str(b_off, b_len)) => {
+                    let mut joined = self.resolve_str(*a_off, *a_len).to_owned();
+                    joined.push_str(self.resolve_str(*b_off, *b_len));
+                    let (off, len) = self.alloc_str(&joined);
+                    Ok(Value::Str(off, len))
+                }
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         Ok(Value::Float(a + b))

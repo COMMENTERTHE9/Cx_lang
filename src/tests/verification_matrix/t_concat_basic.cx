@@ -1,0 +1,3 @@
+// #020: string concatenation with `+`.
+s: str = "a" + "b"
+print(s)
