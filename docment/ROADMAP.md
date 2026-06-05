@@ -19,6 +19,9 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 - No strref constructor syntax
 - Expression statements still require semicolons
 
+**Post-release hardening (on submain):**
+- [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+
 ---
 
 ## Backend — Active Development
