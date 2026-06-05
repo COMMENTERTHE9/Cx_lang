@@ -1,0 +1,13 @@
+nums: [5: t64] = [10, 20, 30, 40, 50]
+
+print(nums:[0])
+print(nums:[2])
+print(nums:[4])
+
+while in nums:[0], 0..5 {
+    print(*nums)
+}
+
+for i in 0..5 {
+    print(i)
+}

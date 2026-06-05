@@ -1,0 +1,9 @@
+// CX-121: exit-code-based JIT parity — array alloca inside a user-defined function.
+// Exercises array allocation, init, and indexed read within a non-main function scope.
+// Correctness verified by exit code only (0 = all asserts held).
+fnc: t64 pick_middle() {
+    vals: [3: t64] = [7, 42, 99]
+    return vals:[1]
+}
+result: t64 = pick_middle()
+assert_eq(result, 42)

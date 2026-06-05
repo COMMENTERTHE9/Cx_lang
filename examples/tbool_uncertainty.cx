@@ -1,0 +1,27 @@
+a: bool = true
+b: bool = ?
+
+print(is_known(a))
+print(is_known(b))
+
+let x;
+x = true
+
+when x {
+    true    => print("is true"),
+    false   => print("is false"),
+    unknown => print("is unknown"),
+}
+
+let y;
+y = ?
+
+when y {
+    true    => print("is true"),
+    false   => print("is false"),
+    unknown => print("is unknown"),
+}
+
+let z;
+z = a && b
+print(is_known(z))

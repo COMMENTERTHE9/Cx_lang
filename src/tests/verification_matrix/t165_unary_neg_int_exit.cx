@@ -1,0 +1,19 @@
+// CX-228: exit-code-based JIT parity — Unary integer negation.
+// Uses -x + x = 0 idiom to avoid negative literals in assert_eq.
+// Verified by exit code only (0 = all asserts held).
+x: t64 = 7
+neg_x: t64 = -x
+assert_eq(neg_x + x, 0)
+
+// Negation of zero
+z: t64 = 0
+assert_eq(-z, 0)
+
+// Double negation
+y: t64 = 5
+assert_eq(-(-y), 5)
+
+// Negation in arithmetic
+a: t64 = 10
+b: t64 = -a + 3
+assert_eq(b + a, 3)

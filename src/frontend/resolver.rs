@@ -12,6 +12,7 @@ pub struct ModuleId(pub usize);
 
 // Resolved import relationship — alias lives here not on the file
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // importer + pos retained as resolver diagnostics surface
 pub struct ImportEdge {
     pub importer: ModuleId,
     pub importee: ModuleId,
@@ -21,6 +22,7 @@ pub struct ImportEdge {
 
 // Intrinsic file data only
 #[derive(Debug)]
+#[allow(dead_code)] // populated for future incremental-resolution work
 pub struct ResolvedFile {
     pub id: ModuleId,
     pub path: PathBuf,
@@ -38,6 +40,7 @@ pub struct ResolvedProgram {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // pos fields on FileNotFound/RegistryNotSupported are resolver diagnostics surface
 pub enum ResolveError {
     FileNotFound { path: String, pos: usize },
     CircularImport { chain: Vec<PathBuf> },

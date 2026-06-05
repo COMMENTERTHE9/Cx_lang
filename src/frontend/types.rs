@@ -93,6 +93,7 @@ pub enum RuntimeError {
     },
     BreakSignal,
     ContinueSignal,
+    #[allow(dead_code)] // frontend-level variant; IR layer currently enforces via IrValidationError::LoopVariableReassignment
     ReadOnlyLoopVar {
         pos: usize,
         name: String,

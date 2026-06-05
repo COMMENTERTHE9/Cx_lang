@@ -1,0 +1,26 @@
+// CX-103: exit-code-based JIT parity — implicit f64→t32 truncation cast.
+// Truncates toward zero: 7.9 → 7, 9.9 → 9, 2.1 → 2.
+// Negative values also truncate toward zero: -7.9 → -7, -2.1 → -2, -0.5 → 0.
+x: f64 = 7.9
+n: t32 = x
+assert_eq(n, 7)
+
+y: f64 = 9.9
+m: t32 = y
+assert_eq(m, 9)
+
+z: f64 = 2.1
+k: t32 = z
+assert_eq(k, 2)
+
+neg1: f64 = -7.9
+p: t32 = neg1
+assert_eq(p, -7)
+
+neg2: f64 = -2.1
+q: t32 = neg2
+assert_eq(q, -2)
+
+neg3: f64 = -0.5
+r: t32 = neg3
+assert_eq(r, 0)

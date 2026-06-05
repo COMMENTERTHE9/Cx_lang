@@ -1,0 +1,10 @@
+// CX-228: exit-code-based JIT parity — DirectCall forward declaration.
+// Mirrors t29_forward_decl without print; call before definition.
+// Verified by exit code only (0 = all asserts held).
+result: t64 = get_answer()
+
+fnc: t64 get_answer() {
+    42
+}
+
+assert_eq(result, 42)

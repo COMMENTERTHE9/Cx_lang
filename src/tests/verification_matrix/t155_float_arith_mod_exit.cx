@@ -1,0 +1,16 @@
+// CX-117/CX-209: exit-code-based JIT parity — f64 modulo (remainder).
+// Results scaled by 10.0 and cast to t32 to avoid floating-point rounding
+// drift in JIT backends (e.g. 1.9 → 1 vs 2 due to precision).
+a: f64 = 10.0
+b: f64 = 3.0
+rem: f64 = a % b
+scaled: f64 = rem * 10.0
+n: t32 = scaled
+assert_eq(n, 10)
+
+x: f64 = 5.5
+y: f64 = 2.0
+rem2: f64 = x % y
+scaled2: f64 = rem2 * 10.0
+m: t32 = scaled2
+assert_eq(m, 15)

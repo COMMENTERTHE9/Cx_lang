@@ -1,0 +1,30 @@
+// CX-228: exit-code-based JIT parity — BuiltinAssert assert_eq() pass conditions.
+// Tests assert_eq(lhs, rhs) where lhs == rhs; no Trap path triggered at runtime.
+// Verified by exit code only (0 = all asserts held).
+
+// Literal integers
+assert_eq(1, 1)
+assert_eq(0, 0)
+
+// Variable vs literal
+x: t64 = 7
+assert_eq(x, 7)
+
+// Two equal variables
+y: t64 = 7
+assert_eq(x, y)
+
+// Arithmetic expressions
+assert_eq(2 + 3, 5)
+assert_eq(x * y, 49)
+
+// Accumulated sum
+sum: t64 = 0
+sum = sum + 1
+sum = sum + 2
+sum = sum + 3
+assert_eq(sum, 6)
+
+// Result of subtraction
+diff: t64 = y - x
+assert_eq(diff, 0)

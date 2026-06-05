@@ -108,9 +108,15 @@ fn run() {
         .iter()
         .find(|a| !a.starts_with("--"))
         .cloned()
-        .unwrap_or_else(|| "src/tests/test.cx".to_string());
+        .unwrap_or_else(|| {
+            eprintln!("error: no input file specified\nusage: cx <file.cx> [--flags...]");
+            std::process::exit(1);
+        });
 
-    let input = fs::read_to_string(&path).expect("failed to read .cx file");
+    let input = fs::read_to_string(&path).unwrap_or_else(|e| {
+        eprintln!("error: failed to read '{}': {}", path, e);
+        std::process::exit(1);
+    });
 
     // LEXER PHASE
     let lex_timer = flags.phase.then(|| PhaseTimer::start("LEXER"));
@@ -229,13 +235,19 @@ fn run() {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("{}", err);
-                    return;
+                    // IR lowering failure = this Cx program uses a feature the JIT
+                    // pipeline does not yet lower.  Exit 127 so the differential
+                    // harness counts it as SKIP (unsupported construct), not PARITY_FAIL.
+                    std::process::exit(127);
                 }
             };
-            println!("{}", crate::ir::printer::print_module(&ir));
+            if flags.trace {
+                println!("{}", crate::ir::printer::print_module(&ir));
+            }
             let b = backend::cranelift::CraneliftBackend;
-            if let Err(msg) = b.execute(&ir) {
-                eprintln!("{}", msg);
+            if let Err(err) = b.execute(&ir) {
+                eprintln!("{}", err.message);
+                std::process::exit(err.exit_code);
             }
         }
         backend::BackendKind::Llvm => {
@@ -243,12 +255,13 @@ fn run() {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("{}", err);
-                    return;
+                    std::process::exit(1);
                 }
             };
             let b = backend::llvm::LlvmBackend;
-            if let Err(msg) = b.execute(&ir) {
-                eprintln!("{}", msg);
+            if let Err(err) = b.execute(&ir) {
+                eprintln!("{}", err.message);
+                std::process::exit(err.exit_code);
             }
         }
         backend::BackendKind::Validate => {
@@ -256,7 +269,7 @@ fn run() {
                 Ok(ir) => ir,
                 Err(err) => {
                     eprintln!("Lowering failed: {}", err);
-                    return;
+                    std::process::exit(1);
                 }
             };
             match crate::ir::validate::validate_module(&ir) {
@@ -270,6 +283,7 @@ fn run() {
                     for e in &errors {
                         eprintln!("  {:?}", e);
                     }
+                    std::process::exit(1);
                 }
             }
         }

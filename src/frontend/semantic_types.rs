@@ -94,6 +94,7 @@ pub enum SemanticExprKind {
         function: FunctionId,
         args: Vec<SemanticCallArg>,
     },
+    #[allow(dead_code)] // rejected at lowering (CX-19); kept for analyzer completeness
     Range {
         start: Box<SemanticExpr>,
         end: Box<SemanticExpr>,
@@ -127,6 +128,8 @@ pub enum SemanticExprKind {
         instance: String,
         method: String,
         args: Vec<SemanticCallArg>,
+        instance_binding: BindingId,
+        struct_name: String,
         pos: usize,
     },
     StructInstance {
@@ -378,6 +381,7 @@ ExprStmt {
         name: String,
         aliases: Vec<(String, SemanticType)>,
         methods: Vec<SemanticFunction>,
+        method_alias_params: Vec<Vec<SemanticParam>>,
         pos: usize,
     },
     ConstDecl {
@@ -396,6 +400,7 @@ pub struct SemanticProgram {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // consts + enums populated by export machinery for upcoming importer expansion
 pub struct ExportTable {
     pub functions: HashMap<String, SemanticFunction>,
     pub structs: HashMap<String, Vec<(String, SemanticType)>>,

@@ -1,0 +1,6 @@
+// CX-92: exit-code-based JIT parity — integer addition.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+assert_eq(0 + 0, 0)
+assert_eq(1 + 1, 2)
+assert_eq(10 + 20, 30)
+assert_eq(100 + 200, 300)

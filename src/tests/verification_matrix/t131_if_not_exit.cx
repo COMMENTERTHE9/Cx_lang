@@ -1,0 +1,39 @@
+// CX-97: exit-code-based JIT parity — Branch terminator with negated condition.
+// CX-111: extended with bool-variable negation to reconcile with t46 coverage.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+y: t64 = 5
+
+result: t64 = 0
+if !(y == 5) {
+    result = 99
+} else {
+    result = 1
+}
+assert_eq(result, 1)
+
+result = 0
+if !(y > 10) {
+    result = 2
+} else {
+    result = 0
+}
+assert_eq(result, 2)
+
+// Bool-variable negation: mirrors the !x and !alive cases from t46.
+dead: bool = false
+result = 0
+if !dead {
+    result = 3
+} else {
+    result = 0
+}
+assert_eq(result, 3)
+
+alive: bool = true
+result = 0
+if !alive {
+    result = 99
+} else {
+    result = 4
+}
+assert_eq(result, 4)

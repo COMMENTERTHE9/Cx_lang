@@ -1,0 +1,17 @@
+// CX-228: exit-code-based JIT parity — MethodCall impl basic (SKIP in JIT).
+// MethodCall/ImplBlock lowering not yet implemented; exits 127 in JIT.
+// Mirrors t39_impl_basic without print; verified by exit code only.
+struct Player {
+    health: t32,
+}
+
+player_methods: impl (p: Player) {
+    fnc: take_damage(amount: t32) {
+        p.health -= amount
+    }
+}
+
+let p;
+p = Player { health: 100 }
+p.take_damage(30)
+assert_eq(p.health, 70)

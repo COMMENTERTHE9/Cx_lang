@@ -7,7 +7,7 @@ pub fn print_module(module: &IrModule) -> String {
     let mut out = String::new();
     writeln!(out, "module {}", module.debug_name).unwrap();
     for (i, function) in module.functions.iter().enumerate() {
-        if i > 0 || true {
+        if i > 0 {
             writeln!(out).unwrap();
         }
         write!(out, "{}", print_function(function)).unwrap();
@@ -111,6 +111,14 @@ pub fn print_inst(inst: &IrInst) -> String {
         IrInst::Alloca { dst, size, align } => {
             format!("{} = alloca size {} align {}", print_value_id(*dst), size, align)
         }
+        IrInst::ArrayAlloca { dst, element_type, count } => {
+            format!(
+                "{} = array_alloca {} * {}",
+                print_value_id(*dst),
+                print_type(element_type),
+                count
+            )
+        }
         IrInst::PtrOffset { dst, base, offset } => {
             format!(
                 "{} = ptr_offset {} + {}",
@@ -178,6 +186,7 @@ pub fn print_terminator(term: &IrTerminator) -> String {
             Some(v) => format!("ret {}", print_value_id(*v)),
             None => "ret".to_string(),
         },
+        IrTerminator::Trap => "trap".to_string(),
     }
 }
 
@@ -192,6 +201,7 @@ fn print_type(ty: &IrType) -> &'static str {
         IrType::Bool => "bool",
         IrType::TBool => "tbool",
         IrType::Ptr => "ptr",
+        IrType::Void => "void",
     }
 }
 
@@ -288,6 +298,18 @@ mod tests {
     }
 
     #[test]
+    fn prints_trap_terminator() {
+        let block = IrBlock {
+            id: BlockId(5),
+            params: vec![],
+            insts: vec![],
+            term: IrTerminator::Trap,
+        };
+        let output = print_block(&block);
+        assert!(output.contains("trap"), "expected 'trap' in output, got: {}", output);
+    }
+
+    #[test]
     fn prints_branch_with_args() {
         let block = IrBlock {
             id: BlockId(0),
@@ -332,8 +354,8 @@ mod tests {
         let block = IrBlock {
             id: BlockId(3),
             params: vec![
-                BlockParam { value: ValueId(5), ty: IrType::I64 },
-                BlockParam { value: ValueId(6), ty: IrType::Bool },
+                BlockParam { value: ValueId(5), ty: IrType::I64, read_only: false },
+                BlockParam { value: ValueId(6), ty: IrType::Bool, read_only: false },
             ],
             insts: vec![],
             term: IrTerminator::Return { value: None },

@@ -63,17 +63,23 @@ When copy param support lands in the compiled backend:
 
 ## Open Design Questions
 
-### TBool Representation — PARTIALLY LOCKED
+### TBool Representation — LOCKED (0.1)
 Three-state value: true (1), false (0), unknown (2).
 - Wire format and storage size: LOCKED. 1 byte, values 0/1/2, stored as I8 at Cranelift level.
-- IrType::TBool exists in the IR type system. Not yet produced by lower_type (awaiting SemanticType::TBool in frontend).
+- IrType::TBool is reserved as a first-class IR type variant per the ABI; maps to Cranelift `types::I8`.
 - Valid operations: comparison (0/1/2), three-way branching. Invalid: arithmetic, bitwise.
-- Wire format 0/1/2 is locked from the language spec.
-- Runtime representation: u8? enum? tagged union?
-- Does IrType need a TBool variant or is it lowered as I8 with 0/1/2 convention?
-- Unknown propagation: IR-level checks or runtime intrinsic calls?
-- TBool function parameters: calling convention implications.
-- Arithmetic on unknown-infected values: propagation cost and mechanism.
+- Runtime representation: u8 stored in a 1-byte slot. No enum wrapping. Values 0/1/2 are the only valid states.
+- Current 0.1 lowering encodes TBool wire values as I8 + Cast at construction sites: the IR validator's `ConstInt` accepts only non-TBool integer types, so `when` arms matching TBool unknown emit `ConstInt(I8, 2)` followed by `Cast(I8 → scrutinee.ty)`. Promotion to a direct `ConstInt(TBool)` construction is post-0.1.
+- TBool function parameters: LOCKED. Follows C ABI treating TBool as I8. Passed in the same integer registers as Bool (RDI/RSI/RDX/RCX/R8/R9 on Linux x64; RCX/RDX/R8/R9 on Windows x64). Values 0/1/2 are preserved across the call boundary without padding or encoding. Zero-extended when widened to a larger integer type (Cast TBool → I32 uses `uextend`, not `sextend`).
+- JIT validation: all three TBool wire values (0 = false, 1 = true, 2 = unknown) round-trip correctly through JIT-compiled function calls (confirmed by CX-127 tests in `host_boundary.rs`).
+
+**0.1 status:**
+- When-block lowering (Option A, 0.1): Literal/Range/Bool/Catchall + TBool unknown wire-match landed at bed71c1 (`lower_when_stmt` + `lower_when_expr`, chained Compare/Branch CFG modeled on `lower_logical`). TBool unknown matches via `Cast(I8→scrutinee.ty) + Compare(Eq)` since the IR validator restricts `ConstInt` to non-TBool integer types.
+
+**Post-0.1 deferred items:**
+- Full unknown propagation through arithmetic / logical / comparison ops on TBool-infected values: propagation cost and mechanism. Today's `when` lowering does not propagate unknown into arithmetic.
+- `EnumVariant` arms in `when` (rejected with structured error today).
+- Direct `ConstInt(TBool)` construction (currently encoded via I8 + Cast).
 
 ### String Layout — OPEN
 - `str` at C boundary is `(*const u8, u32)` — pointer + length, no null termination. LOCKED per frontend dev.
@@ -113,6 +119,18 @@ Example: `[5: t64]` → element 8 bytes, stride 8, total 40 bytes, alignment 8.
 Dynamic arrays (push/pop, runtime-sized) are post-0.1 stdlib work. When those land they will need a different layout (fat pointer or struct with ptr + len + cap). This section covers fixed-size arrays only.
 
 Layout computation implemented in `src/ir/types.rs` as `compute_array_layout`. Confidence tests cover i64, i8, bool, i128, and zero-length arrays.
+
+### Expression Evaluation Order — LOCKED (0.1)
+
+All Cx expressions are evaluated strictly left-to-right. Authoritative specification: `docs/backend/cx_eval_order.md`.
+
+ABI impact: the IR instruction stream produced by `lower_binary` and the call argument-lowering loop encodes evaluation order structurally. Instructions for the left operand are emitted before instructions for the right operand within the same basic block. All backends must preserve this instruction order — no reordering of side-effecting instructions across operand boundaries is permitted.
+
+Covered expression forms: binary arithmetic (`+`, `-`, `*`, `/`, `%`), comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`), function call argument lists, short-circuit operators (`&&`, `||` — lhs evaluated first, rhs only on non-short-circuit path; implemented in `lower_logical()` at `src/ir/lower.rs` via a decision/rhs/sc/merge CFG and covered by the LogicalOps parity category, fixtures t141–t142), and `when` expressions (scrutinee then arms left-to-right; implemented in `lower_when_expr()` at `src/ir/lower.rs`, fixtures t143–t145). `EnumVariant` arms in `when` remain post-0.1.
+
+JIT conformance tests in `src/backend/cranelift/host_boundary.rs` (`jit_eval_order_*`) verify that `IrInst::Binary { lhs, rhs }` and `IrInst::Compare { lhs, rhs }` map `lhs` as the left operand and `rhs` as the right operand in emitted Cranelift instructions.
+
+---
 
 ### Enum Layout — LOCKED (tag-only)
 

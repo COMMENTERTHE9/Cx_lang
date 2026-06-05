@@ -1,0 +1,16 @@
+fnc: Result<t32> safe_divide(a: t32, b: t32) {
+    if b == 0 {
+        return Err("division by zero")
+    }
+    return Ok(a / b)
+}
+
+fnc: Result<t32> compute(a: t32, b: t32) {
+    let q;
+    q = safe_divide(a, b)?
+    return Ok(q * 2)
+}
+
+print(compute(10, 2))
+print(compute(10, 0))
+print(compute(9, 3))

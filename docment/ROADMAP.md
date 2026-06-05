@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-21
+Last updated: 2026-05-18
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -51,8 +51,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Array element writes (CX-20)
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
-  - [x] Method call actual lowering (0ab7e9b on submain)
-  - [x] `when` block lowering — Literal/Range/Bool/Catchall + TBool wire-value (bed71c1 on submain; EnumVariant arms deferred post-0.1)
+  - [x] Method call actual lowering (0ab7e9b — synthesis-and-recurse via Call arm)
+  - [ ] `when` block lowering or structured rejection
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
@@ -60,10 +60,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
-- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; more fixtures in flight)
+- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; CX-57/58/60/63/64/66 instruction coverage in flight)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -90,9 +90,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 
 ## Working Notes
 
-**2026-05-21:** `when` block IR lowering landed on submain (bed71c1) — closes H3 for Option A scope. Literal/Range/Bool/Catchall patterns lower via chained-decision CFG. EnumVariant arms deferred. Compound-assign narrow-int fix (e4c9202) closed 2 more SKIPs. JIT parity: 120/62/0 across 182 fixtures. Submain 181 commits ahead of main.
-
-**2026-05-20:** Method-call lowering (0ab7e9b), print-widening (08fa2f9), diff-harness hardening (8e7143d, 4c43362). Closed H1, H2, H5. JIT parity moved 99/83 → 110/72. Submain 179 ahead.
+**2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 

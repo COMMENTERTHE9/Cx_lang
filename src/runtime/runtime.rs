@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug)]
+#[allow(dead_code)] // HandleAlloc/Drop/Access: handle-lifecycle trace events reserved for future --trace-handles wiring
 pub enum ScopeEvent {
     Open(String),
     Close(String),
@@ -682,6 +683,28 @@ impl RunTime {
                 Ok(apply_numeric_cast(result, &expr.ty))
             }
             SemanticExprKind::Binary { lhs, op, pos, rhs } => {
+                // Short-circuit semantics for && and ||: evaluate lhs first; if
+                // the result is already determined, skip rhs entirely.  This
+                // matches the CFG-based JIT lowering added in CX-105.
+                if matches!(op, Op::And | Op::Or) {
+                    let l = self.eval_semantic_expr(lhs)?;
+                    let skip = match (&l, op) {
+                        (Value::Bool(false), Op::And) | (Value::TBool(0), Op::And) => true,
+                        (Value::Bool(true), Op::Or)  | (Value::TBool(1), Op::Or)  => true,
+                        _ => false,
+                    };
+                    if skip {
+                        return Ok(apply_numeric_cast(l, &expr.ty));
+                    }
+                    let r = self.eval_semantic_expr(rhs)?;
+                    let result = self.apply_op(l, op.clone(), *pos, r)?;
+                    return Ok(apply_numeric_cast(result, &expr.ty));
+                }
+                // Evaluation order guarantee: lhs is fully evaluated before rhs.
+                // Any side effects in lhs (e.g. function calls with print) occur
+                // before any side effects in rhs.  The IR lowering (lower_binary
+                // in ir/lower.rs) mirrors this order exactly.  This is a Cx 0.1
+                // language guarantee.  See docs/backend/cx_eval_order.md.
                 let l = self.eval_semantic_expr(lhs)?;
                 let r = self.eval_semantic_expr(rhs)?;
                 let result = self.apply_op(l, op.clone(), *pos, r)?;
@@ -723,7 +746,7 @@ impl RunTime {
                 let result = self.run_semantic_when(val, arms)?;
                 Ok(result)
             }
-            SemanticExprKind::MethodCall { instance, method, args, pos } => {
+            SemanticExprKind::MethodCall { instance, method, args, pos, .. } => {
                 self.call_semantic_method(instance, method, args, *pos)
             }
             SemanticExprKind::Range { .. } => Ok(Value::Num(0)), // stub
