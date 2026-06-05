@@ -10,9 +10,9 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ## Frontend — Release Candidate
 
-All 9 hard blockers resolved. 117/117 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
-**Status:** 0.1 release candidate. No known soundness holes. Syntax frozen.
+**Status:** v0.1.0 released (tagged at 9fc0d24). No known soundness holes. Syntax frozen.
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -56,7 +56,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
-### Merged to submain (not yet on main)
+### Landed (integrated to main via v0.1.0 merge)
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
