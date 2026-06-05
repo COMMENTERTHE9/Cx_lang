@@ -4,7 +4,7 @@ Cx is a compiled, GC-free systems programming language for game engines, tools, 
 
 The goal of Cx is to give engine-facing code predictable memory behavior, explicit value movement, deterministic teardown, and low-level control without forcing every feature to become allocator plumbing.
 
-**Status: 0.2, in development (unreleased).** Last tagged release: **v0.1.0**.
+**Status: 0.2.0 — released 2026-06-05.** Last tagged release: **v0.2.0**.
 
 This README describes the current `submain` branch. The reference interpreter is the source of truth for language semantics; every code sample below was compiled and run against it.
 
@@ -62,7 +62,7 @@ cargo run -- --backend=validate examples/fibonacci.cx
 
 ## Current Verification Status
 
-As of `submain` at `c3506c6`:
+As of `v0.2.0`:
 
 - **243 unit tests passing** (`cargo test`)
 - **418 unit tests passing** with the JIT enabled (`cargo test --features jit`)
@@ -332,7 +332,7 @@ All currently JIT-lowered fixtures match interpreter behavior (0 PARITY_FAIL). A
 
 ### JIT Parity Baseline
 
-As of `c3506c6`:
+As of `v0.2.0`:
 
 | Status | Count |
 |--------|-------|
