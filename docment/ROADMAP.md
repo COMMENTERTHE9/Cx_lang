@@ -8,7 +8,7 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ---
 
-## Frontend — Release Candidate
+## Frontend — v0.1.0 Released
 
 All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
 
