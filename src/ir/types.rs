@@ -95,7 +95,13 @@ pub struct ArrayLayout {
     #[allow(dead_code)]
     pub element_size: usize,
     pub stride: usize,
+    /// `total_size` and `alignment` are read by the Cranelift backend's array
+    /// stack-slot allocation (`--features jit`, host_boundary.rs) and by unit
+    /// tests; a default non-jit, non-test build reads neither (lowering uses
+    /// `stride`), so they warn as dead there only (tracker #042).
+    #[allow(dead_code)]
     pub total_size: usize,
+    #[allow(dead_code)]
     pub alignment: usize,
 }
 

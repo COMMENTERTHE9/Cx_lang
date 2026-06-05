@@ -1,5 +1,10 @@
 use crate::backend::{Backend, BackendError};
-use crate::ir::types::{IrBlock, IrFunction, IrModule, IrType};
+use crate::ir::types::{IrBlock, IrFunction, IrModule};
+// `IrType` is used only by `ir_type_to_cranelift`, which is `#[cfg(feature =
+// "jit")]`; gating the import keeps a default (non-jit) build warning-free
+// (tracker #042).
+#[cfg(feature = "jit")]
+use crate::ir::types::IrType;
 use crate::ir::instr::{IrInst, IrTerminator};
 
 pub mod aot;
