@@ -1,0 +1,28 @@
+struct Player {
+    health: t32,
+    max_health: t32,
+}
+
+player_methods: impl (p: Player) {
+    fnc: take_damage(amount: t32) {
+        p.health -= amount
+    }
+
+    fnc: heal(amount: t32) {
+        p.health += amount
+    }
+
+    fnc: show() {
+        print(p.health)
+    }
+}
+
+let p;
+p = Player { health: 100, max_health: 100 }
+p.show()
+p.take_damage(30)
+p.show()
+p.heal(10)
+p.show()
+p.take_damage(55)
+p.show()

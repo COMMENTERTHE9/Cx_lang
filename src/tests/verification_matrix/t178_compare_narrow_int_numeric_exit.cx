@@ -1,0 +1,21 @@
+// Exit-code JIT parity — ordering compares (Lt/Gt/LtEq/GtEq) with a Numeric
+// literal against narrow-int (t8/t16/t32). Previously misaligned widths at
+// the IR layer because the Op::Lt/Gt/LtEq/GtEq semantic arm skipped the
+// common_numeric_type + insert_cast_if_needed step that EqEq/NotEq and the
+// arithmetic ops both do. Exit 0 iff every comparison evaluates correctly.
+a: t32 = 5
+assert(a > 0)
+assert(a < 10)
+assert(a >= 5)
+assert(a <= 5)
+assert(!(a > 100))
+assert(!(a < 0))
+
+b: t16 = 3
+assert(b > 1)
+assert(b < 100)
+assert(b >= 3)
+
+c: t8 = 2
+assert(c > 0)
+assert(c <= 2)

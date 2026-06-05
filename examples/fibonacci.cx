@@ -1,0 +1,23 @@
+fnc: t64 fib(n: t64) {
+    if n < 2 {
+        return n
+    }
+    a: t64 = 0
+    b: t64 = 1
+    tmp: t64 = 0
+    i: t64 = 2
+    while (i <= n) {
+        tmp = a + b
+        a = b
+        b = tmp
+        i += 1
+    }
+    return b
+}
+
+let i;
+i = 0
+while (i <= 10) {
+    print(fib(i))
+    i += 1
+}

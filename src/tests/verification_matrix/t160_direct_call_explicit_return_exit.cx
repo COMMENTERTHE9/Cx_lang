@@ -1,0 +1,10 @@
+// CX-228: exit-code-based JIT parity — DirectCall explicit return.
+// Mirrors t03_explicit_return without print; verified by exit code only.
+fnc: t64 first(a: t64, b: t64) {
+    return a
+    b
+}
+
+assert_eq(first(10, 20), 10)
+assert_eq(first(42, 0), 42)
+assert_eq(first(7, 99), 7)

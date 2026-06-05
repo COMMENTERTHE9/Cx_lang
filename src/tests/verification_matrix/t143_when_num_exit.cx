@@ -1,0 +1,30 @@
+// CX-113: exit-code-based JIT parity — when-block numeric pattern matching.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// JIT SKIP: when-block lowering not yet implemented; exits 127.
+
+x: t64 = 3
+result: t64 = 0
+when x {
+    1 => { result = 10 },
+    2 => { result = 20 },
+    _ => { result = 99 },
+}
+assert_eq(result, 99)
+
+x = 1
+result = 0
+when x {
+    1 => { result = 10 },
+    2 => { result = 20 },
+    _ => { result = 99 },
+}
+assert_eq(result, 10)
+
+x = 2
+result = 0
+when x {
+    1 => { result = 10 },
+    2 => { result = 20 },
+    _ => { result = 99 },
+}
+assert_eq(result, 20)

@@ -1,0 +1,23 @@
+// CX-228: exit-code-based JIT parity — InfiniteLoop file-scope counter.
+// File-scope loop accumulator — back-edge across multiple iterations.
+// Verified by exit code only (0 = all asserts held).
+count: t64 = 0
+loop {
+    count = count + 1
+    if count >= 5 {
+        break
+    }
+}
+assert_eq(count, 5)
+
+// Accumulate sum 1+2+3+4 = 10
+total: t64 = 0
+i: t64 = 1
+loop {
+    total = total + i
+    i = i + 1
+    if i > 4 {
+        break
+    }
+}
+assert_eq(total, 10)

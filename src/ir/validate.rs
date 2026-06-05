@@ -40,6 +40,7 @@ pub enum IrValidationError {
         function: String,
         detail: String,
     },
+    #[allow(dead_code)] // reserved variant for future validator pass
     InvalidTerminatorPlacement {
         function: String,
         block: BlockId,
@@ -50,6 +51,15 @@ pub enum IrValidationError {
         block: BlockId,
         detail: String,
     },
+    LoopVariableReassignment {
+        function: String,
+        block: BlockId,
+        value: ValueId,
+        context: String,
+    },
+    ReservedRuntimeIntrinsicName {
+        function: String,
+    },
 }
 
 struct ValidatorFunctionSig {
@@ -58,10 +68,38 @@ struct ValidatorFunctionSig {
     has_return: bool,
 }
 
+/// Return the signatures of every known runtime intrinsic.
+///
+/// These are pre-seeded into the validator's `function_sigs` map so that
+/// `IrInst::Call` to an intrinsic like `cx_printn` passes validation even
+/// though it has no `IrFunction` entry in the module.
+fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
+    let mut sigs = HashMap::new();
+    // cx_printn(n: I64) -> void — Phase 9 sub-packet 2 print-integer intrinsic.
+    sigs.insert(
+        "cx_printn".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::I64],
+            has_return: false,
+        },
+    );
+    sigs
+}
+
+/// Return the C-ABI names of every known runtime intrinsic.
+///
+/// Authoritative set shared between the validator and the IR lowering pass so
+/// that both agree on which names are reserved JIT runtime symbols.
+pub fn runtime_intrinsic_names() -> HashSet<String> {
+    known_intrinsic_sigs().into_keys().collect()
+}
+
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
 
-    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = HashMap::new();
+    // Seed known runtime intrinsic signatures before scanning user-defined functions.
+    let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
     for function in &module.functions {
         function_sigs.insert(function.name.clone(), ValidatorFunctionSig {
             param_count: function.params.len(),
@@ -83,6 +121,14 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
     }
 }
 
+fn is_reserved_runtime_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "print" | "println" | "printn" | "read" | "input"
+            | "assert" | "assert_eq" | "is_known" | "cx_printn"
+    )
+}
+
 fn validate_function(
     function_index: usize,
     function: &IrFunction,
@@ -93,11 +139,42 @@ fn validate_function(
         errors.push(IrValidationError::EmptyFunctionName { function_index });
     }
 
+    if is_reserved_runtime_intrinsic(&function.name) {
+        errors.push(IrValidationError::ReservedRuntimeIntrinsicName {
+            function: function.name.clone(),
+        });
+    }
+
     if function.blocks.is_empty() {
         errors.push(IrValidationError::EmptyFunctionBody {
             function: function.name.clone(),
         });
         return;
+    }
+
+    // Function-header storable-type checks.  Use the entry block's id for the
+    // InvalidTypeUsage error slot (the variant requires a block id, but these
+    // sites are function-scoped — the entry block is the closest meaningful
+    // anchor).  `function.return_ty == None` canonically encodes void and is
+    // intentionally allowed; only `Some(IrType::Void)` is rejected.
+    let entry_block_id = function.blocks[0].id;
+    for (i, param) in function.params.iter().enumerate() {
+        ensure_storable_type(
+            &param.ty,
+            function,
+            entry_block_id,
+            &format!("function parameter {} ('{}')", i, param.name),
+            errors,
+        );
+    }
+    if let Some(ret_ty) = &function.return_ty {
+        ensure_storable_type(
+            ret_ty,
+            function,
+            entry_block_id,
+            "function return_ty",
+            errors,
+        );
     }
 
     let mut block_ids = HashSet::new();
@@ -118,6 +195,20 @@ fn validate_function(
 
     let mut defined_values = HashMap::<ValueId, IrType>::new();
 
+    // Collect all values produced by SsaBind instructions across the whole
+    // function.  These represent user-level assignments.  The terminator
+    // validator uses this set to reject any Jump/Branch that forwards an
+    // SsaBind-produced value into a `read_only` block parameter (which would
+    // mean a for-loop variable was overwritten inside the loop body).
+    let mut ssa_bind_values: HashSet<ValueId> = HashSet::new();
+    for block in &function.blocks {
+        for inst in &block.insts {
+            if let IrInst::SsaBind { dst, .. } = inst {
+                ssa_bind_values.insert(*dst);
+            }
+        }
+    }
+
     for block in &function.blocks {
         let mut block_params = HashSet::new();
         for param in &block.params {
@@ -128,6 +219,13 @@ fn validate_function(
                     value: param.value,
                 });
             }
+            ensure_storable_type(
+                &param.ty,
+                function,
+                block.id,
+                "block parameter type",
+                errors,
+            );
             define_value(
                 function,
                 block.id,
@@ -149,6 +247,7 @@ fn validate_function(
             &block.term,
             &defined_values,
             &blocks_by_id,
+            &ssa_bind_values,
             errors,
         );
     }
@@ -226,6 +325,7 @@ fn validate_inst(
             );
         }
         IrInst::SsaBind { dst, ty, src } => {
+            ensure_storable_type(ty, function, block, "SsaBind destination type", errors);
             let src_ty = require_value(
                 function,
                 block,
@@ -361,6 +461,17 @@ fn validate_inst(
                         }
                     }
                 }
+
+                if !sig.has_return && (dst.is_some() || return_ty.is_some()) {
+                    errors.push(IrValidationError::InvalidTypeUsage {
+                        function: function.name.clone(),
+                        block,
+                        detail: format!(
+                            "Call to '{}': callee returns void but call provides destination/return_ty",
+                            callee
+                        ),
+                    });
+                }
             } else {
                 errors.push(IrValidationError::InvalidTypeUsage {
                     function: function.name.clone(),
@@ -378,6 +489,7 @@ fn validate_inst(
                     });
                     return;
                 };
+                ensure_storable_type(return_ty, function, block, "Call return_ty", errors);
                 define_value(
                     function,
                     block,
@@ -395,6 +507,7 @@ fn validate_inst(
             to,
             value,
         } => {
+            ensure_storable_type(to, function, block, "Cast destination type", errors);
             let value_ty = require_value(
                 function,
                 block,
@@ -441,6 +554,17 @@ fn validate_inst(
             }
             define_value(function, block, *dst, IrType::Ptr, "Alloca destination", defined_values, errors);
         }
+        IrInst::ArrayAlloca { dst, element_type, count } => {
+            if *count == 0 {
+                errors.push(IrValidationError::InvalidTypeUsage {
+                    function: function.name.clone(),
+                    block,
+                    detail: "ArrayAlloca count must be > 0".to_string(),
+                });
+            }
+            ensure_storable_type(element_type, function, block, "ArrayAlloca element_type", errors);
+            define_value(function, block, *dst, IrType::Ptr, "ArrayAlloca destination", defined_values, errors);
+        }
         IrInst::PtrOffset { dst, base, .. } => {
             require_value(function, block, *base, "PtrOffset base", defined_values, errors);
             if let Some(base_ty) = defined_values.get(base) {
@@ -478,6 +602,7 @@ fn validate_inst(
             define_value(function, block, *dst, IrType::Ptr, "PtrAdd destination", defined_values, errors);
         }
         IrInst::Load { dst, ty, ptr } => {
+            ensure_storable_type(ty, function, block, "Load destination type", errors);
             require_value(function, block, *ptr, "Load ptr", defined_values, errors);
             if let Some(ptr_ty) = defined_values.get(ptr) {
                 if *ptr_ty != IrType::Ptr {
@@ -512,6 +637,7 @@ fn validate_terminator(
     term: &IrTerminator,
     defined_values: &HashMap<ValueId, IrType>,
     blocks_by_id: &HashMap<BlockId, &IrBlock>,
+    ssa_bind_values: &HashSet<ValueId>,
     errors: &mut Vec<IrValidationError>,
 ) {
     match term {
@@ -528,6 +654,7 @@ fn validate_terminator(
                 args,
                 defined_values,
                 blocks_by_id,
+                ssa_bind_values,
                 errors,
             );
         }
@@ -585,6 +712,7 @@ fn validate_terminator(
                 then_args,
                 defined_values,
                 blocks_by_id,
+                ssa_bind_values,
                 errors,
             );
             validate_target_args(
@@ -595,6 +723,7 @@ fn validate_terminator(
                 else_args,
                 defined_values,
                 blocks_by_id,
+                ssa_bind_values,
                 errors,
             );
         }
@@ -610,6 +739,8 @@ fn validate_terminator(
                 );
             }
         }
+        // Trap is an unconditional abort: no values consumed, no successor block.
+        IrTerminator::Trap => {}
     }
 }
 
@@ -627,6 +758,33 @@ fn define_value(
             function: function.name.clone(),
             value,
             context: context.to_string(),
+        });
+    }
+}
+
+/// Reject `IrType::Void` in storable positions.
+///
+/// `IrType::Void` is not a storable type: it cannot back a parameter, block
+/// param, SSA value, or any slot that holds a runtime value.  It is only
+/// legitimate in *return-position*, where `IrFunction::return_ty` /
+/// `IrInst::Call::return_ty` use `Option<IrType>` and `None` canonically
+/// encodes "no return value" — `Some(IrType::Void)` is an invariant violation.
+///
+/// Callers extract the bare `IrType` (unwrapping `Option<IrType>` themselves
+/// when needed) and invoke this helper at every storable slot.  Emits
+/// `IrValidationError::InvalidTypeUsage` matching the existing variant shape.
+fn ensure_storable_type(
+    ty: &IrType,
+    function: &IrFunction,
+    block: BlockId,
+    context: &str,
+    errors: &mut Vec<IrValidationError>,
+) {
+    if matches!(ty, IrType::Void) {
+        errors.push(IrValidationError::InvalidTypeUsage {
+            function: function.name.clone(),
+            block,
+            detail: format!("{context} must be a storable type, got Void"),
         });
     }
 }
@@ -675,6 +833,7 @@ fn validate_target_args(
     args: &[ValueId],
     defined_values: &HashMap<ValueId, IrType>,
     blocks_by_id: &HashMap<BlockId, &IrBlock>,
+    ssa_bind_values: &HashSet<ValueId>,
     errors: &mut Vec<IrValidationError>,
 ) {
     let Some(target_block) = blocks_by_id.get(&target) else {
@@ -707,6 +866,23 @@ fn validate_target_args(
                     ),
                 });
             }
+        }
+
+        // Loop variable read-only invariant: a `read_only` block parameter
+        // may only receive values that were NOT produced by an SsaBind
+        // instruction.  An SsaBind destination represents a user-level
+        // assignment; if one reaches a read_only param it means the loop
+        // variable was overwritten inside the body.
+        if param.read_only && ssa_bind_values.contains(arg) {
+            errors.push(IrValidationError::LoopVariableReassignment {
+                function: function.name.clone(),
+                block,
+                value: *arg,
+                context: format!(
+                    "{context} passes SsaBind value {:?} into read-only loop counter param {:?} of block {:?}",
+                    arg, param.value, target
+                ),
+            });
         }
     }
 }
@@ -956,6 +1132,7 @@ mod tests {
                         params: vec![BlockParam {
                             value: ValueId(2),
                             ty: IrType::I64,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return { value: None },
@@ -981,10 +1158,12 @@ mod tests {
                         BlockParam {
                             value: ValueId(0),
                             ty: IrType::I64,
+                            read_only: false,
                         },
                         BlockParam {
                             value: ValueId(0),
                             ty: IrType::I64,
+                            read_only: false,
                         },
                     ],
                     insts: vec![],
@@ -1069,6 +1248,7 @@ mod tests {
                         params: vec![BlockParam {
                             value: ValueId(1),
                             ty: IrType::I64,
+                            read_only: false,
                         }],
                         insts: vec![],
                         term: IrTerminator::Return { value: None },
@@ -1082,6 +1262,72 @@ mod tests {
         assert!(errors
             .iter()
             .any(|err| matches!(err, IrValidationError::InvalidTypeUsage { detail, .. } if detail.contains("expects 1 args"))));
+    }
+
+    #[test]
+    fn accepts_trap_terminator_in_unreachable_else_branch() {
+        // Models an assertion: branch on bool, pass → Return, fail → Trap.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "f".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![IrInst::ConstInt {
+                            dst: ValueId(0),
+                            ty: IrType::Bool,
+                            value: 1,
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(0),
+                            then_block: BlockId(1),
+                            then_args: vec![],
+                            else_block: BlockId(2),
+                            else_args: vec![],
+                        },
+                    },
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    },
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Trap,
+                    },
+                ],
+            }],
+        };
+
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    #[test]
+    fn accepts_trap_as_sole_terminator_in_single_block_function() {
+        // A function that unconditionally traps is structurally valid IR.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "always_fails".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Trap,
+                }],
+            }],
+        };
+
+        assert_eq!(validate_module(&module), Ok(()));
     }
 
     #[test]
@@ -1132,6 +1378,7 @@ mod tests {
                     params: vec![BlockParam {
                         value: ValueId(0),
                         ty: IrType::I64,
+                        read_only: false,
                     }],
                     insts: vec![
                         IrInst::ConstInt {
@@ -1173,6 +1420,7 @@ mod tests {
                     params: vec![BlockParam {
                         value: ValueId(0),
                         ty: IrType::I64,
+                        read_only: false,
                     }],
                     insts: vec![],
                     term: IrTerminator::Return {
@@ -1183,5 +1431,575 @@ mod tests {
         };
 
         assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Loop variable read-only invariant tests
+    // ---------------------------------------------------------------------------
+
+    /// Builds a minimal for-loop IR that is CORRECT:
+    ///
+    ///   B0 (entry): v0=0, v1=9 → Jump B1[v0]
+    ///   B1 [v2: I64 read_only] (header): cmp v2 < v1 → Branch(cmp, B2, B3)
+    ///   B2 (body): Jump B4[v2]          ← passes original counter, no SsaBind
+    ///   B3 (exit): Return
+    ///   B4 [v3: I64 read_only] (inc): v4=1, v5=Add(v3,v4) → Jump B1[v5]
+    fn valid_for_loop_module() -> IrModule {
+        IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![
+                    // B0: entry
+                    IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 0 },
+                            IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 9 },
+                        ],
+                        term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(0)] },
+                    },
+                    // B1: header — counter param is read_only
+                    IrBlock {
+                        id: BlockId(1),
+                        params: vec![BlockParam { value: ValueId(2), ty: IrType::I64, read_only: true }],
+                        insts: vec![IrInst::Compare {
+                            dst: ValueId(10),
+                            op: CompareOp::Lt,
+                            lhs: ValueId(2),
+                            rhs: ValueId(1),
+                        }],
+                        term: IrTerminator::Branch {
+                            cond: ValueId(10),
+                            then_block: BlockId(2),
+                            then_args: vec![],
+                            else_block: BlockId(3),
+                            else_args: vec![],
+                        },
+                    },
+                    // B2: body — correctly forwards the original counter (v2) to increment
+                    IrBlock {
+                        id: BlockId(2),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Jump { target: BlockId(4), args: vec![ValueId(2)] },
+                    },
+                    // B3: exit
+                    IrBlock {
+                        id: BlockId(3),
+                        params: vec![],
+                        insts: vec![],
+                        term: IrTerminator::Return { value: None },
+                    },
+                    // B4: increment — counter param is also read_only
+                    IrBlock {
+                        id: BlockId(4),
+                        params: vec![BlockParam { value: ValueId(3), ty: IrType::I64, read_only: true }],
+                        insts: vec![
+                            IrInst::ConstInt { dst: ValueId(4), ty: IrType::I64, value: 1 },
+                            IrInst::Binary {
+                                dst: ValueId(5),
+                                op: BinaryOp::Add,
+                                ty: IrType::I64,
+                                lhs: ValueId(3),
+                                rhs: ValueId(4),
+                            },
+                        ],
+                        term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(5)] },
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn accepts_for_loop_without_counter_reassignment() {
+        assert_eq!(validate_module(&valid_for_loop_module()), Ok(()));
+    }
+
+    #[test]
+    fn rejects_for_loop_body_that_reassigns_counter_via_ssabind() {
+        // Body block assigns a new value via SsaBind and forwards that to the
+        // increment block's read_only counter param — must be rejected.
+        //
+        //   B2 (body):
+        //     v6 = ConstInt(5)
+        //     v7 = SsaBind(I64, v6)   ← user assignment: i = 5
+        //     Jump B4 [v7]            ← passes SsaBind result to read_only param
+        let mut module = valid_for_loop_module();
+        let body = &mut module.functions[0].blocks[2]; // B2
+        body.insts = vec![
+            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I64, value: 5 },
+            IrInst::SsaBind { dst: ValueId(7), ty: IrType::I64, src: ValueId(6) },
+        ];
+        body.term = IrTerminator::Jump { target: BlockId(4), args: vec![ValueId(7)] };
+
+        let errors = validate_module(&module)
+            .expect_err("validator must reject loop body that overwrites the counter");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::LoopVariableReassignment { .. }
+            )),
+            "expected LoopVariableReassignment error, got: {:?}",
+            errors
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Reserved runtime intrinsic name tests
+    // ---------------------------------------------------------------------------
+
+    fn single_block_function(name: &str) -> IrModule {
+        IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: name.to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn rejects_function_named_print() {
+        let errors = validate_module(&single_block_function("print"))
+            .expect_err("validator should reject function named 'print'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "print"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_println() {
+        let errors = validate_module(&single_block_function("println"))
+            .expect_err("validator should reject function named 'println'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "println"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_printn() {
+        let errors = validate_module(&single_block_function("printn"))
+            .expect_err("validator should reject function named 'printn'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "printn"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_read() {
+        let errors = validate_module(&single_block_function("read"))
+            .expect_err("validator should reject function named 'read'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "read"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_input() {
+        let errors = validate_module(&single_block_function("input"))
+            .expect_err("validator should reject function named 'input'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "input"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_assert() {
+        let errors = validate_module(&single_block_function("assert"))
+            .expect_err("validator should reject function named 'assert'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "assert"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_assert_eq() {
+        let errors = validate_module(&single_block_function("assert_eq"))
+            .expect_err("validator should reject function named 'assert_eq'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "assert_eq"
+        )));
+    }
+
+    #[test]
+    fn rejects_function_named_is_known() {
+        let errors = validate_module(&single_block_function("is_known"))
+            .expect_err("validator should reject function named 'is_known'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "is_known"
+        )));
+    }
+
+    // cx_printn is pre-seeded in `known_intrinsic_sigs` as an IR-level runtime
+    // intrinsic; the reserved-name gate must reject user-defined functions of
+    // that name so they cannot overwrite the seeded signature in `function_sigs`
+    // and corrupt validation of intrinsic calls.
+    #[test]
+    fn rejects_function_named_cx_printn() {
+        let errors = validate_module(&single_block_function("cx_printn"))
+            .expect_err("validator should reject function named 'cx_printn'");
+        assert!(errors.iter().any(|err| matches!(
+            err,
+            IrValidationError::ReservedRuntimeIntrinsicName { function, .. }
+                if function == "cx_printn"
+        )));
+    }
+
+    #[test]
+    fn accepts_function_with_non_reserved_name() {
+        assert_eq!(validate_module(&single_block_function("my_func")), Ok(()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Storable-type guard tests (`ensure_storable_type`)
+    //
+    // `IrType::Void` is rejected at every storable position; `None` in
+    // `IrFunction::return_ty` remains the canonical "void return" encoding and
+    // must continue to validate.
+    // ---------------------------------------------------------------------------
+
+    fn assert_void_storable_error(errors: &[IrValidationError], substring: &str) {
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                    if detail.contains(substring) && detail.contains("got Void")
+            )),
+            "expected InvalidTypeUsage containing '{}' and 'got Void', got: {:?}",
+            substring,
+            errors
+        );
+    }
+
+    #[test]
+    fn rejects_void_function_param_type() {
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "f".to_string(),
+                params: vec![IrParam { name: "x".to_string(), ty: IrType::Void }],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject Void function parameter type");
+        assert_void_storable_error(&errors, "function parameter");
+    }
+
+    #[test]
+    fn rejects_void_function_return_ty() {
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "f".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::Void),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject Some(IrType::Void) return type — canonical void is None");
+        assert_void_storable_error(&errors, "function return_ty");
+    }
+
+    #[test]
+    fn accepts_none_function_return_ty_as_canonical_void() {
+        // None is the canonical encoding for "no return value" (void) and must
+        // continue to validate — the new guard only rejects Some(IrType::Void).
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "f".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    #[test]
+    fn rejects_void_block_param_type() {
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "f".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![BlockParam {
+                        value: ValueId(0),
+                        ty: IrType::Void,
+                        read_only: false,
+                    }],
+                    insts: vec![],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject Void block parameter type");
+        assert_void_storable_error(&errors, "block parameter type");
+    }
+
+    #[test]
+    fn rejects_void_ssabind_destination_type() {
+        // Construct an SsaBind whose declared destination type is Void.  The
+        // source value's type would never legitimately be Void either, but the
+        // helper at the destination slot catches the declaration directly.
+        let module = int_main(
+            vec![
+                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 0 },
+                IrInst::SsaBind { dst: ValueId(1), ty: IrType::Void, src: ValueId(0) },
+            ],
+            IrTerminator::Return { value: None },
+        );
+        let errors = validate_module(&module)
+            .expect_err("validator must reject Void SsaBind destination type");
+        assert_void_storable_error(&errors, "SsaBind destination type");
+    }
+
+    #[test]
+    fn rejects_void_load_destination_type() {
+        // A Load that declares its result type as Void violates the storable
+        // invariant — Void can never back a runtime value.
+        let module = int_main(
+            vec![
+                IrInst::Alloca { dst: ValueId(0), size: 8, align: 8 },
+                IrInst::Load { dst: ValueId(1), ty: IrType::Void, ptr: ValueId(0) },
+            ],
+            IrTerminator::Return { value: None },
+        );
+        let errors = validate_module(&module)
+            .expect_err("validator must reject Void Load destination type");
+        assert_void_storable_error(&errors, "Load destination type");
+    }
+
+    #[test]
+    fn rejects_void_cast_destination_type() {
+        let module = int_main(
+            vec![
+                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 1 },
+                IrInst::Cast {
+                    dst: ValueId(1),
+                    from: IrType::I32,
+                    to: IrType::Void,
+                    value: ValueId(0),
+                },
+            ],
+            IrTerminator::Return { value: None },
+        );
+        let errors = validate_module(&module)
+            .expect_err("validator must reject Void Cast destination type");
+        assert_void_storable_error(&errors, "Cast destination type");
+    }
+
+    #[test]
+    fn rejects_void_array_alloca_element_type_via_helper() {
+        // Regression-check: the inline Void guard at the ArrayAlloca site was
+        // replaced with a call to `ensure_storable_type`; behavior must be
+        // preserved (Void element_type still rejected).
+        let module = int_main(
+            vec![IrInst::ArrayAlloca {
+                dst: ValueId(0),
+                element_type: IrType::Void,
+                count: 4,
+            }],
+            IrTerminator::Return { value: None },
+        );
+        let errors = validate_module(&module)
+            .expect_err("validator must continue to reject Void ArrayAlloca element_type");
+        assert_void_storable_error(&errors, "ArrayAlloca element_type");
+    }
+
+    #[test]
+    fn rejects_compound_assign_equivalent_ssabind_reaching_read_only_param() {
+        // Simulates:  i += 1  in the body — a compound assignment also
+        // produces an SsaBind destination that reaches the read_only counter.
+        //
+        //   B2 (body):
+        //     v6 = ConstInt(1)
+        //     v7 = Binary Add (v2, v6)
+        //     v8 = SsaBind(I64, v7)   ← compound assign result stored via SsaBind
+        //     Jump B4 [v8]
+        let mut module = valid_for_loop_module();
+        let body = &mut module.functions[0].blocks[2];
+        body.insts = vec![
+            IrInst::ConstInt { dst: ValueId(6), ty: IrType::I64, value: 1 },
+            IrInst::Binary {
+                dst: ValueId(7),
+                op: BinaryOp::Add,
+                ty: IrType::I64,
+                lhs: ValueId(2),
+                rhs: ValueId(6),
+            },
+            IrInst::SsaBind { dst: ValueId(8), ty: IrType::I64, src: ValueId(7) },
+        ];
+        body.term = IrTerminator::Jump { target: BlockId(4), args: vec![ValueId(8)] };
+
+        let errors = validate_module(&module)
+            .expect_err("validator must reject compound-assign to loop counter");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::LoopVariableReassignment { .. }
+            )),
+            "expected LoopVariableReassignment error, got: {:?}",
+            errors
+        );
+    }
+
+    // ── Runtime intrinsic signature tests (CX-77) ────────────────────────────
+
+    #[test]
+    fn validator_accepts_cx_printn_call_with_i64_arg() {
+        // A call to `cx_printn(i64)` must pass validation even though cx_printn
+        // has no IrFunction entry in the module — it is seeded by known_intrinsic_sigs.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        assert_eq!(validate_module(&module), Ok(()));
+    }
+
+    #[test]
+    fn validator_rejects_cx_printn_call_with_wrong_arg_type() {
+        // cx_printn expects I64; passing I32 must produce a type-mismatch error.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I32, value: 42 },
+                        IrInst::Call {
+                            dst: None,
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: None,
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject wrong-type arg to cx_printn");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                if detail.contains("Call to 'cx_printn': argument 0 has type")
+                    && detail.contains("expected I64")
+            )),
+            "expected type-mismatch error for cx_printn, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn validator_rejects_void_intrinsic_call_with_dst_or_return_ty() {
+        // cx_printn is void; a Call that assigns its result to a dst or declares
+        // a return_ty must be rejected.
+        let module = IrModule {
+            debug_name: "m".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![
+                        IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 42 },
+                        IrInst::Call {
+                            dst: Some(ValueId(1)),
+                            callee: "cx_printn".to_string(),
+                            args: vec![ValueId(0)],
+                            return_ty: Some(IrType::I64),
+                        },
+                    ],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        };
+        let errors = validate_module(&module)
+            .expect_err("validator must reject void intrinsic call with dst/return_ty");
+        assert!(
+            errors.iter().any(|err| matches!(
+                err,
+                IrValidationError::InvalidTypeUsage { detail, .. }
+                if detail.contains("Call to 'cx_printn': callee returns void")
+            )),
+            "expected void-return shape error for cx_printn, got: {:?}",
+            errors
+        );
     }
 }

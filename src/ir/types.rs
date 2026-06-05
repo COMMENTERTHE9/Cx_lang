@@ -1,6 +1,7 @@
 use crate::ir::instr::{IrInst, IrTerminator};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // TBool + Void: reserved first-class IR type variants per docs/backend/cx_abi_v0.1.md; current lowering encodes TBool via Cast(I8) and canonicalises Void to Option<IrType>::None at the function boundary
 pub enum IrType {
     I8,
     I16,
@@ -11,6 +12,16 @@ pub enum IrType {
     Bool,
     TBool,
     Ptr,
+    /// Void — the absence of a value.
+    ///
+    /// Used in `lower_type` to represent `SemanticType::Void` within the type
+    /// system.  `Void` is **not** a storable or loadable type; it must never
+    /// appear in block parameters, instruction operands, or `IrFunction::return_ty`
+    /// (which uses `Option<IrType>` where `None` already encodes void).
+    ///
+    /// At the function-lowering boundary, `IrType::Void` returned by `lower_type`
+    /// is canonicalised to `None` before being placed in the IR.
+    Void,
 }
 
 impl IrType {
@@ -25,6 +36,7 @@ impl IrType {
             IrType::Bool => 1,
             IrType::TBool => 1,
             IrType::Ptr => 8,
+            IrType::Void => 0,
         }
     }
 
@@ -39,6 +51,7 @@ impl IrType {
             IrType::Bool => 1,
             IrType::TBool => 1,
             IrType::Ptr => 8,
+            IrType::Void => 1,
         }
     }
 }
@@ -78,6 +91,8 @@ pub fn compute_struct_layout(fields: &[IrType]) -> StructLayout {
 }
 
 pub struct ArrayLayout {
+    /// Reserved for layout introspection; read by unit tests, not by current lowering (stride is the live field).
+    #[allow(dead_code)]
     pub element_size: usize,
     pub stride: usize,
     pub total_size: usize,
@@ -141,6 +156,11 @@ pub struct IrBlock {
 pub struct BlockParam {
     pub value: ValueId,
     pub ty: IrType,
+    /// True for `for`-loop counter block parameters. The IR validator rejects
+    /// any Jump/Branch that passes an `SsaBind`-produced value into a
+    /// `read_only` position, because that would mean user code overwrote the
+    /// loop variable.
+    pub read_only: bool,
 }
 
 #[cfg(test)]
@@ -176,6 +196,7 @@ mod tests {
             params: vec![BlockParam {
                 value: ValueId(3),
                 ty: IrType::I64,
+                read_only: false,
             }],
             insts: vec![],
             term: IrTerminator::Return { value: None },
@@ -348,5 +369,12 @@ mod tests {
         // Enum tags are stored as I8 — 1 byte, align 1, values 0..255
         assert_eq!(IrType::I8.size_bytes(), 1);
         assert_eq!(IrType::I8.align_bytes(), 1);
+    }
+
+    #[test]
+    fn void_has_zero_size_and_unit_alignment() {
+        // Void is not storable; size is 0. Alignment is 1 (neutral for layout math).
+        assert_eq!(IrType::Void.size_bytes(), 0);
+        assert_eq!(IrType::Void.align_bytes(), 1);
     }
 }

@@ -65,6 +65,16 @@ pub enum IrInst {
         size: usize,
         align: usize,
     },
+    /// Allocate a fixed-size array on the stack.
+    ///
+    /// Equivalent to `Alloca { size: element_size(element_type) * count,
+    /// align: align_bytes(element_type) }` but carries explicit array
+    /// semantics so the JIT emitter can use typed layout helpers.
+    ArrayAlloca {
+        dst: ValueId,
+        element_type: IrType,
+        count: usize,
+    },
     /// Advance a pointer by a compile-time byte offset.
     ///
     /// `dst = ptr_offset base + offset`
@@ -115,6 +125,12 @@ pub enum IrTerminator {
     Return {
         value: Option<ValueId>,
     },
+    /// Unconditional abort — emitted for assertion failures.
+    ///
+    /// In the JIT backend this lowers to a Cranelift `trap` instruction,
+    /// which raises a hardware fault and terminates the process.  No values
+    /// are consumed and no successor block exists.
+    Trap,
 }
 
 #[cfg(test)]
@@ -147,6 +163,15 @@ mod tests {
             }
             other => panic!("unexpected instruction variant: {other:?}"),
         }
+    }
+
+    #[test]
+    fn trap_terminator_is_distinct_from_other_variants() {
+        let term = IrTerminator::Trap;
+        assert!(matches!(term, IrTerminator::Trap));
+        assert!(!matches!(term, IrTerminator::Return { .. }));
+        assert!(!matches!(term, IrTerminator::Jump { .. }));
+        assert!(!matches!(term, IrTerminator::Branch { .. }));
     }
 
     #[test]

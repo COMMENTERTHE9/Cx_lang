@@ -155,6 +155,9 @@ pub enum Token {
     #[token("char")]
     TypeChar,
 
+    #[token("void")]
+    TypeVoid,
+
     // ── Literals ─────────────────────────────────
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let s = lex.slice();

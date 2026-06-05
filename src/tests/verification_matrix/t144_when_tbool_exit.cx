@@ -1,0 +1,24 @@
+// CX-113: exit-code-based JIT parity — when-block TBool pattern matching.
+// No stdout; correctness verified by exit code only (0 = all asserts held).
+// JIT SKIP: when-block lowering not yet implemented; exits 127.
+// Uses untyped let+assign (same as t20) because bool literals cannot be
+// directly assigned to an explicit tbool-annotated variable.
+
+let x
+x = false
+result: t64 = 0
+when x {
+    true    => { result = 1 },
+    false   => { result = 190 },
+    unknown => { result = 2 },
+}
+assert_eq(result, 190)
+
+x = true
+result = 0
+when x {
+    true    => { result = 1 },
+    false   => { result = 190 },
+    unknown => { result = 2 },
+}
+assert_eq(result, 1)

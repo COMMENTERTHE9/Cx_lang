@@ -7,7 +7,7 @@ v5.0 — 2026-04-25
 
 **All 9 hard blockers are resolved.** Cx 0.1 is at release candidate status.
 
-- Test matrix: 117/117 green (0 failures)
+- Verification matrix: 182 fixtures (interpreter all green; JIT parity 120/62/0)
 - Examples: 8/8 pass (`bash examples/run_all.sh`)
 - Two full audits completed:
   - Parser/semantic/interpreter agreement audit: 12 tests, all findings fixed

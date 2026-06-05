@@ -1,0 +1,29 @@
+// CX-228: exit-code-based JIT parity — Unary boolean NOT.
+// Verified by exit code only (0 = all asserts held).
+
+// NOT true → false
+flag: bool = true
+not_flag: bool = !flag
+if not_flag {
+    assert(false)
+}
+
+// NOT false → true
+not_false: bool = !false
+if !not_false {
+    assert(false)
+}
+
+// NOT on comparison expression: !(x == y) where x != y → true
+p: t64 = 3
+q: t64 = 4
+ne: bool = !(p == q)
+if !ne {
+    assert(false)
+}
+
+// NOT on equal comparison: !(x == x) → false
+eq: bool = !(p == p)
+if eq {
+    assert(false)
+}

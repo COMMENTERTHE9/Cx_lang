@@ -1,0 +1,6 @@
+// CX-92: exit-code-based JIT parity — integer division.
+// Verifies zero-numerator division: 0 / b == 0 for any nonzero b.
+assert_eq(0 / 5, 0)
+assert_eq(0 / 7, 0)
+assert_eq(0 / 100, 0)
+assert_eq(0 / 1, 0)

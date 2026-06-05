@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+
+reviews:
+  profile: chill
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: true
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - submain
+      - main
+  path_filters:
+    - "!Cargo.lock"
+    - "!daily_log/**"
+    - "!examples/**"
+    - "!target/**"
+    - "!**/*.lock"
+    - "!tests/snapshots/**"
+    - "!**/generated/**"
+  path_instructions:
+    - path: "src/backend/**"
+      instructions: "Backend developer owns this directory. Flag changes here for extra scrutiny — verify they don't break IR contracts or Cranelift lowering. Confirm test matrix still passes."
+    - path: "src/ir/**"
+      instructions: "Backend territory. Verify IrType variants, SSA invariants, and ABI/data layout decisions are preserved."
+    - path: "src/frontend/**"
+      instructions: "Check parser/lexer changes against locked syntax decisions: fnc declarations, optional semicolons, #![imports] system, strict UTF-8, wrapping arithmetic at declared integer width."
+    - path: "src/tests/**"
+      instructions: "Verify new tests match existing patterns in verification_matrix and diff_harness. Don't accept tests that mask failures with overly broad assertions."
+    - path: ".github/workflows/**"
+      instructions: "CI changes need extra scrutiny. Verify no secret leaks, correct branch triggers, and that the change preserves all existing matrix coverage."
+  tools:
+    github-checks:
+      enabled: true
+
+chat:
+  auto_reply: true

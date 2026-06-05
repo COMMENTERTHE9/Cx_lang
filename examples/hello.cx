@@ -1,0 +1,7 @@
+name: str = "World"
+age: t32 = 42
+score: f64 = 9.8
+
+print("Hello, {name}!")
+print("Age: {age}")
+print("Score: {score}")

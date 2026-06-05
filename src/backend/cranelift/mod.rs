@@ -1,4 +1,4 @@
-use crate::backend::Backend;
+use crate::backend::{Backend, BackendError};
 use crate::ir::types::{IrBlock, IrFunction, IrModule, IrType};
 use crate::ir::instr::{IrInst, IrTerminator};
 
@@ -53,19 +53,21 @@ impl std::fmt::Display for CraneliftLoweringError {
 /// Map an [`IrType`] to its Cranelift [`cranelift_codegen::ir::types::Type`]
 /// equivalent.
 ///
-/// All nine `IrType` variants are handled:
+/// All ten `IrType` variants are handled:
 ///
-/// | IrType  | Cranelift type | Notes                                    |
-/// |---------|---------------|------------------------------------------|
-/// | I8      | I8            | direct mapping                           |
-/// | I16     | I16           | direct mapping                           |
-/// | I32     | I32           | direct mapping                           |
-/// | I64     | I64           | direct mapping                           |
-/// | I128    | I128          | direct mapping                           |
-/// | F64     | F64           | direct mapping                           |
-/// | Bool    | I8            | booleans are 0/1, no native bool in CL   |
-/// | TBool   | I8            | three-state (0/1/2) fits in i8           |
-/// | Ptr     | I64           | 64-bit pointer on all supported targets  |
+/// | IrType  | Cranelift type | Notes                                                      |
+/// |---------|---------------|------------------------------------------------------------|
+/// | I8      | I8            | direct mapping                                             |
+/// | I16     | I16           | direct mapping                                             |
+/// | I32     | I32           | direct mapping                                             |
+/// | I64     | I64           | direct mapping                                             |
+/// | I128    | I128          | direct mapping                                             |
+/// | F64     | F64           | direct mapping                                             |
+/// | Bool    | I8            | booleans are 0/1, no native bool in CL                     |
+/// | TBool   | I8            | three-state (0/1/2) fits in i8                             |
+/// | Ptr     | I64           | 64-bit pointer on all supported targets                    |
+/// | Void    | —             | error: Cranelift has no void type; void functions use an   |
+/// |         |               | empty return list in their signature (no ABI param at all) |
 #[cfg(feature = "jit")]
 pub fn ir_type_to_cranelift(
     ty: &IrType,
@@ -81,6 +83,13 @@ pub fn ir_type_to_cranelift(
         IrType::Bool  => types::I8,
         IrType::TBool => types::I8,
         IrType::Ptr   => types::I64,
+        IrType::Void  => {
+            return Err(CraneliftLoweringError::InvalidIrType {
+                ty: "Void (Cranelift has no void type; void-return functions use an empty \
+                     return list — IrType::Void must never reach the signature builder)"
+                    .to_string(),
+            });
+        }
     })
 }
 
@@ -167,6 +176,12 @@ fn lower_instruction(inst: &IrInst) -> Result<(), CraneliftLoweringError> {
                 context: format!("dst={dst:?} size={size} align={align}"),
             })
         }
+        IrInst::ArrayAlloca { dst, element_type, count } => {
+            Err(CraneliftLoweringError::UnsupportedInstruction {
+                inst: "ArrayAlloca".to_string(),
+                context: format!("dst={dst:?} element_type={element_type:?} count={count}"),
+            })
+        }
         IrInst::PtrOffset { dst, base, offset } => {
             Err(CraneliftLoweringError::UnsupportedInstruction {
                 inst: "PtrOffset".to_string(),
@@ -221,34 +236,251 @@ fn lower_terminator(term: &IrTerminator) -> Result<(), CraneliftLoweringError> {
                 context: format!("value={value:?}"),
             })
         }
+        IrTerminator::Trap => {
+            Err(CraneliftLoweringError::UnsupportedTerminator {
+                term: "Trap".to_string(),
+                context: "assertion-failure abort".to_string(),
+            })
+        }
     }
 }
 
 // ── Backend impl ─────────────────────────────────────────────────────────────
 
+/// Returns `true` when `e` is a compile-or-link failure that warrants an IR
+/// dump.  `RuntimePanic` means the IR compiled successfully and the failure
+/// happened at execution time, so the dump would not add signal.
+#[cfg(feature = "jit")]
+fn should_dump_ir_on_jit_failure(e: &host_boundary::JitExecutionError) -> bool {
+    !matches!(e, host_boundary::JitExecutionError::RuntimePanic { .. })
+}
+
 impl Backend for CraneliftBackend {
-    fn execute(&self, module: &IrModule) -> Result<(), String> {
+    fn execute(&self, module: &IrModule) -> Result<(), BackendError> {
         #[cfg(feature = "jit")]
         {
+            use host_boundary::JitExecutionError;
             use jit::run_jit;
             match run_jit(module) {
                 Ok(outcome) => {
                     if outcome.exit_code.is_success() {
                         Ok(())
                     } else {
-                        Err(format!(
-                            "JIT: program exited with code {}",
-                            outcome.exit_code
-                        ))
+                        // Propagate the Cx program's own exit code unchanged.
+                        let code = outcome.exit_code.raw();
+                        Err(BackendError {
+                            message: format!("program exited with code {}", code),
+                            exit_code: code,
+                        })
                     }
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) => {
+                    let exit_code = match &e {
+                        // 127 = JIT_SKIP_EXIT_CODE: the JIT pipeline cannot handle
+                        // this program.  The differential harness counts this as SKIP.
+                        JitExecutionError::UnsupportedConstruct { .. }
+                        | JitExecutionError::CodegenFailure { .. }
+                        | JitExecutionError::MainNotFound => 127,
+                        // 126 = JIT_RUNTIME_FAILURE: program compiled but crashed.
+                        JitExecutionError::RuntimePanic { .. } => 126,
+                    };
+                    if should_dump_ir_on_jit_failure(&e) {
+                        eprintln!("--- cx jit: compile/link failed — IR dump ---");
+                        eprint!("{}", crate::ir::printer::print_module(module));
+                        eprintln!("--- end IR dump ---");
+                    }
+                    Err(BackendError {
+                        message: e.to_string(),
+                        exit_code,
+                    })
+                }
             }
         }
         #[cfg(not(feature = "jit"))]
         {
             let _ = module;
-            Err("Cranelift backend requires the `jit` feature — rebuild with --features jit".to_string())
+            Err(BackendError {
+                message: "Cranelift backend requires the `jit` feature — rebuild with --features jit".to_string(),
+                exit_code: 1,
+            })
+        }
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::*;
+    use crate::backend::Backend;
+    use crate::ir::instr::IrTerminator;
+    use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
+
+    // ── BackendError exit-code propagation tests ─────────────────────────────
+
+    #[test]
+    fn cranelift_backend_unsupported_construct_exits_127() {
+        // IrInst::ConstInt with I128 is explicitly unsupported in the JIT backend.
+        // CraneliftBackend::execute must map UnsupportedConstruct → exit_code 127.
+        use crate::ir::instr::IrInst;
+        let module = IrModule {
+            debug_name: "test_unsupported".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::ConstInt {
+                        dst: ValueId(0),
+                        ty: IrType::I128,
+                        value: 0,
+                    }],
+                    term: IrTerminator::Return { value: Some(ValueId(0)) },
+                }],
+            }],
+        };
+        let err = CraneliftBackend.execute(&module).unwrap_err();
+        assert_eq!(
+            err.exit_code, 127,
+            "UnsupportedConstruct must map to exit code 127, got {}",
+            err.exit_code
+        );
+    }
+
+    #[test]
+    fn cranelift_backend_nonzero_program_exit_propagates() {
+        // A Cx program that returns 42 must produce BackendError { exit_code: 42 }.
+        use crate::ir::instr::IrInst;
+        let module = IrModule {
+            debug_name: "test_exit42".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::ConstInt {
+                        dst: ValueId(0),
+                        ty: IrType::I32,
+                        value: 42,
+                    }],
+                    term: IrTerminator::Return { value: Some(ValueId(0)) },
+                }],
+            }],
+        };
+        let err = CraneliftBackend.execute(&module).unwrap_err();
+        assert_eq!(
+            err.exit_code, 42,
+            "non-zero Cx program exit must propagate as exit_code, got {}",
+            err.exit_code
+        );
+    }
+
+    #[test]
+    fn cranelift_backend_zero_exit_is_ok() {
+        // A program returning 0 must produce Ok(()) — no error, no exit code.
+        use crate::ir::instr::IrInst;
+        let module = IrModule {
+            debug_name: "test_exit0".to_string(),
+            functions: vec![IrFunction {
+                name: "main".to_string(),
+                params: vec![],
+                return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::ConstInt {
+                        dst: ValueId(0),
+                        ty: IrType::I32,
+                        value: 0,
+                    }],
+                    term: IrTerminator::Return { value: Some(ValueId(0)) },
+                }],
+            }],
+        };
+        assert!(
+            CraneliftBackend.execute(&module).is_ok(),
+            "program exiting 0 must produce Ok(())"
+        );
+    }
+
+    // ── IR dump gating tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn ir_dump_suppressed_for_runtime_panic() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::RuntimePanic { detail: "crash".to_string() };
+        assert!(
+            !should_dump_ir_on_jit_failure(&err),
+            "RuntimePanic must not trigger an IR dump"
+        );
+    }
+
+    #[test]
+    fn ir_dump_enabled_for_codegen_failure() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::CodegenFailure { detail: "bad".to_string() };
+        assert!(
+            should_dump_ir_on_jit_failure(&err),
+            "CodegenFailure must trigger an IR dump"
+        );
+    }
+
+    #[test]
+    fn ir_dump_enabled_for_unsupported_construct() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::UnsupportedConstruct { construct: "X".to_string() };
+        assert!(
+            should_dump_ir_on_jit_failure(&err),
+            "UnsupportedConstruct must trigger an IR dump"
+        );
+    }
+
+    #[test]
+    fn ir_dump_enabled_for_main_not_found() {
+        use host_boundary::JitExecutionError;
+        let err = JitExecutionError::MainNotFound;
+        assert!(
+            should_dump_ir_on_jit_failure(&err),
+            "MainNotFound must trigger an IR dump"
+        );
+    }
+
+    // ── Type mapping tests ───────────────────────────────────────────────────
+
+    /// IrType::Void must produce an error from ir_type_to_cranelift, not a
+    /// Cranelift type, because Cranelift has no void type.  Void-return
+    /// functions skip the return-type ABI param entirely in build_cl_signature.
+    #[test]
+    fn ir_type_to_cranelift_void_returns_error() {
+        let result = ir_type_to_cranelift(&IrType::Void);
+        assert!(
+            matches!(result, Err(CraneliftLoweringError::InvalidIrType { .. })),
+            "expected InvalidIrType for Void, got {:?}",
+            result
+        );
+    }
+
+    /// All non-void scalar types must map successfully.
+    #[test]
+    fn ir_type_to_cranelift_scalar_types_succeed() {
+        for ty in &[
+            IrType::I8,
+            IrType::I16,
+            IrType::I32,
+            IrType::I64,
+            IrType::F64,
+            IrType::Bool,
+            IrType::TBool,
+            IrType::Ptr,
+        ] {
+            assert!(
+                ir_type_to_cranelift(ty).is_ok(),
+                "expected Ok for {ty:?}, got Err"
+            );
         }
     }
 }

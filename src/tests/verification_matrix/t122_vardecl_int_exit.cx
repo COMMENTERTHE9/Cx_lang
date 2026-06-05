@@ -1,0 +1,6 @@
+// CX-92: exit-code-based JIT parity — integer variable declarations.
+// Declares two t64 variables and verifies their stored values.
+x: t64 = 42
+assert_eq(x, 42)
+y: t64 = 100
+assert_eq(y, 100)

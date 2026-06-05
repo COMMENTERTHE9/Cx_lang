@@ -1,0 +1,5 @@
+// CX-92: exit-code-based JIT parity — integer subtraction.
+assert_eq(5 - 0, 5)
+assert_eq(10 - 3, 7)
+assert_eq(100 - 1, 99)
+assert_eq(50 - 50, 0)

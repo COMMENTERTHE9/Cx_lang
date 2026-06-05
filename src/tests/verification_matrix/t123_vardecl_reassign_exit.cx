@@ -1,0 +1,9 @@
+// CX-92: exit-code-based JIT parity — variable reassignment.
+// Starts from zero, verifies the initial value, then checks each
+// reassigned value via exit code only.
+x: t64 = 0
+assert(x == 0)
+x = 42
+assert(x == 42)
+x = 100
+assert(x == 100)

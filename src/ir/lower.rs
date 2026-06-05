@@ -7,6 +7,7 @@ use crate::frontend::ast::Op;
 use crate::frontend::semantic_types::{
     BindingId, SemanticCallArg, SemanticExpr, SemanticExprKind, SemanticLValue,
     SemanticParamKind, SemanticProgram, SemanticStmt, SemanticType, SemanticValue,
+    SemanticWhenArm, SemanticWhenPattern,
 };
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
@@ -66,6 +67,35 @@ impl fmt::Display for LoweringError {
 
 impl std::error::Error for LoweringError {}
 
+// ---------------------------------------------------------------------------
+// Runtime intrinsics boundary — Phase 9 audit
+// ---------------------------------------------------------------------------
+//
+// These names are Cx language builtins. They are recognized at the semantic
+// layer (semantic.rs `analyze_call`) and assigned `FunctionId(u32::MAX)` to
+// flag them as non-user-defined. They do NOT appear in the `signature_table`,
+// which only holds user-defined functions.
+//
+// Classification (see docs/backend/cx_runtime_intrinsics_v0.1.md for the
+// full boundary specification):
+//
+//   Category          | Builtins          | Status
+//   ──────────────────┼───────────────────┼──────────────────────────────────
+//   I/O (stdout)      | print, println    | LOWERABLE (I64 only) — routes to cx_printn
+//   I/O (stdout)      | printn            | LOWERABLE — see lower_printn_stmt
+//   I/O (stdin)       | read, input       | blocked on Phase 8 str layout
+//   Debug / assertion | assert, assert_eq | LOWERABLE — Phase 9 sub-packet 3
+//
+// Builtins that remain in `is_cx_builtin` produce a structured
+// `UnsupportedSemanticConstruct` error instead of a misleading
+// `UnresolvedSemanticArtifact` from a signature_table miss.
+//
+// Builtins that are handled before this gate (assert, assert_eq, print, println, printn)
+// are intercepted in `lower_stmt` and never reach `is_cx_builtin`.
+fn is_cx_builtin(name: &str) -> bool {
+    matches!(name, "read" | "input")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct LoweredValue {
     value: ValueId,
@@ -78,6 +108,11 @@ type BindingMap = HashMap<BindingId, LoweredValue>;
 struct FunctionSignature {
     param_types: Vec<IrType>,
     return_ty: Option<IrType>,
+}
+
+/// Mangled IR name for an impl-block method: `<FirstAliasStruct>$<method>`.
+fn mangle_method(struct_name: &str, method: &str) -> String {
+    format!("{}${}", struct_name, method)
 }
 
 fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionSignature> {
@@ -104,8 +139,8 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
             if !all_params_ok { continue; }
 
             let return_ty = match &function.return_ty {
-                Some(ty) => match lower_type(ty) {
-                    Ok(ir_ty) => Some(ir_ty),
+                Some(ty) => match lower_return_type(ty) {
+                    Ok(opt) => opt,
                     Err(_) => continue,
                 },
                 None => None,
@@ -115,6 +150,73 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                 param_types,
                 return_ty,
             });
+        }
+        // Impl-block methods are registered alongside free functions so calls
+        // (after Stage 2 desugaring) resolve through the same signature_table
+        // lookup. Mangled key: `<FirstAliasStruct>$<method>`. The receiver and
+        // any extra aliases are prepended to the user params, mirroring the
+        // IrFunction shape emitted in lower_program_inner.
+        if let SemanticStmt::ImplBlock { aliases, methods, method_alias_params, .. } = stmt {
+            if aliases.is_empty() { continue; }
+            let tn = match &aliases[0].1 {
+                SemanticType::Struct(name) => name.clone(),
+                _ => continue,
+            };
+            for (i, method) in methods.iter().enumerate() {
+                let mut param_types = Vec::new();
+                let mut all_params_ok = true;
+                // Alias params first (each is a struct → Ptr).
+                if let Some(alias_params) = method_alias_params.get(i) {
+                    for param in alias_params {
+                        match param.kind {
+                            SemanticParamKind::Typed => {
+                                let Some(ref ty) = param.ty else {
+                                    all_params_ok = false;
+                                    break;
+                                };
+                                match lower_type(ty) {
+                                    Ok(ir_ty) => param_types.push(ir_ty),
+                                    Err(_) => { all_params_ok = false; break; }
+                                }
+                            }
+                            _ => { all_params_ok = false; break; }
+                        }
+                    }
+                } else {
+                    all_params_ok = false;
+                }
+                if !all_params_ok { continue; }
+                // Then the user-declared params.
+                for param in &method.params {
+                    match param.kind {
+                        SemanticParamKind::Typed => {
+                            let Some(ref ty) = param.ty else {
+                                all_params_ok = false;
+                                break;
+                            };
+                            match lower_type(ty) {
+                                Ok(ir_ty) => param_types.push(ir_ty),
+                                Err(_) => { all_params_ok = false; break; }
+                            }
+                        }
+                        _ => { all_params_ok = false; break; }
+                    }
+                }
+                if !all_params_ok { continue; }
+
+                let return_ty = match &method.return_ty {
+                    Some(ty) => match lower_return_type(ty) {
+                        Ok(opt) => opt,
+                        Err(_) => continue,
+                    },
+                    None => None,
+                };
+
+                table.insert(
+                    mangle_method(&tn, &method.name),
+                    FunctionSignature { param_types, return_ty },
+                );
+            }
         }
     }
     table
@@ -158,12 +260,62 @@ fn build_struct_table(program: &SemanticProgram) -> HashMap<String, StructLayout
     table
 }
 
+/// Compilation target configuration threaded through the IR lowering pass.
+///
+/// Controls target-dependent decisions such as the default integer width chosen
+/// for unresolved numeric literals (`SemanticType::Numeric`) and the value
+/// range accepted without error during literal lowering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetConfig {
+    /// Width of the target's native pointer in bits (32 or 64).
+    pub pointer_bits: u32,
+}
+
+impl TargetConfig {
+    /// Construct a `TargetConfig` matching the current compilation host.
+    ///
+    /// On a 64-bit host this yields `pointer_bits: 64`; on a 32-bit host,
+    /// `pointer_bits: 32`.  Cx 0.1 targets only x86-64, so in practice this
+    /// always returns the 64-bit configuration.
+    pub const fn host() -> Self {
+        Self { pointer_bits: usize::BITS }
+    }
+
+    /// The [`IrType`] used to represent an unresolved numeric literal on this
+    /// target.  `I64` on 64-bit targets, `I32` on 32-bit targets.
+    pub fn numeric_literal_ir_type(&self) -> IrType {
+        match self.pointer_bits {
+            32 => IrType::I32,
+            _ => IrType::I64,
+        }
+    }
+
+    /// Inclusive minimum value that fits in the target's default numeric
+    /// literal type (see [`TargetConfig::numeric_literal_ir_type`]).
+    pub fn numeric_literal_min(&self) -> i128 {
+        match self.pointer_bits {
+            32 => i32::MIN as i128,
+            _ => i64::MIN as i128,
+        }
+    }
+
+    /// Inclusive maximum value that fits in the target's default numeric
+    /// literal type (see [`TargetConfig::numeric_literal_ir_type`]).
+    pub fn numeric_literal_max(&self) -> i128 {
+        match self.pointer_bits {
+            32 => i32::MAX as i128,
+            _ => i64::MAX as i128,
+        }
+    }
+}
+
 struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
     signature_table: HashMap<String, FunctionSignature>,
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
+    target: TargetConfig,
 }
 
 struct ActiveBlock {
@@ -192,6 +344,7 @@ impl LoweringCtx {
         signature_table: HashMap<String, FunctionSignature>,
         struct_table: HashMap<String, StructLayoutInfo>,
         trace: bool,
+        target: TargetConfig,
     ) -> Self {
         Self {
             builder: IrBuilder::new(),
@@ -199,6 +352,7 @@ impl LoweringCtx {
             signature_table,
             struct_table,
             trace,
+            target,
         }
     }
 
@@ -277,6 +431,8 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
 }
 
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
+    let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
+
     if program.stmts.is_empty() {
         return Ok(IrModule {
             debug_name: "cxir_v0".into(),
@@ -292,20 +448,74 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let mut has_real_main = false;
     let signature_table = build_signature_table(program);
     let struct_table = build_struct_table(program);
+    // Single place where the compilation target is chosen; threaded into every
+    // lowering context so all target-dependent decisions use the same config.
+    let target = TargetConfig::host();
 
     for stmt in &program.stmts {
         match stmt {
             SemanticStmt::FuncDef(function) => {
+                if reserved_runtime_intrinsics.contains(function.name.as_str()) {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "function name '{}' is reserved for runtime intrinsics",
+                            function.name
+                        ),
+                    });
+                }
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace, target)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
             // executable semantics and produce no IR, so skip them here rather
             // than routing them into the synthetic-main statement sequence.
             SemanticStmt::StructDef { .. } => {}
+            // Impl-block methods are emitted as IrFunctions under mangled names.
+            // The captured `method_alias_params` carry the BindingIds the body's
+            // VarRef/DotAccess nodes reference, so re-prepending them lets
+            // lower_semantic_function's bindings map resolve receiver access.
+            // The ImplBlock statement itself produces no IR — handled below in
+            // lower_stmt; this arm just keeps it out of the synthetic-main
+            // statement sequence.
+            SemanticStmt::ImplBlock { aliases, methods, method_alias_params, .. } => {
+                if aliases.is_empty() { continue; }
+                let tn = match &aliases[0].1 {
+                    SemanticType::Struct(name) => name.clone(),
+                    _ => continue,
+                };
+                for (i, method) in methods.iter().enumerate() {
+                    let mangled = mangle_method(&tn, &method.name);
+                    if reserved_runtime_intrinsics.contains(mangled.as_str()) {
+                        return Err(LoweringError::UnsupportedSemanticConstruct {
+                            construct: format!(
+                                "function name '{}' is reserved for runtime intrinsics",
+                                mangled
+                            ),
+                        });
+                    }
+                    let alias_params = match method_alias_params.get(i) {
+                        Some(ap) => ap.clone(),
+                        None => continue,
+                    };
+                    let mut full_params = alias_params;
+                    full_params.extend(method.params.iter().cloned());
+                    let reconstructed = crate::frontend::semantic_types::SemanticFunction {
+                        id: method.id,
+                        name: mangled,
+                        type_params: method.type_params.clone(),
+                        params: full_params,
+                        return_ty: method.return_ty.clone(),
+                        body: method.body.clone(),
+                        ret_expr: method.ret_expr.clone(),
+                        is_test: method.is_test,
+                        pos: method.pos,
+                    };
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, trace, target)?);
+                }
+            }
             other => top_level_stmts.push(other),
         }
     }
@@ -318,19 +528,19 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, trace)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, trace, target)?);
     }
 
     Ok(module)
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, trace: bool) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, trace: bool, target: TargetConfig) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
         allow_return_stmt: false,
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
         stmts.iter().copied(),
@@ -356,13 +566,17 @@ fn lower_semantic_function(
     signature_table: &HashMap<String, FunctionSignature>,
     struct_table: &HashMap<String, StructLayoutInfo>,
     trace: bool,
+    target: TargetConfig,
 ) -> Result<IrFunction, LoweringError> {
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
     let mut bindings = HashMap::new();
-    let return_ty = function.return_ty.as_ref().map(lower_type).transpose()?;
+    let return_ty = match &function.return_ty {
+        Some(ty) => lower_return_type(ty)?,
+        None => None,
+    };
 
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -375,6 +589,7 @@ fn lower_semantic_function(
                 block_params.push(BlockParam {
                     value,
                     ty: ty.clone(),
+                    read_only: false,
                 });
                 bindings.insert(param.binding, LoweredValue { value, ty });
             }
@@ -501,7 +716,13 @@ fn lower_stmt(
             let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
                 SemanticLValue::Binding { binding, ty, .. } => {
-                    let target_ty = lower_type(ty)?;
+                    // Numeric/Unknown: binding type is a placeholder; use the
+                    // lowered expression's concrete type as authoritative.
+                    let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
+                        lowered.ty.clone()
+                    } else {
+                        lower_type(ty)?
+                    };
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
                     let dst = ctx.fresh_value();
                     current.emit(IrInst::SsaBind {
@@ -556,6 +777,35 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
+            // Phase 9 sub-packets 2 and 3: assert/assert_eq, print, println, and printn are now
+            // fully lowerable.  Intercept them before the is_cx_builtin gate so
+            // they are routed to the dedicated lowering functions rather than
+            // returning a structured error.
+            if let SemanticExprKind::Call { callee, args, .. } = &expr.kind {
+                match callee.as_str() {
+                    "assert" => return lower_assert_stmt(args, ctx, current),
+                    "assert_eq" => return lower_assert_eq_stmt(args, ctx, current),
+                    "print" | "println" => {
+                        return lower_print_stmt(callee.as_str(), args, ctx, current)
+                    }
+                    "printn" => return lower_printn_stmt(args, ctx, current),
+                    _ => {}
+                }
+            }
+            // Remaining unimplemented builtin intrinsics (read, input) are not in the
+            // signature_table.  Intercept them here so they produce a structured
+            // UnsupportedSemanticConstruct rather than falling through to a misleading
+            // UnresolvedSemanticArtifact.
+            if let SemanticExprKind::Call { callee, .. } = &expr.kind {
+                if is_cx_builtin(callee) {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "builtin '{}' is not yet lowerable to IR — codegen pending (Phase 9)",
+                            callee
+                        ),
+                    });
+                }
+            }
             // Void function calls cannot go through lower_expr because that function
             // must return a LoweredValue, and void calls produce no value.
             // Detect and lower void calls here before falling through to lower_expr.
@@ -565,6 +815,31 @@ fn lower_stmt(
                 if let Some((None, param_types)) = sig_info {
                     let callee = callee.clone();
                     lower_void_call(&callee, args, &param_types, ctx, &mut current)?;
+                    return Ok(Some(current));
+                }
+            }
+            // Same void-call detection for MethodCall: build the synthetic
+            // receiver-as-arg list (Stage 1 IR param order is
+            // [receiver, extra_aliases..., user_params...]) and route through
+            // lower_void_call so the receiver lowers through the existing
+            // VarRef→Ptr path. Mirrors the Call arm above; same fall-through
+            // to lower_expr for non-void.
+            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, .. } = &expr.kind {
+                let recv_arg = SemanticCallArg::Expr(SemanticExpr {
+                    ty: SemanticType::Struct(struct_name.clone()),
+                    kind: SemanticExprKind::VarRef {
+                        binding: *instance_binding,
+                        name: instance.clone(),
+                    },
+                });
+                let mut full_args = Vec::with_capacity(args.len() + 1);
+                full_args.push(recv_arg);
+                full_args.extend(args.iter().cloned());
+                let callee = mangle_method(struct_name, method);
+                let sig_info = ctx.signature_table.get(callee.as_str())
+                    .map(|s| (s.return_ty.clone(), s.param_types.clone()));
+                if let Some((None, param_types)) = sig_info {
+                    lower_void_call(&callee, &full_args, &param_types, ctx, &mut current)?;
                     return Ok(Some(current));
                 }
             }
@@ -606,12 +881,18 @@ fn lower_stmt(
         SemanticStmt::CompoundAssign { target, op, operand, .. } => {
     match target {
         SemanticLValue::Binding { binding, ty, .. } => {
-            let target_ty = lower_type(ty)?;
             let current_val = current.bindings.get(binding).ok_or_else(|| {
                 LoweringError::UnresolvedSemanticArtifact {
                     artifact: format!("compound assign binding {:?}", binding),
                 }
             })?.clone();
+            // Numeric/Unknown: binding type is a placeholder; use the stored
+            // concrete type from the SSA bindings map as authoritative.
+            let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
+                current_val.ty.clone()
+            } else {
+                lower_type(ty)?
+            };
             let rhs = lower_expr(operand, ctx, &mut current)?;
             let bin_op = match op {
                 Op::Plus => BinaryOp::Add,
@@ -789,7 +1070,9 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
     ctx.seal_block(current)?;
     return Ok(None);
 },
-        SemanticStmt::When { .. } => { unsupported!("When") },
+        SemanticStmt::When { expr, arms, .. } => {
+            lower_when_stmt(expr, arms, ctx, current, spec, loop_ctx)
+        },
         SemanticStmt::IfElse {
             condition,
             then_body,
@@ -809,7 +1092,12 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
         // Struct definitions are pre-processed into the struct_table before
         // lowering begins; there is no IR to emit for the definition itself.
         SemanticStmt::StructDef { .. } => Ok(Some(current)),
-        SemanticStmt::ImplBlock { .. } => { unsupported!("ImplBlock") },
+        // Methods are emitted as IrFunctions in lower_program_inner; the
+        // ImplBlock statement itself carries no executable IR. This arm is
+        // defense-in-depth in case an ImplBlock reaches statement lowering by
+        // any path (it currently does not — lower_program_inner filters it out
+        // of the synthetic-main statement sequence).
+        SemanticStmt::ImplBlock { .. } => Ok(Some(current)),
         SemanticStmt::ConstDecl { .. } => { unsupported!("ConstDecl") },
     }
 }
@@ -972,6 +1260,7 @@ fn merge_fallthroughs(
             let block_param = BlockParam {
                 value: param_value,
                 ty: incoming_value.ty.clone(),
+                read_only: false,
             };
             merge_param_bindings.push(binding);
             merge_block_params.push(block_param.clone());
@@ -1038,6 +1327,7 @@ fn lower_while(
         header_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         header_bindings.insert(
             *binding,
@@ -1072,6 +1362,7 @@ fn lower_while(
         exit_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         exit_bindings.insert(
             *binding,
@@ -1150,6 +1441,7 @@ fn lower_loop(
         header_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         header_bindings.insert(
             *binding,
@@ -1181,6 +1473,7 @@ fn lower_loop(
         exit_params.push(BlockParam {
             value: param_value,
             ty: val.ty.clone(),
+            read_only: false,
         });
         exit_bindings.insert(
             *binding,
@@ -1258,13 +1551,16 @@ fn lower_for(
     let mut entry_args = Vec::new();
 
     let counter_param = ctx.fresh_value();
-    header_params.push(BlockParam { value: counter_param, ty: start_val.ty.clone() });
+    // The header's counter param is the loop variable — mark read_only so the
+    // validator can reject any backedge that passes an SsaBind-produced value
+    // here (which would indicate the loop variable was reassigned in the body).
+    header_params.push(BlockParam { value: counter_param, ty: start_val.ty.clone(), read_only: true });
     entry_args.push(start_val.value);
 
     for b in &ordered_bindings {
         let val = incoming.get(b).unwrap();
         let pv = ctx.fresh_value();
-        header_params.push(BlockParam { value: pv, ty: val.ty.clone() });
+        header_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
         header_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
         entry_args.push(val.value);
     }
@@ -1277,12 +1573,15 @@ fn lower_for(
 
     // Increment block: counter + bindings as params, increments counter, jumps to header
     let inc_counter_param = ctx.fresh_value();
-    let mut inc_params = vec![BlockParam { value: inc_counter_param, ty: start_val.ty.clone() }];
+    // The increment block's counter param receives the loop variable from the
+    // body's backedge — also marked read_only so that a body-modified counter
+    // value (an SsaBind result) is caught here before it reaches the Add.
+    let mut inc_params = vec![BlockParam { value: inc_counter_param, ty: start_val.ty.clone(), read_only: true }];
     let mut inc_bindings = HashMap::new();
     for b in &ordered_bindings {
         let val = incoming.get(b).unwrap();
         let pv = ctx.fresh_value();
-        inc_params.push(BlockParam { value: pv, ty: val.ty.clone() });
+        inc_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
         inc_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
     }
     let mut inc_block = ctx.start_block(inc_params, inc_bindings);
@@ -1326,7 +1625,7 @@ fn lower_for(
     for b in &ordered_bindings {
         let val = incoming.get(b).unwrap();
         let pv = ctx.fresh_value();
-        exit_params.push(BlockParam { value: pv, ty: val.ty.clone() });
+        exit_params.push(BlockParam { value: pv, ty: val.ty.clone(), read_only: false });
         exit_bindings.insert(*b, LoweredValue { value: pv, ty: val.ty.clone() });
     }
     let exit_block = ctx.start_block(exit_params, exit_bindings);
@@ -1402,7 +1701,6 @@ fn lower_expr(
     match &expr.kind {
         SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx, active),
         SemanticExprKind::VarRef { binding, name } => {
-            let ty = lower_type(&expr.ty)?;
             let lowered = active.bindings.get(binding).cloned().ok_or_else(|| {
                 LoweringError::InternalInvariantViolation {
                     detail: format!(
@@ -1411,17 +1709,59 @@ fn lower_expr(
                     ),
                 }
             })?;
-            ensure_type_match("var ref", ty, lowered.ty.clone())?;
-            Ok(lowered)
+            if matches!(expr.ty, SemanticType::Numeric | SemanticType::Unknown) {
+                // Placeholder type: the stored binding type (set at first assignment)
+                // is authoritative. Mirrors the fallback in lower_array_lit/lower_index.
+                Ok(lowered)
+            } else {
+                let ty = lower_type(&expr.ty)?;
+                ensure_type_match("var ref", ty, lowered.ty.clone())?;
+                Ok(lowered)
+            }
         }
         SemanticExprKind::Binary { lhs, op, rhs, .. } => {
             lower_binary(lhs, *op, rhs, &expr.ty, ctx, active)
         }
         SemanticExprKind::Cast { expr, from, to } => {
+            let to_ty = lower_type(to)?;
+            if *from == SemanticType::Numeric {
+                if ir_int_range(&to_ty).is_some() {
+                    // Integer target: fast path — lower the literal directly at
+                    // to_ty so it is range-validated against the actual
+                    // destination width and emitted without a redundant
+                    // default-width → to_ty cast instruction.
+                    if let SemanticExprKind::Value(semantic_val) = &expr.kind {
+                        let lowered = lower_value(semantic_val, to, ctx, active)?;
+                        ensure_type_match("cast source", to_ty.clone(), lowered.ty.clone())?;
+                        return Ok(lowered);
+                    }
+                }
+                // Non-integer target (e.g. F64) or non-literal Numeric
+                // expression: lower the source at the target-default integer
+                // width (I64 on 64-bit), then emit a Cast to the destination
+                // type.  lower_type(Numeric) has no IR equivalent, so we use
+                // the actual lowered type as the cast source.
+                let lowered = lower_expr(expr, ctx, active)?;
+                let from_ty = lowered.ty.clone();
+                if from_ty == to_ty {
+                    return Ok(LoweredValue { value: lowered.value, ty: to_ty });
+                }
+                let dst = ctx.fresh_value();
+                active.emit(IrInst::Cast {
+                    dst,
+                    from: from_ty,
+                    to: to_ty.clone(),
+                    value: lowered.value,
+                })?;
+                return Ok(LoweredValue { value: dst, ty: to_ty });
+            }
             let lowered = lower_expr(expr, ctx, active)?;
             let from_ty = lower_type(from)?;
-            let to_ty = lower_type(to)?;
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
+            // Skip no-op casts only after validating source type invariants.
+            if from_ty == to_ty {
+                return Ok(LoweredValue { value: lowered.value, ty: to_ty });
+            }
             let dst = ctx.fresh_value();
             active.emit(IrInst::Cast {
                 dst,
@@ -1466,6 +1806,20 @@ fn lower_expr(
         //    the caller as a LoweredValue so it can flow into assignments,
         //    return statements, and sub-expressions.
         SemanticExprKind::Call { callee, function: _, args } => {
+            // Remaining unimplemented builtin intrinsics (read, input) are not in the
+            // signature_table.  Intercept them before the lookup so the error is
+            // structured and actionable rather than the generic UnresolvedSemanticArtifact
+            // produced by a table miss.
+            // Note: assert/assert_eq, print, println, and printn are handled at statement
+            // level and should not reach lower_expr in well-formed programs.
+            if is_cx_builtin(callee) {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "builtin '{}' is not yet lowerable to IR — codegen pending (Phase 9)",
+                        callee
+                    ),
+                });
+            }
             let (param_types, return_ty) = {
                 let sig = ctx.signature_table.get(callee).ok_or_else(|| {
                     LoweringError::UnresolvedSemanticArtifact {
@@ -1493,6 +1847,9 @@ fn lower_expr(
                 });
             }
 
+            // Arguments are lowered left-to-right (args.iter() order), matching
+            // the interpreter's left-to-right argument evaluation in
+            // call_semantic_func.  See docs/backend/cx_eval_order.md.
             let mut lowered_args = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 match arg {
@@ -1610,10 +1967,34 @@ fn lower_expr(
         SemanticExprKind::Index { target, index, .. } => {
             lower_index(target, index, &expr.ty, ctx, active)
         }
-        SemanticExprKind::MethodCall { instance, method, .. } => {
-            Err(LoweringError::UnsupportedSemanticConstruct {
-                construct: format!("MethodCall '{}.{}'", instance, method),
-            })
+        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, pos: _ } => {
+            // Synthesize an equivalent Call and recurse into the existing Call
+            // arm (which has the proven signature_table lookup, void-in-value-
+            // position rejection, arity check, per-arg ensure_type_match, and
+            // IrInst::Call emission). The synthetic receiver arg is a VarRef
+            // that lowers to the receiver's Ptr SSA via the existing VarRef
+            // arm. Arg order matches Stage 1's IrFunction param order
+            // [receiver, extra_aliases..., user_params...].
+            let recv_arg = SemanticCallArg::Expr(SemanticExpr {
+                ty: SemanticType::Struct(struct_name.clone()),
+                kind: SemanticExprKind::VarRef {
+                    binding: *instance_binding,
+                    name: instance.clone(),
+                },
+            });
+            let mut full_args = Vec::with_capacity(args.len() + 1);
+            full_args.push(recv_arg);
+            full_args.extend(args.iter().cloned());
+            let callee = mangle_method(struct_name, method);
+            let synthetic = SemanticExpr {
+                ty: expr.ty.clone(),
+                kind: SemanticExprKind::Call {
+                    callee,
+                    function: crate::frontend::semantic_types::FunctionId(u32::MAX),
+                    args: full_args,
+                },
+            };
+            lower_expr(&synthetic, ctx, active)
         }
         // Struct literal lowering strategy
         //
@@ -1689,10 +2070,26 @@ fn lower_expr(
 
             Ok(LoweredValue { value: ptr, ty: IrType::Ptr })
         },
-        SemanticExprKind::When { .. } => { unsupported!("WhenExpr") },
+        SemanticExprKind::When { expr: scrutinee, arms, .. } => {
+            lower_when_expr(scrutinee, arms, &expr.ty, ctx, active)
+        },
         SemanticExprKind::ResultOk { .. } => { unsupported!("ResultOk") },
         SemanticExprKind::ResultErr { .. } => { unsupported!("ResultErr") },
         SemanticExprKind::Try { .. } => { unsupported!("Try") },
+    }
+}
+
+/// Returns the inclusive `[min, max]` range of values that fit in `ty` as a
+/// signed integer, or `None` if `ty` is not an integer type.
+fn ir_int_range(ty: &IrType) -> Option<(i128, i128)> {
+    match ty {
+        IrType::I8   => Some((i8::MIN  as i128, i8::MAX  as i128)),
+        IrType::I16  => Some((i16::MIN as i128, i16::MAX as i128)),
+        IrType::I32  => Some((i32::MIN as i128, i32::MAX as i128)),
+        IrType::I64  => Some((i64::MIN as i128, i64::MAX as i128)),
+        IrType::I128 => Some((i128::MIN, i128::MAX)),
+        IrType::Bool => Some((0, 1)),
+        _            => None,
     }
 }
 
@@ -1702,15 +2099,29 @@ fn lower_value(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
-    let ty = lower_type(semantic_ty)?;
+    // Numeric literals have no explicit type annotation in Cx source.  The
+    // semantic layer uses `SemanticType::Numeric` as a placeholder.  The IR
+    // default for unresolved numeric literals is the target's native integer
+    // width: I64 on 64-bit targets, I32 on 32-bit targets.
+    let ty = if *semantic_ty == SemanticType::Numeric {
+        ctx.target.numeric_literal_ir_type()
+    } else {
+        lower_type(semantic_ty)?
+    };
     let dst = ctx.fresh_value();
 
     match value {
         SemanticValue::Num(n) => {
-            let value =
-                i128::try_from(*n).map_err(|_| LoweringError::InternalInvariantViolation {
-                    detail: format!("integer literal {n} exceeds i128 IR constant range"),
-                })?;
+            let value = *n;
+            if let Some((min, max)) = ir_int_range(&ty) {
+                if value < min || value > max {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "integer literal {value} does not fit in {ty:?} during lowering"
+                        ),
+                    });
+                }
+            }
             active.emit(IrInst::ConstInt {
                 dst,
                 ty: ty.clone(),
@@ -1755,6 +2166,20 @@ fn lower_value(
     }
 }
 
+// Binary expression lowering — evaluation order guarantee
+//
+// Operands are lowered strictly left-to-right: `lhs` is fully lowered
+// (all instructions emitted) before `rhs` lowering begins.  This mirrors
+// the interpreter's `eval_semantic_expr` which evaluates `lhs` before `rhs`
+// at runtime.  Any side effects embedded in either operand (e.g. function
+// calls) occur in left-to-right order in both the interpreter path and the
+// compiled path.
+//
+// This ordering is a language guarantee for Cx 0.1 and must not be changed
+// by optimisation passes.  See docs/backend/cx_eval_order.md.
+//
+// Exception: Op::And and Op::Or use short-circuit evaluation and are
+// dispatched to lower_logical before any operand is evaluated.
 fn lower_binary(
     lhs: &SemanticExpr,
     op: Op,
@@ -1763,13 +2188,29 @@ fn lower_binary(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    // Short-circuit operators must be dispatched before eager evaluation.
+    if matches!(op, Op::And | Op::Or) {
+        return lower_logical(lhs, op, rhs, result_ty, ctx, active);
+    }
+
+    // Left operand lowered first — preserves left-to-right evaluation order.
     let lhs = lower_expr(lhs, ctx, active)?;
+    // Right operand lowered second — all lhs side effects are already emitted.
     let rhs = lower_expr(rhs, ctx, active)?;
     let dst = ctx.fresh_value();
 
     match op {
         Op::Plus | Op::Minus | Op::Mul | Op::Div | Op::Mod => {
-            let ty = lower_type(result_ty)?;
+            // SemanticType::Numeric is an unresolved placeholder for integer
+            // literals without an explicit type annotation.  Resolve it to the
+            // target's native integer width (I64 on 64-bit) so that expressions
+            // like `0 + 0` or `3 * 4` lower successfully instead of returning
+            // an UnsupportedSemanticType error (which propagates as JIT SKIP).
+            let ty = if *result_ty == SemanticType::Numeric {
+                ctx.target.numeric_literal_ir_type()
+            } else {
+                lower_type(result_ty)?
+            };
             ensure_type_match("binary lhs", ty.clone(), lhs.ty)?;
             ensure_type_match("binary rhs", ty.clone(), rhs.ty)?;
             let op = match op {
@@ -1818,13 +2259,522 @@ fn lower_binary(
             })
         }
         Op::Not => unreachable!("Op::Not is unary only"),
-        Op::And => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Binary::And".to_string(),
-        }),
-        Op::Or => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: "Binary::Or".to_string(),
-        }),
+        Op::And | Op::Or => unreachable!("And/Or dispatched to lower_logical above"),
     }
+}
+
+// Logical AND/OR short-circuit lowering
+//
+// `a && b` and `a || b` cannot be lowered as eager binary instructions
+// because the right operand must not be evaluated when the left operand
+// already determines the result.  Instead, we emit a three-block CFG:
+//
+//   [decision]           — current block; evaluates lhs; terminates with Branch
+//       |    \
+//   [rhs]  [sc]          — rhs: evaluates rhs; sc: emits the short-circuit constant
+//       \    /
+//     [merge(result)]    — receives the Bool result via a block parameter
+//
+// For AND: Branch(lhs, then=rhs, else=sc);  sc emits false (0).
+// For OR:  Branch(lhs, then=sc, else=rhs);  sc emits true  (1).
+//
+// On return, *active has been replaced with the merge block so the caller
+// can continue emitting instructions after the logical expression.
+fn lower_logical(
+    lhs: &SemanticExpr,
+    op: Op,
+    rhs: &SemanticExpr,
+    result_ty: &SemanticType,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    ensure_type_match("logical result", IrType::Bool, lower_type(result_ty)?)?;
+    let incoming = active.bindings.clone();
+
+    // Evaluate the left operand in the current (decision) block.
+    let lhs_val = lower_expr(lhs, ctx, active)?;
+    ensure_type_match("logical lhs", IrType::Bool, lhs_val.ty.clone())?;
+
+    // Block that evaluates the right operand (reached when short-circuit does not fire).
+    let mut rhs_active = ctx.start_block(vec![], incoming.clone());
+    let rhs_block_id = rhs_active.id();
+
+    // Block that produces the short-circuit constant (reached when lhs settles the result).
+    let mut sc_active = ctx.start_block(vec![], incoming.clone());
+    let sc_block_id = sc_active.id();
+
+    // Merge block receives the Bool result from whichever path ran.
+    let result_param = ctx.fresh_value();
+    let merge_block = ctx.start_block(
+        vec![BlockParam { value: result_param, ty: IrType::Bool, read_only: false }],
+        incoming,
+    );
+    let merge_id = merge_block.id();
+
+    // AND: true lhs → evaluate rhs; false lhs → short-circuit to false.
+    // OR:  true lhs → short-circuit to true; false lhs → evaluate rhs.
+    let (then_id, else_id) = match op {
+        Op::And => (rhs_block_id, sc_block_id),
+        Op::Or  => (sc_block_id,  rhs_block_id),
+        _       => unreachable!(),
+    };
+
+    // Terminate the decision block and hand *active over to the merge block
+    // so the caller continues emitting into the merge block.
+    active.terminate(IrTerminator::Branch {
+        cond: lhs_val.value,
+        then_block: then_id,
+        then_args: vec![],
+        else_block: else_id,
+        else_args: vec![],
+    })?;
+    let old_active = std::mem::replace(active, merge_block);
+    ctx.seal_block(old_active)?;
+
+    // Lower the right operand and jump to merge with its value.
+    let rhs_val = lower_expr(rhs, ctx, &mut rhs_active)?;
+    ensure_type_match("logical rhs", IrType::Bool, rhs_val.ty.clone())?;
+    rhs_active.terminate(IrTerminator::Jump {
+        target: merge_id,
+        args: vec![rhs_val.value],
+    })?;
+    ctx.seal_block(rhs_active)?;
+
+    // Emit the short-circuit constant and jump to merge.
+    // AND short-circuits to false (0); OR short-circuits to true (1).
+    let sc_const: i128 = match op {
+        Op::And => 0,
+        Op::Or  => 1,
+        _       => unreachable!(),
+    };
+    let sc_dst = ctx.fresh_value();
+    sc_active.emit(IrInst::ConstInt { dst: sc_dst, ty: IrType::Bool, value: sc_const })?;
+    sc_active.terminate(IrTerminator::Jump {
+        target: merge_id,
+        args: vec![sc_dst],
+    })?;
+    ctx.seal_block(sc_active)?;
+
+    Ok(LoweredValue { value: result_param, ty: IrType::Bool })
+}
+
+/// Lower a `when` statement (chained-decision CFG modeled on lower_logical).
+///
+/// SCOPE BOUNDARY (Option A, 0.1):
+///
+/// The `unknown` arm in a TBool when matches via wire-value comparison: emit
+/// ConstInt(I8, 2), Cast(I8 → scrutinee.ty), Compare(Eq, scrutinee, casted).
+/// This is pattern-match-as-value, NOT unknown propagation.
+///
+/// Why ConstInt(I8) + Cast instead of ConstInt(TBool):
+///   The IR validator (validate.rs:~294) does NOT accept TBool in ConstInt's
+///   type set — only I8/I16/I32/I64/I128/Bool. This is deliberate scope-keeping:
+///   adding TBool to ConstInt would commit the IR layer to a global TBool-as-
+///   literal semantics that Option A explicitly defers. The two-instruction
+///   workaround keeps the validator's accepted set unchanged. Both
+///   Cast(I8 → Bool) and Cast(I8 → TBool) are Cranelift-no-ops since both
+///   lower to `types::I8`, so this is a single bit-preserving move at machine
+///   level.
+///
+/// Why no fixture exercises the wire-value match end-to-end:
+///   No current source program can construct a scrutinee with TBool wire value
+///   2 — the `?` expression literal lowers SemanticValue::Unknown through
+///   lower_value, which rejects it (lower.rs:~2118). `?`-lowering is part of
+///   the deferred Unknown-propagation design surface (cx_abi_v0.1.md:76-79).
+///   So the unknown-arm IR shape is reachable at the lowering layer and
+///   validator-clean, but unreachable from source until post-0.1 `?` lowering
+///   lands. t144 covers structural validity (well-forms, doesn't fire on Bool);
+///   true end-to-end wire-value exercise requires post-0.1 work.
+///
+/// Whether an `unknown` value flowing into arithmetic, comparison, or logical
+/// operators infects the result is a separate language-design question (also
+/// cx_abi_v0.1.md:76-79) and remains explicitly deferred post-0.1. Nothing in
+/// this lowering commits the language to any particular unknown-propagation
+/// semantics.
+///
+/// EnumVariant arms are rejected here with a structured error; that's blocked
+/// on Enum IR lowering, separate work.
+fn lower_when_stmt(
+    scrutinee: &SemanticExpr,
+    arms: &[SemanticWhenArm],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+    spec: &FunctionLoweringSpec,
+    loop_ctx: Option<&LoopContext>,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let incoming = current.bindings.clone();
+    let scrutinee_val = lower_expr(scrutinee, ctx, &mut current)?;
+
+    let mut fallthroughs: Vec<ActiveBlock> = Vec::new();
+
+    for arm in arms.iter() {
+        let body_block = ctx.start_block(vec![], incoming.clone());
+        let body_id = body_block.id();
+
+        match &arm.pattern {
+            SemanticWhenPattern::Catchall => {
+                current.terminate(IrTerminator::Jump {
+                    target: body_id,
+                    args: vec![],
+                })?;
+                ctx.seal_block(current)?;
+                if let Some(active) = lower_stmt_sequence(
+                    arm.body.iter(),
+                    ctx,
+                    Some(body_block),
+                    spec,
+                    loop_ctx,
+                )? {
+                    fallthroughs.push(active);
+                }
+                // Arms after Catchall are unreachable — we don't allocate
+                // their body blocks. Merge whatever fallthroughs we have.
+                return match fallthroughs.len() {
+                    0 => Ok(None),
+                    1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
+                    _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
+                };
+            }
+            SemanticWhenPattern::Literal(value) => {
+                let pat_value = if matches!(value, SemanticValue::Unknown) {
+                    // TBool wire-value match — see SCOPE BOUNDARY at fn doc.
+                    let unknown_byte = ctx.fresh_value();
+                    current.emit(IrInst::ConstInt {
+                        dst: unknown_byte,
+                        ty: IrType::I8,
+                        value: 2,
+                    })?;
+                    let unknown_const = ctx.fresh_value();
+                    current.emit(IrInst::Cast {
+                        dst: unknown_const,
+                        from: IrType::I8,
+                        to: scrutinee_val.ty.clone(),
+                        value: unknown_byte,
+                    })?;
+                    unknown_const
+                } else {
+                    let lowered = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
+                    lowered.value
+                };
+                let cmp_dst = ctx.fresh_value();
+                current.emit(IrInst::Compare {
+                    dst: cmp_dst,
+                    op: CompareOp::Eq,
+                    lhs: scrutinee_val.value,
+                    rhs: pat_value,
+                })?;
+                let next_block = ctx.start_block(vec![], incoming.clone());
+                let next_id = next_block.id();
+                current.terminate(IrTerminator::Branch {
+                    cond: cmp_dst,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: next_id,
+                    else_args: vec![],
+                })?;
+                ctx.seal_block(current)?;
+                if let Some(active) = lower_stmt_sequence(
+                    arm.body.iter(),
+                    ctx,
+                    Some(body_block),
+                    spec,
+                    loop_ctx,
+                )? {
+                    fallthroughs.push(active);
+                }
+                current = next_block;
+            }
+            SemanticWhenPattern::Range(low, high, inclusive) => {
+                let lo_lowered = lower_value(low, &scrutinee.ty, ctx, &mut current)?;
+                let lo_cmp = ctx.fresh_value();
+                current.emit(IrInst::Compare {
+                    dst: lo_cmp,
+                    op: CompareOp::Ge,
+                    lhs: scrutinee_val.value,
+                    rhs: lo_lowered.value,
+                })?;
+                let mut lo_pass = ctx.start_block(vec![], incoming.clone());
+                let lo_pass_id = lo_pass.id();
+                let no_match = ctx.start_block(vec![], incoming.clone());
+                let no_match_id = no_match.id();
+                current.terminate(IrTerminator::Branch {
+                    cond: lo_cmp,
+                    then_block: lo_pass_id,
+                    then_args: vec![],
+                    else_block: no_match_id,
+                    else_args: vec![],
+                })?;
+                ctx.seal_block(current)?;
+
+                let hi_lowered = lower_value(high, &scrutinee.ty, ctx, &mut lo_pass)?;
+                let hi_op = if *inclusive { CompareOp::Le } else { CompareOp::Lt };
+                let hi_cmp = ctx.fresh_value();
+                lo_pass.emit(IrInst::Compare {
+                    dst: hi_cmp,
+                    op: hi_op,
+                    lhs: scrutinee_val.value,
+                    rhs: hi_lowered.value,
+                })?;
+                lo_pass.terminate(IrTerminator::Branch {
+                    cond: hi_cmp,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: no_match_id,
+                    else_args: vec![],
+                })?;
+                ctx.seal_block(lo_pass)?;
+
+                if let Some(active) = lower_stmt_sequence(
+                    arm.body.iter(),
+                    ctx,
+                    Some(body_block),
+                    spec,
+                    loop_ctx,
+                )? {
+                    fallthroughs.push(active);
+                }
+                current = no_match;
+            }
+            SemanticWhenPattern::EnumVariant { enum_name, variant_name, .. } => {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "EnumVariant when arm '{}::{}' — blocked on Enum IR lowering (separate work)",
+                        enum_name, variant_name
+                    ),
+                });
+            }
+        }
+    }
+
+    // Loop completed without a Catchall: `current` is the tail "no arm matched"
+    // block. It falls through to the merge as if it were a no-op arm body.
+    fallthroughs.push(current);
+
+    match fallthroughs.len() {
+        0 => Ok(None),
+        1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
+        _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
+    }
+}
+
+/// Lower a `when` expression (value-producing form). Same chained-decision CFG
+/// as `lower_when_stmt`, but the merge block carries a single block parameter
+/// of the result type, and each arm terminates with `Jump(merge, [arm_value])`.
+///
+/// Arms in expression position must end in an `ExprStmt` whose expression
+/// produces the arm's value. Block-bodied expression-form arms (leading stmts
+/// before the trailing expression) are accepted as long as the leading stmts
+/// lower without diverging; if a leading stmt diverges, that arm contributes
+/// no merge edge.
+///
+/// Same SCOPE BOUNDARY as `lower_when_stmt` applies. See that function's doc
+/// for the wire-value match details and the post-0.1 deferred surface.
+fn lower_when_expr(
+    scrutinee: &SemanticExpr,
+    arms: &[SemanticWhenArm],
+    result_ty: &SemanticType,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    let result_ir_ty = lower_type(result_ty)?;
+    let incoming = active.bindings.clone();
+    let scrutinee_val = lower_expr(scrutinee, ctx, active)?;
+
+    // Merge block: single block parameter typed as the result.
+    let result_param = ctx.fresh_value();
+    let merge_block = ctx.start_block(
+        vec![BlockParam {
+            value: result_param,
+            ty: result_ir_ty.clone(),
+            read_only: false,
+        }],
+        incoming.clone(),
+    );
+    let merge_id = merge_block.id();
+
+    // Swap caller's `*active` to be the merge block up front. The chain is
+    // built in `current` (a local), starting from what was originally `*active`.
+    let mut current = std::mem::replace(active, merge_block);
+
+    // Helper to lower one arm body and Jump to merge with its value.
+    // The arm body's leading stmts (all but the last) lower via the void path;
+    // the trailing ExprStmt is lowered as an expression to capture its value.
+    // If the body diverges before producing the trailing value, no merge edge
+    // is added — that arm just doesn't contribute to the merge.
+    let lower_arm_body =
+        |ctx: &mut LoweringCtx,
+         mut body_active: ActiveBlock,
+         arm: &SemanticWhenArm|
+         -> Result<(), LoweringError> {
+            if arm.body.is_empty() {
+                return Err(LoweringError::InternalInvariantViolation {
+                    detail: "when expression arm body is empty".to_string(),
+                });
+            }
+            let last_idx = arm.body.len() - 1;
+            // Lower leading stmts in-place into body_active.
+            for stmt in &arm.body[..last_idx] {
+                // Use a minimal lowering spec — when arms in expression position
+                // shouldn't contain Return statements; if they do, this errors.
+                let inline_spec = FunctionLoweringSpec {
+                    name: "<when-arm>".to_string(),
+                    return_ty: None,
+                    allow_return_stmt: false,
+                };
+                let result = lower_stmt(stmt, ctx, body_active, &inline_spec, None)?;
+                body_active = match result {
+                    Some(active) => active,
+                    None => return Ok(()), // diverged — no merge edge
+                };
+            }
+            // Lower the trailing expression to capture the arm's value.
+            let trailing_expr = match &arm.body[last_idx] {
+                SemanticStmt::ExprStmt { expr, .. } => expr,
+                other => {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "when expression arm must end in an expression, got {:?}",
+                            std::mem::discriminant(other)
+                        ),
+                    });
+                }
+            };
+            let arm_value = lower_expr(trailing_expr, ctx, &mut body_active)?;
+            ensure_type_match("when arm result", result_ir_ty.clone(), arm_value.ty)?;
+            body_active.terminate(IrTerminator::Jump {
+                target: merge_id,
+                args: vec![arm_value.value],
+            })?;
+            ctx.seal_block(body_active)?;
+            Ok(())
+        };
+
+    for arm in arms.iter() {
+        let body_block = ctx.start_block(vec![], incoming.clone());
+        let body_id = body_block.id();
+
+        match &arm.pattern {
+            SemanticWhenPattern::Catchall => {
+                current.terminate(IrTerminator::Jump {
+                    target: body_id,
+                    args: vec![],
+                })?;
+                ctx.seal_block(current)?;
+                lower_arm_body(ctx, body_block, arm)?;
+                // Arms after Catchall are unreachable.
+                return Ok(LoweredValue {
+                    value: result_param,
+                    ty: result_ir_ty,
+                });
+            }
+            SemanticWhenPattern::Literal(value) => {
+                let pat_value = if matches!(value, SemanticValue::Unknown) {
+                    let unknown_byte = ctx.fresh_value();
+                    current.emit(IrInst::ConstInt {
+                        dst: unknown_byte,
+                        ty: IrType::I8,
+                        value: 2,
+                    })?;
+                    let unknown_const = ctx.fresh_value();
+                    current.emit(IrInst::Cast {
+                        dst: unknown_const,
+                        from: IrType::I8,
+                        to: scrutinee_val.ty.clone(),
+                        value: unknown_byte,
+                    })?;
+                    unknown_const
+                } else {
+                    let lowered = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
+                    lowered.value
+                };
+                let cmp_dst = ctx.fresh_value();
+                current.emit(IrInst::Compare {
+                    dst: cmp_dst,
+                    op: CompareOp::Eq,
+                    lhs: scrutinee_val.value,
+                    rhs: pat_value,
+                })?;
+                let next_block = ctx.start_block(vec![], incoming.clone());
+                let next_id = next_block.id();
+                current.terminate(IrTerminator::Branch {
+                    cond: cmp_dst,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: next_id,
+                    else_args: vec![],
+                })?;
+                ctx.seal_block(current)?;
+                lower_arm_body(ctx, body_block, arm)?;
+                current = next_block;
+            }
+            SemanticWhenPattern::Range(low, high, inclusive) => {
+                let lo_lowered = lower_value(low, &scrutinee.ty, ctx, &mut current)?;
+                let lo_cmp = ctx.fresh_value();
+                current.emit(IrInst::Compare {
+                    dst: lo_cmp,
+                    op: CompareOp::Ge,
+                    lhs: scrutinee_val.value,
+                    rhs: lo_lowered.value,
+                })?;
+                let mut lo_pass = ctx.start_block(vec![], incoming.clone());
+                let lo_pass_id = lo_pass.id();
+                let no_match = ctx.start_block(vec![], incoming.clone());
+                let no_match_id = no_match.id();
+                current.terminate(IrTerminator::Branch {
+                    cond: lo_cmp,
+                    then_block: lo_pass_id,
+                    then_args: vec![],
+                    else_block: no_match_id,
+                    else_args: vec![],
+                })?;
+                ctx.seal_block(current)?;
+
+                let hi_lowered = lower_value(high, &scrutinee.ty, ctx, &mut lo_pass)?;
+                let hi_op = if *inclusive { CompareOp::Le } else { CompareOp::Lt };
+                let hi_cmp = ctx.fresh_value();
+                lo_pass.emit(IrInst::Compare {
+                    dst: hi_cmp,
+                    op: hi_op,
+                    lhs: scrutinee_val.value,
+                    rhs: hi_lowered.value,
+                })?;
+                lo_pass.terminate(IrTerminator::Branch {
+                    cond: hi_cmp,
+                    then_block: body_id,
+                    then_args: vec![],
+                    else_block: no_match_id,
+                    else_args: vec![],
+                })?;
+                ctx.seal_block(lo_pass)?;
+                lower_arm_body(ctx, body_block, arm)?;
+                current = no_match;
+            }
+            SemanticWhenPattern::EnumVariant {
+                enum_name,
+                variant_name,
+                ..
+            } => {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "EnumVariant when arm '{}::{}' — blocked on Enum IR lowering (separate work)",
+                        enum_name, variant_name
+                    ),
+                });
+            }
+        }
+    }
+
+    // Loop completed without Catchall: a value-producing when must be
+    // exhaustive. The tail block has no arm value to supply to the merge.
+    // Emit Trap on the no-arm-matched path so reaching it is a runtime abort
+    // rather than passing an undefined value to the merge.
+    current.terminate(IrTerminator::Trap)?;
+    ctx.seal_block(current)?;
+
+    Ok(LoweredValue {
+        value: result_param,
+        ty: result_ir_ty,
+    })
 }
 
 // Struct field access lowering strategy
@@ -2122,16 +3072,25 @@ fn lower_array_lit(
         });
     }
 
-    let elem_ir_ty = lower_type(elem_sem_ty)?;
-    let layout = compute_array_layout(&elem_ir_ty, count);
+    // Numeric and Unknown are placeholder types used by the semantic layer for
+    // untyped integer literals.  Map both to the target's default integer width
+    // (I64 on 64-bit) so arrays of untyped literals (e.g. [10, 20, 30]) lower
+    // cleanly regardless of which placeholder the semantic pass emitted.
+    let elem_ir_ty = if matches!(elem_sem_ty, SemanticType::Numeric | SemanticType::Unknown) {
+        ctx.target.numeric_literal_ir_type()
+    } else {
+        lower_type(elem_sem_ty)?
+    };
 
-    // 1. Alloca: reserve stack space for the entire array.
+    // 1. ArrayAlloca: reserve stack space for the entire array.
     let ptr = ctx.fresh_value();
-    active.emit(IrInst::Alloca {
+    active.emit(IrInst::ArrayAlloca {
         dst: ptr,
-        size: layout.total_size,
-        align: layout.alignment,
+        element_type: elem_ir_ty.clone(),
+        count,
     })?;
+
+    let layout = compute_array_layout(&elem_ir_ty, count);
 
     // 2. Store each element at its stride-aligned byte offset.
     for (i, elem_expr) in elements.iter().enumerate() {
@@ -2201,18 +3160,30 @@ fn lower_index(
         }
     };
 
-    let elem_ir_ty = lower_type(declared_elem_sem_ty)?;
+    // Numeric and Unknown are placeholder types the semantic layer uses for
+    // unresolved or partially-resolved array element positions.  Map both to
+    // the target's default integer width (I64 on 64-bit) to allow array
+    // programs that mix declared and literal types to lower cleanly.
+    let elem_ir_ty = if matches!(declared_elem_sem_ty, SemanticType::Numeric | SemanticType::Unknown) {
+        ctx.target.numeric_literal_ir_type()
+    } else {
+        lower_type(declared_elem_sem_ty)?
+    };
     let layout = compute_array_layout(&elem_ir_ty, count);
 
     // Verify the outer expression type is consistent with the element type.
-    let outer_ir_ty = lower_type(elem_sem_ty)?;
-    if outer_ir_ty != elem_ir_ty {
-        return Err(LoweringError::InternalInvariantViolation {
-            detail: format!(
-                "Index expression type {:?} does not match array element type {:?}",
-                outer_ir_ty, elem_ir_ty
-            ),
-        });
+    // When the outer type is Unknown the semantic layer could not resolve it;
+    // skip the check and use the declared element type directly.
+    if !matches!(elem_sem_ty, SemanticType::Numeric | SemanticType::Unknown) {
+        let outer_ir_ty = lower_type(elem_sem_ty)?;
+        if outer_ir_ty != elem_ir_ty {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "Index expression type {:?} does not match array element type {:?}",
+                    outer_ir_ty, elem_ir_ty
+                ),
+            });
+        }
     }
 
     // 1. Lower the array target to get the base pointer.
@@ -2297,7 +3268,27 @@ fn lower_type(ty: &SemanticType) -> Result<IrType, LoweringError> {
         SemanticType::Struct(_) => Ok(IrType::Ptr),
         SemanticType::Array(_, _) => Ok(IrType::Ptr),
         SemanticType::Result(_) => { unsupported_type!("Result") },
-        SemanticType::Void => { unsupported_type!("Void") },
+        // Void is not a storable type — it is only valid in return position,
+        // where `lower_return_type` canonicalises it to `None`.  Letting Void
+        // leak into params, block params, locals, or SSA values would violate
+        // the non-storable-void invariant.
+        SemanticType::Void => Err(LoweringError::InternalInvariantViolation {
+            detail: "SemanticType::Void is not storable; use lower_return_type for return-type slots".to_string(),
+        }),
+    }
+}
+
+/// Lower a return-type slot.  `SemanticType::Void` canonicalises to `None`
+/// (the absence of a return value); all other types delegate to `lower_type`.
+///
+/// This is the **only** path that may legitimately accept `SemanticType::Void`.
+/// `IrFunction::return_ty` and `FunctionSignature::return_ty` are
+/// `Option<IrType>` where `None` already encodes void; `IrType::Void` must
+/// never appear in either slot.
+fn lower_return_type(ty: &SemanticType) -> Result<Option<IrType>, LoweringError> {
+    match ty {
+        SemanticType::Void => Ok(None),
+        _ => Ok(Some(lower_type(ty)?)),
     }
 }
 
@@ -2311,6 +3302,333 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
             ),
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 sub-packet 3 — assert / assert_eq lowering
+// ---------------------------------------------------------------------------
+//
+// Both builtins are lowered to a two-branch CFG pattern:
+//
+//   [current block]
+//     ... condition computation ...
+//     Branch { cond, then: pass_block, else: trap_block }
+//
+//   [pass_block]          ← execution continues here after a passing assertion
+//     (empty — caller receives this as the new current block)
+//
+//   [trap_block]
+//     Trap                ← abort; maps to Cranelift `trap` in the JIT backend
+//
+// Supported condition types:
+//   - Bool    → used directly as the branch condition
+//   - I8/I16/I32/I64 → compared != 0 to produce Bool (truthy-integer assert)
+//   - Bool/I8/I16/I32/I64 for assert_eq → compared with Eq to produce Bool
+//
+// Unsupported types (e.g. Ptr, F64, StrRef) produce a structured
+// UnsupportedSemanticConstruct error so the caller gets a clear diagnostic.
+
+/// Route a print argument to the appropriate runtime intrinsic.
+///
+/// Returns the SSA value to pass and the callee name to invoke:
+///   - I64 passes through directly to `cx_printn`
+///   - I8/I16/I32 sign-extend to I64 via `IrInst::Cast` and call `cx_printn`
+///   - Bool/TBool pass through unmodified to `cx_print_bool` (formats true/false
+///     to match the interpreter's `print_value` Bool behavior; convergent stdout)
+///   - F64, I128, Ptr, Str, and composites are not yet supported — returns None,
+///     the caller emits a structured error.
+///
+/// This is the single edit point for adding more (callee, value) routing
+/// branches when post-0.1 work adds f64/string/composite print intrinsics.
+fn route_print_arg(
+    value: ValueId,
+    value_ty: IrType,
+    ctx: &mut LoweringCtx,
+    current: &mut ActiveBlock,
+) -> Result<Option<(ValueId, &'static str)>, LoweringError> {
+    match value_ty {
+        IrType::I64 => Ok(Some((value, "cx_printn"))),
+        IrType::I8 | IrType::I16 | IrType::I32 => {
+            let dst = ctx.fresh_value();
+            current.emit(IrInst::Cast {
+                dst,
+                from: value_ty.clone(),
+                to: IrType::I64,
+                value,
+            })?;
+            Ok(Some((dst, "cx_printn")))
+        }
+        IrType::Bool | IrType::TBool => Ok(Some((value, "cx_print_bool"))),
+        _ => Ok(None),
+    }
+}
+
+/// Lower `printn(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+///
+/// `printn` is a Cx builtin that prints an integer to stdout.  At the IR level
+/// it lowers to a call to the `cx_printn` runtime intrinsic, which is pre-declared
+/// in the JIT module as an imported C-ABI symbol.
+///
+/// Narrow integer widths (I8/I16/I32) and Bool/TBool are widened to I64 at the
+/// boundary via `widen_to_i64_for_print` (mirrors the semantic-phase narrowing
+/// idiom for typed sinks).  F64, I128, Ptr, Str, and composite types produce a
+/// structured error.
+fn lower_printn_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("printn expects 1 argument, got {}", args.len()),
+        });
+    }
+    let arg_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr argument to printn".to_string(),
+            });
+        }
+    };
+    let arg = lower_expr(arg_expr, ctx, &mut current)?;
+    let (routed_value, callee) = route_print_arg(arg.value, arg.ty.clone(), ctx, &mut current)?
+        .ok_or_else(|| LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "printn argument must be a numeric integer (I8/I16/I32/I64) or Bool, got {:?} — F64, I128, Str, and composite types not yet supported",
+                arg.ty
+            ),
+        })?;
+    current.emit(IrInst::Call {
+        dst: None,
+        callee: callee.to_string(),
+        args: vec![routed_value],
+        return_ty: None,
+    })?;
+    Ok(Some(current))
+}
+
+/// Lower `print(n)` or `println(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
+///
+/// Both `print` and `println` in Cx print a value followed by a newline.  Narrow
+/// integer widths (I8/I16/I32) and Bool/TBool are widened to I64 at the boundary
+/// via `widen_to_i64_for_print`.  F64, I128, Ptr, Str, and composite types
+/// produce a structured error.
+fn lower_print_stmt(
+    builtin_name: &str,
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("{} expects 1 argument, got {}", builtin_name, args.len()),
+        });
+    }
+    let arg_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!("non-Expr argument to {}", builtin_name),
+            });
+        }
+    };
+    let arg = lower_expr(arg_expr, ctx, &mut current)?;
+    let (routed_value, callee) = route_print_arg(arg.value, arg.ty.clone(), ctx, &mut current)?
+        .ok_or_else(|| LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "{} argument must be a numeric integer (I8/I16/I32/I64) or Bool, got {:?} — F64, I128, Str, and composite types not yet supported",
+                builtin_name, arg.ty
+            ),
+        })?;
+    current.emit(IrInst::Call {
+        dst: None,
+        callee: callee.to_string(),
+        args: vec![routed_value],
+        return_ty: None,
+    })?;
+    Ok(Some(current))
+}
+
+/// Lower `assert(cond)` as a void statement.
+///
+/// Emits a two-way branch: the pass branch continues execution; the fail
+/// branch terminates with [`IrTerminator::Trap`].  Returns the pass block
+/// as the new active block so lowering of subsequent statements continues
+/// in the correct CFG position.
+fn lower_assert_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("assert expects 1 argument, got {}", args.len()),
+        });
+    }
+
+    let cond_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr argument to assert".to_string(),
+            });
+        }
+    };
+
+    let cond = lower_expr(cond_expr, ctx, &mut current)?;
+
+    // Coerce the condition to Bool (IrType::Bool is the required Branch type).
+    let bool_val = coerce_to_bool(cond, ctx, &mut current)?;
+
+    emit_assert_branch(bool_val, ctx, current)
+}
+
+/// Lower `assert_eq(lhs, rhs)` as a void statement.
+///
+/// Emits a Compare(Eq) followed by the same two-way branch pattern as
+/// [`lower_assert_stmt`].  Both operands must have the same IR type and that
+/// type must be equality-comparable (Bool or integer).
+fn lower_assert_eq_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() != 2 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("assert_eq expects 2 arguments, got {}", args.len()),
+        });
+    }
+
+    let lhs_expr = match &args[0] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr first argument to assert_eq".to_string(),
+            });
+        }
+    };
+    let rhs_expr = match &args[1] {
+        SemanticCallArg::Expr(e) => e,
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr second argument to assert_eq".to_string(),
+            });
+        }
+    };
+
+    let lhs = lower_expr(lhs_expr, ctx, &mut current)?;
+    let rhs = lower_expr(rhs_expr, ctx, &mut current)?;
+
+    if lhs.ty != rhs.ty {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "assert_eq: lhs has type {:?}, rhs has type {:?} — operand types must match",
+                lhs.ty, rhs.ty
+            ),
+        });
+    }
+
+    // Validate that the type supports equality comparison.
+    match &lhs.ty {
+        IrType::Bool
+        | IrType::I8
+        | IrType::I16
+        | IrType::I32
+        | IrType::I64
+        | IrType::I128 => {}
+        other => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "assert_eq: type {:?} is not supported for equality comparison in the IR backend",
+                    other
+                ),
+            });
+        }
+    }
+
+    let cmp_dst = ctx.fresh_value();
+    current.emit(IrInst::Compare {
+        dst: cmp_dst,
+        op: CompareOp::Eq,
+        lhs: lhs.value,
+        rhs: rhs.value,
+    })?;
+
+    emit_assert_branch(cmp_dst, ctx, current)
+}
+
+/// Coerce a [`LoweredValue`] to `IrType::Bool` for use as a branch condition.
+///
+/// - If the value is already `Bool`, it is returned unchanged.
+/// - If the value is an integer type (`I8`/`I16`/`I32`/`I64`/`I128`), a
+///   `Compare { Ne, value, 0 }` is emitted to produce a `Bool` result
+///   (truthy semantics: any non-zero integer is true).
+/// - All other types produce an `UnsupportedSemanticConstruct` error.
+fn coerce_to_bool(
+    val: LoweredValue,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<ValueId, LoweringError> {
+    match &val.ty {
+        IrType::Bool => Ok(val.value),
+        IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 | IrType::I128 => {
+            let zero = ctx.fresh_value();
+            active.emit(IrInst::ConstInt {
+                dst: zero,
+                ty: val.ty.clone(),
+                value: 0,
+            })?;
+            let cmp_dst = ctx.fresh_value();
+            active.emit(IrInst::Compare {
+                dst: cmp_dst,
+                op: CompareOp::Ne,
+                lhs: val.value,
+                rhs: zero,
+            })?;
+            Ok(cmp_dst)
+        }
+        other => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "assert condition of type {:?} is not supported in the IR backend",
+                other
+            ),
+        }),
+    }
+}
+
+/// Emit the common Branch + Trap pattern for assertions.
+///
+/// Terminates `current` with a [`IrTerminator::Branch`] on `bool_val`:
+/// - true  → `pass_block` (continues execution; returned as new current)
+/// - false → `trap_block` (terminated with [`IrTerminator::Trap`])
+fn emit_assert_branch(
+    bool_val: ValueId,
+    ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let incoming = current.bindings.clone();
+
+    let pass_active = ctx.start_block(vec![], incoming.clone());
+    let pass_block_id = pass_active.id();
+
+    let mut trap_active = ctx.start_block(vec![], incoming);
+    let trap_block_id = trap_active.id();
+
+    let mut current = current;
+    current.terminate(IrTerminator::Branch {
+        cond: bool_val,
+        then_block: pass_block_id,
+        then_args: vec![],
+        else_block: trap_block_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(current)?;
+
+    trap_active.terminate(IrTerminator::Trap)?;
+    ctx.seal_block(trap_active)?;
+
+    Ok(Some(pass_active))
 }
 
 /// Lower a void function call as a standalone statement.
@@ -2737,6 +4055,64 @@ mod tests {
             LoweringError::UnsupportedSemanticType {
                 ty: "Numeric".to_string()
             }
+        );
+    }
+
+    // VarRef with SemanticType::Numeric falls back to the stored binding type
+    // (I64 on 64-bit) rather than calling lower_type(Numeric) which would fail.
+    // Mirrors the fallback introduced for array element lowering in CX-121/CX-129.
+    #[test]
+    fn varref_numeric_type_falls_back_to_binding_type() {
+        let binding = BindingId(1);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(
+                    binding,
+                    "i",
+                    SemanticType::I64,
+                    int_expr(0, SemanticType::I64),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(binding, "i", SemanticType::Numeric),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(
+            insts.iter().any(|inst| matches!(inst, IrInst::SsaBind { ty: IrType::I64, .. })),
+            "expected SsaBind(I64) for VarRef with Numeric placeholder type"
+        );
+    }
+
+    // VarRef with SemanticType::Unknown also falls back to the stored binding type.
+    #[test]
+    fn varref_unknown_type_falls_back_to_binding_type() {
+        let binding = BindingId(2);
+        let program = SemanticProgram {
+            stmts: vec![
+                typed_assign(
+                    binding,
+                    "j",
+                    SemanticType::I64,
+                    int_expr(5, SemanticType::I64),
+                ),
+                SemanticStmt::ExprStmt {
+                    expr: binding_ref(binding, "j", SemanticType::Unknown),
+                    pos: 0,
+                },
+            ],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts = &module.functions[0].blocks[0].insts;
+        assert!(
+            insts.iter().any(|inst| matches!(inst, IrInst::SsaBind { ty: IrType::I64, .. })),
+            "expected SsaBind(I64) for VarRef with Unknown placeholder type"
         );
     }
 
@@ -4875,6 +6251,21 @@ mod tests {
         }
     }
 
+    // Helper: build an ArrayLit SemanticExpr with N Numeric-typed elements,
+    // matching what the semantic layer emits for untyped integer literals.
+    fn array_lit_numeric(elements: Vec<i128>) -> SemanticExpr {
+        let count = elements.len();
+        SemanticExpr {
+            ty: SemanticType::Array(count, Box::new(SemanticType::Numeric)),
+            kind: SemanticExprKind::ArrayLit {
+                elements: elements
+                    .into_iter()
+                    .map(|v| int_expr(v, SemanticType::Numeric))
+                    .collect(),
+            },
+        }
+    }
+
     // Helper: build an Index SemanticExpr.
     fn index_expr(
         target: SemanticExpr,
@@ -4891,7 +6282,7 @@ mod tests {
         }
     }
 
-    // ArrayLit lowering: a three-element i64 array must emit exactly one Alloca
+    // ArrayLit lowering: a three-element i64 array must emit exactly one ArrayAlloca
     // (for the whole array), two PtrOffset instructions (elements 1 and 2 —
     // element 0 is at offset 0 so no PtrOffset), and three Stores.
     #[test]
@@ -4914,12 +6305,12 @@ mod tests {
             .flat_map(|b| b.insts.iter())
             .collect();
 
-        // One Alloca for the array storage (3 * 8 = 24 bytes, align 8).
+        // One ArrayAlloca for the array storage (3 x I64).
         let alloca_count = insts
             .iter()
-            .filter(|i| matches!(i, IrInst::Alloca { size: 24, align: 8, .. }))
+            .filter(|i| matches!(i, IrInst::ArrayAlloca { element_type: IrType::I64, count: 3, .. }))
             .count();
-        assert_eq!(alloca_count, 1, "expected exactly one Alloca(24, 8)");
+        assert_eq!(alloca_count, 1, "expected exactly one ArrayAlloca(I64, 3)");
 
         // Three Store instructions — one per element.
         let store_count = insts.iter().filter(|i| matches!(i, IrInst::Store { .. })).count();
@@ -4942,11 +6333,99 @@ mod tests {
         assert!(!has_ptr_offset_0, "unexpected PtrOffset(0) for first element");
     }
 
+    // ArrayLit with Numeric placeholder element type must still emit one
+    // ArrayAlloca (using the target's default integer width), locking in the
+    // SemanticType::Numeric fallback introduced in lower_array_lit.
+    #[test]
+    fn lowers_array_lit_numeric_elem_uses_default_int() {
+        let arr = array_lit_numeric(vec![10, 20, 30]);
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "arr",
+                SemanticType::Array(3, Box::new(SemanticType::Numeric)),
+                arr,
+            )],
+            enums: vec![],
+        };
+
+        let module = lower_and_validate(&program);
+        let insts: Vec<&IrInst> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+
+        // The fallback maps Numeric → I64 on a 64-bit target; count stays 3.
+        let alloca_count = insts
+            .iter()
+            .filter(|i| matches!(i, IrInst::ArrayAlloca { element_type: IrType::I64, count: 3, .. }))
+            .count();
+        assert_eq!(alloca_count, 1, "expected exactly one ArrayAlloca(I64, 3) for Numeric element type");
+    }
+
     // lower_type must map SemanticType::Array(_) to IrType::Ptr.
     #[test]
     fn lower_type_array_maps_to_ptr() {
         let result = lower_type(&SemanticType::Array(4, Box::new(SemanticType::I64)));
         assert_eq!(result, Ok(IrType::Ptr));
+    }
+
+    // lower_type must reject SemanticType::Void: Void is not storable and must
+    // not leak into params, block params, locals, or SSA values.  The only
+    // legitimate Void→IR path is `lower_return_type`, which canonicalises Void
+    // to `None` for `IrFunction::return_ty`.
+    #[test]
+    fn lower_type_rejects_void_in_storable_position() {
+        let result = lower_type(&SemanticType::Void);
+        assert!(
+            matches!(result, Err(LoweringError::InternalInvariantViolation { .. })),
+            "lower_type(Void) must error in storable position, got {:?}",
+            result
+        );
+    }
+
+    // lower_return_type must canonicalise SemanticType::Void to None.
+    // Non-Void types delegate to lower_type and are wrapped in Some.
+    #[test]
+    fn lower_return_type_void_canonicalises_to_none() {
+        assert_eq!(lower_return_type(&SemanticType::Void), Ok(None));
+        assert_eq!(lower_return_type(&SemanticType::I64), Ok(Some(IrType::I64)));
+        assert_eq!(lower_return_type(&SemanticType::Bool), Ok(Some(IrType::Bool)));
+    }
+
+    // A user-defined void-return function (SemanticType::Void return type)
+    // must lower to an IrFunction with return_ty: None (canonicalised).
+    #[test]
+    fn lower_semantic_function_void_return_canonicalises_to_none() {
+        use crate::frontend::semantic_types::{
+            FunctionId, SemanticFunction, SemanticStmt, SemanticType,
+        };
+        // Build a minimal program: fn do_nothing() -> void {}
+        let func = SemanticFunction {
+            id: FunctionId(0),
+            name: "do_nothing".to_string(),
+            type_params: vec![],
+            params: vec![],
+            return_ty: Some(SemanticType::Void),
+            body: vec![],
+            ret_expr: None,
+            is_test: false,
+            pos: 0,
+        };
+        let program = crate::frontend::semantic_types::SemanticProgram {
+            stmts: vec![SemanticStmt::FuncDef(func)],
+            enums: vec![],
+        };
+        let module = lower_program(&program).expect("lowering must succeed");
+        assert_eq!(module.functions.len(), 1);
+        let ir_func = &module.functions[0];
+        assert_eq!(ir_func.name, "do_nothing");
+        // Void return must be canonicalised to None, not Some(IrType::Void).
+        assert_eq!(
+            ir_func.return_ty, None,
+            "void-return function must have return_ty: None in IR"
+        );
     }
 
     // Index lowering on an i64 array with an i64 literal index must emit:
@@ -5242,9 +6721,12 @@ mod tests {
         assert!(lower_program(&program).is_err());
     }
 
-    // MethodCall produces a named structured error that includes both the
-    // instance name and the method name, rather than the generic "MethodCall"
-    // placeholder produced by the unsupported! macro.
+    // MethodCall with an empty struct_name (degenerate state — semantic phase
+    // couldn't resolve the instance's struct type) lowers via the post-H2
+    // synthetic-Call path: mangle_method("", "foo") = "$foo", which misses in
+    // signature_table and surfaces as a named UnresolvedSemanticArtifact whose
+    // artifact field carries the mangled callee. Regression-check that the
+    // error remains structured and named, not a generic placeholder.
     #[test]
     fn method_call_produces_named_structured_error() {
         let program = SemanticProgram {
@@ -5258,6 +6740,8 @@ mod tests {
                         instance: "obj".to_string(),
                         method: "foo".to_string(),
                         args: vec![],
+                        instance_binding: BindingId(u32::MAX),
+                        struct_name: String::new(),
                         pos: 0,
                     },
                 },
@@ -5268,11 +6752,1268 @@ mod tests {
         assert!(
             matches!(
                 &err,
-                LoweringError::UnsupportedSemanticConstruct { construct }
-                if construct.contains("obj") && construct.contains("foo")
+                LoweringError::UnresolvedSemanticArtifact { artifact }
+                if artifact.contains("$foo")
             ),
-            "expected named error mentioning instance and method, got: {:?}",
+            "expected UnresolvedSemanticArtifact carrying the mangled callee '$foo', got: {:?}",
             err
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 9 — Runtime intrinsics boundary audit (CX-35)
+    //
+    // Each builtin must produce UnsupportedSemanticConstruct (not the
+    // generic UnresolvedSemanticArtifact that a signature_table miss gives).
+    // -----------------------------------------------------------------------
+
+    // Helper: build a top-level ExprStmt that calls a builtin with the given
+    // args. `FunctionId(u32::MAX)` is the semantic-layer sentinel for builtins.
+    fn builtin_stmt(name: &str, args: Vec<SemanticCallArg>) -> SemanticStmt {
+        SemanticStmt::ExprStmt {
+            expr: SemanticExpr {
+                ty: SemanticType::Void,
+                kind: SemanticExprKind::Call {
+                    callee: name.to_string(),
+                    function: FunctionId(u32::MAX),
+                    args,
+                },
+            },
+            pos: 0,
+        }
+    }
+
+    fn assert_builtin_structured_error(name: &str) {
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(name, vec![])],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains(name)
+            ),
+            "builtin '{}' should produce UnsupportedSemanticConstruct mentioning its name, got: {:?}",
+            name, err
+        );
+    }
+
+    #[test]
+    fn rejects_user_function_named_cx_printn() {
+        // lower_program_inner derives reserved C-ABI names from validate::runtime_intrinsic_names();
+        // a user function named "cx_printn" must be rejected regardless of the hardcoded list.
+        let program = SemanticProgram {
+            stmts: vec![semantic_function("cx_printn", vec![], None, vec![], None)],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("cx_printn") && construct.contains("reserved")
+            ),
+            "expected reserved-name error for 'cx_printn', got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn print_i64_lowers_to_cx_printn_call() {
+        // print(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "print",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from print");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn println_i64_lowers_to_cx_printn_call() {
+        // println(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "println",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call from println");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn print_f64_arg_returns_unsupported_construct() {
+        // print with an F64 argument must return UnsupportedSemanticConstruct.
+        // Post-widening contract: I8/I16/I32 sign-extend to I64 via Cast and
+        // succeed; Bool/TBool route to cx_print_bool. F64, I128, Str, and
+        // composites are the still-unsupported set the lowering must reject.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "print",
+                vec![SemanticCallArg::Expr(float_expr(3.14))],
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).expect_err("lowering should fail for F64 print arg");
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("F64")
+            ),
+            "expected UnsupportedSemanticConstruct mentioning F64, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn printn_lowers_to_cx_printn_call() {
+        // printn(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "printn",
+                vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        let cx_printn_calls: Vec<_> = main_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .collect();
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call");
+        match cx_printn_calls[0] {
+            IrInst::Call { dst, callee, args, return_ty } => {
+                assert!(dst.is_none(), "cx_printn is void — no destination");
+                assert_eq!(callee, "cx_printn");
+                assert_eq!(args.len(), 1, "cx_printn takes one argument");
+                assert!(return_ty.is_none(), "cx_printn returns void");
+            }
+            _ => panic!("expected Call instruction"),
+        }
+    }
+
+    #[test]
+    fn printn_with_f64_arg_returns_error() {
+        // printn with an F64 argument must return UnsupportedSemanticConstruct.
+        // Post-widening contract: integers and Bool succeed via route_print_arg;
+        // F64 is in the still-unsupported set (no cx_print_f64 intrinsic yet).
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "printn",
+                vec![SemanticCallArg::Expr(float_expr(3.14))],
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).expect_err("lowering should fail for F64 printn arg");
+        assert!(
+            matches!(
+                &err,
+                LoweringError::UnsupportedSemanticConstruct { construct }
+                if construct.contains("F64")
+            ),
+            "expected UnsupportedSemanticConstruct mentioning F64, got: {:?}",
+            err
+        );
+    }
+
+    // assert and assert_eq are now lowerable (Phase 9 sub-packet 3) so they no
+    // longer trigger the is_cx_builtin gate.  The tests below verify that they
+    // lower correctly to multi-block CFGs with a Trap terminator.
+
+    #[test]
+    fn assert_true_lowers_to_validated_multi_block_cfg() {
+        // assert(true) → Branch on Bool 1 (pass) / Trap (fail, never taken)
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt("assert", vec![SemanticCallArg::Expr(bool_expr(true))])],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        // Synthetic main must have at least 3 blocks: decision, pass, trap.
+        assert!(
+            module.functions[0].blocks.len() >= 3,
+            "expected at least 3 blocks, got {}",
+            module.functions[0].blocks.len()
+        );
+        // At least one Trap terminator must exist.
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_integer_one_lowers_via_truthy_coercion() {
+        // assert(1) → Compare(Ne, 1, 0) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert",
+                vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I64))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        // Must contain a Compare(Ne) to coerce the integer to Bool.
+        let has_ne_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Ne, .. })
+            })
+        });
+        assert!(has_ne_compare, "expected a Ne Compare for truthy-integer coercion");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_eq_same_integers_lowers_to_validated_cfg() {
+        // assert_eq(1, 1) → Compare(Eq) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I64)),
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I64)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_eq_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Eq, .. })
+            })
+        });
+        assert!(has_eq_compare, "expected an Eq Compare for assert_eq");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_eq_bool_true_true_lowers_to_validated_cfg() {
+        // assert_eq(true, true) → Compare(Eq, Bool, Bool) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(bool_expr(true)),
+                    SemanticCallArg::Expr(bool_expr(true)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_i128_nonzero_lowers_via_truthy_coercion() {
+        // assert(1_i128) → Compare(Ne, 1_i128, 0_i128) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert",
+                vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I128))],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_ne_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Ne, .. })
+            })
+        });
+        assert!(has_ne_compare, "expected a Ne Compare for I128 truthy-integer coercion");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_eq_same_i128_lowers_to_validated_cfg() {
+        // assert_eq(1_i128, 1_i128) → Compare(Eq) → Branch → Trap on false
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I128)),
+                    SemanticCallArg::Expr(int_expr(1, SemanticType::I128)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_eq_compare = module.functions[0].blocks.iter().any(|b| {
+            b.insts.iter().any(|inst| {
+                matches!(inst, IrInst::Compare { op: CompareOp::Eq, .. })
+            })
+        });
+        assert!(has_eq_compare, "expected an Eq Compare for I128 assert_eq");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected a Trap block in the CFG");
+    }
+
+    #[test]
+    fn assert_with_wrong_arity_produces_invariant_violation() {
+        // assert() with 0 args → InternalInvariantViolation (arity check)
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt("assert", vec![])],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::InternalInvariantViolation { .. }),
+            "expected InternalInvariantViolation for wrong assert arity, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn assert_eq_with_wrong_arity_produces_invariant_violation() {
+        // assert_eq() with 0 args → InternalInvariantViolation
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt("assert_eq", vec![])],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::InternalInvariantViolation { .. }),
+            "expected InternalInvariantViolation for wrong assert_eq arity, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn builtin_read_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("read");
+    }
+
+    #[test]
+    fn assert_eq_with_numeric_binary_lhs_lowers_correctly() {
+        // assert_eq(1 + 1, 2) — both args have SemanticType::Numeric.
+        // Prior to CX-218 this returned UnsupportedSemanticType("Numeric")
+        // because lower_binary called lower_type(Numeric) for arithmetic ops.
+        // After the fix, Numeric resolves to I64 (on 64-bit targets) and the
+        // entire assert_eq lowers to Compare(Eq) + Branch/Trap.
+        let add_expr = SemanticExpr {
+            ty: SemanticType::Numeric,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(int_expr(1, SemanticType::Numeric)),
+                op: Op::Plus,
+                pos: 0,
+                rhs: Box::new(int_expr(1, SemanticType::Numeric)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![builtin_stmt(
+                "assert_eq",
+                vec![
+                    SemanticCallArg::Expr(add_expr),
+                    SemanticCallArg::Expr(int_expr(2, SemanticType::Numeric)),
+                ],
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let all_insts: Vec<_> = module.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|b| b.insts.iter())
+            .collect();
+        let has_add = all_insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Binary { op: BinaryOp::Add, ty: IrType::I64, .. }));
+        assert!(has_add, "expected Binary(Add, I64) for Numeric 1+1");
+        let has_eq = all_insts
+            .iter()
+            .any(|i| matches!(i, IrInst::Compare { op: CompareOp::Eq, .. }));
+        assert!(has_eq, "expected Compare(Eq) for assert_eq");
+        let has_trap = module.functions[0]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.term, IrTerminator::Trap));
+        assert!(has_trap, "expected Trap block for failing assert_eq path");
+    }
+
+    #[test]
+    fn builtin_input_produces_unsupported_construct_not_unresolved_artifact() {
+        assert_builtin_structured_error("input");
+    }
+
+    // ── TargetConfig tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn target_config_host_pointer_bits_matches_usize() {
+        let cfg = TargetConfig::host();
+        assert_eq!(cfg.pointer_bits, usize::BITS);
+    }
+
+    #[test]
+    fn target_config_64bit_numeric_literal_ir_type_is_i64() {
+        let cfg = TargetConfig { pointer_bits: 64 };
+        assert_eq!(cfg.numeric_literal_ir_type(), IrType::I64);
+    }
+
+    #[test]
+    fn target_config_32bit_numeric_literal_ir_type_is_i32() {
+        let cfg = TargetConfig { pointer_bits: 32 };
+        assert_eq!(cfg.numeric_literal_ir_type(), IrType::I32);
+    }
+
+    #[test]
+    fn target_config_64bit_numeric_literal_bounds_match_i64() {
+        let cfg = TargetConfig { pointer_bits: 64 };
+        assert_eq!(cfg.numeric_literal_min(), i64::MIN as i128);
+        assert_eq!(cfg.numeric_literal_max(), i64::MAX as i128);
+    }
+
+    #[test]
+    fn target_config_32bit_numeric_literal_bounds_match_i32() {
+        let cfg = TargetConfig { pointer_bits: 32 };
+        assert_eq!(cfg.numeric_literal_min(), i32::MIN as i128);
+        assert_eq!(cfg.numeric_literal_max(), i32::MAX as i128);
+    }
+
+    #[test]
+    fn numeric_literal_lowers_to_target_default_int_type() {
+        // A Numeric-typed literal with an I64 binding should lower cleanly to
+        // ConstInt(I64) on the host (64-bit) target.
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I64,
+                int_expr(42, SemanticType::Numeric),
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_const_i64 = module.functions[0].blocks[0].insts.iter().any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::I64, value: 42, .. })
+        });
+        assert!(has_const_i64, "expected ConstInt(I64, 42) from Numeric literal");
+    }
+
+    #[test]
+    fn numeric_literal_exceeding_target_range_is_rejected() {
+        // A Numeric-typed literal whose value exceeds i64::MAX should be
+        // rejected on a 64-bit host target.
+        let out_of_range: i128 = i64::MAX as i128 + 1;
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I128,
+                int_expr(out_of_range, SemanticType::Numeric),
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::UnsupportedSemanticConstruct { .. }),
+            "expected UnsupportedSemanticConstruct for out-of-range Numeric literal, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn cast_from_numeric_source_uses_lowered_type() {
+        // A Cast with from=Numeric should lower the literal directly at the
+        // cast destination type (I32), emitting ConstInt(I32) without an
+        // intermediate I64 → I32 cast instruction.
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I32,
+                SemanticExpr {
+                    ty: SemanticType::I32,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(int_expr(7, SemanticType::Numeric)),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::I32,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_const_i32 = module.functions[0].blocks[0].insts.iter().any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::I32, value: 7, .. })
+        });
+        assert!(has_const_i32, "expected ConstInt(I32, 7) — Numeric literal lowered at cast destination, no intermediate Cast needed");
+        let has_spurious_cast = module.functions[0].blocks[0].insts.iter().any(|inst| {
+            matches!(inst, IrInst::Cast { from: IrType::I64, to: IrType::I32, .. })
+        });
+        assert!(!has_spurious_cast, "unexpected I64→I32 Cast: Numeric literal should be emitted at I32 directly");
+    }
+
+    #[test]
+    fn cast_from_numeric_out_of_i32_range_is_rejected() {
+        // A Numeric literal that exceeds i32::MAX must be rejected when cast to
+        // I32, even though it would pass the default I64 range check.
+        let too_large: i128 = i32::MAX as i128 + 1;
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::I32,
+                SemanticExpr {
+                    ty: SemanticType::I32,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(int_expr(too_large, SemanticType::Numeric)),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::I32,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let err = lower_program(&program).unwrap_err();
+        assert!(
+            matches!(err, LoweringError::UnsupportedSemanticConstruct { .. }),
+            "expected UnsupportedSemanticConstruct for out-of-range Numeric->I32 cast, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn cast_from_numeric_to_f64_uses_default_width_cast() {
+        // A Numeric literal cast to F64 must NOT take the integer fast path.
+        // Expected IR: ConstInt(I64, 42) followed by Cast(I64 → F64).
+        // The fast path would wrongly emit ConstInt(F64, 42), which the IR
+        // validator rejects because ConstInt requires an integer or bool type.
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(1),
+                "x",
+                SemanticType::F64,
+                SemanticExpr {
+                    ty: SemanticType::F64,
+                    kind: SemanticExprKind::Cast {
+                        expr: Box::new(int_expr(42, SemanticType::Numeric)),
+                        from: SemanticType::Numeric,
+                        to: SemanticType::F64,
+                    },
+                },
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let has_cast_i64_to_f64 = module.functions[0].blocks[0].insts.iter().any(|inst| {
+            matches!(inst, IrInst::Cast { from: IrType::I64, to: IrType::F64, .. })
+        });
+        assert!(
+            has_cast_i64_to_f64,
+            "expected Cast(I64 → F64) for Numeric→F64 cast; integer fast path must not apply to float targets"
+        );
+    }
+
+    fn logical_and_expr(lhs: SemanticExpr, rhs: SemanticExpr) -> SemanticExpr {
+        SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(lhs),
+                op: Op::And,
+                pos: 0,
+                rhs: Box::new(rhs),
+            },
+        }
+    }
+
+    fn logical_or_expr(lhs: SemanticExpr, rhs: SemanticExpr) -> SemanticExpr {
+        SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(lhs),
+                op: Op::Or,
+                pos: 0,
+                rhs: Box::new(rhs),
+            },
+        }
+    }
+
+    #[test]
+    fn lowers_logical_and_to_short_circuit_cfg() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_and_expr(bool_expr(true), bool_expr(false)),
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        // Short-circuit lowering creates 4 blocks: entry/decision, rhs, sc, merge.
+        assert!(
+            main_fn.blocks.len() >= 4,
+            "AND short-circuit must produce at least 4 blocks, got {}",
+            main_fn.blocks.len()
+        );
+        // There must be at least one Branch terminator (the decision branch).
+        let has_branch = main_fn.blocks.iter().any(|b| {
+            matches!(b.term, IrTerminator::Branch { .. })
+        });
+        assert!(has_branch, "AND must emit a Branch terminator");
+        // The short-circuit constant for AND is false (0).
+        let has_false_const = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::Bool, value: 0, .. })
+        });
+        assert!(has_false_const, "AND must emit ConstInt(Bool, 0) for the short-circuit path");
+    }
+
+    #[test]
+    fn lowers_logical_or_to_short_circuit_cfg() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_or_expr(bool_expr(false), bool_expr(true)),
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            main_fn.blocks.len() >= 4,
+            "OR short-circuit must produce at least 4 blocks, got {}",
+            main_fn.blocks.len()
+        );
+        let has_branch = main_fn.blocks.iter().any(|b| {
+            matches!(b.term, IrTerminator::Branch { .. })
+        });
+        assert!(has_branch, "OR must emit a Branch terminator");
+        // The short-circuit constant for OR is true (1).
+        let has_true_const = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::ConstInt { ty: IrType::Bool, value: 1, .. })
+        });
+        assert!(has_true_const, "OR must emit ConstInt(Bool, 1) for the short-circuit path");
+    }
+
+    #[test]
+    fn logical_and_result_is_bool() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_and_expr(bool_expr(true), bool_expr(true)),
+            )],
+            enums: vec![],
+        };
+        // IR validation (inside lower_and_validate) checks type consistency.
+        // A successful call guarantees the result is Bool.
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn logical_or_result_is_bool() {
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(
+                BindingId(0),
+                "x",
+                SemanticType::Bool,
+                logical_or_expr(bool_expr(false), bool_expr(false)),
+            )],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn nested_logical_and_or_lowers_without_error() {
+        // (true && false) || true
+        let inner = logical_and_expr(bool_expr(true), bool_expr(false));
+        let outer = logical_or_expr(inner, bool_expr(true));
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(0), "x", SemanticType::Bool, outer)],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn logical_and_used_as_if_condition_lowers_correctly() {
+        // if true && false { } else { }
+        let program = SemanticProgram {
+            stmts: vec![SemanticStmt::IfElse {
+                condition: logical_and_expr(bool_expr(true), bool_expr(false)),
+                then_body: vec![],
+                else_ifs: vec![],
+                else_body: Some(vec![]),
+                pos: 0,
+            }],
+            enums: vec![],
+        };
+        let _ = lower_and_validate(&program);
+    }
+
+    #[test]
+    fn logical_and_with_non_bool_result_type_is_rejected() {
+        // A logical AND expression whose semantic result type is I64 (not Bool)
+        // must be rejected before CFG lowering proceeds.
+        let expr = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(bool_expr(true)),
+                op: Op::And,
+                pos: 0,
+                rhs: Box::new(bool_expr(false)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
+            enums: vec![],
+        };
+        assert!(
+            lower_program(&program).is_err(),
+            "logical AND with non-Bool result type must be rejected by lower_logical"
+        );
+    }
+
+    #[test]
+    fn logical_or_with_non_bool_result_type_is_rejected() {
+        let expr = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::Binary {
+                lhs: Box::new(bool_expr(false)),
+                op: Op::Or,
+                pos: 0,
+                rhs: Box::new(bool_expr(true)),
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
+            enums: vec![],
+        };
+        assert!(
+            lower_program(&program).is_err(),
+            "logical OR with non-Bool result type must be rejected by lower_logical"
+        );
+    }
+
+    // CX-108: Observable side-effect proof.
+    //
+    // The Call instruction (representing an observable RHS side effect) must
+    // appear only in the RHS block, never in the SC block.  This is the
+    // IR-level equivalent of the rhs_trap() fixture in t141_logical_and_or_exit.cx
+    // — it proves that short-circuit lowering truly isolates RHS evaluation to
+    // the path where it is needed.
+    //
+    // CX-110 hardens these tests: instead of matching any IrInst::Call,
+    // we match by callee name ("side_effect_fn") and assert that exactly one
+    // such call exists across all blocks in main, and that block is rhs_id.
+
+    #[test]
+    fn and_short_circuit_rhs_call_is_in_rhs_block_only() {
+        // x: bool = false && side_effect_fn()
+        // AND: then=rhs (LHS true → evaluate RHS), else=sc (LHS false → false constant).
+        // The Call must land in the rhs block and must be absent from the sc block.
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_and_expr(bool_expr(false), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("AND must emit a Branch terminator");
+        let (rhs_id, sc_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+
+        let sc_block = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+
+        let call_blocks: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| {
+                matches!(i, IrInst::Call { callee, .. } if callee == "side_effect_fn")
+            }))
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(call_blocks.len(), 1, "expected exactly one side_effect_fn call in main");
+        assert_eq!(call_blocks[0], rhs_id, "side_effect_fn call must be emitted only in RHS block");
+        assert!(
+            !sc_block.insts.iter().any(|i| {
+                matches!(i, IrInst::Call { callee, .. } if callee == "side_effect_fn")
+            }),
+            "side_effect_fn call must NOT be present in SC block — AND short-circuit must suppress RHS evaluation"
+        );
+    }
+
+    #[test]
+    fn or_short_circuit_rhs_call_is_in_rhs_block_only() {
+        // x: bool = true || side_effect_fn()
+        // OR: then=sc (LHS true → true constant), else=rhs (LHS false → evaluate RHS).
+        // The Call must land in the rhs block and must be absent from the sc block.
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_or_expr(bool_expr(true), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("OR must emit a Branch terminator");
+        let (sc_id, rhs_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+
+        let sc_block = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+
+        let call_blocks: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| {
+                matches!(i, IrInst::Call { callee, .. } if callee == "side_effect_fn")
+            }))
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(call_blocks.len(), 1, "expected exactly one side_effect_fn call in main");
+        assert_eq!(call_blocks[0], rhs_id, "side_effect_fn call must be emitted only in RHS block");
+        assert!(
+            !sc_block.insts.iter().any(|i| {
+                matches!(i, IrInst::Call { callee, .. } if callee == "side_effect_fn")
+            }),
+            "side_effect_fn call must NOT be present in SC block — OR short-circuit must suppress RHS evaluation"
+        );
+    }
+
+    // CX-109: Hardened RHS-block-only proof.
+    //
+    // CX-108 proved that a Call appearing as the RHS of a short-circuit
+    // expression lands in the RHS block and not in the SC block.  These tests
+    // strengthen that proof to cover all blocks: we scan every block in the
+    // lowered function and assert that the Call appears in exactly one of them,
+    // and that block is the RHS block.  This rules out leakage into the decision
+    // block, the merge block, or any synthetic block the lowering might
+    // introduce in the future.
+    //
+    // We additionally prove that the short-circuit constant (false for AND,
+    // true for OR) is confined to the SC block and does not appear in any other
+    // block, completing the dual-isolation guarantee.
+    //
+    // CX-110 hardens both groups:
+    // — "confined" tests: match Call by callee ("side_effect_fn") instead of any Call.
+    // — SC-constant tests: replace literal bool LHS with a non-literal call so
+    //   the same ConstInt cannot leak into the decision block, then assert the
+    //   constant appears in exactly one block (the SC block).
+
+    #[test]
+    fn and_rhs_call_confined_to_rhs_block_across_all_blocks() {
+        // false && side_effect_fn()
+        // Scans every block in main; the side_effect_fn Call must appear in
+        // exactly one block and that block must be the RHS block (then-branch
+        // of the AND Branch).
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_and_expr(bool_expr(false), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("AND must emit a Branch terminator");
+        // AND: then_block = rhs, else_block = sc.
+        let rhs_id = match &branch_block.term {
+            IrTerminator::Branch { then_block, .. } => *then_block,
+            _ => unreachable!(),
+        };
+
+        let blocks_with_call: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| {
+                matches!(i, IrInst::Call { callee, .. } if callee == "side_effect_fn")
+            }))
+            .collect();
+
+        assert_eq!(
+            blocks_with_call.len(),
+            1,
+            "side_effect_fn Call must appear in exactly one block; got {} — decision/sc/merge block isolation violated",
+            blocks_with_call.len()
+        );
+        assert_eq!(
+            blocks_with_call[0].id,
+            rhs_id,
+            "The sole block containing a side_effect_fn Call must be the RHS block"
+        );
+    }
+
+    #[test]
+    fn or_rhs_call_confined_to_rhs_block_across_all_blocks() {
+        // true || side_effect_fn()
+        // Scans every block in main; the side_effect_fn Call must appear in
+        // exactly one block and that block must be the RHS block (else-branch
+        // of the OR Branch).
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_or_expr(bool_expr(true), call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("OR must emit a Branch terminator");
+        // OR: then_block = sc, else_block = rhs.
+        let rhs_id = match &branch_block.term {
+            IrTerminator::Branch { else_block, .. } => *else_block,
+            _ => unreachable!(),
+        };
+
+        let blocks_with_call: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| {
+                matches!(i, IrInst::Call { callee, .. } if callee == "side_effect_fn")
+            }))
+            .collect();
+
+        assert_eq!(
+            blocks_with_call.len(),
+            1,
+            "side_effect_fn Call must appear in exactly one block; got {} — decision/sc/merge block isolation violated",
+            blocks_with_call.len()
+        );
+        assert_eq!(
+            blocks_with_call[0].id,
+            rhs_id,
+            "The sole block containing a side_effect_fn Call must be the RHS block"
+        );
+    }
+
+    #[test]
+    fn and_sc_block_contains_exactly_false_constant() {
+        // lhs_cond_fn() && side_effect_fn()
+        // Uses a non-literal (call) LHS so ConstInt(Bool, 0) can only appear
+        // in the SC block, never in the decision block.  Proves the false
+        // short-circuit constant is exclusive to the SC block.
+        let lhs_call = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "lhs_cond_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "lhs_cond_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_and_expr(lhs_call, call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("AND must emit a Branch terminator");
+        // AND: then_block = rhs, else_block = sc.
+        let (rhs_id, sc_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+        let sc_block  = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+        let rhs_block = main_fn.blocks.iter().find(|b| b.id == rhs_id).unwrap();
+
+        assert_eq!(
+            sc_block.insts.len(),
+            1,
+            "AND SC block must contain exactly one instruction (the short-circuit constant), got {}",
+            sc_block.insts.len()
+        );
+        assert!(
+            matches!(sc_block.insts[0], IrInst::ConstInt { ty: IrType::Bool, value: 0, .. }),
+            "AND SC block's sole instruction must be ConstInt(Bool, 0)"
+        );
+        assert!(
+            !rhs_block.insts.iter().any(|i| matches!(i, IrInst::ConstInt { ty: IrType::Bool, value: 0, .. })),
+            "ConstInt(Bool, 0) must not appear in the RHS block — false constant belongs only in SC block"
+        );
+        // Cross-block uniqueness: ConstInt(Bool, 0) must appear in exactly one
+        // block (the SC block).  With a non-literal LHS call, the decision block
+        // emits no ConstInt, so leakage would be caught here.
+        let false_const_blocks: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| matches!(i, IrInst::ConstInt { ty: IrType::Bool, value: 0, .. })))
+            .collect();
+        assert_eq!(
+            false_const_blocks.len(),
+            1,
+            "ConstInt(Bool, 0) must appear in exactly one block (the SC block); got {}",
+            false_const_blocks.len()
+        );
+        assert_eq!(
+            false_const_blocks[0].id,
+            sc_id,
+            "The sole ConstInt(Bool, 0) must reside in the SC block"
+        );
+    }
+
+    #[test]
+    fn or_sc_block_contains_exactly_true_constant() {
+        // lhs_cond_fn() || side_effect_fn()
+        // Uses a non-literal (call) LHS so ConstInt(Bool, 1) can only appear
+        // in the SC block, never in the decision block.  Proves the true
+        // short-circuit constant is exclusive to the SC block.
+        let lhs_call = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "lhs_cond_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let call_rhs = SemanticExpr {
+            ty: SemanticType::Bool,
+            kind: SemanticExprKind::Call {
+                callee: "side_effect_fn".to_string(),
+                function: FunctionId(0),
+                args: vec![],
+            },
+        };
+        let program = SemanticProgram {
+            stmts: vec![
+                semantic_function(
+                    "lhs_cond_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(true)),
+                ),
+                semantic_function(
+                    "side_effect_fn",
+                    vec![],
+                    Some(SemanticType::Bool),
+                    vec![],
+                    Some(bool_expr(false)),
+                ),
+                typed_assign(
+                    BindingId(0),
+                    "x",
+                    SemanticType::Bool,
+                    logical_or_expr(lhs_call, call_rhs),
+                ),
+            ],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let main_fn = module.functions.iter().find(|f| f.name == "main").unwrap();
+
+        let branch_block = main_fn.blocks.iter()
+            .find(|b| matches!(b.term, IrTerminator::Branch { .. }))
+            .expect("OR must emit a Branch terminator");
+        // OR: then_block = sc, else_block = rhs.
+        let (sc_id, rhs_id) = match &branch_block.term {
+            IrTerminator::Branch { then_block, else_block, .. } => (*then_block, *else_block),
+            _ => unreachable!(),
+        };
+        let sc_block  = main_fn.blocks.iter().find(|b| b.id == sc_id).unwrap();
+        let rhs_block = main_fn.blocks.iter().find(|b| b.id == rhs_id).unwrap();
+
+        assert_eq!(
+            sc_block.insts.len(),
+            1,
+            "OR SC block must contain exactly one instruction (the short-circuit constant), got {}",
+            sc_block.insts.len()
+        );
+        assert!(
+            matches!(sc_block.insts[0], IrInst::ConstInt { ty: IrType::Bool, value: 1, .. }),
+            "OR SC block's sole instruction must be ConstInt(Bool, 1)"
+        );
+        assert!(
+            !rhs_block.insts.iter().any(|i| matches!(i, IrInst::ConstInt { ty: IrType::Bool, value: 1, .. })),
+            "ConstInt(Bool, 1) must not appear in the RHS block — true constant belongs only in SC block"
+        );
+        // Cross-block uniqueness: ConstInt(Bool, 1) must appear in exactly one
+        // block (the SC block).  With a non-literal LHS call, the decision block
+        // emits no ConstInt, so leakage would be caught here.
+        let true_const_blocks: Vec<_> = main_fn.blocks.iter()
+            .filter(|b| b.insts.iter().any(|i| matches!(i, IrInst::ConstInt { ty: IrType::Bool, value: 1, .. })))
+            .collect();
+        assert_eq!(
+            true_const_blocks.len(),
+            1,
+            "ConstInt(Bool, 1) must appear in exactly one block (the SC block); got {}",
+            true_const_blocks.len()
+        );
+        assert_eq!(
+            true_const_blocks[0].id,
+            sc_id,
+            "The sole ConstInt(Bool, 1) must reside in the SC block"
         );
     }
 }

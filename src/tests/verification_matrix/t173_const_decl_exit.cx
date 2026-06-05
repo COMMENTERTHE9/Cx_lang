@@ -1,0 +1,11 @@
+// CX-228: exit-code-based JIT parity — const declarations (SKIP in JIT).
+// ConstDecl not yet lowered in IR; exits 127 in JIT.
+// Verified by exit code only (0 = all asserts held).
+const MAX: t64 = 100
+const MIN: t64 = 0
+const MID: t64 = 50
+
+assert_eq(MAX, 100)
+assert_eq(MIN, 0)
+assert_eq(MID, 50)
+assert_eq(MAX - MID, 50)

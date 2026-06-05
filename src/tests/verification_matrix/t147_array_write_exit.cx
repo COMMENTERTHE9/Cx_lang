@@ -1,0 +1,8 @@
+// CX-121: exit-code-based JIT parity — array element write then read-back.
+// Exercises Alloca + init, then PtrAdd + Store (write), then PtrAdd + Load (read-back).
+// Correctness verified by exit code only (0 = all asserts held).
+arr: [3: t64] = [10, 20, 30]
+arr:[1] = 99
+assert_eq(arr:[0], 10)
+assert_eq(arr:[1], 99)
+assert_eq(arr:[2], 30)

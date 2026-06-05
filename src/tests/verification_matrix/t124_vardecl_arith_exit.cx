@@ -1,0 +1,10 @@
+// CX-92: exit-code-based JIT parity — arithmetic over declared variables.
+// Exercises variable declarations combined with arithmetic operators.
+a: t64 = 10
+b: t64 = 3
+c: t64 = a + b
+assert(c == 13)
+d: t64 = a * b
+assert(d == 30)
+e: t64 = a - b
+assert(e == 7)

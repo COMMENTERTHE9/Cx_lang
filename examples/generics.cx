@@ -1,0 +1,12 @@
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+
+ints: Pair = Pair { first: 10, second: 20 }
+print(ints.first)
+print(ints.second)
+
+floats: Pair = Pair { first: 3.14, second: 2.71 }
+print(floats.first)
+print(floats.second)

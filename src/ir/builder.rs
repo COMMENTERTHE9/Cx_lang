@@ -1,7 +1,7 @@
 use crate::ir::instr::{IrInst, IrTerminator};
-use crate::ir::types::{
-    BlockId, BlockParam, IrBlock, IrFunction, IrModule, IrParam, IrType, ValueId,
-};
+use crate::ir::types::{BlockId, BlockParam, IrBlock, ValueId};
+#[cfg(test)]
+use crate::ir::types::{IrFunction, IrModule, IrParam, IrType};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IrBuildError {
@@ -40,6 +40,7 @@ impl IrBuilder {
         id
     }
 
+    #[cfg(test)]
     pub fn module(&self, debug_name: impl Into<String>) -> IrModule {
         IrModule {
             debug_name: debug_name.into(),
@@ -47,6 +48,7 @@ impl IrBuilder {
         }
     }
 
+    #[cfg(test)]
     pub fn function(
         &self,
         name: impl Into<String>,
@@ -70,10 +72,12 @@ impl IrBuilder {
         }
     }
 
+    #[cfg(test)]
     pub fn append_block(&self, function: &mut IrFunction, block: IrBlock) {
         function.blocks.push(block);
     }
 
+    #[cfg(test)]
     pub fn append_function(&self, module: &mut IrModule, function: IrFunction) {
         module.functions.push(function);
     }
@@ -135,6 +139,7 @@ mod tests {
         let block_param = BlockParam {
             value: builder.fresh_value(),
             ty: IrType::I64,
+            read_only: false,
         };
         let mut block = builder.block(vec![block_param.clone()]);
         let dst = builder.fresh_value();

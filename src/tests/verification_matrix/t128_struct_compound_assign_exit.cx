@@ -1,0 +1,7 @@
+// CX-94: exit-code-based JIT parity — compound assign on a struct field.
+// Verifies the Load + Binary + Store pattern emitted by DotAccess compound assign.
+// Correctness verified by exit code only (0 = all asserts held).
+struct Player { health: t64 }
+p: Player = Player { health: 100 }
+p.health -= 30
+assert_eq(p.health, 70)

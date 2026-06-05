@@ -1,0 +1,9 @@
+// CX-228: exit-code-based JIT parity — block-scope variable shadowing (SKIP in JIT).
+// Block lowering not yet implemented; exits 127 in JIT.
+// Mirrors t15_block_scope_shadow without print; verified by exit code only.
+x: t64 = 10
+{
+    x: t64 = 99
+    assert_eq(x, 99)
+}
+assert_eq(x, 10)

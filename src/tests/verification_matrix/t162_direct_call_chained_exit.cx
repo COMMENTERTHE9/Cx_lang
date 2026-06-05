@@ -1,0 +1,17 @@
+// CX-228: exit-code-based JIT parity — DirectCall chained (function calling function).
+// Verified by exit code only (0 = all asserts held).
+fnc: t64 double(x: t64) {
+    x * 2
+}
+
+fnc: t64 quad(x: t64) {
+    double(double(x))
+}
+
+fnc: t64 add_then_double(a: t64, b: t64) {
+    double(a + b)
+}
+
+assert_eq(double(5), 10)
+assert_eq(quad(3), 12)
+assert_eq(add_then_double(3, 4), 14)
