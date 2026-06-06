@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-05-27"
+date: 2026-05-27
+description: "Third quiet day in a row with no developer commits, but roadmap corrections caught three unchecked Phase 11 items and the submain merge backlog keeps growing."
+---
+
+No developer-authored commits landed anywhere in the last 24 hours. This is the third consecutive quiet day. Main has not changed since May 22 when the Type::Void variant merged via PR #278, and submain has been sitting at 7 commits ahead since the tracker sprint wrapped on May 25. The matrix holds at 182 PASS / 0 FAIL.
+
+That said, the project is not stuck. It is sitting between a productive burst of work and the integration step that pulls it all together. This post is mostly about what is waiting to land and some roadmap housekeeping that was overdue.
+
+## Roadmap corrections
+
+The roadmap on main was noticeably stale. It was still dated 2026-05-09, still described the frontend as a "0.1 release candidate," and still listed the matrix at "117/117." In reality, v0.1.0 shipped (the tag exists at the PR #266 merge commit) and 182 tests now pass. This daily log's commit corrects those facts.
+
+More specifically, three Phase 11 items that had already landed on main were never checked off in the roadmap:
+
+- **Method call lowering** (commit `0ab7e9b`) -- actual lowering with literal-width narrowing for method calls on impl types.
+- **`when` block lowering** (commit `bed71c1`) -- covers Literal, Range, Bool, and Catchall arms plus TBool wire-value unknown handling.
+- **DotAccess in compound forms** (commit `2d6804a`) -- compound assignment through dot-access paths, verified against the CX-187 parity fixtures.
+
+All three were committed to main weeks ago. They just never got marked done. This is the kind of drift that happens when documentation lives in a separate file and updates are batched into daily-log branches that accumulate without merging. The roadmap is now accurate through today's date.
+
+## The submain backlog
+
+Submain carries seven commits from the May 24-25 tracker sprint. This is real work:
+
+- **Tracker #001** -- composite literal type-checking
+- **Tracker #002 / #032** -- IndexOutOfBounds diagnostics
+- **Tracker #008** -- builtin registry
+- **Tracker #009** -- BindingId-indexed variables, which measured a 57% speedup on arithmetic loops
+- **Tracker #012** -- the exit() builtin (covered in the May 23 dev log)
+
+No merge conflicts are expected. Submain pulled main via PR #282 on May 24 to establish a clean base. The merge is straightforward. Every daily log since May 6 has predicted this merge as the next move, and every day it has not happened.
+
+## Seven daily-log branches pending
+
+There are also seven daily-log branches (May 20 through May 26) waiting to merge into main. Each carries its own snapshot of roadmap updates and working notes. The last daily-log branch that actually reached main was from May 9. The corrections made in this daily log's commit supersede most of what those intermediate branches carry, but they still need to be merged or closed to keep the branch list clean.
+
+## What is actually next
+
+The same three items that have been predicted for days:
+
+1. **Merge submain into main.** This is the single highest-leverage action available. It brings in the performance refactor, the correctness fixes, and the structural improvements from the tracker sprint. The merge path is clean.
+2. **Merge or close the daily-log branch backlog.** Seven pending branches is too many. The roadmap corrections in this log make merging them less critical for accuracy, but the branch hygiene matters.
+3. **Lazy arena (tracker #010) or JIT bounds checking (tracker #003).** These are the natural follow-ups from the May 24-25 sprint. The arena fix targets a 64KB memset bottleneck. Bounds checking would close the `jit_known_unsound` gap.
+
+None of these happened yesterday or the day before. The honest summary is that the project had a strong push through May 25, and the integration step has not happened yet. The work exists. It just needs to land.
