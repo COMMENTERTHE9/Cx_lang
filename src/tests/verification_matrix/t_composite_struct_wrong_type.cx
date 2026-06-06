@@ -1,0 +1,6 @@
+// Composite literal type checking: a struct field declared t64 must reject a
+// str value at semantic analysis (tracker #001 / B2).
+struct P { a: t64, b: t64 }
+let p;
+p = P { a: 1, b: "hello" }
+print(p.b)

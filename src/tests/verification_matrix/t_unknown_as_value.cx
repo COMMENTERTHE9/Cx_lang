@@ -1,0 +1,4 @@
+// Tracker #039 / audit F6: `unknown` is a `when`-pattern keyword, not a value.
+// Using it in value position must error and name the `?` literal, instead of
+// failing deep in the statement parser and pointing at the `:`.
+b: bool = unknown

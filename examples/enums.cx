@@ -1,0 +1,28 @@
+// Enums: declaration, `::` variants, and — since #019 — enum types in function
+// signatures (parameter and return positions). `when` is used here both as a
+// value-returning expression (`next`) and as a statement (`name`).
+enum Light { Red, Green, Yellow }
+
+fnc: Light next(cur: Light) {
+    when cur {
+        Light::Red    => Light::Green,
+        Light::Green  => Light::Yellow,
+        Light::Yellow => Light::Red,
+        _             => Light::Red,
+    }
+}
+
+fnc: name(cur: Light) {
+    when cur {
+        Light::Red    => print("red"),
+        Light::Green  => print("green"),
+        Light::Yellow => print("yellow"),
+        _             => print("?"),
+    }
+}
+
+cur: Light = Light::Red
+for i in 0..4 {
+    name(cur)
+    cur = next(cur)
+}

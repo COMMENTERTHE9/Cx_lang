@@ -1,0 +1,3 @@
+// exit() builtin — no-arg form defaults to exit(0).
+// Expect: exit 0, no stdout. No sidecar (PassAny, exit 0).
+exit()

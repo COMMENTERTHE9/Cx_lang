@@ -1,0 +1,10 @@
+// #044: a typed `b: bool = ?` is stored as TBool(2); the `unknown` when-arm must
+// fire for it (before #044 it fell through to blank output). No `_` arm here, so
+// this also pins #027 exhaustiveness soundness — {true,false,unknown} is accepted
+// as complete AND the unknown arm genuinely fires.
+b: bool = ?
+when b {
+    true    => print(1),
+    false   => print(2),
+    unknown => print(3),
+}

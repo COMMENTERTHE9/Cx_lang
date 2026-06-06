@@ -1,0 +1,2 @@
+// #021 edge: length of the empty string is 0.
+print(len(""))

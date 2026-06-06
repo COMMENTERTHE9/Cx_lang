@@ -11,6 +11,17 @@ use colored::Colorize;
 pub(crate) const ERR_FAILED_STATEMENT: &str = "failed to parse statement";
 
 pub(crate) fn lexer_error_message(slice: &str) -> String {
+    // An all-digit slice that reaches the lexer error path is an integer literal
+    // that overflowed Cx's widest integer type (i128 / t128): the LiteralInt
+    // regex callback returns None on parse overflow, which Logos surfaces as a
+    // lex error. Report the range rather than the misleading "this character is
+    // not valid" (tracker #016).
+    if !slice.is_empty() && slice.bytes().all(|b| b.is_ascii_digit()) {
+        return format!(
+            "integer literal out of range for i128 (max {})",
+            i128::MAX
+        );
+    }
     format!(
         "unrecognized token {:?} — this character is not valid in Cx",
         slice
@@ -187,7 +198,37 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             "stale handle access - handle was already dropped".to_string(),
             *pos,
         ),
-        RuntimeError::BreakSignal => ("unhandled 'break' outside of a loop -- this may be a compiler bug".to_string(), 0),
+        RuntimeError::UnknownCondition { pos } => (
+            "`if` condition is unknown; an unknown TBool can't choose a branch — \
+             use `when` to handle true, false, and unknown explicitly"
+                .to_string(),
+            *pos,
+        ),
+        RuntimeError::IndexOutOfBounds { pos, index, length } => (
+            format!("array index {} out of bounds for array of length {}", index, length),
+            *pos,
+        ),
+        // Tracker #038: a `{...}` in an interpolated string that doesn't resolve
+        // to a bound variable. The hint differs by failure mode: a non-variable
+        // expression gets the "compute it into a variable first" workaround; a
+        // bare name that simply isn't in scope is flagged as undefined.
+        RuntimeError::BadInterpolation { pos, content, is_identifier } => (
+            if *is_identifier {
+                format!(
+                    "string interpolation: no variable `{}` in scope — \
+                     check the name, or declare it before this string",
+                    content
+                )
+            } else {
+                format!(
+                    "string interpolation supports bare variables only; \
+                     compute `{{{}}}` into a variable first",
+                    content
+                )
+            },
+            *pos,
+        ),
+        RuntimeError::BreakSignal =>("unhandled 'break' outside of a loop -- this may be a compiler bug".to_string(), 0),
         RuntimeError::ContinueSignal => ("unhandled 'continue' outside of a loop -- this may be a compiler bug".to_string(), 0),
         RuntimeError::ReadOnlyLoopVar { pos, name } => (
             format!("loop variable '{}' is read-only", name),
@@ -195,6 +236,13 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
         ),
         RuntimeError::EarlyReturn(_) => (
             "unhandled control flow signal -- this is likely a compiler bug, please report".to_string(),
+            0,
+        ),
+        // Never-render arm: Exit is caught at the top-level interpreter loop and
+        // the --test loop before any rendering. If this fires, the catch-site
+        // ordering in main.rs is wrong.
+        RuntimeError::Exit(_) => (
+            "exit signal — should not reach renderer (bug: top-level catch missed it)".to_string(),
             0,
         ),
         RuntimeError::AssertionFailed { pos, msg } => (
@@ -432,7 +480,7 @@ Expr::Call(name, args, _) => {
             print_expr(lhs, depth + 1);
             print_expr(rhs, depth + 1);
         }
-        Expr::ArrayLit(elems) => {
+        Expr::ArrayLit(elems, _) => {
             eprintln!("{}ArrayLit", pad);
             for e in elems {
                 print_expr(e, depth + 1);
@@ -457,6 +505,10 @@ Expr::Call(name, args, _) => {
         Expr::When(match_expr, arms, _) => {
             eprintln!("{}WhenExpr({} arms)", pad, arms.len());
             print_expr(match_expr, depth + 1);
+        }
+        Expr::If(cond, _then, _els, _) => {
+            eprintln!("{}IfExpr", pad);
+            print_expr(cond, depth + 1);
         }
         Expr::ResultOk(inner, _) => {
             eprintln!("{}Ok(...)", pad);
@@ -507,16 +559,6 @@ pub fn print_scope_event(event: &ScopeEvent) {
                 eprintln!("  ⬡ handle access slot={} gen={} STALE", slot, gen);
             } else {
                 eprintln!("  ⬡ handle access slot={} gen={} ok", slot, gen);
-            }
-        }
-        ScopeEvent::ArenaReset { bytes, chunks } => {
-            if *bytes == 0 {
-                eprintln!("  ? arena reset  N/A  {} chunk(s)", chunks);
-            } else {
-                eprintln!(
-                    "  ? arena reset  {} bytes freed  {} chunk(s)",
-                    bytes, chunks
-                );
             }
         }
     }

@@ -1,0 +1,5 @@
+// Integer literal one past i128::MAX must be rejected at lex time with a
+// range error ("integer literal out of range for i128 ..."), not the
+// misleading "this character is not valid" (tracker #016).
+x: t128 = 170141183460469231731687303715884105728
+print(x)

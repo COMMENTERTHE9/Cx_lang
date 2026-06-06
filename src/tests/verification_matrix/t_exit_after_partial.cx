@@ -1,0 +1,5 @@
+// exit() builtin — exit after partial output; stdout must flush before exit.
+// Expect: exit 5, stdout "before". .expected_fail + .expected_exit=5 + .expected_output.
+print("before")
+exit(5)
+print("after")

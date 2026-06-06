@@ -1,0 +1,4 @@
+// #020: `str + num` is a type error pointing at interpolation — no implicit
+// value->string coercion.
+s: str = "count: " + 5
+print(s)

@@ -1,0 +1,11 @@
+// #044 decisive case: TBool(2) arises from TBool arithmetic (`&&` of two unknowns)
+// with nothing to do with declaration coercion. The `unknown` arm must fire — this
+// is why a coercion-only fix would have been insufficient.
+x: bool = ?
+y: bool = ?
+z: bool = x && y
+when z {
+    true    => print(1),
+    false   => print(2),
+    unknown => print(3),
+}

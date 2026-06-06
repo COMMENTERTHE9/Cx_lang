@@ -1,0 +1,9 @@
+// #044 regression guard: the untyped `let b; b = ?` form (stored as
+// `Value::Unknown`) already worked and must keep firing the `unknown` arm.
+let b
+b = ?
+when b {
+    true    => print(1),
+    false   => print(2),
+    unknown => print(3),
+}

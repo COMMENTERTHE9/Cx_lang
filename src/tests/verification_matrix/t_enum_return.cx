@@ -1,0 +1,18 @@
+// Tracker #019: an enum used as a function *return* type.
+enum Dir { North, South }
+
+fnc: Dir flip(d: Dir) {
+    when d {
+        Dir::North => Dir::South,
+        Dir::South => Dir::North,
+        _ => Dir::North,
+    }
+}
+
+let d;
+d = flip(Dir::North)
+when d {
+    Dir::North => print(1),
+    Dir::South => print(2),
+    _ => print(0),
+}

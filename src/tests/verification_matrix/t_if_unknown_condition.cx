@@ -1,0 +1,8 @@
+// An `if` whose condition is the TBool unknown state cannot choose a branch:
+// runtime error directing to `when`, not a silent fall-through to else (#026).
+b: bool = ?
+if b {
+    print(1)
+} else {
+    print(2)
+}

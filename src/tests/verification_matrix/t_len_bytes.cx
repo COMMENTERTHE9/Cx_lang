@@ -1,0 +1,3 @@
+// #021 byte-semantics pin: len is BYTE length, not char/grapheme count. "é" is
+// one character but two UTF-8 bytes (U+00E9 -> 0xC3 0xA9), so len is 2.
+print(len("é"))

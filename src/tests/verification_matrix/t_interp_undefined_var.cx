@@ -1,0 +1,5 @@
+// Tracker #038 / audit F2: a `{...}` naming a variable that isn't in scope (a
+// typo) must error instead of printing the literal `{toatl}` — the more common
+// and more dangerous silent-wrong-output case.
+total: t32 = 5
+print("sum = {toatl}")

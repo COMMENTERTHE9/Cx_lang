@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::frontend::ast::*;
+use crate::frontend::builtins::{self, BuiltinKind, BuiltinRet};
 use crate::frontend::semantic_types::*;
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,12 @@ pub struct Analyzer {
     next_function_id: u32,
     next_enum_id: u32,
     next_enum_variant_id: u32,
+    /// Declared array element type for the array literal currently being
+    /// analyzed, when one is known from context (e.g. `let a: [N: T] = [...]`).
+    /// Set by the typed-assignment arm before analyzing the initializer and
+    /// consumed (taken) by the ArrayLit arm so element-mismatch errors report
+    /// the DECLARED element type rather than element[0]'s inferred type (#031a).
+    expected_array_elem: Option<SemanticType>,
 }
 
 impl Analyzer {
@@ -82,6 +89,7 @@ impl Analyzer {
             next_function_id: 0,
             next_enum_id: 0,
             next_enum_variant_id: 0,
+            expected_array_elem: None,
         }
     }
 
@@ -252,8 +260,9 @@ impl Analyzer {
             Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
                 let semantic_value = self.analyze_expr(value)?;
                 let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
-                self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                let binding = self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
                 Ok(SemanticStmt::ConstDecl {
+                    binding,
                     name: name.clone(),
                     ty: sem_ty,
                     value: semantic_value,
@@ -438,6 +447,7 @@ impl Analyzer {
                             return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a struct field — use an owned str instead"));
                         }
                         if field_ty != SemanticType::Unknown {
+                            check_semantic_num_fits(&semantic_expr, &field_ty, *pos_eq)?;
                             if !types_compatible(&field_ty, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(&field_ty, &semantic_expr.ty, *pos_eq));
                             }
@@ -489,14 +499,22 @@ impl Analyzer {
                 pos_type,
             } => {
                 let declared_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
-                let mut semantic_expr = self.analyze_expr(expr)?;
+                // Hint the declared element type to the array-literal analysis so
+                // element-mismatch errors name the declared type, not element[0]'s
+                // inferred type (#031a). Save/restore so it never leaks past this
+                // initializer.
+                let prev_expected_elem = self.expected_array_elem.take();
+                if let SemanticType::Array(_, elem) = &declared_ty {
+                    self.expected_array_elem = Some((**elem).clone());
+                }
+                let analyzed = self.analyze_expr(expr);
+                self.expected_array_elem = prev_expected_elem;
+                let mut semantic_expr = analyzed?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_type, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
 
-                if let Expr::Val(AstValue::Num(n)) = expr {
-                    check_num_range(ty.clone(), *n, *pos_type)?;
-                }
+                check_literal_fits(expr, &declared_ty, *pos_type)?;
 
                 if !types_compatible(&declared_ty, &semantic_expr.ty) {
                     return Err(type_mismatch_error(
@@ -666,6 +684,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         })
                     })
                     .collect::<Result<Vec<_>, SemanticError>>()?;
+                if !when_is_exhaustive(&semantic_arms) {
+                    return Err(sem_err!(*pos, "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases"));
+                }
                 Ok(SemanticStmt::When {
                     expr: semantic_expr,
                     arms: semantic_arms,
@@ -1050,6 +1071,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
 
         let expr = match (expr, self.current_ret_ty.clone()) {
             (Some(expr), Some(expected)) => {
+                check_literal_fits(expr, &expected, pos)?;
                 let expr = self.analyze_expr(expr)?;
                 if expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
@@ -1142,20 +1164,50 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
-            Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs)) => {
-                // Check if the struct definition has any strref fields — reject at instantiation
-                if let Some(struct_fields) = self.structs.get(type_name) {
-                    for (fname, ftype) in struct_fields {
-                        let sem_ty = semantic_type_from_decl(ftype.clone(), &self.current_type_params);
+            Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs, pos)) => {
+                let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
+                if let Some(struct_fields) = self.structs.get(type_name).cloned() {
+                    // The struct's own generic parameters must be in scope when
+                    // resolving its field types, so e.g. `first: T` resolves to a
+                    // type parameter (which unifies with anything) rather than a
+                    // concrete struct named "T".
+                    let mut field_type_params = self.struct_type_params.get(type_name).cloned().unwrap_or_default();
+                    field_type_params.extend(self.current_type_params.iter().cloned());
+                    // strref fields cannot be stored in a struct — reject at instantiation
+                    for (fname, ftype) in &struct_fields {
+                        let sem_ty = semantic_type_from_decl(ftype.clone(), &field_type_params);
                         if sem_ty == SemanticType::StrRef {
-                            return Err(sem_err!(0, "struct '{}' has a strref field '{}' — StrRef cannot be stored in struct fields because it does not outlive the struct", type_name, fname));
+                            return Err(sem_err!(*pos, "struct '{}' has a strref field '{}' — StrRef cannot be stored in struct fields because it does not outlive the struct", type_name, fname));
                         }
                     }
-                }
-                let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
-                for (fname, fexpr) in field_exprs {
-                    let sem_expr = self.analyze_expr(fexpr)?;
-                    semantic_fields.push((fname.clone(), sem_expr));
+                    // Each provided field must exist on the struct, and its value's
+                    // type must unify with the declared field type.
+                    for (fname, fexpr) in field_exprs {
+                        let sem_expr = self.analyze_expr(fexpr)?;
+                        match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
+                            None => return Err(sem_err!(*pos, "unknown field '{}' in struct literal of type '{}'", fname, type_name)),
+                            Some((_, decl_ty)) => {
+                                let decl_sem = semantic_type_from_decl(decl_ty.clone(), &field_type_params);
+                                check_literal_fits(fexpr, &decl_sem, *pos)?;
+                                if !types_compatible(&decl_sem, &sem_expr.ty) {
+                                    return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
+                                }
+                            }
+                        }
+                        semantic_fields.push((fname.clone(), sem_expr));
+                    }
+                    // Every declared field must be supplied.
+                    for (decl_name, _) in &struct_fields {
+                        if !field_exprs.iter().any(|(fname, _)| fname == decl_name) {
+                            return Err(sem_err!(*pos, "missing field '{}' in struct literal of type '{}'", decl_name, type_name));
+                        }
+                    }
+                } else {
+                    // Unknown struct type — analyze field values without struct-aware checks.
+                    for (fname, fexpr) in field_exprs {
+                        let sem_expr = self.analyze_expr(fexpr)?;
+                        semantic_fields.push((fname.clone(), sem_expr));
+                    }
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::Struct(type_name.clone()),
@@ -1272,14 +1324,35 @@ Expr::Unary(op, inner, pos) => {
                 })
             }
             Expr::Bin(lhs, op, op_pos, rhs) => self.analyze_binary(lhs, *op, *op_pos, rhs),
-            Expr::ArrayLit(elems) => {
+            Expr::ArrayLit(elems, pos) => {
+                // Consume any declared-element-type hint up front (#031a) so the
+                // element sub-analyses below don't inherit it.
+                let declared_elem = self.expected_array_elem.take();
                 let mut semantic_elems = Vec::new();
                 for e in elems {
                     semantic_elems.push(self.analyze_expr(e)?);
                 }
-                let elem_ty = semantic_elems.first()
-                    .map(|e| e.ty.clone())
-                    .unwrap_or(SemanticType::Unknown);
+                // With a declared element type, every element (including index 0)
+                // must unify with the DECLARED type, and mismatches name it. Without
+                // one (untyped array), element[0] fixes the type and later elements
+                // must unify with it.
+                let (elem_ty, check_from) = match &declared_elem {
+                    Some(t) => (t.clone(), 0),
+                    None => (
+                        semantic_elems.first().map(|e| e.ty.clone()).unwrap_or(SemanticType::Unknown),
+                        1,
+                    ),
+                };
+                for (i, e) in semantic_elems.iter().enumerate().skip(check_from) {
+                    if declared_elem.is_some() {
+                        // Range-check integer literals against the declared element
+                        // type (#028).
+                        check_semantic_num_fits(e, &elem_ty, *pos)?;
+                    }
+                    if !types_compatible(&elem_ty, &e.ty) {
+                        return Err(sem_err!(*pos, "array element at index {} expects type '{}' but got '{}'", i, type_name(&elem_ty), type_name(&e.ty)));
+                    }
+                }
                 Ok(SemanticExpr {
                     ty: SemanticType::Array(semantic_elems.len(), Box::new(elem_ty)),
                     kind: SemanticExprKind::ArrayLit {
@@ -1320,11 +1393,40 @@ Expr::Unary(op, inner, pos) => {
                     }
                     semantic_arms.push(SemanticWhenArm { pattern, body, pos: arm.pos });
                 }
+                if !when_is_exhaustive(&semantic_arms) {
+                    return Err(sem_err!(*pos, "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases"));
+                }
                 Ok(SemanticExpr {
                     ty: result_ty,
                     kind: SemanticExprKind::When {
                         expr: Box::new(semantic_match),
                         arms: semantic_arms,
+                        pos: *pos,
+                    },
+                })
+            }
+            Expr::If(cond, then_body, else_body, pos) => {
+                let semantic_cond = self.analyze_expr(cond)?;
+                let then_semantic: Vec<SemanticStmt> = then_body.iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let else_semantic: Vec<SemanticStmt> = else_body.iter()
+                    .map(|s| self.analyze_stmt(s))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // #046: result type mirrors `when` — take the then-branch's
+                // trailing expression type. Branch type-unification is a 0.3
+                // hardening tracked for both `if` and `when` together (W1); doing
+                // it here would make `if` stricter than its sibling.
+                let mut result_ty = SemanticType::Unknown;
+                if let Some(SemanticStmt::ExprStmt { expr, .. }) = then_semantic.last() {
+                    result_ty = expr.ty.clone();
+                }
+                Ok(SemanticExpr {
+                    ty: result_ty,
+                    kind: SemanticExprKind::If {
+                        condition: Box::new(semantic_cond),
+                        then_body: then_semantic,
+                        else_body: else_semantic,
                         pos: *pos,
                     },
                 })
@@ -1568,75 +1670,136 @@ Expr::Unary(op, inner, pos) => {
         args: &[CallArg],
         pos: usize,
     ) -> Result<SemanticExpr, SemanticError> {
-        if name == "is_known" {
-            let expr = match args.first() {
-                Some(CallArg::Expr(expr)) => self.analyze_expr(expr)?,
-                _ => {
-                    return Err(sem_err!(pos, "call to undefined function '{}'", name));
+        // Built-in dispatch — names and per-builtin metadata come from the
+        // single-source-of-truth registry (crate::frontend::builtins, #008).
+        // Each kind keeps its existing recognition behavior verbatim.
+        if let Some(def) = builtins::lookup(name) {
+            match def.kind {
+                BuiltinKind::IsKnown => {
+                    let expr = match args.first() {
+                        Some(CallArg::Expr(expr)) => self.analyze_expr(expr)?,
+                        _ => {
+                            return Err(sem_err!(pos, "call to undefined function '{}'", name));
+                        }
+                    };
+                    return Ok(SemanticExpr {
+                        ty: SemanticType::Bool,
+                        kind: SemanticExprKind::Call {
+                            callee: name.to_string(),
+                            function: FunctionId(u32::MAX),
+                            args: vec![SemanticCallArg::Expr(expr)],
+                        },
+                    });
                 }
-            };
-            return Ok(SemanticExpr {
-                ty: SemanticType::Bool,
-                kind: SemanticExprKind::Call {
-                    callee: name.to_string(),
-                    function: FunctionId(u32::MAX),
-                    args: vec![SemanticCallArg::Expr(expr)],
-                },
-            });
-        }
 
-        // Built-in: read(var) and input("prompt", var)
-        if name == "read" || name == "input" || name == "print" || name == "println" || name == "printn" || name == "assert" || name == "assert_eq" {
-            let mut semantic_args = Vec::new();
-            for arg in args {
-                match arg {
-                    CallArg::Expr(expr) => {
-                        let sem_expr = self.analyze_expr(expr)?;
-                        semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                // Built-in: exit(code) / exit() — terminate with a process exit
+                // code. Arity (0 or 1) enforced here via the registry so the
+                // runtime sees only valid shapes. Return type Void (no usable
+                // value); divergence is a runtime concern, not a type-system one
+                // for 0.2 (no Never/Diverges).
+                BuiltinKind::Exit => {
+                    if !def.arity.accepts(args.len()) {
+                        return Err(sem_err!(
+                            pos,
+                            "'exit' expects 0 or 1 argument(s), got {}",
+                            args.len()
+                        ));
                     }
-                    _ => {}
+                    let mut semantic_args = Vec::new();
+                    if let Some(CallArg::Expr(expr)) = args.first() {
+                        semantic_args.push(SemanticCallArg::Expr(self.analyze_expr(expr)?));
+                    }
+                    return Ok(SemanticExpr {
+                        ty: SemanticType::Void,
+                        kind: SemanticExprKind::Call {
+                            callee: name.to_string(),
+                            function: FunctionId(u32::MAX),
+                            args: semantic_args,
+                        },
+                    });
+                }
+
+                // read(var), input("prompt", var), print/println/printn, assert,
+                // assert_eq — collect Expr args; return type comes from the
+                // registry (Str for read/input, Void otherwise).
+                BuiltinKind::Read
+                | BuiltinKind::Input
+                | BuiltinKind::Print
+                | BuiltinKind::Println
+                | BuiltinKind::Printn
+                | BuiltinKind::Assert
+                | BuiltinKind::AssertEq
+                | BuiltinKind::Len => {
+                    let mut semantic_args = Vec::new();
+                    for arg in args {
+                        if let CallArg::Expr(expr) = arg {
+                            let sem_expr = self.analyze_expr(expr)?;
+                            semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                        }
+                    }
+                    if def.kind == BuiltinKind::AssertEq && semantic_args.len() == 2 {
+                        let lhs_ty = if let SemanticCallArg::Expr(e) = &semantic_args[0] {
+                            Some(e.ty.clone())
+                        } else { None };
+                        let rhs_ty = if let SemanticCallArg::Expr(e) = &semantic_args[1] {
+                            Some(e.ty.clone())
+                        } else { None };
+                        if let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) {
+                            if lhs_ty == SemanticType::Numeric
+                                && rhs_ty != SemanticType::Numeric
+                                && is_numeric(&rhs_ty)
+                            {
+                                if let SemanticCallArg::Expr(lhs) = semantic_args[0].clone() {
+                                    semantic_args[0] =
+                                        SemanticCallArg::Expr(insert_cast_if_needed(lhs, &rhs_ty));
+                                }
+                            } else if rhs_ty == SemanticType::Numeric
+                                && lhs_ty != SemanticType::Numeric
+                                && is_numeric(&lhs_ty)
+                            {
+                                if let SemanticCallArg::Expr(rhs) = semantic_args[1].clone() {
+                                    semantic_args[1] =
+                                        SemanticCallArg::Expr(insert_cast_if_needed(rhs, &lhs_ty));
+                                }
+                            }
+                        }
+                    }
+                    // Tracker #021: `len` accepts a string or array only. The
+                    // registry doesn't type-check builtin args in general (a
+                    // general arg-typing system is a 0.3 candidate); this is a
+                    // targeted one-builtin check.
+                    if def.kind == BuiltinKind::Len {
+                        let arg_ty = match semantic_args.first() {
+                            Some(SemanticCallArg::Expr(e)) => Some(&e.ty),
+                            _ => None,
+                        };
+                        let ok = matches!(
+                            arg_ty,
+                            Some(SemanticType::Str)
+                                | Some(SemanticType::StrRef)
+                                | Some(SemanticType::Array(_, _))
+                        );
+                        if !ok {
+                            let got = arg_ty.map(type_name).unwrap_or_else(|| "no argument".to_string());
+                            return Err(sem_err!(pos, "`len` expects a string or array, got {}", got));
+                        }
+                    }
+                    let ret_ty = match def.ret {
+                        BuiltinRet::Str => SemanticType::Str,
+                        BuiltinRet::Bool => SemanticType::Bool,
+                        BuiltinRet::Void => SemanticType::Void,
+                        BuiltinRet::Int => SemanticType::I64,
+                    };
+                    return Ok(SemanticExpr {
+                        ty: ret_ty,
+                        kind: SemanticExprKind::Call {
+                            callee: name.to_string(),
+                            function: FunctionId(u32::MAX),
+                            args: semantic_args,
+                        },
+                    });
                 }
             }
-            if name == "assert_eq" && semantic_args.len() == 2 {
-                let lhs_ty = if let SemanticCallArg::Expr(e) = &semantic_args[0] {
-                    Some(e.ty.clone())
-                } else { None };
-                let rhs_ty = if let SemanticCallArg::Expr(e) = &semantic_args[1] {
-                    Some(e.ty.clone())
-                } else { None };
-                if let (Some(lhs_ty), Some(rhs_ty)) = (lhs_ty, rhs_ty) {
-                    if lhs_ty == SemanticType::Numeric
-                        && rhs_ty != SemanticType::Numeric
-                        && is_numeric(&rhs_ty)
-                    {
-                        if let SemanticCallArg::Expr(lhs) = semantic_args[0].clone() {
-                            semantic_args[0] =
-                                SemanticCallArg::Expr(insert_cast_if_needed(lhs, &rhs_ty));
-                        }
-                    } else if rhs_ty == SemanticType::Numeric
-                        && lhs_ty != SemanticType::Numeric
-                        && is_numeric(&lhs_ty)
-                    {
-                        if let SemanticCallArg::Expr(rhs) = semantic_args[1].clone() {
-                            semantic_args[1] =
-                                SemanticCallArg::Expr(insert_cast_if_needed(rhs, &lhs_ty));
-                        }
-                    }
-                }
-            }
-            let ret_ty = if name == "read" || name == "input" {
-                SemanticType::Str
-            } else {
-                SemanticType::Void
-            };
-            return Ok(SemanticExpr {
-                ty: ret_ty,
-                kind: SemanticExprKind::Call {
-                    callee: name.to_string(),
-                    function: FunctionId(u32::MAX),
-                    args: semantic_args,
-                },
-            });
         }
 
         let function = self.funcs.get(name).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
@@ -1682,6 +1845,7 @@ Expr::Unary(op, inner, pos) => {
                 CallArg::Expr(expr) => {
                     let expr = self.analyze_expr(expr)?;
                     let expr = if let Some(expected) = expected {
+                        check_semantic_num_fits(&expr, &expected, pos)?;
                         if !types_compatible(&expected, &expr.ty) {
                             return Err(sem_err!(pos, "argument {} to '{}': expected {}, got {}", index + 1, name, type_name(&expected), type_name(&expr.ty)));
                         }
@@ -1765,6 +1929,31 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     });
+                }
+                // Tracker #020: `+` on strings is concatenation, producing a new
+                // `str`. Only `str + str` is allowed — a mixed operand (either
+                // order) is rejected with a pointer at string interpolation,
+                // never an implicit value->string coercion (the silent-coercion
+                // class the soundness arc closed). Only `+` concatenates; the
+                // other arithmetic ops fall through to the numeric requirement.
+                if op == Op::Plus {
+                    let lhs_str = matches!(lhs.ty, SemanticType::Str | SemanticType::StrRef);
+                    let rhs_str = matches!(rhs.ty, SemanticType::Str | SemanticType::StrRef);
+                    if lhs_str && rhs_str {
+                        return Ok(SemanticExpr {
+                            ty: SemanticType::Str,
+                            kind: SemanticExprKind::Binary {
+                                lhs: Box::new(lhs),
+                                op,
+                                pos: op_pos,
+                                rhs: Box::new(rhs),
+                            },
+                        });
+                    }
+                    if lhs_str || rhs_str {
+                        let other = if lhs_str { &rhs.ty } else { &lhs.ty };
+                        return Err(sem_err!(op_pos, "cannot concatenate `str` and `{}` with `+` — Cx does not implicitly convert values to strings; use string interpolation instead, e.g. \"total {{x}}\"", type_name(other)));
+                    }
                 }
                 if !is_numeric(&lhs.ty) || !is_numeric(&rhs.ty) {
                     return Err(sem_err!(op_pos, "arithmetic requires numeric operands, got {} and {}", type_name(&lhs.ty), type_name(&rhs.ty)));
@@ -1921,22 +2110,95 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
     }
 }
 
-fn check_num_range(ty: Type, n: i128, pos: usize) -> Result<(), SemanticError> {
-    let bounds: Option<(i128, i128)> = match ty {
-        Type::T8 => Some((0, u8::MAX as i128)),
-        Type::T16 => Some((0, u16::MAX as i128)),
-        Type::T32 => Some((0, u32::MAX as i128)),
-        Type::T64 => Some((0, u64::MAX as i128)),
-        Type::T128 => Some((i128::MIN, i128::MAX)),
+/// Range-check an integer literal against a declared integer width (#028).
+/// Cx integers are SIGNED (the runtime stores them as i8/i16/i32/i64/i128), so
+/// the valid ranges are the signed ones. A literal that statically cannot fit is
+/// a semantic error in both backends, rather than wrapping in the interpreter and
+/// being rejected at JIT lowering. Non-integer types pass through.
+fn check_num_range(ty: &SemanticType, n: i128, pos: usize) -> Result<(), SemanticError> {
+    let bounds: Option<(i128, i128, &str)> = match ty {
+        SemanticType::I8 => Some((i8::MIN as i128, i8::MAX as i128, "t8")),
+        SemanticType::I16 => Some((i16::MIN as i128, i16::MAX as i128, "t16")),
+        SemanticType::I32 => Some((i32::MIN as i128, i32::MAX as i128, "t32")),
+        SemanticType::I64 => Some((i64::MIN as i128, i64::MAX as i128, "t64")),
+        SemanticType::I128 => Some((i128::MIN, i128::MAX, "t128")),
         _ => None,
     };
 
-    if let Some((min, max)) = bounds {
+    if let Some((min, max, name)) = bounds {
         if n < min || n > max {
-            return Err(sem_err!(pos, "value {} overflows type {:?} (range {}..{})", n, ty, min, max));
+            return Err(sem_err!(
+                pos,
+                "integer literal {} out of range for {} (valid range: {}..{})",
+                n, name, min, max
+            ));
         }
     }
     Ok(())
+}
+
+/// If `expr` is an integer literal — bare `Num(n)` or a negated literal
+/// `Unary(Minus, Num(n))` — range-check its VALUE against the declared type
+/// `expected` (#028 + #037). The sign is folded first and the signed result is
+/// checked, so the check is value-aware: `Num(128)` is out of range for t8 but
+/// `-Num(128)` = -128 is the valid minimum. `n` is a positive `Num` (≤ i128::MAX
+/// — the lexer rejects larger), so `-n` never overflows.
+fn check_literal_fits(expr: &Expr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
+    let value = match expr {
+        Expr::Val(AstValue::Num(n)) => Some(*n),
+        Expr::Unary(Op::Minus, inner, _) => match inner.as_ref() {
+            Expr::Val(AstValue::Num(n)) => Some(-*n),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(n) = value {
+        check_num_range(expected, n, pos)?;
+    }
+    Ok(())
+}
+
+/// Same as [`check_literal_fits`] but for an already-analyzed expression — used
+/// where only the `SemanticExpr` is in scope (field assignment, array elements,
+/// call arguments). A bare integer literal analyzes to `Value(Num(_))`; a negated
+/// one to `Unary { Minus, Value(Num(_)) }` (the analyzer does not constant-fold).
+fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
+    let value = match &sem.kind {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => Some(*n),
+        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => match &expr.kind {
+            SemanticExprKind::Value(SemanticValue::Num(n)) => Some(-*n),
+            _ => None,
+        },
+        _ => None,
+    };
+    if let Some(n) = value {
+        check_num_range(expected, n, pos)?;
+    }
+    Ok(())
+}
+
+/// Whether a `when`'s arms make it exhaustive (#027, lenient / Option 2).
+/// Exhaustive iff it has a catch-all `_` arm — also produced by enum group /
+/// super-group patterns, which `analyze_when_pattern` lowers to `Catchall` — OR
+/// it is a TBool match covering all three states (true, false, unknown). Open
+/// domains (numeric / range / string) and bare enum-variant matches must supply
+/// a `_`. Full static enum exhaustiveness is deferred to 0.3.
+fn when_is_exhaustive(arms: &[SemanticWhenArm]) -> bool {
+    if arms.iter().any(|a| matches!(a.pattern, SemanticWhenPattern::Catchall)) {
+        return true;
+    }
+    let (mut has_true, mut has_false, mut has_unknown) = (false, false, false);
+    for a in arms {
+        if let SemanticWhenPattern::Literal(sv) = &a.pattern {
+            match sv {
+                SemanticValue::Bool(true) => has_true = true,
+                SemanticValue::Bool(false) => has_false = true,
+                SemanticValue::Unknown => has_unknown = true,
+                _ => {}
+            }
+        }
+    }
+    has_true && has_false && has_unknown
 }
 
 fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
@@ -1969,6 +2231,122 @@ fn semantic_type_from_decl(ty: Type, type_params: &[String]) -> SemanticType {
     }
 }
 
+// ── Tracker #019: enum-annotation normalization ──────────────────────────────
+// The parser cannot distinguish an enum name from a struct name in type-
+// annotation position, so every bare name parses to `Type::Struct(name)`
+// (parser.rs `named_type`). This pass runs before semantic analysis and rewrites
+// `Type::Struct(name) -> Type::Enum(name)` for every `name` that is a declared
+// enum. With that done, enum annotations in parameter types, return types, typed
+// bindings, and struct fields flow through the existing `semantic_type_from_decl`
+// arm (`Type::Enum => SemanticType::Enum`) and unify with enum *values* (which
+// already infer to `SemanticType::Enum`). The parser is left untouched and none
+// of the ~25 `semantic_type_from_decl` call sites change.
+fn normalize_enum_type(ty: Type, enums: &std::collections::HashSet<String>) -> Type {
+    match ty {
+        Type::Struct(name) if enums.contains(&name) => Type::Enum(name),
+        Type::Array(size, elem) => Type::Array(size, Box::new(normalize_enum_type(*elem, enums))),
+        Type::Handle(inner) => Type::Handle(Box::new(normalize_enum_type(*inner, enums))),
+        Type::Result(inner) => Type::Result(Box::new(normalize_enum_type(*inner, enums))),
+        other => other,
+    }
+}
+
+fn normalize_enum_param(p: ParamKind, enums: &std::collections::HashSet<String>) -> ParamKind {
+    match p {
+        ParamKind::Typed(name, ty) => ParamKind::Typed(name, normalize_enum_type(ty, enums)),
+        other => other,
+    }
+}
+
+fn normalize_enum_stmts(stmts: Vec<Stmt>, enums: &std::collections::HashSet<String>) -> Vec<Stmt> {
+    stmts.into_iter().map(|s| normalize_enum_stmt(s, enums)).collect()
+}
+
+fn normalize_enum_when_arm(arm: WhenArm, enums: &std::collections::HashSet<String>) -> WhenArm {
+    WhenArm {
+        pattern: arm.pattern,
+        pos: arm.pos,
+        body: match arm.body {
+            WhenBody::Stmts(stmts) => WhenBody::Stmts(normalize_enum_stmts(stmts, enums)),
+            WhenBody::SuperGroup(handlers) => WhenBody::SuperGroup(
+                handlers.into_iter().map(|h| match h {
+                    SuperGroupHandler::Stmts(stmts) => SuperGroupHandler::Stmts(normalize_enum_stmts(stmts, enums)),
+                    SuperGroupHandler::Placeholder => SuperGroupHandler::Placeholder,
+                }).collect(),
+            ),
+        },
+    }
+}
+
+// Rewrites enum annotations everywhere a `Type` can appear in a statement,
+// recursing through every nested statement body (function/impl bodies, blocks,
+// loop/if/when arms) so a typed binding like `cur: Light = ...` is normalized no
+// matter how deeply nested. Type annotations never appear in expression position
+// (only struct-literal generic args, which enums don't use), so expressions are
+// left untouched.
+fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) -> Stmt {
+    match stmt {
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
+            name, type_params, is_pub, pos,
+            fields: fields.into_iter().map(|(f, t)| (f, normalize_enum_type(t, enums))).collect(),
+        },
+        Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
+            name, is_pub, pos,
+            aliases: aliases.into_iter().map(|(a, t)| (a, normalize_enum_type(t, enums))).collect(),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+                normalize_enum_stmts(body, enums),
+                ret_expr,
+            )).collect(),
+        },
+        Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
+            name, value, is_pub, pos, ty: normalize_enum_type(ty, enums),
+        },
+        Stmt::Decl { name, ty, pos } => Stmt::Decl {
+            name, pos, ty: ty.map(|t| normalize_enum_type(t, enums)),
+        },
+        Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
+            name, expr, pos_type, ty: normalize_enum_type(ty, enums),
+        },
+        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, is_pub, macros, pos,
+            params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+            ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
+            body: normalize_enum_stmts(body, enums),
+            ret_expr,
+        },
+        Stmt::Block { stmts, _pos } => Stmt::Block { stmts: normalize_enum_stmts(stmts, enums), _pos },
+        Stmt::While { cond, body, pos } => Stmt::While { cond, body: normalize_enum_stmts(body, enums), pos },
+        Stmt::For { var, start, end, inclusive, body, pos } => Stmt::For {
+            var, start, end, inclusive, pos, body: normalize_enum_stmts(body, enums),
+        },
+        Stmt::Loop { body, pos } => Stmt::Loop { body: normalize_enum_stmts(body, enums), pos },
+        Stmt::IfElse { condition, then_body, else_ifs, else_body, pos } => Stmt::IfElse {
+            condition, pos,
+            then_body: normalize_enum_stmts(then_body, enums),
+            else_ifs: else_ifs.into_iter().map(|(c, b)| (c, normalize_enum_stmts(b, enums))).collect(),
+            else_body: else_body.map(|b| normalize_enum_stmts(b, enums)),
+        },
+        Stmt::WhileIn { arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
+            arr, start_slot, range_start, range_end, inclusive, result, pos,
+            body: normalize_enum_stmts(body, enums),
+            then_chains: then_chains.into_iter().map(|c| WhileInChain {
+                body: normalize_enum_stmts(c.body, enums),
+                ..c
+            }).collect(),
+        },
+        Stmt::When { expr, arms, pos } => Stmt::When {
+            expr, pos,
+            arms: arms.into_iter().map(|a| normalize_enum_when_arm(a, enums)).collect(),
+        },
+        // No type annotation and no nested statement bodies: ImportBlock, EnumDef,
+        // Assign, CompoundAssign, ExprStmt, Return, Break, Continue.
+        other => other,
+    }
+}
+
 fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
     match ty {
         SemanticType::TypeParam(name) => {
@@ -1995,7 +2373,7 @@ fn semantic_type_from_value(value: &AstValue) -> SemanticType {
         AstValue::Bool(_) => SemanticType::Bool,
         AstValue::Char(_) => SemanticType::Char,
         AstValue::EnumVariant(enum_name, _) => SemanticType::Enum(enum_name.clone()),
-        AstValue::StructInstance(name, _, _) => SemanticType::Struct(name.clone()),
+        AstValue::StructInstance(name, _, _, _) => SemanticType::Struct(name.clone()),
         AstValue::Unknown => SemanticType::Unknown,
     }
 }
@@ -2017,7 +2395,7 @@ fn semantic_value_from_ast(value: &AstValue, enums: &HashMap<String, EnumInfo>) 
                 variant_id,
             }
         }
-        AstValue::StructInstance(_, _, _) => SemanticValue::Unknown,
+        AstValue::StructInstance(_, _, _, _) => SemanticValue::Unknown,
         AstValue::Unknown => SemanticValue::Unknown,
     }
 }
@@ -2038,7 +2416,14 @@ pub(crate) fn type_name(ty: &SemanticType) -> String {
         SemanticType::Numeric => "numeric literal".to_string(),
         SemanticType::Unknown => "unknown".to_string(),
         SemanticType::Void => "void".to_string(),
-        SemanticType::Enum(name) => format!("enum {}", name),
+        // Tracker #019: render an enum type by its bare name (`Light`), not
+        // `enum Light`. The `enum ` prefix was a leaking internal tag — nothing
+        // branches on the rendered string — and it produced the baffling
+        // "expected Light, got enum Light" mismatch (audit F4) where the two
+        // names looked identical. The `SemanticType::Enum` *variant* stays
+        // distinct (it is load-bearing for variant matching); only the
+        // user-facing text is unified with how struct/typeparam names render.
+        SemanticType::Enum(name) => name.clone(),
         SemanticType::Struct(name) => name.clone(),
         SemanticType::TypeParam(name) => name.clone(),
         SemanticType::Handle(inner) => format!("Handle<{}>", type_name(inner)),
@@ -2183,8 +2568,25 @@ pub fn analyze_resolved_program(
         let mut analyzer = Analyzer::new();
         analyzer.module_aliases = alias_exports.clone();
 
+        // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
+        // every `Type::Struct(name)` annotation that names an enum to
+        // `Type::Enum(name)` before any analysis. The parser emits all bare-name
+        // annotations as `Type::Struct`, so without this an enum used in a
+        // parameter/return/typed-binding position would not unify with enum
+        // values. Cross-module (imported) enum annotations stay `Struct` for now;
+        // resolving aliased enum types is a 0.3 follow-up.
+        let enum_names: std::collections::HashSet<String> = file.program.stmts.iter()
+            .filter_map(|s| match s {
+                Stmt::EnumDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let normalized_stmts: Vec<Stmt> = file.program.stmts.iter()
+            .map(|s| normalize_enum_stmt(s.clone(), &enum_names))
+            .collect();
+
         // Struct pre-pass
-        for stmt in &file.program.stmts {
+        for stmt in &normalized_stmts {
             if let Stmt::StructDef { name, fields, type_params, .. } = stmt {
                 analyzer.structs.insert(name.clone(), fields.clone());
                 analyzer.struct_type_params.insert(name.clone(), type_params.clone());
@@ -2192,7 +2594,7 @@ pub fn analyze_resolved_program(
         }
 
         // Function pre-pass
-        for stmt in &file.program.stmts {
+        for stmt in &normalized_stmts {
             if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
                 let placeholders = params.iter()
                     .map(semantic_param_placeholder)
@@ -2210,7 +2612,7 @@ pub fn analyze_resolved_program(
         // Main analysis pass — skip ImportBlock statements
         let mut file_stmts = Vec::new();
         let mut errors = Vec::new();
-        for stmt in &file.program.stmts {
+        for stmt in &normalized_stmts {
             if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
             match analyzer.analyze_stmt(stmt) {
                 Ok(s) => file_stmts.push(s),

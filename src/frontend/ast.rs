@@ -65,7 +65,10 @@ pub enum AstValue {
     Bool(bool),
     Char(char),
     EnumVariant(String, String),
-    StructInstance(String, Vec<Type>, Vec<(String, Expr)>),
+    /// (struct name, type args, fields, source position of the literal). The
+    /// trailing `usize` is the byte offset of the literal, used so composite
+    /// literal diagnostics report a real line (tracker #031b).
+    StructInstance(String, Vec<Type>, Vec<(String, Expr)>, usize),
     Unknown,
 }
 
@@ -80,10 +83,17 @@ pub enum Expr {
     Call(String, Vec<CallArg>, usize),
 Unary(Op, Box<Expr>, usize),
     Bin(Box<Expr>, Op, usize, Box<Expr>),
-    ArrayLit(Vec<Expr>),
+    ArrayLit(Vec<Expr>, usize),
     Index(Box<Expr>, Box<Expr>, usize),
     MethodCall(String, String, Vec<CallArg>, usize),
     When(Box<Expr>, Vec<WhenArm>, usize),
+    /// `if` in expression position (tracker #046): `if c { a } else { b }` as a
+    /// value. Fields: condition, then-block, else-block, source pos. The else
+    /// block is mandatory for the expression form (a consumed `if` must always
+    /// produce a value); `else if` chains are desugared by the parser into a
+    /// nested `Expr::If` inside the else block. The statement form stays
+    /// `Stmt::IfElse` (else optional) — unchanged.
+    If(Box<Expr>, Vec<Stmt>, Vec<Stmt>, usize),
     ResultOk(Box<Expr>, usize),
     ResultErr(Box<Expr>, usize),
     Try(Box<Expr>, usize),

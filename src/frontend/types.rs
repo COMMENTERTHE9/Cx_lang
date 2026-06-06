@@ -91,6 +91,36 @@ pub enum RuntimeError {
     StaleHandle {
         pos: usize,
     },
+    /// A `{...}` segment in an interpolated string did not resolve to a bound
+    /// variable (tracker #038). Previously such a segment was silently emitted
+    /// as literal text (audit F2) — a fat-fingered name like `{toatl}` or a
+    /// non-variable expression like `{fib(i)}` would appear verbatim in output
+    /// instead of erroring. `is_identifier` distinguishes a mistyped/undefined
+    /// bare name (true) from a non-variable expression (false) so the message
+    /// gives the right hint. Full arbitrary-expression interpolation is a 0.3
+    /// feature; this is the guard against silent-wrong-output until then.
+    BadInterpolation {
+        pos: usize,
+        content: String,
+        is_identifier: bool,
+    },
+    /// An `if` condition evaluated to the TBool `unknown` state (tracker #026).
+    /// An unknown value cannot choose a branch — silently taking `else` would
+    /// throw away the third state TBool exists to express. The user is directed
+    /// to `when`, which handles true/false/unknown explicitly.
+    UnknownCondition {
+        pos: usize,
+    },
+    // `index` is i64 because Cx permits negative indices and the diagnostic
+    // should echo the actual value the user wrote; `length` is usize because an
+    // array length is non-negative; `pos` preserves the source location of the
+    // offending index expression. Constructed at the three array OOB sites in
+    // runtime.rs (array read, array write, compound-assign) by tracker #002.
+    IndexOutOfBounds {
+        pos: usize,
+        index: i64,
+        length: usize,
+    },
     BreakSignal,
     ContinueSignal,
     #[allow(dead_code)] // frontend-level variant; IR layer currently enforces via IrValidationError::LoopVariableReassignment
@@ -99,6 +129,13 @@ pub enum RuntimeError {
         name: String,
     },
     EarlyReturn(Value),
+    /// Control-flow signal raised by the `exit(code)` builtin. Not an error
+    /// condition — it carries the process exit code requested by the program.
+    /// Propagates uncaught to the top-level interpreter loop (or the --test
+    /// loop), which translates it to `std::process::exit(code)`. Sibling of
+    /// EarlyReturn/BreakSignal/ContinueSignal: RuntimeError is the runtime's
+    /// control-flow-signal carrier, not solely an error type.
+    Exit(i32),
     AssertionFailed {
         msg: String,
         pos: usize,

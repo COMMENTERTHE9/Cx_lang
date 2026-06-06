@@ -1,0 +1,7 @@
+// exit() builtin — exit from inside a taken if-branch.
+// Expect: exit 4, no stdout. .expected_fail + .expected_exit=4.
+n: t32 = 1
+if n > 0 {
+    exit(4)
+}
+print("not reached")

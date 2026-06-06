@@ -1,0 +1,3 @@
+// #021: element count of an array (shared mechanism with strings).
+a: [4: t64] = [10, 20, 30, 40]
+print(len(a))

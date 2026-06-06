@@ -21,10 +21,11 @@ fn expr_pos(expr: &Expr) -> usize {
         Expr::Call(_, _, pos) => *pos,
         Expr::Unary(_, _, pos) => *pos,
 Expr::Bin(_, _, pos, _) => *pos,
-        Expr::ArrayLit(_) => 0,
+        Expr::ArrayLit(_, pos) => *pos,
         Expr::Index(_, _, pos) => *pos,
         Expr::MethodCall(_, _, _, pos) => *pos,
         Expr::When(_, _, pos) => *pos,
+        Expr::If(_, _, _, pos) => *pos,
         Expr::ResultOk(_, pos) => *pos,
         Expr::ResultErr(_, pos) => *pos,
         Expr::Try(_, pos) => *pos,
@@ -75,6 +76,27 @@ where
     })
 }
 
+// Tracker #046: convert an `if`/`else` statement's parts into the expression
+// form `Expr::If`, folding any `else if` chain into a nested `Expr::If` in the
+// else block. Used to promote a trailing `Stmt::IfElse` (with a final else) into
+// a function's implicit-return value. Unlike the `if_expr` grammar (single-
+// expression branches), this preserves the statement blocks verbatim, so a
+// multi-statement branch works as an implicit return.
+fn ifelse_to_if_expr(
+    condition: Expr,
+    then_body: Vec<Stmt>,
+    else_ifs: Vec<(Expr, Vec<Stmt>)>,
+    else_body: Vec<Stmt>,
+    pos: usize,
+) -> Expr {
+    let mut acc_else = else_body;
+    for (ei_cond, ei_body) in else_ifs.into_iter().rev() {
+        let nested = Expr::If(Box::new(ei_cond), ei_body, acc_else, pos);
+        acc_else = vec![Stmt::ExprStmt { expr: nested, _pos: pos }];
+    }
+    Expr::If(Box::new(condition), then_body, acc_else, pos)
+}
+
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
@@ -89,7 +111,23 @@ where
             Token::KeywordFalse     => Expr::Val(AstValue::Bool(false)),
         }
         .or(just(Token::QuestionMark)
-            .map_with(|_, _e: &mut ParseExtra<'a, '_, I>| Expr::Val(AstValue::Unknown)));
+            .map_with(|_, _e: &mut ParseExtra<'a, '_, I>| Expr::Val(AstValue::Unknown)))
+        // Tracker #039 / audit F6: `unknown` is a `when`-pattern keyword, not a
+        // value. Without this arm, writing it in value position (`b: bool =
+        // unknown`) failed deep in the statement parser and reported at the `:`,
+        // never naming `?`. Match it here and `validate`-emit a targeted error at
+        // the `unknown` span, recovering as the unknown literal so the diagnostic
+        // points at the right token instead of cascading. The emitted error still
+        // fails the parse (into_result returns Err whenever any error is emitted).
+        .or(just(Token::KeywordUnknown).validate(
+            |_, e: &mut ParseExtra<'a, '_, I>, emitter| {
+                emitter.emit(Rich::custom(
+                    e.span(),
+                    "`unknown` is a pattern keyword, not a value — use `?` for the unknown literal",
+                ));
+                Expr::Val(AstValue::Unknown)
+            },
+        ));
 
         let ident = select! { Token::Identifier(s) => s };
         let ident_with_pos = ident
@@ -194,7 +232,9 @@ where
                     .collect::<Vec<_>>(),
             )
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|((name, type_args), fields)| Expr::Val(AstValue::StructInstance(name, type_args, fields)))
+            .map_with(|((name, type_args), fields), e: &mut ParseExtra<'a, '_, I>| {
+                Expr::Val(AstValue::StructInstance(name, type_args, fields, e.span().start))
+            })
             .boxed();
 
         let enum_variant = ident
@@ -231,7 +271,7 @@ where
                 just(Token::PunctBracketOpen),
                 just(Token::PunctBracketClose),
             )
-            .map(|elems| Expr::ArrayLit(elems));
+            .map_with(|elems, e: &mut ParseExtra<'a, '_, I>| Expr::ArrayLit(elems, e.span().start));
 
         let when_expr_arm = {
             let pattern = choice((
@@ -297,6 +337,66 @@ where
             .map(|((pos, match_expr), arms)| Expr::When(Box::new(match_expr), arms, pos))
             .boxed();
 
+        // Tracker #046: `if` in expression position. A branch is `{ <expr> }` —
+        // a single expression, mirroring `when`-expression arms (which are also
+        // single expressions, not statement blocks). The final `else` is
+        // mandatory for the expression form; `else if` chains desugar into a
+        // nested `Expr::If` in the else block. The statement form (`if_stmt`,
+        // else optional, multi-statement blocks) is unchanged.
+        let if_branch = just(Token::PunctBraceOpen)
+            .ignore_then(expr.clone())
+            .then_ignore(just(Token::PunctBraceClose))
+            .boxed();
+        let if_expr = just(Token::KeywordIf)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(expr.clone())
+            .then(if_branch.clone())
+            .then(
+                just(Token::KeywordElse)
+                    .ignore_then(just(Token::KeywordIf))
+                    .ignore_then(expr.clone())
+                    .then(if_branch.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .then(just(Token::KeywordElse).ignore_then(if_branch.clone()))
+            .map(|((((pos, cond), then_val), else_ifs), else_val)| {
+                let wrap = |e: Expr| vec![Stmt::ExprStmt { expr: e, _pos: pos }];
+                let mut acc_else: Vec<Stmt> = wrap(else_val);
+                for (ei_cond, ei_val) in else_ifs.into_iter().rev() {
+                    let nested = Expr::If(Box::new(ei_cond), wrap(ei_val), acc_else, pos);
+                    acc_else = wrap(nested);
+                }
+                Expr::If(Box::new(cond), wrap(then_val), acc_else, pos)
+            })
+            .boxed();
+
+        // #046: an `if` consumed as a value with no final `else` — emit a targeted
+        // error instead of the cascade parse failure. Tried AFTER `if_expr`, so a
+        // proper `if … else …` value is handled there; this only fires for the
+        // else-less form in pure expression position (statement `if`s without an
+        // else are handled earlier by `if_stmt`, which wins in statement context).
+        let if_expr_no_else = just(Token::KeywordIf)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(expr.clone())
+            .then(if_branch.clone())
+            .then(
+                just(Token::KeywordElse)
+                    .ignore_then(just(Token::KeywordIf))
+                    .ignore_then(expr.clone())
+                    .then(if_branch.clone())
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
+            .validate(|(((pos, _cond), _then), _else_ifs), _e: &mut ParseExtra<'a, '_, I>, emitter| {
+                emitter.emit(Rich::custom(
+                    SimpleSpan::new((), pos..pos),
+                    "`if` used as a value must have an `else` — a consumed `if` must always produce a value",
+                ));
+                Expr::Val(AstValue::Num(0))
+            })
+            .boxed();
+
         let primary = literal
             .or(result_ok)
             .or(result_err)
@@ -307,6 +407,8 @@ where
             .or(method_call)
             .or(struct_literal)
             .or(when_expr)
+            .or(if_expr)
+            .or(if_expr_no_else)
             .or(ident_or_call)
             .or(paren)
             .or(array_lit)
@@ -416,8 +518,21 @@ where
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
             .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
+            // Detect a stray initializer: `let` is an uninitialized-declaration
+            // keyword; `let x = v` / `let x: T = v` are not valid. Point users at
+            // the working `x: T = value` form instead of the raw chumsky error
+            // (tracker #013).
+            .then(just(Token::OpAssign).or_not())
             .then_ignore(semi.clone().or_not())
-            .map(|((pos, name), ty)| Stmt::Decl { name, ty, pos })
+            .try_map(|(((pos, name), ty), eq), span| {
+                if eq.is_some() {
+                    return Err(Rich::custom(
+                        span,
+                        "`let` declares an uninitialized binding and cannot have an initializer — to declare with a value use `x: T = value` (without `let`)",
+                    ));
+                }
+                Ok(Stmt::Decl { name, ty, pos })
+            })
             .boxed();
 
         let index_assign = ident
@@ -1068,11 +1183,35 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                         tagged.last(),
                         Some((Stmt::ExprStmt { .. }, false))
                     );
+                    // #046: a trailing `if`/`else` is an implicit-return value
+                    // ONLY when it is fully value-producing — every branch (then,
+                    // each `else if`, and the final else) ends in a trailing
+                    // expression. An `if`/`else` whose branches use explicit
+                    // `return` (or end in plain statements) is control flow, not a
+                    // value: leaving it as `Stmt::IfElse` keeps `return`/EarlyReturn
+                    // working (e.g. a classify() chain of `return` arms). A trailing
+                    // `if` without a final else also stays a statement → "missing
+                    // return value" if a value was expected (else-required rule).
+                    let last_is_if_value = match tagged.last() {
+                        Some((Stmt::IfElse { then_body, else_ifs, else_body: Some(eb), .. }, _)) => {
+                            let is_value = |b: &Vec<Stmt>| matches!(b.last(), Some(Stmt::ExprStmt { .. }));
+                            is_value(then_body)
+                                && is_value(eb)
+                                && else_ifs.iter().all(|(_, b)| is_value(b))
+                        }
+                        _ => false,
+                    };
 
                     for (i, (stmt, _had_semi)) in tagged.into_iter().enumerate() {
                         if i == len - 1 && last_is_implicit_return {
                             if let Stmt::ExprStmt { expr, .. } = stmt {
                                 ret_expr = Some(expr);
+                            } else {
+                                stmts.push(stmt);
+                            }
+                        } else if i == len - 1 && last_is_if_value {
+                            if let Stmt::IfElse { condition, then_body, else_ifs, else_body: Some(eb), pos } = stmt {
+                                ret_expr = Some(ifelse_to_if_expr(condition, then_body, else_ifs, eb, pos));
                             } else {
                                 stmts.push(stmt);
                             }

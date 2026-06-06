@@ -5,8 +5,6 @@ mod runtime;
 #[cfg(test)]
 mod diff_harness;
 
-pub use runtime::arena::Arena;
-
 use backend::Backend;
 use frontend::ast::*;
 use frontend::diagnostics;
@@ -99,8 +97,41 @@ fn main() {
     }
 }
 
+fn print_help() {
+    println!(
+        "\
+{name} {version} — the Cx compiler/interpreter
+
+USAGE:
+    cx [OPTIONS] <file.cx>
+
+OPTIONS:
+    --backend=<interp|cranelift|llvm|validate>
+                       Select the execution backend (default: interp)
+    --test             Run the file's #[test] functions instead of executing it
+    --debug[-<phase>]  Emit debug output; <phase> = tokens|ast|scope|phase|trace
+                       (bare --debug enables all)
+    -h, --help         Print this help and exit
+    -V, --version      Print version information and exit",
+        name = env!("CARGO_PKG_NAME"),
+        version = env!("CARGO_PKG_VERSION"),
+    );
+}
+
 fn run() {
     let args: Vec<String> = env::args().skip(1).collect();
+
+    // --help / --version are handled before any file argument is required, and
+    // take priority over everything else (tracker #015).
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return;
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let flags = DebugFlags::from_args(&args);
     let test_mode = args.contains(&"--test".to_string());
     let backend_kind = backend::parse_backend_flag(&args);
@@ -212,6 +243,18 @@ fn run() {
                     println!("PASS: {}", name);
                     passed += 1;
                 }
+                // exit(0) inside a test counts as pass; exit(n!=0) as fail.
+                // The runner continues to the next test — Exit never terminates
+                // the process from inside --test mode (no process::exit here),
+                // which is what stops exit() from silently killing the suite.
+                Err(RuntimeError::Exit(0)) => {
+                    println!("PASS: {} (via exit(0))", name);
+                    passed += 1;
+                }
+                Err(RuntimeError::Exit(code)) => {
+                    println!("FAIL: {} — exit({})", name, code);
+                    failed += 1;
+                }
                 Err(RuntimeError::AssertionFailed { msg, .. }) => {
                     println!("FAIL: {} — {}", name, msg);
                     failed += 1;
@@ -291,7 +334,7 @@ fn run() {
 }
 
 fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
-    use frontend::semantic_types::{SemanticStmt, SemanticType};
+    use frontend::semantic_types::{BindingId, SemanticStmt, SemanticType};
 
     for stmt in &program.stmts {
         match stmt {
@@ -302,8 +345,26 @@ fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
                 rt.register_semantic_func(sem_func.clone());
             }
             SemanticStmt::EnumDef { .. } => {}
-            SemanticStmt::ImplBlock { aliases, methods, .. } => {
-                for sem_func in methods {
+            SemanticStmt::ImplBlock { aliases, methods, method_alias_params, .. } => {
+                for (mi, sem_func) in methods.iter().enumerate() {
+                    // Carry per-method alias BindingIds (#009), parallel to `aliases`.
+                    let method_aliases: Vec<(BindingId, String, SemanticType)> = method_alias_params
+                        .get(mi)
+                        .map(|params| {
+                            params
+                                .iter()
+                                .enumerate()
+                                .map(|(ai, p)| {
+                                    let ty = aliases
+                                        .get(ai)
+                                        .map(|(_, t)| t.clone())
+                                        .or_else(|| p.ty.clone())
+                                        .unwrap_or(SemanticType::Unknown);
+                                    (p.binding, p.name.clone(), ty)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     for (_, alias_type) in aliases {
                         let type_key = match alias_type {
                             SemanticType::Struct(n) => n.clone(),
@@ -311,7 +372,7 @@ fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
                         };
                         rt.semantic_impls.insert(
                             (type_key, sem_func.name.clone()),
-                            (aliases.clone(), Arc::new(sem_func.clone())),
+                            (method_aliases.clone(), Arc::new(sem_func.clone())),
                         );
                     }
                 }
@@ -332,6 +393,15 @@ fn run_with_interpreter(program: SemanticProgram, input: &str, flags: &DebugFlag
     let mut step_count = 0;
     for stmt in &program.stmts {
         if let Err(err) = rt.run_semantic_stmt(stmt) {
+            // exit(code) raises the Exit control-flow signal. Catch it BEFORE
+            // any error rendering so a clean exit(0) prints no error banner.
+            // Flush stdout first: process::exit skips Drop and does not flush,
+            // so `print(...); exit(N)` would lose piped output without this.
+            if let RuntimeError::Exit(code) = err {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                std::process::exit(code);
+            }
             diagnostics::print_runtime(input, &err);
             diagnostics::print_summary(1);
             std::process::exit(1);
@@ -371,7 +441,9 @@ fn parse_program_chumsky(tok_list: &[Tok], src: &str) -> Result<Program, Vec<Par
             let mapped = errs
                 .into_iter()
                 .map(|e| ParseError {
-                    msg: format!("{:?}", e.reason()),
+                    // Display (not Debug) so chumsky renders Token via its
+                    // Display impl — friendly names, not enum debug (#014).
+                    msg: format!("{}", e.reason()),
                     pos: e.span().start,
                 })
                 .collect::<Vec<ParseError>>();

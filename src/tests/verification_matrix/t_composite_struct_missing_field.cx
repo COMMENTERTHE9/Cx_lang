@@ -1,0 +1,6 @@
+// Composite literal type checking: a struct literal that omits a declared
+// field must be rejected at semantic analysis (tracker #001 / B1).
+struct P { a: t64, b: t64 }
+let p;
+p = P { a: 1 }
+print(p.a)

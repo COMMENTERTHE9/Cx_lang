@@ -1,2 +1,5 @@
-x: t8 = 250
-print(x + 10)
+// t8 arithmetic addition overflow wraps at declared width (locked behavior).
+// Setup uses in-range literals; the SUM overflows (#028: literals must fit, but
+// runtime arithmetic still wraps).
+x: t8 = 100
+print(x + 100)

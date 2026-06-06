@@ -1,0 +1,6 @@
+// #044 guard: broadening the `unknown` arm must NOT make definite typed bools
+// match the wrong arm. `true`/`false` still route correctly.
+b: bool = true
+c: bool = false
+when b { true => print(1), false => print(2), unknown => print(3) }
+when c { true => print(1), false => print(2), unknown => print(3) }

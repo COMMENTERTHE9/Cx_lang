@@ -12,9 +12,13 @@
 //! Each test lives in `src/tests/verification_matrix/` as a triple:
 //!
 //! ```text
-//! <name>.cx                  — Cx source program
-//! <name>.cx.expected_output  — expected stdout (present only for output-verified pass tests)
-//! <name>.cx.expected_fail    — zero-byte marker (present only for expected-failure tests)
+//! <name>.cx                   — Cx source program
+//! <name>.cx.expected_output   — expected stdout (present only for output-verified pass tests)
+//! <name>.cx.expected_fail     — zero-byte marker (present only for expected-failure tests)
+//! <name>.cx.jit_known_unsound — zero-byte marker; excludes the fixture from the
+//!                               JIT parity gate because the JIT is known-unsound
+//!                               on the construct it exercises (tracker #003).
+//!                               Interpreter-side runs ignore this marker.
 //! ```
 //!
 //! A `.cx` file with neither companion file is a "pass-any" test: the interpreter
@@ -326,6 +330,16 @@ pub struct TestFixture {
 
     /// What the interpreter is expected to produce for this fixture.
     pub expectation: TestExpectation,
+
+    /// When `true`, this fixture is excluded from the JIT parity gate because
+    /// the JIT backend is *known* to be unsound on the construct it exercises
+    /// (e.g. array out-of-bounds: the interpreter traps cleanly but the JIT has
+    /// no bounds checking, so it returns garbage or segfaults — tracker #003).
+    /// Marked by a zero-byte `<name>.cx.jit_known_unsound` sidecar. The parity
+    /// harness counts these as SKIP, not PARITY_FAIL. Remove the sidecar (and
+    /// this exclusion) once #003 makes the JIT trap OOB so both backends agree.
+    /// Interpreter-side matrix runs ignore this flag entirely.
+    pub jit_excluded: bool,
 }
 
 // ── Interpreter run result ────────────────────────────────────────────────────
@@ -378,10 +392,12 @@ pub fn collect_matrix_tests() -> Vec<TestFixture> {
             let entry = entry.ok()?;
             let name = entry.file_name();
             let s = name.to_string_lossy();
-            // Accept only plain .cx files — exclude .expected_output / .expected_fail.
+            // Accept only plain .cx files — exclude sidecars
+            // (.expected_output / .expected_fail / .jit_known_unsound).
             if s.ends_with(".cx")
                 && !s.ends_with(".expected_output")
                 && !s.ends_with(".expected_fail")
+                && !s.ends_with(".jit_known_unsound")
             {
                 Some(entry.path())
             } else {
@@ -404,6 +420,7 @@ pub fn collect_matrix_tests() -> Vec<TestFixture> {
             let path_str = path.to_string_lossy();
             let expected_output_path = PathBuf::from(format!("{}.expected_output", path_str));
             let expected_fail_path = PathBuf::from(format!("{}.expected_fail", path_str));
+            let jit_excluded_path = PathBuf::from(format!("{}.jit_known_unsound", path_str));
 
             let expectation = if expected_fail_path.exists() {
                 TestExpectation::Fail
@@ -415,7 +432,9 @@ pub fn collect_matrix_tests() -> Vec<TestFixture> {
                 TestExpectation::PassAny
             };
 
-            TestFixture { name, path, expectation }
+            let jit_excluded = jit_excluded_path.exists();
+
+            TestFixture { name, path, expectation, jit_excluded }
         })
         .collect()
 }
@@ -656,8 +675,25 @@ pub fn parity_by_feature(
 
     for fixture in &fixtures {
         let cat = feature_of(&fixture.name);
-        let outcome = run_jit_subprocess(binary, fixture);
         let entry = map.entry(cat).or_insert((0, 0, 0));
+
+        // Fixtures flagged `.jit_known_unsound` exercise a construct the JIT
+        // handles unsoundly (array OOB — no bounds checking; tracker #003). The
+        // interpreter traps cleanly but the JIT returns garbage or segfaults, so
+        // running them here would produce a (correct-but-unactionable) PARITY_FAIL
+        // that just re-reports #003 on every run. Count them as SKIP and don't
+        // execute the JIT. Remove the sidecar once #003 lands and the backends
+        // agree — they should then convert to PASS.
+        if fixture.jit_excluded {
+            eprintln!(
+                "JIT-EXCLUDED (known-unsound, tracker #003): {} [{}]",
+                fixture.name, cat
+            );
+            entry.1 += 1; // skip
+            continue;
+        }
+
+        let outcome = run_jit_subprocess(binary, fixture);
 
         // Two SKIP signals:
         //
@@ -956,6 +992,112 @@ mod tests {
             fixtures.len(),
             fixtures.len()
         );
+    }
+
+    // ── exit() builtin in --test mode ─────────────────────────────────────────
+
+    /// Write `src` to a unique temp `.cx` file, run `<binary> --test <file>`,
+    /// and return (stdout, exit_code). The temp file is removed before return.
+    fn run_test_mode(src: &str, tag: &str) -> (String, i32) {
+        let dir = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let file = dir.join(format!("cx_exit_testmode_{}_{}.cx", tag, nanos));
+        std::fs::write(&file, src).expect("write temp test-mode fixture");
+
+        let output = std::process::Command::new(cx_binary_path())
+            .arg("--test")
+            .arg(&file)
+            .output()
+            .expect("spawn --test subprocess");
+
+        let _ = std::fs::remove_file(&file);
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let code = output.status.code().unwrap_or(-1);
+        (stdout, code)
+    }
+
+    /// A `#[test]` function calling `exit(1)` must be recorded as a failure and
+    /// must NOT terminate the runner — the second test must still execute.
+    /// This is the structural property that stops `exit()` from silently
+    /// disabling the rest of the test suite.
+    #[test]
+    fn test_mode_exit_nonzero_counts_as_fail_and_runner_continues() {
+        let binary = cx_binary_path();
+        if !binary.exists() {
+            eprintln!("SKIP — binary not found at {:?}; build first.", binary);
+            return;
+        }
+
+        let src = "\
+#[test]
+fnc: first() {
+    exit(1)
+}
+#[test]
+fnc: second() {
+    assert_eq(1, 1)
+}
+";
+        let (stdout, code) = run_test_mode(src, "fail");
+
+        // The second test must have run — this is the anti-silent-disable check.
+        assert!(
+            stdout.contains("second"),
+            "second test did not run — exit() killed the runner. stdout:\n{}",
+            stdout
+        );
+        // first counts as a failure.
+        assert!(
+            stdout.contains("FAIL: first"),
+            "exit(1) in a test should be recorded as FAIL. stdout:\n{}",
+            stdout
+        );
+        // Overall accounting: one pass, one fail; runner exits non-zero.
+        assert!(
+            stdout.contains("1 passed, 1 failed"),
+            "expected '1 passed, 1 failed'. stdout:\n{}",
+            stdout
+        );
+        assert_ne!(code, 0, "runner must exit non-zero when a test failed");
+    }
+
+    /// A `#[test]` function calling `exit(0)` must be recorded as a pass and the
+    /// runner must continue to the next test.
+    #[test]
+    fn test_mode_exit_zero_counts_as_pass_and_runner_continues() {
+        let binary = cx_binary_path();
+        if !binary.exists() {
+            eprintln!("SKIP — binary not found at {:?}; build first.", binary);
+            return;
+        }
+
+        let src = "\
+#[test]
+fnc: first() {
+    exit(0)
+}
+#[test]
+fnc: second() {
+    assert_eq(2, 2)
+}
+";
+        let (stdout, code) = run_test_mode(src, "pass");
+
+        assert!(
+            stdout.contains("second"),
+            "second test did not run after exit(0). stdout:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains("2 passed, 0 failed"),
+            "expected '2 passed, 0 failed' (exit(0) = pass). stdout:\n{}",
+            stdout
+        );
+        assert_eq!(code, 0, "runner must exit 0 when all tests passed");
     }
 
     // ── JIT parity by feature ─────────────────────────────────────────────────

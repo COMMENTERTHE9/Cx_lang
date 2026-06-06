@@ -1,0 +1,10 @@
+// exit() builtin — exit from inside a called function.
+// Verifies the Exit signal propagates past the function-call boundary
+// (runtime.rs ~1455, the catch-all Err(e) => return Err(e) arm), terminating
+// the whole program rather than just returning from the callee.
+// Expect: exit 9, no stdout. .expected_fail + .expected_exit=9.
+fnc: do_exit() {
+    exit(9)
+}
+do_exit()
+print("not reached")

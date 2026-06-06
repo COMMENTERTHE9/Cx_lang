@@ -1,0 +1,29 @@
+// Tracker #019 / audit F4: the state machine a README-only newcomer could not
+// write. Exercises all three previously-broken enum annotation positions at
+// once — a typed binding `cur: Light`, an enum parameter, and an enum return.
+enum Light { Red, Green, Yellow }
+
+fnc: Light next(s: Light) {
+    when s {
+        Light::Red => Light::Green,
+        Light::Green => Light::Yellow,
+        Light::Yellow => Light::Red,
+        _ => Light::Red,
+    }
+}
+
+fnc: t32 code(s: Light) {
+    when s {
+        Light::Red => 1,
+        Light::Green => 2,
+        Light::Yellow => 3,
+        _ => 0,
+    }
+}
+
+cur: Light = Light::Red
+for i in 0..6 {
+    c: t32 = code(cur)
+    print(c)
+    cur = next(cur)
+}

@@ -2,6 +2,6 @@ struct Counter {
     value: t8,
 }
 
-c: Counter = Counter { value: 250 }
-c.value += 10
+c: Counter = Counter { value: 100 }
+c.value += 100
 print(c.value)

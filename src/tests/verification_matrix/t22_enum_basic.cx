@@ -8,4 +8,8 @@ when d {
     Direction::South => print(2),
     Direction::East  => print(3),
     Direction::West  => print(4),
+    // #027: a `when` requires a `_` catch-all unless it covers all TBool states;
+    // static enum exhaustiveness (which would make this `_` unnecessary) is a 0.3
+    // follow-up. Unreachable here since every Direction variant is matched above.
+    _                => print(5),
 }

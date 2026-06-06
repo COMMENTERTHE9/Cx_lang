@@ -1,0 +1,5 @@
+// Tracker #038 / audit F2: a `{...}` whose contents are not a bare variable
+// (here a function call) must error, not silently emit `{fib(2)}` as literal
+// text. Full expression interpolation is a 0.3 feature; this is the guard.
+fnc: t32 fib(n: t32) { n }
+print("value = {fib(2)}")

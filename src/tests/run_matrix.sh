@@ -16,7 +16,35 @@ for test_file in "$MATRIX_DIR"/t*.cx; do
     output=$(cargo run --quiet -- "$test_file" 2>&1)
     exit_code=$?
 
-    if $expected_fail; then
+    # Explicit exit-code assertion (exit() builtin fixtures). Takes priority
+    # over .expected_fail: asserts the *specific* code, and optionally also
+    # verifies stdout when .expected_output is present.
+    if [ -f "${test_file}.expected_exit" ]; then
+        want_exit=$(cat "${test_file}.expected_exit")
+        if [ "$exit_code" -eq "$want_exit" ]; then
+            if [ -f "${test_file}.expected_output" ]; then
+                expected=$(cat "${test_file}.expected_output" | tr -d '\r')
+                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null | tr -d '\r')
+                if [ "$actual" = "$expected" ]; then
+                    echo "PASS (exit $want_exit + output) — $test_name"
+                    PASS=$((PASS + 1))
+                else
+                    echo "FAIL (output mismatch, exit $want_exit ok) — $test_name"
+                    echo "  Expected: $expected"
+                    echo "  Got:      $actual"
+                    FAIL=$((FAIL + 1))
+                    ERRORS+=("$test_name")
+                fi
+            else
+                echo "PASS (exit $want_exit) — $test_name"
+                PASS=$((PASS + 1))
+            fi
+        else
+            echo "FAIL (expected exit $want_exit, got $exit_code) — $test_name"
+            FAIL=$((FAIL + 1))
+            ERRORS+=("$test_name")
+        fi
+    elif $expected_fail; then
         if [ $exit_code -ne 0 ]; then
             echo "PASS (expected fail) — $test_name"
             PASS=$((PASS + 1))
@@ -28,8 +56,8 @@ for test_file in "$MATRIX_DIR"/t*.cx; do
     else
         if [ $exit_code -eq 0 ]; then
             if [ -f "${test_file}.expected_output" ]; then
-                expected=$(cat "${test_file}.expected_output")
-                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null)
+                expected=$(cat "${test_file}.expected_output" | tr -d '\r')
+                actual=$(cargo run --quiet -- "$test_file" 2>/dev/null | tr -d '\r')
                 if [ "$actual" = "$expected" ]; then
                     echo "PASS (output verified) — $test_name"
                     PASS=$((PASS + 1))

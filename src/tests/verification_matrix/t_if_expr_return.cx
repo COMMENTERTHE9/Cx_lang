@@ -1,0 +1,7 @@
+// #046: `if` as a function's implicit-return value, including an `else if` chain.
+fnc: t64 classify(n: t64) {
+    if n > 100 { 3 } else if n > 10 { 2 } else { 1 }
+}
+print(classify(200))
+print(classify(50))
+print(classify(5))

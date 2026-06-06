@@ -1,0 +1,4 @@
+// #046: an `if` consumed as a value with no `else` must error (a consumed `if`
+// must always produce a value).
+x: t64 = if true { 1 }
+print(x)

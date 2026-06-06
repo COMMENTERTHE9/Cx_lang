@@ -1,0 +1,4 @@
+// Composite literal type checking: an array literal element whose type does
+// not match the array element type must be rejected (tracker #001 / B4).
+a: [3: t64] = [1, "two", 3]
+print(a:[1])

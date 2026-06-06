@@ -1,0 +1,6 @@
+// Negative integer literal out of range for its declared width must be a
+// semantic error, like positive overflow (#037 completes #028). `-200` folds
+// to a value below i8::MIN (-128). The valid minimum `-128` is NOT rejected
+// (covered by t96).
+x: t8 = -200
+print(x)

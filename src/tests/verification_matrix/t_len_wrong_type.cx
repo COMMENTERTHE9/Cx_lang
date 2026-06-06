@@ -1,0 +1,2 @@
+// #021: len's argument must be a string or array — a number is a type error.
+print(len(5))

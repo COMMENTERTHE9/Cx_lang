@@ -1,3 +1,6 @@
+// Arithmetic other than `+` is rejected on strings. (`+` is concatenation as of
+// #020; subtraction has no string meaning and still errors with "arithmetic
+// requires numeric operands".)
 x: str = "hello"
 y: str = "world"
-print(x + y)
+print(x - y)

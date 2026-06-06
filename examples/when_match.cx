@@ -1,0 +1,25 @@
+// `when` matches literals, ranges (positive bounds), and a `_` catch-all. A
+// `when` is an expression: its matched arm is the value, so it can be returned
+// from a function or assigned to a binding.
+fnc: t64 tier(n: t64) {
+    when n {
+        0       => 0,
+        1..=9   => 1,
+        10..=99 => 2,
+        _       => 3,
+    }
+}
+
+print(tier(0))     // 0
+print(tier(7))     // 1
+print(tier(42))    // 2
+print(tier(500))   // 3
+
+// when-as-expression assigned into a typed binding:
+level: t64 = 7
+size: str = when level {
+    0     => "none",
+    1..=9 => "small",
+    _     => "big",
+}
+print(size)        // small

@@ -1,0 +1,8 @@
+// A `when` over an open domain (numeric) with no `_` catch-all is
+// non-exhaustive: it would silently fall through for unmatched values. This is
+// now a semantic error (#027).
+x: t64 = 5
+when x {
+    1 => print(10),
+    2 => print(20),
+}

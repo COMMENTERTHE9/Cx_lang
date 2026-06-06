@@ -1,0 +1,2 @@
+// #021: byte length of a string.
+print(len("hello"))

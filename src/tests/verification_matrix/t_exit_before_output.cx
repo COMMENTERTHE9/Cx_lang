@@ -1,0 +1,4 @@
+// exit() builtin — exit before any print produces output.
+// Expect: exit 7, no stdout. .expected_fail + .expected_exit=7.
+exit(7)
+print("unreachable")

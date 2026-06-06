@@ -1,0 +1,6 @@
+// #046 regression: the statement form of `if` is unchanged — no `else` required
+// when the value is not consumed.
+i: t64 = 5
+if i > 0 { print(1) }
+if i > 100 { print(99) }
+print(2)
