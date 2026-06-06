@@ -1,0 +1,5 @@
+// CR#1 (#037 parity): negative out-of-range through explicit type args also
+// rejects. `b: t8 = -200` is below t8's -128 minimum.
+struct Pair<T> { a: T, b: T }
+p: Pair = Pair<t8> { a: 1, b: -200 }
+print(p.b)

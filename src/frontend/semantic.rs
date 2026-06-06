@@ -1164,14 +1164,34 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
-            Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs, pos)) => {
+            Expr::Val(AstValue::StructInstance(type_name, type_args, field_exprs, pos)) => {
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
                 if let Some(struct_fields) = self.structs.get(type_name).cloned() {
                     // The struct's own generic parameters must be in scope when
                     // resolving its field types, so e.g. `first: T` resolves to a
                     // type parameter (which unifies with anything) rather than a
                     // concrete struct named "T".
-                    let mut field_type_params = self.struct_type_params.get(type_name).cloned().unwrap_or_default();
+                    let declared_params = self.struct_type_params.get(type_name).cloned().unwrap_or_default();
+                    // CR#1: explicit type args (`Pair<t8> { … }`) instantiate the
+                    // struct's generic params so each field literal range-checks at
+                    // the supplied width (#028/#037) and type-checks against the
+                    // supplied type. Arity must match in BOTH directions — extra
+                    // args would be silently dropped by the zip, too few would leave
+                    // a param unsubstituted — so a mismatch errors before any
+                    // substitution. Empty `type_args` is the inferred path: no
+                    // instantiation, fields stay generic (`T` unconstrained),
+                    // behavior unchanged (a separate generics-inference concern).
+                    let instantiation: std::collections::HashMap<String, SemanticType> = if type_args.is_empty() {
+                        std::collections::HashMap::new()
+                    } else {
+                        if type_args.len() != declared_params.len() {
+                            return Err(sem_err!(*pos, "struct '{}' expects {} type argument(s), got {}", type_name, declared_params.len(), type_args.len()));
+                        }
+                        declared_params.iter().cloned()
+                            .zip(type_args.iter().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params)))
+                            .collect()
+                    };
+                    let mut field_type_params = declared_params;
                     field_type_params.extend(self.current_type_params.iter().cloned());
                     // strref fields cannot be stored in a struct — reject at instantiation
                     for (fname, ftype) in &struct_fields {
@@ -1187,7 +1207,14 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
                             None => return Err(sem_err!(*pos, "unknown field '{}' in struct literal of type '{}'", fname, type_name)),
                             Some((_, decl_ty)) => {
-                                let decl_sem = semantic_type_from_decl(decl_ty.clone(), &field_type_params);
+                                // Resolve the field's declared type to its generic
+                                // params, then substitute the explicit instantiation
+                                // (CR#1) so `b: T` becomes `b: t8` before the range
+                                // and type checks. Empty map → unchanged (inferred).
+                                let decl_sem = substitute_type_params(
+                                    semantic_type_from_decl(decl_ty.clone(), &field_type_params),
+                                    &instantiation,
+                                );
                                 check_literal_fits(fexpr, &decl_sem, *pos)?;
                                 if !types_compatible(&decl_sem, &sem_expr.ty) {
                                     return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));

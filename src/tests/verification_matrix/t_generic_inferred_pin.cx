@@ -1,0 +1,7 @@
+// CR#1 scope boundary (deliberate): the INFERRED path leaves T unconstrained —
+// no explicit width is declared, so there is no width to violate. `b: 300` is
+// stored and read as 300. This pins current behavior; cross-field inference that
+// would pin T from a concrete field is a separate generics-inference item (0.3.3).
+struct Pair<T> { a: T, b: T }
+p: Pair = Pair { a: 1, b: 300 }
+print(p.b)

@@ -1,0 +1,5 @@
+// CR#1: an in-range explicit instantiation still passes — the fix must not
+// reject valid values. 100 fits t8 (-128..127).
+struct Pair<T> { a: T, b: T }
+p: Pair = Pair<t8> { a: 1, b: 100 }
+print(p.b)
