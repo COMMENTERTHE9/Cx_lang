@@ -1,0 +1,12 @@
+// CR#2: in-range and boundary array elements in a struct field pass (-128 and 127
+// are the t8 limits; the fix must not reject valid values). The interpreter is
+// the reference and is correct (prints 127).
+//
+// Excluded from JIT parity (.jit_known_unsound): the Cranelift backend SEGFAULTs
+// when a struct fixed-size array field holds a NEGATIVE element (e.g. -128) — it
+// prints the correct value then corrupts memory on teardown. A pre-existing
+// struct-array-field store codegen bug this fixture exposed; filed as a backend
+// item. All-positive struct array fields lower correctly.
+struct B { items: [3: t8] }
+b: B = B { items: [-128, 0, 127] }
+print(b.items:[2])

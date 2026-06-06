@@ -499,17 +499,9 @@ impl Analyzer {
                 pos_type,
             } => {
                 let declared_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
-                // Hint the declared element type to the array-literal analysis so
-                // element-mismatch errors name the declared type, not element[0]'s
-                // inferred type (#031a). Save/restore so it never leaks past this
-                // initializer.
-                let prev_expected_elem = self.expected_array_elem.take();
-                if let SemanticType::Array(_, elem) = &declared_ty {
-                    self.expected_array_elem = Some((**elem).clone());
-                }
-                let analyzed = self.analyze_expr(expr);
-                self.expected_array_elem = prev_expected_elem;
-                let mut semantic_expr = analyzed?;
+                // Analyze with the declared element-type hint (#031a element naming,
+                // #028 element range-check) via the shared helper (CR#2).
+                let mut semantic_expr = self.analyze_expr_with_elem_hint(expr, &declared_ty)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_type, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
@@ -1203,8 +1195,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     // Each provided field must exist on the struct, and its value's
                     // type must unify with the declared field type.
                     for (fname, fexpr) in field_exprs {
-                        let sem_expr = self.analyze_expr(fexpr)?;
-                        match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
+                        // Resolve the declared field type FIRST (before analyzing the
+                        // value) so an array field's element type is known and can be
+                        // hinted to the value analysis (CR#2).
+                        let sem_expr = match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
                             None => return Err(sem_err!(*pos, "unknown field '{}' in struct literal of type '{}'", fname, type_name)),
                             Some((_, decl_ty)) => {
                                 // Resolve the field's declared type to its generic
@@ -1215,12 +1209,19 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                                     semantic_type_from_decl(decl_ty.clone(), &field_type_params),
                                     &instantiation,
                                 );
+                                // CR#2: an array-typed field (incl. `[N: T]` made
+                                // concrete by CR#1's substitution above) hints its
+                                // element type so the array literal's elements
+                                // range-check at the declared width, mirroring
+                                // `x: [N: t8] = [...]`.
+                                let sem_expr = self.analyze_expr_with_elem_hint(fexpr, &decl_sem)?;
                                 check_literal_fits(fexpr, &decl_sem, *pos)?;
                                 if !types_compatible(&decl_sem, &sem_expr.ty) {
                                     return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
                                 }
+                                sem_expr
                             }
-                        }
+                        };
                         semantic_fields.push((fname.clone(), sem_expr));
                     }
                     // Every declared field must be supplied.
@@ -1870,7 +1871,13 @@ Expr::Unary(op, inner, pos) => {
                 });
             match arg {
                 CallArg::Expr(expr) => {
-                    let expr = self.analyze_expr(expr)?;
+                    // CR#2: if the parameter is an array type, hint its element type
+                    // so an array-literal argument range-checks its elements (#028),
+                    // mirroring the typed-declaration and struct-field paths.
+                    let expr = match &expected {
+                        Some(e) => self.analyze_expr_with_elem_hint(expr, e)?,
+                        None => self.analyze_expr(expr)?,
+                    };
                     let expr = if let Some(expected) = expected {
                         check_semantic_num_fits(&expr, &expected, pos)?;
                         if !types_compatible(&expected, &expr.ty) {
@@ -1932,6 +1939,26 @@ Expr::Unary(op, inner, pos) => {
                 args: semantic_args,
             },
         })
+    }
+
+    // Analyze `expr` while hinting the declared element type of an expected array
+    // type, so an array literal's elements range-check at that width (#028/#037)
+    // and name the declared type on a mismatch (#031a). The `ArrayLit` arm
+    // consumes the hint (`expected_array_elem.take()`); the prev/set/restore here
+    // keeps it from leaking to siblings or surviving when `expr` isn't an array
+    // literal. For a non-array `expected`, this is a plain `analyze_expr`. Tracker
+    // CR#2: the single delivery point for the element hint, shared by the typed-
+    // declaration, struct-field, and call-argument sites.
+    fn analyze_expr_with_elem_hint(&mut self, expr: &Expr, expected: &SemanticType) -> Result<SemanticExpr, SemanticError> {
+        if let SemanticType::Array(_, elem) = expected {
+            let prev = self.expected_array_elem.take();
+            self.expected_array_elem = Some((**elem).clone());
+            let r = self.analyze_expr(expr);
+            self.expected_array_elem = prev;
+            r
+        } else {
+            self.analyze_expr(expr)
+        }
     }
 
     fn analyze_binary(

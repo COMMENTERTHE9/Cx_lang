@@ -1,0 +1,5 @@
+// CR#2 regression pin: standalone array declarations already range-checked elements
+// (the #031a hint path); this pins that the shared helper keeps it working. The
+// #031a-era fixture only covered element TYPE mismatch (in a t64 array), not range.
+x: [3: t8] = [1, 2, 300]
+print(x:[0])
