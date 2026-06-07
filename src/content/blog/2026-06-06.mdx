@@ -1,0 +1,52 @@
+---
+title: "Cx Dev Log — 2026-06-06"
+date: 2026-06-06
+description: "v0.2.0 merged to main with 35 commits and 48 new test fixtures, then three post-release range-check fixes closed every known gap in out-of-range literal rejection."
+---
+
+The v0.2.0 merge landed. PR #295 brought 35 commits from submain into main, touching 145 files (+4130/-2052) and jumping the verification matrix from 182 to 230 fixtures. Within hours, three targeted range-check fixes found during review pushed submain to 252. No regressions, no reverts.
+
+## What shipped in v0.2.0
+
+This release closes a month of divergence between main and submain. The highlights:
+
+- String concatenation and the `len` builtin
+- `if` as an expression (not just a statement)
+- Enum signatures in function declarations
+- TBool safety and unknown-as-value rejection
+- `exit()` builtin
+- Composite literal type-checking
+- The differential harness for interpreter/JIT parity testing
+- Runtime refactoring: the monolithic 1725-line `runtime.rs` was split into six modules (`exec`, `eval`, `call`, `ops`, `scope`, `print`)
+
+The runtime split is a pure structural refactor with no behavior change, but it sets up the module boundaries for future work on the runtime.
+
+48 new verification matrix fixtures came along with all of this. Main went from 182 to 230 passing tests, zero failures.
+
+## Three range-check fixes in one afternoon
+
+The original out-of-range literal rejection rule (#028/#037) was established early: if you write `x: t8 = 300`, the compiler should reject it at semantic analysis time, not silently truncate. That rule worked for standalone declarations, but CodeRabbit caught three surfaces where it didn't apply.
+
+**CR#1: Generic struct fields.** Writing `Pair<t8> { b: 300 }` silently accepted 300. The problem: explicit generic type arguments were being discarded. The `_type_args` in the `StructInstance` arm of `semantic.rs` were unused, so field literals validated against raw `TypeParam("T")`, making the range check a no-op. The fix builds a positional param-to-arg substitution map and applies it to each field's declared type before range-checking. Six new fixtures. Matrix: 236/0.
+
+**CR#2: Array elements in struct fields and call arguments.** `items: [3: t8]` initialized with `[1, 2, 300]` inside a struct silently accepted the out-of-range element, even though standalone `x: [3: t8] = [1, 2, 300]` correctly rejected it. The element-type hint was never propagated at those sites. A new `analyze_expr_with_elem_hint` helper in `semantic.rs` delivers the hint at struct-field and call-argument sites, consolidating the typed-declaration path. This composes with CR#1, so `Box<t8> { items: [3: T] }` now resolves to `[3: t8]` and range-checks every element. Eight new fixtures. Matrix: 244/0.
+
+This fix also surfaced a pre-existing Cranelift codegen bug: storing a negative value in a struct's fixed-size array field corrupts adjacent stack memory on teardown. Positive arrays work fine. The interpreter handles it correctly. Marked `.jit_known_unsound` for now.
+
+**CR#3: Return values.** `fnc: t8 f() { 300 }` silently returned 44 (300 mod 256). The trailing-return path went straight to `insert_cast_if_needed`, which wraps without checking. This is the worst class of bug: silent wrong values. The fix introduces an `analyze_returned_expr` chokepoint in `semantic.rs` that runs the same sequence a typed declaration runs (array-element hint, bare-literal width check, type-compatibility gate, then cast) and both return forms (explicit `return expr` and trailing expression) route through it. Eight new fixtures. Matrix: 252/0.
+
+All three fixes are on submain only, not yet merged to main. Submain is 3 commits and 59 files ahead.
+
+## The rule is now closed across five surfaces
+
+After CR#1-3, out-of-range literal rejection applies to: standalone declarations, explicit generic type arguments, array elements in struct fields and call arguments, and both return positions. The only identified remaining gap is literals nested inside if/when branches (`{ if c { 300 } else { 0 } }`), tracked as CR#4.
+
+One thing deliberately left alone: implicit non-literal narrowing. Writing `x: t8 = a` where `a: t64` still compiles. Cx has no explicit cast syntax yet, so rejecting this would strand legitimate truncation with no escape hatch. The plan is to add cast syntax first, then tighten the rule.
+
+## What's next
+
+The immediate priority is merging CR#1-3 from submain to main. It's only 3 commits and should be a clean merge.
+
+After that, CR#4 (range-checking inside if/when branches) is the natural next step to complete the sweep. The Cranelift negative-element segfault that CR#2 exposed is worth investigating but sits in the JIT codegen layer rather than the semantic analysis layer where the current work is happening.
+
+The larger remaining frontier is Phase 8 Round 2 and Phase 15: str/strref layout, Handle<T>, TBool calling convention, and closing the remaining JIT instruction coverage gaps. v0.2.0 cleared the integration backlog. Now the path forward is backend work.
