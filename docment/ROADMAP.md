@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-06-07
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -8,11 +8,11 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ---
 
-## Frontend — v0.1.0 Released
+## Frontend — v0.2.0 Released
 
-All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 230/230 matrix tests passing on main. 10/10 examples passing.
 
-**Status:** v0.1.0 released (tagged at 9fc0d24). No known soundness holes. Syntax frozen.
+**Status:** v0.2.0 released (tagged at 5981121, merged to main via PR #295). No known soundness holes. Syntax frozen. Post-release range-check sweep (CR#1-3) on submain closes all known #028/#037 gaps except branch-nested literals (CR#4).
 
 **Known limitations (documented, not blocking):**
 - String arena grows monotonically (interpreter-only)
@@ -21,6 +21,9 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] CR#1 — range-check fields through explicit generic type args (b8e92fb)
+- [x] CR#2 — range-check array elements in struct fields and call args (7337b61)
+- [x] CR#3 — range-check return values at declared width (79a1bbd)
 
 ---
 
@@ -55,18 +58,18 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
   - [x] Method call actual lowering (0ab7e9b — synthesis-and-recurse via Call arm)
-  - [ ] `when` block lowering or structured rejection
+  - [x] `when` block lowering — Literal/Range/Bool/Catchall + TBool wire-value (bed71c1, landed on main via v0.2.0 merge)
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
-### Landed (integrated to main via v0.1.0 merge)
+### Landed (integrated to main via v0.2.0 merge)
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
 - [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 156 PASS / 96 SKIP / 0 PARITY_FAIL across 252 fixtures on submain)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -92,6 +95,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-07:** Quiet day. No feature commits. Submain CR#1-3 still awaiting merge to main. Matrix 230/0 on main, 252/0 on submain — both unchanged. PR #298 (daily log 2026-06-06) open, not yet merged.
+
+**2026-06-06:** v0.2.0 merged to main (PR #295, tagged). Three post-release range-check fixes landed on submain (CR#1 generic fields, CR#2 array elements in struct fields/call args, CR#3 return values) — all found by CodeRabbit, all in `semantic.rs`. Matrix grew from 230 to 252 fixtures on submain, 0 failures. Submain now 3 commits ahead of main. CR#2 surfaced a pre-existing Cranelift segfault with negative struct array elements (marked `.jit_known_unsound`).
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
