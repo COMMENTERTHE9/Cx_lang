@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-05-26"
+date: 2026-05-26
+description: "A quiet day with no developer-authored commits, while submain sits 7 commits ahead of main carrying significant tracker work still waiting to merge."
+---
+
+No developer-authored commits landed anywhere in the last 24 hours. The only activity was automated housekeeping: yesterday's daily log, a `chmod +x` fix for the matrix runner script, and a retrospective blog post pushed to the site branch. Main is unchanged. The matrix holds at 182/0.
+
+That makes this a good moment to talk about the integration backlog, because it is getting harder to ignore.
+
+## Submain is sitting on real work
+
+Submain has been ahead of main since at least May 4. Right now it carries 7 commits (47 files changed, +1061/-331 lines) that include:
+
+- **Tracker #001:** Composite literal type-checking
+- **Tracker #002 / #012 / #032:** IndexOutOfBounds diagnostics
+- **Tracker #008:** Builtin registry
+- **Tracker #009:** BindingId-indexed variables, measured at a 57% speedup on arithmetic loops
+- The `exit()` builtin
+
+None of this has reached main. No merge conflicts are expected since submain pulled from main via PR #282 on May 24, but the merge just has not happened. Every daily log since May 6 has predicted a submain-to-main merge. It has not materialized.
+
+## The daily-log branch backlog
+
+Beyond submain, the daily-log branches are also piling up. The last daily-log branch merged to main was 2026-05-09. Since then, at least the 05-24 and 05-25 branches have been sitting unmerged. Each one carries roadmap updates and project history that is useful but not reaching the main branch.
+
+The roadmap on main is dated 2026-05-09. It still says "0.1 release candidate" with a 117/117 matrix. The actual state is v0.1.0 released with 182 passing tests. The daily-log branches have been correcting this, but since they have not been merged, the authoritative roadmap stays stale.
+
+## Nothing in progress
+
+The working tree on main is clean. No modified files, no staged changes, no untracked work. This is not a "work is happening somewhere else" situation. It is a genuine pause.
+
+## What is likely next
+
+The same prediction as yesterday and the day before: merge submain to main. That is the single highest-leverage action available right now. After that, merging the daily-log branches would bring the project documentation current. And the natural follow-up work from the May 24-25 tracker sprint would be either the lazy arena optimization (tracker #010, targeting the 64KB memset bottleneck) or JIT array bounds checking (tracker #003, closing the `jit_known_unsound` gap).
+
+Whether any of that happens tomorrow is an open question. But the work is there, waiting.
