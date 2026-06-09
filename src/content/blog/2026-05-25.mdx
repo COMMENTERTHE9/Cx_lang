@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-05-25"
+date: 2026-05-25
+description: "Four tracker items closed on submain, headlined by a BindingId-indexed variable lookup that cut arithmetic loop runtime by 57%."
+---
+
+The interpreter's variable lookup got 57% faster on tight loops today. That single number understates the scope of the day: four tracker items closed, a new builtin registry landed, and array out-of-bounds errors finally report something useful. All of it on submain, all of it directly traceable to yesterday's four-pillar audit.
+
+## BindingId replaces string hashing at runtime
+
+The biggest change is tracker #009. Until today, the interpreter looked up variables by hashing their name strings with SipHash on every single access. The semantic phase already assigns each variable a numeric BindingId during analysis, but the runtime was throwing that away and re-deriving identity from the name. That is gone now.
+
+`ScopeFrame.vars` is now `HashMap<BindingId, VarEntry, BuildIdHasher>`, using a zero-cost identity hasher for the u32 binding IDs. A secondary `by_name` index still exists for cold paths like string interpolation and bleed-back, but the hot path is integer-keyed.
+
+Two sites that were discarding their BindingId at runtime had to be fixed upstream: `ConstDecl` now carries a `binding` field, and `semantic_impls` carries per-method alias BindingIds. These are not just plumbing changes. They mean the semantic phase's output is now the interpreter's primary key throughout, which narrows the gap between interpreter and JIT variable representation.
+
+Measured results on a Windows release build:
+
+- arith_loop (5M iterations): 5744ms to 2481ms (56.8% faster)
+- nested_loops (4M iterations): 2675ms to 1796ms (32.8% faster)
+- fib_recursive: 6835ms to 6488ms (5.1% faster, call-bound rather than lookup-bound)
+
+The fib result confirms what you would expect: recursive calls are bottlenecked on frame setup, not variable access, so the lookup optimization barely registers there.
+
+## Array bounds errors stop lying
+
+Tracker #002 and #032 fix a diagnostic that has been misleading since arrays shipped. When a program accessed an out-of-bounds array index, the interpreter routed to `UndefinedVar`, producing something like `variable 'index 5' has not been declared`. That error is both wrong and confusing.
+
+The fix landed in two commits. First, a new `RuntimeError::IndexOutOfBounds { pos, index, length }` variant was added to the error enum. Then the three OOB sites in runtime.rs (lines 391, 739, 875) were rewired to use it. Programs now get `array index N out of bounds for array of length M`, which is the error they should have gotten from the start.
+
+Three new verification matrix fixtures pin this behavior. They also introduced the `.jit_known_unsound` sidecar mechanism in the diff harness: when a fixture is known to exercise behavior the JIT does not yet handle (the JIT has no bounds checks, tracker #003), the sidecar file marks it as SKIP rather than FAIL. This keeps interpreter correctness improvements from being blocked by JIT parity gaps.
+
+## Builtin registry
+
+Tracker #008 is smaller in scope but structurally important. Cx builtins were hardcoded in four separate places: semantic recognition, interpreter dispatch, IR validation, and JIT lowering. Each site maintained its own list. The new `src/frontend/builtins.rs` module serves as a single-source-of-truth registry that all four sites consult. Adding a future builtin is now a one-place change instead of a four-place coordination problem.
+
+This directly addresses the structural drift surface that showed up in the Pillar 2 disagreement findings from the audit. When four lists can drift independently, they will. Now they cannot.
+
+## Deliberate sequencing
+
+The four commits followed a dependency-driven order: #012 added the error variant, #002/#032 used it at the three OOB sites and introduced the JIT exclusion mechanism, #008 eliminated the builtin duplication surface, and #009 (the BindingId refactor) came last because it needed to safely add new fields to semantic types without the structural ambiguity the registry was cleaning up. Each commit references its tracker number and pillar origin.
+
+## What is next
+
+The #009 commit message names the lazy arena (tracker #010) as the next target. The 64KB memset per function call was identified as the remaining Pillar 1 hotspot, accounting for 90% of runtime in call-heavy workloads. It is a well-understood fix with bounded scope.
+
+After that, the natural path is merging submain to main. Submain is now 7 commits ahead with four tracker closures, a major performance improvement, and a correctness fix. Then JIT array bounds checking (tracker #003) becomes the next correctness target, especially now that the `jit_known_unsound` mechanism exists to manage the transition.
+
+Main stays at 182/0. All of today's work is branch-local.
