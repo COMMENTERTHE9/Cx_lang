@@ -1,0 +1,8 @@
+// D1.0 net-expansion: INT_MIN % -1 — AGREEMENT pin (not a divergence).
+// Interpreter returns 0 (ops.rs divisor==-1 special case). Cranelift's srem
+// legalization also returns 0 for the overflow pair, so the backends agree
+// today — unlike sdiv, which overflow-traps (see t_intmin_div_neg1, marked).
+// This pin locks the agreement so drift on either side trips PARITY_FAIL.
+a: t8 = -128
+b: t8 = -1
+print(a % b)

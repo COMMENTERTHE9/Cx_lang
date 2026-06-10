@@ -1,0 +1,10 @@
+// D1.0 net-expansion: integer divide-by-zero divergence (unmeasured pre-D1.0).
+// Interpreter: clean RUNTIME ERROR "division by zero" (ops.rs guard), exit 1.
+// JIT: no guard — Cranelift's sdiv trap reaches hardware and the process dies
+// with STATUS_ILLEGAL_INSTRUCTION (0xC000001D). The divisor is a variable so
+// the zero reaches runtime instead of semantic analysis (same trick as
+// t_oob_array_read). Fix lands in the JIT memory-safety gate (D1.2 guards);
+// remove the .jit_known_unsound marker then.
+a: t32 = 5
+b: t32 = 0
+print(a / b)

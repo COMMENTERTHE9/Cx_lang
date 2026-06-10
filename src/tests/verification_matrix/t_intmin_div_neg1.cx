@@ -1,0 +1,11 @@
+// D1.0 net-expansion: INT_MIN / -1 divergence (unmeasured pre-D1.0).
+// Interpreter: the divisor==-1 special case (ops.rs) wraps to the minimum and
+// prints -128, exit 0. JIT: no guard — Cranelift's sdiv overflow-traps and the
+// process dies with STATUS_INTEGER_OVERFLOW (0xC0000095). Both operands are
+// variables so the pair reaches runtime instead of semantic analysis. Fix
+// lands in the JIT memory-safety gate (D1.2 guards); remove the
+// .jit_known_unsound marker then. Note srem does NOT share this trap — see
+// t_intmin_mod_neg1, which agrees and is pinned unmarked.
+a: t8 = -128
+b: t8 = -1
+print(a / b)

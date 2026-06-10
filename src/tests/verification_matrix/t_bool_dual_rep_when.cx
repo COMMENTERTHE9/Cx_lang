@@ -1,0 +1,23 @@
+// D1.0 net-expansion: three-state-bool dual representation — AGREEMENT pin.
+// The interpreter carries "unknown" in TWO reps: a typed `bool = ?` produces
+// Value::TBool(2) (#044); an untyped binding assigned `?` produces
+// Value::Unknown(Type) (runtime.rs:146-149). Both must match the `unknown`
+// when-arm, and comparing them yields unknown (`?`). The IR models only the
+// TBool wire-value 2; the untyped path does not lower today ("unsupported
+// semantic type during lowering: Unknown" — clean JIT SKIP, exit 127), so the
+// JIT cannot diverge on it yet. This pin trips the net if either rep's
+// observable behavior drifts, including when untyped bindings start lowering.
+b: bool = ?
+when b {
+    true    => print(1),
+    false   => print(0),
+    unknown => print(2),
+}
+let u
+u = ?
+when u {
+    true    => print(1),
+    false   => print(0),
+    unknown => print(2),
+}
+print(b == u)

@@ -1,0 +1,9 @@
+// D1.0 net-expansion: integer modulo-by-zero divergence (unmeasured pre-D1.0).
+// Interpreter: clean RUNTIME ERROR "division by zero" (ops.rs guard), exit 1.
+// JIT: no guard — srem shares sdiv's zero-divisor trap; the process dies with
+// STATUS_INTEGER_DIVIDE_BY_ZERO (0xC0000094). The divisor is a variable so the
+// zero reaches runtime instead of semantic analysis. Fix lands in the JIT
+// memory-safety gate (D1.2 guards); remove the .jit_known_unsound marker then.
+a: t32 = 5
+b: t32 = 0
+print(a % b)
