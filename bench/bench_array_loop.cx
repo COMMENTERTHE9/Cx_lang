@@ -2,20 +2,16 @@
 // in-bounds, all-positive values (JIT-lowerable surface; stays clear of the
 // #003 OOB / negative-element crash triggers).
 //
-// Shape note: element reads land in typed locals before arithmetic because an
-// index-read inside a larger expression (e.g. `acc + a:[k]`) does not lower
-// today — the Index node's semantic type poisons the enclosing Binary as
-// Unknown and the JIT SKIPs (perf-rider finding, filed for the D1 lowering
-// queue). The loads/stores still happen every iteration.
+// As of D1.1b this is the natural form: index-reads inside expressions now
+// carry the element type and lower (the typed-local workaround the original
+// baseline carried is gone). The array_loop row in BASELINE.md resets here.
 a: [8: t64] = [1, 2, 3, 4, 5, 6, 7, 8]
 acc: t64 = 0
 i: t64 = 0
 while (i < 300000) {
     k: t64 = i % 8
-    v: t64 = a:[k]
-    a:[k] = v + 1
-    w: t64 = a:[k]
-    acc = acc + w
+    a:[k] = a:[k] + 1
+    acc = acc + a:[k]
     i += 1
 }
 print(acc)

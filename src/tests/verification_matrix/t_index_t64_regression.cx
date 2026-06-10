@@ -1,0 +1,7 @@
+// D1.1b regression guard: t64 array arithmetic was accidentally fine before
+// (100+100 fits t64, so the missing wrap was invisible) and MUST stay fine —
+// the element-type recovery must not change t64 behavior. Bonus: this now
+// lowers cleanly (the Index read is typed), so it is also a parity PASS.
+a: [4: t64] = [10, 20, 30, 40]
+k: t64 = 2
+print(a:[k] + a:[k])

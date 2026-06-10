@@ -1,0 +1,7 @@
+// D1.1b: array-element arithmetic must wrap at the element width, exactly like
+// plain t8 vars. Pre-fix the Index read carried `Unknown`, short-circuiting
+// analyze_binary past common_numeric_type and printing 200; now it carries t8
+// and wraps 100+100 -> -56. Now lowers (was a JIT SKIP) and agrees.
+a: [2: t8] = [100, 100]
+k: t64 = 0
+print(a:[k] + a:[k])

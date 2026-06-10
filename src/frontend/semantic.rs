@@ -1389,8 +1389,20 @@ Expr::Unary(op, inner, pos) => {
             Expr::Index(base, idx, pos) => {
                 let sem_base = self.analyze_expr(base)?;
                 let sem_idx = self.analyze_expr(idx)?;
+                // Carry the array's element type so an indexed read behaves like
+                // any other typed expression (tracker D1.1b). Mirrors the store-
+                // lvalue path (the `Array(_, elem_ty)` arm above) and struct
+                // `DotAccess`. Without it the leaked `Unknown` short-circuits
+                // `analyze_binary` past `common_numeric_type`/`insert_cast_if_needed`
+                // and defeats typed-assignment narrowing — so `a:[k] + a:[k]` at t8
+                // failed to wrap and out-of-range values slipped into typed bindings.
+                // A non-array base (genuinely unknown element type) keeps `Unknown`.
+                let elem_ty = match &sem_base.ty {
+                    SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
+                    _ => SemanticType::Unknown,
+                };
                 Ok(SemanticExpr {
-                    ty: SemanticType::Unknown,
+                    ty: elem_ty,
                     kind: SemanticExprKind::Index {
                         target: Box::new(sem_base),
                         index: Box::new(sem_idx),

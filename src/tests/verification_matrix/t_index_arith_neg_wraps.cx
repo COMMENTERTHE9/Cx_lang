@@ -1,0 +1,5 @@
+// D1.1b: negative-direction wrap (#037 parity) — t8 -100 + -100 = -200 wraps
+// to 56, matching plain t8 vars. Both signs of the boundary are covered.
+a: [2: t8] = [-100, -100]
+k: t64 = 0
+print(a:[k] + a:[k])
