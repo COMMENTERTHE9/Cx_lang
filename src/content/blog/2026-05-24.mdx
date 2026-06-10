@@ -1,0 +1,54 @@
+---
+title: "Cx Dev Log — 2026-05-24"
+date: 2026-05-24
+description: "Composite literal type-checking closed the last known soundness hole in the shipped interpreter, and a four-pillar deep-dive audit established the evidence base for the 0.2 roadmap."
+---
+
+The day split into two threads: a targeted soundness fix that landed on submain, and a systematic four-pillar audit of the entire 0.1 codebase. The fix was small and concrete. The audit was broad and structural. Both turned out to be connected.
+
+## Composite literal type-checking
+
+The semantic analyzer was validating struct names and array lengths, but not the contents. A struct literal with a wrong-typed field, a missing field, or an extra field would compile and produce wrong output. Same for array literals with mixed element types. This was classified as the highest-priority finding (Category B) in the Pillar 2 correctness audit and was fixed the same day.
+
+Commit `8169d33` on submain adds about 54 lines to `src/frontend/semantic.rs`:
+
+- Struct literals now validate that every declared field is present, reject unknown fields, and type-check each field value against its declared type. Generic struct type parameters are resolved during field checking.
+- Array literals verify that every element's type unifies with the element type established by the first element.
+
+Four new verification matrix fixtures pin the corrected behavior: `t_composite_array_element_type.cx`, `t_composite_struct_missing_field.cx`, `t_composite_struct_unknown_field.cx`, and `t_composite_struct_wrong_type.cx` (all `.expected_fail`). This closes the last known soundness hole from the correctness audit. Matrix holds at 182/0 on main.
+
+## The four-pillar deep-dive
+
+The rest of the day went into a structured audit across four dedicated branches. Each pillar examined the 0.1 codebase from a different angle, and the combined findings feed into a synthesis document that frames the 0.2 priorities.
+
+### Pillar 1: Performance benchmarks and hotspot analysis
+
+Twelve benchmark programs, baseline measurements, and callgrind flamegraphs. The two dominant findings: 90% of instructions in call-heavy programs are `memset` from per-call 64KB arena zeroing, and about 26% of instructions in loop-heavy code are SipHash string hashing for variable lookup. Both have clear, bounded fixes. The arena can be lazily initialized instead of zeroed. The interpreter already has a `BindingId` assigned by the semantic phase but currently discards it and re-hashes variable names at runtime. Using the existing integer ID eliminates the SipHash cost entirely.
+
+### Pillar 2: Correctness differential audit
+
+Systematic interpreter-vs-JIT probing that produced 14 minimal reproducing programs. The composite literal hole (fixed above) was the only interpreter-side finding. The other 13 are JIT-only safety gaps: out-of-bounds access, division by zero, and cast panics that the interpreter handles but the JIT does not. These 13 are not 13 separate bugs. They are symptoms of one missing abstraction.
+
+### Pillar 3: Architecture risks
+
+A tiered codebase review surfaced five risk items rated by cost of delay. The top finding: there is no shared semantic core between the interpreter and the JIT. Each engine reimplements validation, type dispatch, and error handling independently. This is the structural reason Pillar 2 found 13 behavioral disagreements. Other findings include builtins duplicated across 4 modules, the interpreter discarding its computed `BindingId` (which is why Pillar 1 found the SipHash cost), and `runtime.rs` sitting at 1,955 lines as a monolith.
+
+### Pillar 4: DX friction audit
+
+Five non-trivial programs written specifically to expose friction points. Highest-impact findings: `let x = expr` is a parse error (the language only supports typed declarations), enums cannot be used as function parameters or return types, there is no string concatenation or `len()`, and parse errors leak raw internal token names to users instead of human-readable messages.
+
+## The structural finding
+
+The synthesis document ties the four pillars together. Four seemingly independent findings, the SipHash cost from Pillar 1, the 13 interpreter/JIT disagreements from Pillar 2, the builtin duplication from Pillar 3, and the arena memset from Pillar 1, each trace back to shared structural roots. The interpreter's hashing cost exists because it discards the `BindingId` that the semantic phase already computes, which Pillar 3 independently flagged as an architecture concern. The JIT disagreements exist because there is no shared semantic core, which Pillar 3 identified as the top-tier risk.
+
+This means the fixes are cheaper than any single pillar's findings suggest. Addressing the structural root resolves multiple surface-level issues at once.
+
+## What the audit does not decide
+
+The synthesis document explicitly defers the largest question: commit to a shared semantic core between the interpreter and JIT, or keep maintaining two engines in manual sync. Everything else is ranked and grouped. Quick wins (lazy arena, `let x = expr`, humanized parse errors) are each tagged as small effort and unblocked now. Tier-1 foundational work (builtin registry, binding-indexed locals, runtime.rs split) is sequenced but not committed to.
+
+The audit provides the evidence base for the 0.2 roadmap. It does not prescribe one. The pillar branches remain branch-local analysis until the team reviews the synthesis and makes the R1 call.
+
+## What's next
+
+The composite literal fix on submain (`8169d33`) is a soundness fix with 4 new fixtures and is ready for a PR to main. The exit() builtin from yesterday is also still pending merge. Beyond those two concrete items, the quick wins identified by the synthesis, particularly `let x = expr` and humanized parse errors, are the lowest-cost improvements with the broadest user-facing impact. But all of that hinges on the team reviewing the synthesis document and deciding whether 0.2 starts with structural work or incremental features.
