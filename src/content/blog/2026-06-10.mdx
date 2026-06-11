@@ -1,0 +1,59 @@
+---
+title: "Cx Dev Log — 2026-06-10"
+date: 2026-06-10
+description: "The D1 audit arc opened on submain with four commits: pinning JIT crash classes, establishing a wall-time benchmark baseline, fixing array index element types, and extracting integer-width facts into a single-source-of-truth module."
+---
+
+Instead of merging the CR#1-4 range-check fixes or resuming backend work, the day pivoted to a new track: the D1 audit arc. Four commits landed on submain in a single focused session, all aimed at soundness and structural quality. Submain grew from 261 to 272 matrix fixtures, zero failures. Main is unchanged at 230/0.
+
+## Pinning unmeasured JIT crash classes
+
+The arc opener (D1.0) added five verification matrix fixtures targeting crash behaviors the existing 261-fixture net never exercised through the JIT backend.
+
+Division and modulo by zero: the interpreter errors cleanly with exit code 1, but the JIT dies with hardware traps (SIGILL / STATUS_INTEGER_DIVIDE_BY_ZERO depending on platform). Similarly, `t8 -128 / -1` wraps to -128 in the interpreter but triggers an integer overflow trap in the JIT. These three cases are marked `.jit_known_unsound` with sidecars that prevent hardware traps from leaking into the parity gate.
+
+Two agreement pins also landed. `t8 -128 % -1` does not share the overflow trap since `srem` handles the edge case differently from `sdiv`, so both backends agree on 0. And a `TBool` vs `Unknown` when-arm test confirms both representations reach the correct branch. Matrix after D1.0: 266/0. Parity: 165 PASS / 101 SKIP / 0 PARITY_FAIL.
+
+The point is not to fix these divergences yet but to make them visible. Before D1.0, a regression in any of these behaviors would have been silent.
+
+## Benchmark baseline
+
+Before starting any refactoring, a wall-time performance baseline went in. Eight benchmark programs covering arithmetic loops, fibonacci (iterative and recursive), when-matching, struct field access, array read/write, string concatenation, and if-expressions. A PowerShell runner does 1 warmup + 7 timed runs with median and spread.
+
+Key finding: JIT is roughly 9-13x faster end-to-end, including process startup and Cranelift compile time. That ratio is lower than raw instruction throughput would suggest because startup cost dominates for short programs.
+
+A methodology finding also came out of this work: absolute wall-times are not comparable across sessions because thermal throttling caused a uniform 2.4x swing on untouched programs between runs. The standing rule was revised to within-session A/B comparison only.
+
+The benchmarks also surfaced a real bug, which led directly to the next commit.
+
+## Array index element type fix
+
+During benchmark work, `acc + a:[k]` on `t8` arrays was producing wrong values. The root cause: `Expr::Index` in read position hardcoded its type as `SemanticType::Unknown` even when the array base carries a known element type. This meant array-element arithmetic at sub-64-bit widths skipped wrapping.
+
+Concrete example: `a:[k] + a:[k]` where `a:[k]` returns 100 as a `t8`. The correct answer is -56 (200 wraps in 8-bit signed). With the bug, the index expression's Unknown type caused the runtime to treat the addition as 64-bit, producing 200.
+
+The fix is about five lines in `semantic.rs`: in the Index read arm, recover the element type from `Array(_, elem)` on the base expression. Six new fixtures pin t8/t16 wrapping, typed binding narrowing, and return-value wrapping. The benchmark `bench_array_loop` dropped its typed-local workaround and now runs the natural form.
+
+Matrix after D1.1b: 272/0. Parity: 171 PASS / 101 SKIP / 0 PARITY_FAIL. All six new fixtures lower and agree across both backends.
+
+## Integer-width facts unification
+
+The first "judgment extraction" of the D1 arc. The question "what range of values fits in a tN?" lived in three hand-synced copies: `semantic.rs` (range-check bounds), `runtime.rs` (narrowing casts), and `lower.rs` (IR range validation). Each had its own inline constants for min, max, and truncation behavior.
+
+A new leaf module `frontend/int_facts.rs` is now the single source of truth. It exposes `IntWidth` (W8 through W128), `IntFacts` (min, max, name), and a `truncate(i128)` method. Each consumer maps its own type representation into `IntWidth` and reads the one table.
+
+Design choices worth noting:
+
+- The module is a pure-data leaf with zero dependencies on `SemanticType` or `IrType`. Other modules point into it; it points nowhere. No dependency cycle risk.
+- Bool is excluded. Only the IR layer needs its 0/1 bound, and that stays as a one-line local arm rather than polluting a numeric table.
+- A `bits` field was considered and dropped because no consumer actually reads it.
+
+129 insertions, 26 deletions across 7 files. Behavior-identical by construction: all matrix gate counts and diagnostic messages are frozen before and after. This follows the same architectural pattern as the earlier `builtins.rs` extraction (#008): when a fact is used in 3+ places, it gets a leaf module with a neutral key enum.
+
+## What's next
+
+The D1 arc has a natural continuation. The commit messages reference a D1.2 targeting a JIT memory-safety gate for the three `.jit_known_unsound` fixtures pinned today. More judgment extractions likely follow the `int_facts` pattern.
+
+Submain is now 8 commits ahead of main, the largest gap in a while. CR#1-4 plus D1.0 through D1.1 form a cohesive, tested set. Merging to main would bring the matrix from 230 to 272 fixtures.
+
+The daily-log PR backlog (twelve-plus unmerged branches) and backend work (Phase 11 DotAccess, Phase 8 Round 2) remain deferred. Both have been predicted and not done for multiple consecutive days. The D1 audit arc appears to be the active priority.
