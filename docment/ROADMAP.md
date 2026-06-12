@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-06-12
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -21,6 +21,9 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] CR#1–4: range-check literals through generic type args, array elements in struct fields/call args, return values, if/when branch tails; unified width checking through single semantic-level function (b8e92fb..cbba042)
+- [x] D1.1b: carry element type through array index read-expressions — live interpreter bug fix, sub-64-bit array arithmetic now wraps correctly (aadbd55)
+- [x] D1.1: unify integer-width facts into `frontend/int_facts.rs` — single source of truth replacing 3 hand-synced copies (a5c930d)
 
 ---
 
@@ -63,10 +66,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
-- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
+- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; D1.0 pins div-zero/INT_MIN/dual-bool JIT divergences bb3823a; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 171 PASS / 101 SKIP / 0 PARITY_FAIL across 272 fixtures on submain)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -92,6 +95,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-12:** Quiet day — no commits on any branch since June 11 01:24 UTC. Submain 8 commits ahead of main (CR#1–4 + D1.0/perf-rider/D1.1b/D1.1). Matrix 230/0 on main, 272/0 on submain. Daily-log backlog: branches June 5–10 unmerged.
+
+**2026-06-10:** D1 audit arc opened on submain. D1.0 pins 5 JIT divergence fixtures (div-zero, INT_MIN, dual-bool). Performance baseline established (bench/ directory, 8 programs, JIT ~9-13x faster). D1.1b fixes live array-index element type bug. D1.1 extracts integer-width facts into `frontend/int_facts.rs`. Matrix 272/0 on submain; main unchanged at 230/0. Submain 8 commits ahead of main.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
