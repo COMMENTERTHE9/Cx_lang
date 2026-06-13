@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-05-22"
+date: 2026-05-22
+description: "v0.1.0 shipped today with 181 commits merged from submain to main, jumping the test matrix from 117 to 182 passing tests and closing the submain gap entirely."
+---
+
+v0.1.0 is tagged. PR #266 merged submain into main, bringing roughly 181 commits and 16,325 insertions across 109 changed files. The test matrix on main jumped from 117 to 182, all passing. The submain gap that had been growing since May 4 is now zero. This is the single largest integration event in the project's history so far.
+
+## What the merge brought
+
+The v0.1.0 merge carried the entire backend pipeline onto main: Cranelift JIT, the differential test harness, host boundary, IR lowering through Phase 15. It also brought 65 new verification fixtures (t117 through t178), eight working examples, new backend documentation, CodeRabbit config, and CI expansion. All of this had been accumulating on submain since the last merge on May 4.
+
+Six prep commits preceded the merge to get submain into release shape: semantic hardening, roadmap audits, dead-code cleanup, and doc reconciliation. The final readiness audit (`be29a96`) declared submain 0.1-READY, confirming all five H-series hard blockers closed. Full suite 411/0/0. JIT parity 120/62/0. The 62 remaining JIT SKIPs all map to acknowledged post-0.1 features (enums, generics, `Handle<T>`, string interpolation, `Result/?`, `WhileIn`, t128/f64 print, full TBool unknown propagation).
+
+## Semantic analysis hardening
+
+One of the pre-release prep commits deserves its own section. The method-call analysis path in `src/frontend/semantic.rs` got a substantial rewrite (`075d3dc`). Previously, unresolved method receivers would fall through to the IR layer's mangled-callee miss and produce unhelpful `UnresolvedSemanticArtifact` errors. Now the pipeline catches these earlier:
+
+- Receivers not in scope get a clear scope error.
+- Non-struct receivers are rejected with type information.
+- Undefined methods produce a `method '{struct}.{method}' is not defined` diagnostic.
+- Arity is enforced at analysis time, mirroring the free-function precedent.
+
+The dead `classify_type` function was also removed. This is the kind of error-quality work that makes sense right before a release cut -- users hitting these paths should get actionable diagnostics, not IR-layer artifacts.
+
+## Build hygiene
+
+The polish commit (`23971f4`) touched 17 files across `src/`, `docs/`, and `docment/`. It added `#[allow(dead_code)]` annotations on intentionally-retained items in `ast.rs`, `resolver.rs`, `semantic_types.rs`, `types.rs`, `builder.rs`, `ir/types.rs`, `validate.rs`, and `runtime.rs`. It fixed the clippy error in `ir/printer.rs` (the `if i > 0 || true` pattern) and removed dead re-exports from `ir/mod.rs`. Build warnings went from 20 to 0. Clippy errors went from 1 to 0.
+
+## README rewrite
+
+The README was substantially rewritten from 67 lines of mixed prose and tables to 213 lines of structured documentation. It is now organized around: "Why Cx Exists," "What 0.1.0 Proves," "Current Verification Status," "What Works in 0.1.0," language core and memory model listings, interpreter and JIT sections, deferred post-0.1 items, and cleaner getting-started instructions. This is the project's first public-facing documentation update since reaching v0.1.0, and it signals a shift from build-phase framing to expand-phase framing.
+
+## Roadmap updates
+
+Three roadmap commits landed on submain before the merge:
+
+- CX-91/94 marked as landed, CX-34 marked as canceled (scope superseded by later items).
+- A duplicate soft-blocker ID was renamed (S5 to S9).
+- The "Merged to submain (not yet on main)" section was retitled to "Landed (integrated to main via v0.1.0 merge)."
+- Frontend section updated: test count from 117/117 to 182/182, status from "release candidate" to "v0.1.0 released."
+
+Phase 11 items "Method call actual lowering" and "`when` block lowering or structured rejection" are now checked off as delivered on main.
+
+## What's next
+
+With v0.1.0 tagged, the immediate priority shifts from "get it out" to "expand coverage." The README frames near-term priorities as: stabilize 0.1.1, improve examples and documentation, expand JIT PASS coverage, and add missing runtime ABI extensions.
+
+Concrete next moves: DotAccess in compound forms is the last unchecked Phase 11 sub-item. Enum IR lowering blocks EnumVariant when-arms and at least five parity fixtures. The 62 JIT SKIPs include fixtures blocked by narrow-int and f64 print formatting, which the README's deferred list explicitly names.
+
+The submain merge that had been predicted on four consecutive daily logs finally happened. Now the real post-release work begins.
