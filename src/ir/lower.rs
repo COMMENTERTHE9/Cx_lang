@@ -2450,44 +2450,18 @@ fn lower_when_stmt(
                     _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
                 };
             }
-            SemanticWhenPattern::Literal(value) => {
-                let pat_value = if matches!(value, SemanticValue::Unknown) {
-                    // TBool wire-value match — see SCOPE BOUNDARY at fn doc.
-                    let unknown_byte = ctx.fresh_value();
-                    current.emit(IrInst::ConstInt {
-                        dst: unknown_byte,
-                        ty: IrType::I8,
-                        value: 2,
-                    })?;
-                    let unknown_const = ctx.fresh_value();
-                    current.emit(IrInst::Cast {
-                        dst: unknown_const,
-                        from: IrType::I8,
-                        to: scrutinee_val.ty.clone(),
-                        value: unknown_byte,
-                    })?;
-                    unknown_const
-                } else {
-                    let lowered = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
-                    lowered.value
-                };
-                let cmp_dst = ctx.fresh_value();
-                current.emit(IrInst::Compare {
-                    dst: cmp_dst,
-                    op: CompareOp::Eq,
-                    lhs: scrutinee_val.value,
-                    rhs: pat_value,
-                })?;
-                let next_block = ctx.start_block(vec![], incoming.clone());
-                let next_id = next_block.id();
-                current.terminate(IrTerminator::Branch {
-                    cond: cmp_dst,
-                    then_block: body_id,
-                    then_args: vec![],
-                    else_block: next_id,
-                    else_args: vec![],
-                })?;
-                ctx.seal_block(current)?;
+            // Literal / Range / EnumVariant share one comparison emitter (D1.2a);
+            // the stmt mechanism (fallthrough collection) stays local here.
+            _ => {
+                current = emit_when_arm_match(
+                    &arm.pattern,
+                    scrutinee,
+                    &scrutinee_val,
+                    body_id,
+                    &incoming,
+                    current,
+                    ctx,
+                )?;
                 if let Some(active) = lower_stmt_sequence(
                     arm.body.iter(),
                     ctx,
@@ -2497,66 +2471,6 @@ fn lower_when_stmt(
                 )? {
                     fallthroughs.push(active);
                 }
-                current = next_block;
-            }
-            SemanticWhenPattern::Range(low, high, inclusive) => {
-                let lo_lowered = lower_value(low, &scrutinee.ty, ctx, &mut current)?;
-                let lo_cmp = ctx.fresh_value();
-                current.emit(IrInst::Compare {
-                    dst: lo_cmp,
-                    op: CompareOp::Ge,
-                    lhs: scrutinee_val.value,
-                    rhs: lo_lowered.value,
-                })?;
-                let mut lo_pass = ctx.start_block(vec![], incoming.clone());
-                let lo_pass_id = lo_pass.id();
-                let no_match = ctx.start_block(vec![], incoming.clone());
-                let no_match_id = no_match.id();
-                current.terminate(IrTerminator::Branch {
-                    cond: lo_cmp,
-                    then_block: lo_pass_id,
-                    then_args: vec![],
-                    else_block: no_match_id,
-                    else_args: vec![],
-                })?;
-                ctx.seal_block(current)?;
-
-                let hi_lowered = lower_value(high, &scrutinee.ty, ctx, &mut lo_pass)?;
-                let hi_op = if *inclusive { CompareOp::Le } else { CompareOp::Lt };
-                let hi_cmp = ctx.fresh_value();
-                lo_pass.emit(IrInst::Compare {
-                    dst: hi_cmp,
-                    op: hi_op,
-                    lhs: scrutinee_val.value,
-                    rhs: hi_lowered.value,
-                })?;
-                lo_pass.terminate(IrTerminator::Branch {
-                    cond: hi_cmp,
-                    then_block: body_id,
-                    then_args: vec![],
-                    else_block: no_match_id,
-                    else_args: vec![],
-                })?;
-                ctx.seal_block(lo_pass)?;
-
-                if let Some(active) = lower_stmt_sequence(
-                    arm.body.iter(),
-                    ctx,
-                    Some(body_block),
-                    spec,
-                    loop_ctx,
-                )? {
-                    fallthroughs.push(active);
-                }
-                current = no_match;
-            }
-            SemanticWhenPattern::EnumVariant { enum_name, variant_name, .. } => {
-                return Err(LoweringError::UnsupportedSemanticConstruct {
-                    construct: format!(
-                        "EnumVariant when arm '{}::{}' — blocked on Enum IR lowering (separate work)",
-                        enum_name, variant_name
-                    ),
-                });
             }
         }
     }
@@ -2569,6 +2483,123 @@ fn lower_when_stmt(
         0 => Ok(None),
         1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
         _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
+    }
+}
+
+/// Emit the comparison CFG for one non-catchall `when` arm (tracker D1.2a) — the
+/// pattern->Compare judgment that `lower_when_stmt` and `lower_when_expr` used to
+/// duplicate verbatim. On entry `current` is the active decision block; this
+/// emits the compare(s), branches to `body_id` on match, and returns the "no
+/// match" continuation block the next arm builds from. The caller owns the body
+/// lowering (stmt's fallthrough vs expr's value-merge) — only the judgment is
+/// shared, the mechanism stays local. Catchall is caller-handled (its control
+/// flow differs between the two forms) and never reaches here.
+fn emit_when_arm_match(
+    pattern: &SemanticWhenPattern,
+    scrutinee: &SemanticExpr,
+    scrutinee_val: &LoweredValue,
+    body_id: crate::ir::types::BlockId,
+    incoming: &BindingMap,
+    mut current: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<ActiveBlock, LoweringError> {
+    match pattern {
+        SemanticWhenPattern::Literal(value) => {
+            let pat_value = if matches!(value, SemanticValue::Unknown) {
+                // TBool wire-value match — see SCOPE BOUNDARY at lower_when_stmt doc.
+                let unknown_byte = ctx.fresh_value();
+                current.emit(IrInst::ConstInt {
+                    dst: unknown_byte,
+                    ty: IrType::I8,
+                    value: 2,
+                })?;
+                let unknown_const = ctx.fresh_value();
+                current.emit(IrInst::Cast {
+                    dst: unknown_const,
+                    from: IrType::I8,
+                    to: scrutinee_val.ty.clone(),
+                    value: unknown_byte,
+                })?;
+                unknown_const
+            } else {
+                let lowered = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
+                lowered.value
+            };
+            let cmp_dst = ctx.fresh_value();
+            current.emit(IrInst::Compare {
+                dst: cmp_dst,
+                op: CompareOp::Eq,
+                lhs: scrutinee_val.value,
+                rhs: pat_value,
+            })?;
+            let next_block = ctx.start_block(vec![], incoming.clone());
+            let next_id = next_block.id();
+            current.terminate(IrTerminator::Branch {
+                cond: cmp_dst,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: next_id,
+                else_args: vec![],
+            })?;
+            ctx.seal_block(current)?;
+            Ok(next_block)
+        }
+        SemanticWhenPattern::Range(low, high, inclusive) => {
+            let lo_lowered = lower_value(low, &scrutinee.ty, ctx, &mut current)?;
+            let lo_cmp = ctx.fresh_value();
+            current.emit(IrInst::Compare {
+                dst: lo_cmp,
+                op: CompareOp::Ge,
+                lhs: scrutinee_val.value,
+                rhs: lo_lowered.value,
+            })?;
+            let mut lo_pass = ctx.start_block(vec![], incoming.clone());
+            let lo_pass_id = lo_pass.id();
+            let no_match = ctx.start_block(vec![], incoming.clone());
+            let no_match_id = no_match.id();
+            current.terminate(IrTerminator::Branch {
+                cond: lo_cmp,
+                then_block: lo_pass_id,
+                then_args: vec![],
+                else_block: no_match_id,
+                else_args: vec![],
+            })?;
+            ctx.seal_block(current)?;
+
+            let hi_lowered = lower_value(high, &scrutinee.ty, ctx, &mut lo_pass)?;
+            let hi_op = if *inclusive { CompareOp::Le } else { CompareOp::Lt };
+            let hi_cmp = ctx.fresh_value();
+            lo_pass.emit(IrInst::Compare {
+                dst: hi_cmp,
+                op: hi_op,
+                lhs: scrutinee_val.value,
+                rhs: hi_lowered.value,
+            })?;
+            lo_pass.terminate(IrTerminator::Branch {
+                cond: hi_cmp,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: no_match_id,
+                else_args: vec![],
+            })?;
+            ctx.seal_block(lo_pass)?;
+            Ok(no_match)
+        }
+        SemanticWhenPattern::EnumVariant { enum_name, variant_name, .. } => {
+            Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "EnumVariant when arm '{}::{}' — blocked on Enum IR lowering (separate work)",
+                    enum_name, variant_name
+                ),
+            })
+        }
+        SemanticWhenPattern::Catchall => {
+            // Catchall is caller-handled; it must never be routed through here.
+            Err(LoweringError::InternalInvariantViolation {
+                detail: "Catchall must be handled by the when caller, not emit_when_arm_match"
+                    .to_string(),
+            })
+        }
     }
 }
 
@@ -2682,99 +2713,19 @@ fn lower_when_expr(
                     ty: result_ir_ty,
                 });
             }
-            SemanticWhenPattern::Literal(value) => {
-                let pat_value = if matches!(value, SemanticValue::Unknown) {
-                    let unknown_byte = ctx.fresh_value();
-                    current.emit(IrInst::ConstInt {
-                        dst: unknown_byte,
-                        ty: IrType::I8,
-                        value: 2,
-                    })?;
-                    let unknown_const = ctx.fresh_value();
-                    current.emit(IrInst::Cast {
-                        dst: unknown_const,
-                        from: IrType::I8,
-                        to: scrutinee_val.ty.clone(),
-                        value: unknown_byte,
-                    })?;
-                    unknown_const
-                } else {
-                    let lowered = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
-                    lowered.value
-                };
-                let cmp_dst = ctx.fresh_value();
-                current.emit(IrInst::Compare {
-                    dst: cmp_dst,
-                    op: CompareOp::Eq,
-                    lhs: scrutinee_val.value,
-                    rhs: pat_value,
-                })?;
-                let next_block = ctx.start_block(vec![], incoming.clone());
-                let next_id = next_block.id();
-                current.terminate(IrTerminator::Branch {
-                    cond: cmp_dst,
-                    then_block: body_id,
-                    then_args: vec![],
-                    else_block: next_id,
-                    else_args: vec![],
-                })?;
-                ctx.seal_block(current)?;
+            // Literal / Range / EnumVariant share one comparison emitter (D1.2a);
+            // the expr mechanism (value-producing arm body -> merge) stays local.
+            _ => {
+                current = emit_when_arm_match(
+                    &arm.pattern,
+                    scrutinee,
+                    &scrutinee_val,
+                    body_id,
+                    &incoming,
+                    current,
+                    ctx,
+                )?;
                 lower_arm_body(ctx, body_block, arm)?;
-                current = next_block;
-            }
-            SemanticWhenPattern::Range(low, high, inclusive) => {
-                let lo_lowered = lower_value(low, &scrutinee.ty, ctx, &mut current)?;
-                let lo_cmp = ctx.fresh_value();
-                current.emit(IrInst::Compare {
-                    dst: lo_cmp,
-                    op: CompareOp::Ge,
-                    lhs: scrutinee_val.value,
-                    rhs: lo_lowered.value,
-                })?;
-                let mut lo_pass = ctx.start_block(vec![], incoming.clone());
-                let lo_pass_id = lo_pass.id();
-                let no_match = ctx.start_block(vec![], incoming.clone());
-                let no_match_id = no_match.id();
-                current.terminate(IrTerminator::Branch {
-                    cond: lo_cmp,
-                    then_block: lo_pass_id,
-                    then_args: vec![],
-                    else_block: no_match_id,
-                    else_args: vec![],
-                })?;
-                ctx.seal_block(current)?;
-
-                let hi_lowered = lower_value(high, &scrutinee.ty, ctx, &mut lo_pass)?;
-                let hi_op = if *inclusive { CompareOp::Le } else { CompareOp::Lt };
-                let hi_cmp = ctx.fresh_value();
-                lo_pass.emit(IrInst::Compare {
-                    dst: hi_cmp,
-                    op: hi_op,
-                    lhs: scrutinee_val.value,
-                    rhs: hi_lowered.value,
-                })?;
-                lo_pass.terminate(IrTerminator::Branch {
-                    cond: hi_cmp,
-                    then_block: body_id,
-                    then_args: vec![],
-                    else_block: no_match_id,
-                    else_args: vec![],
-                })?;
-                ctx.seal_block(lo_pass)?;
-                lower_arm_body(ctx, body_block, arm)?;
-                current = no_match;
-            }
-            SemanticWhenPattern::EnumVariant {
-                enum_name,
-                variant_name,
-                ..
-            } => {
-                return Err(LoweringError::UnsupportedSemanticConstruct {
-                    construct: format!(
-                        "EnumVariant when arm '{}::{}' — blocked on Enum IR lowering (separate work)",
-                        enum_name, variant_name
-                    ),
-                });
             }
         }
     }
