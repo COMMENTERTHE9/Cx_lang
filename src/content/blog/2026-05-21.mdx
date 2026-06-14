@@ -1,0 +1,52 @@
+---
+title: "Cx Dev Log — 2026-05-21"
+date: 2026-05-21
+description: "The when-block IR lowering landed in a 426-line commit on submain, substantially closing hard blocker H3 and pushing JIT parity from 110 to 120 passing fixtures."
+---
+
+The big piece today is `when` block IR lowering. Commit `bed71c1` on submain is 426 lines of new IR lowering logic in `src/ir/lower.rs`, replacing what were previously rejection arms for `SemanticStmt::When` and `SemanticExprKind::When` with end-to-end lowering. This substantially closes hard blocker H3 for the 0.1 scope. Combined with yesterday's compound-assign narrowing fix, the JIT parity matrix moved from 110/72/0 to 120/62/0 over the last two days. Ten more fixtures flipped from SKIP to PASS.
+
+## How the when lowering works
+
+The implementation uses chained-decision CFG, following the same pattern as `lower_logical` for AND/OR short-circuit evaluation. For each arm in a `when` block:
+
+- Literal, Range, and TBool-unknown patterns emit Compare instructions followed by a Branch to either the arm body or the next decision block.
+- Catchall arms unconditionally jump to their body.
+- Statement-form `when` blocks merge arm bodies via `merge_fallthroughs`.
+- Expression-form `when` blocks merge via a typed block parameter.
+
+The alternative would have been table-dispatch or SSA phi-based merge, but that would require new IR infrastructure that only serves `when`. The chained-decision approach reuses existing IR patterns and maps cleanly to how Cranelift handles multi-way branches on the backend side. For 0.1, this was the right call.
+
+### TBool unknown matching
+
+The TBool unknown case is worth noting specifically. Matching `unknown` in a `when` arm works by comparing the scrutinee's wire value against `ConstInt(I8, 2)`, cast to the scrutinee's type via `Cast(I8 -> scrutinee.ty)`, then `Compare(Eq)`. This sidesteps the IR validator's ConstInt type set without committing to any TBool-as-literal semantics. Whether an unknown TBool should infect arithmetic or comparison results is a separate language-design question deferred past 0.1. For now, pattern matching just works against the wire value, and that is enough.
+
+### EnumVariant arms are still rejected
+
+Rather than a silent "unsupported" error, the lowering now emits a structured error naming the specific enum and variant. This is blocked on Enum IR lowering as a separate work item. Fixtures like t22, t27, and t28 remain in SKIP because of this. It is the primary remaining `when` surface for post-0.1.
+
+## Compound-assign narrowing fix
+
+The other commit today is `e4c9202`, a 22-line fix in `src/frontend/semantic.rs`. The compound-assign path for `+=`, `*=`, etc. was not narrowing bare Numeric literal operands against the target's type. This caused IR-validator Verifier errors when the target was a narrow-int field (I8/I16/I32). The fix extracts the target type from all three `SemanticLValue` variants (Binding, DotAccess, Index) and applies `insert_cast_if_needed` when both sides are numeric. This is the same pattern already used at five other Numeric-meets-typed-peer sites in the semantic pass.
+
+This flipped t41_compound_assign_dot and t109_struct_field_overflow from SKIP to PASS.
+
+## Hard blocker status
+
+With today's work, the hard blocker picture for 0.1 is looking much cleaner:
+
+- H1: closed (May 20)
+- H2: closed (May 20)
+- H3: substantially closed (May 21, Option A scope)
+- H5: closed (May 20)
+- H4: still open, covering feature-branch parity items CX-91/CX-94/CX-34
+
+Three of four hard blockers closed in two days is real progress. H3 was the one with the most structural risk since it required new IR lowering machinery, and the chained-decision approach kept it contained.
+
+## What's next
+
+There are 62 SKIP fixtures remaining. Some are blocked on Enum IR lowering (the EnumVariant when-arms), others on constructs that are not yet lowered. The next low-hanging-fruit SKIP targets are not obvious without inspecting individual fixture blockers.
+
+The DotAccess compound-forms item is the last unchecked sub-item in Phase 11 of the roadmap. Today's semantic narrowing fix covers DotAccess targets, but whether it also satisfies the IR lowering side needs verification.
+
+And then there is the submain-to-main merge. Submain is now 181 commits ahead. Every daily log since May 6 has predicted this merge. It has not happened. The gap grew by two more commits today.
