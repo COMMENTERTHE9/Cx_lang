@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-06-14
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -21,6 +21,13 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] CR#1–4: range-check unification — generic type args, struct/call-arg arrays, return values, if/when branch tails (b8e92fb..cbba042)
+- [x] D1.1b: carry element type through array index read-expressions (aadbd55)
+- [x] D1.1: unify integer-width facts into frontend-owned table (a5c930d)
+- [x] D1.2a: unify when stmt/expr pattern emission onto one helper (e4c0c77)
+- [x] Gate-1a: guard INT_MIN/-1 division overflow via value-select branch (c4527a6)
+- [x] Gate-1b0: route JIT Trap through clean cx_trap host-exit at code 126 (4714cbb)
+- [x] Gate-1b: guard division/modulo by zero via clean trap — closes Gate-1 crash class (ba2efad)
 
 ---
 
@@ -63,10 +70,10 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 
 - [x] Phase 13 — Cranelift lowering skeleton (CX-22)
 - [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
-- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
+- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; D1.0 divergence pinning, D1.2a when-pattern unification; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; Gate-1 arithmetic safety closed; 182 PASS / 98 SKIP / 0 PARITY_FAIL across 280 fixtures)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -92,6 +99,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-14:** Gate-1 arithmetic crash class closed on submain in 4 commits (e4c0c77, c4527a6, 4714cbb, ba2efad). INT_MIN/-1 overflow, Trap host-exit, and div/mod-by-zero all guarded. Parity 171→182/98/0 across 280 fixtures. cx_trap established as reusable runtime-trap primitive (exit 126). Submain 12 commits ahead of main (CR#1-4 + D1 arc + Gate-1).
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
