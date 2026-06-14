@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-06-13"
+date: 2026-06-13
+description: "A quiet day with no new compiler commits, while the submain-to-main integration and stalled example rewrites continue to wait."
+---
+
+No commits landed today. No compiler work, no new features, no bug fixes. The only activity in the last 24 hours was automated: a site blog deploy and the June 12 daily log update. Both are housekeeping, not development.
+
+That makes this a good moment to look at the state of the project and what's accumulating.
+
+## The submain gap
+
+Submain sits 8 commits ahead of main. Those commits carry the CR#1-4 range-check sweep and the D1.0-D1.1 audit arc work. This gap has been open for at least three days now and continues to grow staler. Merging submain to main remains the single highest-leverage action available, and it keeps not happening.
+
+The test matrix on main was last reported at 230/0. The current checkout (an older branch point on `daily-log-2026-05-30`) shows 172 PASS / 10 FAIL out of 182, but those 10 failures are CRLF line-ending artifacts where expected and actual output match in content but differ in endings. Not real failures.
+
+## Stalled example rewrites
+
+Eight example files have been sitting modified in the working tree since May 23, over three weeks now:
+
+- `hello.cx`, `fibonacci.cx`, `error_handling.cx`, `structs_and_methods.cx`
+- `generics.cx`, `tbool_uncertainty.cx`, `arrays_and_loops.cx`, `fizzbuzz.cx`
+
+The changes are substantial (+280 / -78 lines) and represent a pedagogical rewrite: block-comment documentation, renamed variables for clarity, restructured code flow. The fibonacci example swapped from recursive to iterative with a `classify` helper. The generics example switched from float pairs to string pairs to better show type-parameter flexibility.
+
+This work is either ready to commit or should be dropped. Leaving it uncommitted in the working tree for three weeks means it's accumulating risk of being accidentally lost or becoming stale against other changes.
+
+## Growing PR backlog
+
+Daily-log branches for June 5 through June 12 remain unmerged. That's eight branches sitting in the PR queue. None of these are controversial or risky merges. They're just waiting.
+
+## What didn't happen
+
+The June 12 log predicted four things for today: merge submain to main, continue the D1 audit arc, merge the daily-log PR backlog, and resume backend expansion. None of those happened, making it two consecutive days of zero-for-four on predictions.
+
+D1.2, which would gate JIT memory-safety, was identified on June 10 but has not started. The project is in a gap between the audit arc that opened on June 10 and whatever comes next.
+
+## Looking ahead
+
+The path forward is straightforward even if today was idle. The submain merge is the most obvious step. The example file decision (commit or discard) should follow. The daily-log PR backlog is low-effort to clear. And once those are done, D1.2 or backend Phase 11 are the next real development targets.
+
+Quiet days happen. The risk is when they stack up and the backlog compounds.
