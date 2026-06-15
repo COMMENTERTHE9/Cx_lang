@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-05-20"
+date: 2026-05-20
+description: "Method-call lowering landed end-to-end on submain, print argument widening closed 11 parity SKIPs, and three hard blockers were resolved in a single day."
+---
+
+The JIT backend had its biggest single-day parity jump yet. Eight commits landed on submain covering method-call lowering (closing hard blocker H2), print argument widening, and two differential harness fixes. Parity moved from 99 PASS / 83 SKIP to 110 PASS / 72 SKIP across 182 fixtures, with zero PARITY_FAILs throughout.
+
+## Method-call lowering: synthesis over duplication
+
+The largest commit of the day (790 insertions across 7 files) replaced the rejection-only method-call stub with full end-to-end lowering. The design question here was whether `MethodCall` should replicate the existing `Call` lowering logic or delegate to it. The answer was delegation: the `MethodCall` arm at `lower.rs:1791` synthesizes a `Call` expression with the receiver as the first argument and recurses into the existing `Call` arm. Method dispatch becomes a thin translation layer rather than a parallel code path.
+
+The impl block ingestion now preserves alias params and registers methods under mangled names (`{Struct}${method}`) in the signature table. Three new fixtures (t175/t176/t177) for basic impl, return, and multi-alias methods all pass end-to-end.
+
+This same commit also completed literal-width narrowing as a family. The method-call work exposed gaps in how `Numeric` literals interact with typed peers across operators. Rather than patching just `MethodCall` args, the fix covered the entire surface: `assert_eq` peer-narrowing, all four ordering operators (Lt/Gt/LtEq/GtEq), and `MethodCall` args all now use `insert_cast_if_needed`. A new fixture (t178) verifies narrow-int ordering compares across all four ops. Parity delta from this commit alone: +16 PASS.
+
+## Print argument widening
+
+The `cx_printn` runtime intrinsic only accepted I64. A new `route_print_arg` helper sign-extends I8/I16/I32 to I64 via Cast and routes Bool/TBool to a new `cx_print_bool` extern. This is a per-type-family approach rather than a single polymorphic print path: integers widen and call `cx_printn`, bools get their own intrinsic, and F64/I128 are explicitly parked post-0.1.
+
+The parity impact was immediate: +11 PASS, zero regressions. t01 and t115 now pass, and Bool printing converges with interpreter output. Remaining print gaps are downstream blockers in other constructs (t41, t109) rather than print-path issues.
+
+## Harness hardening
+
+Two fixes addressed real fragility in the differential testing infrastructure.
+
+The first closed hard blocker H1: a non-JIT binary (built via plain `cargo build`) would silently pass all parity fixtures as SKIP. Now `assert_jit_capable()` probes the binary at startup and panics in 30ms if it lacks JIT support. The missing-binary path also panics instead of silent SKIP. This eliminates an entire class of false-green CI results.
+
+The second closed H5 (metric drift). Four consecutive commits had been reporting 94/88 parity totals when the actual table summed to 99/83. The fix adds an `AUTHORITATIVE TOTALS` line computed from the same accumulators that the per-category table uses. Single source of truth, no more copy-paste arithmetic errors.
+
+## 0.1 readiness audit
+
+Two audit commits embedded per-item verification directly in the roadmap file as HTML comments. Reviewers can see `<!-- audit: VERIFIED -->` or `<!-- audit: DRIFTED -->` next to each checkbox. The verdict after both audits: NOT 0.1-READY. H1, H2, and H5 were closed today, but H3 (when-block lowering) and H4 (feature-branch parity items CX-91/CX-94/CX-34) remain.
+
+One notable finding: the Cast category appearing green in the parity matrix is misleading. Those PASSes came from narrowing ride-alongs in today's work, not from the actual CX-91 Cast JIT implementation.
+
+## What's next
+
+Three hard blockers down (H1, H2, H5), two remaining (H3, H4). The CX-233 while-in loop lowering branch is complete and tested but still awaiting merge to submain for the third consecutive day. When-block lowering (H3) gates three SKIP fixtures and is the last named hard blocker under the project's control.
+
+The submain-to-main gap grew to 179 commits. Every daily log for two weeks has flagged this merge as overdue. At some point the integration cost of carrying that delta starts to matter more than the remaining feature work.
+
+JIT parity now stands at 110/182 (60.4%) with the remaining 72 SKIPs increasingly concentrated in constructs that need specific lowering work rather than broad infrastructure gaps. The trajectory is clear, even if 0.1 readiness is not there yet.
