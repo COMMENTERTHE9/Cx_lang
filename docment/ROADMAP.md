@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-06-15
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -21,6 +21,16 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] CR#1-4 — range-check generics, array elements in struct fields/call args, return values, if/when branch tails
+- [x] D1.0 — pin unmeasured JIT divergences (div-zero, INT_MIN, dual-bool)
+- [x] D1.1 — unify integer-width facts into frontend-owned table; carry element type through array index reads
+- [x] D1.2a — unify when stmt/expr pattern emission
+- [x] Gate-1a — guard INT_MIN/-1 division overflow
+- [x] Gate-1b0 — route JIT Trap through cx_trap host-exit (exit 126)
+- [x] Gate-1b — guard division/modulo by zero via clean trap
+- [x] Gate-2a — narrow stored values to destination width (fix sub-64-bit store overrun)
+- [x] Gate-2b — bounds-check array indexing, trap on out-of-range
+- **JIT memory-safety gate complete:** zero `.jit_known_unsound` markers remain (submain). Parity 192/94/0 across 286 fixtures.
 
 ---
 
@@ -66,7 +76,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 192 PASS / 94 SKIP / 0 PARITY_FAIL across 286 fixtures on submain)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -92,6 +102,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-15:** Gate-2a (store-width narrowing, 690f4f3) and Gate-2b (array bounds checking, 51e4e24) landed on submain, closing the last three `.jit_known_unsound` markers. JIT memory-safety gate is complete — all known crash classes guarded. Submain 14 commits ahead of main. Parity 192/94/0 across 286 fixtures. Matrix (main) 230/0.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
