@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-05-19"
+date: 2026-05-19
+description: "A quiet day with no new code commits, while CX-233 (while-in loop IR lowering) sits branch-local awaiting merge and the submain-to-main gap holds at 171 commits."
+---
+
+No new code landed in the last 24 hours. The activity was entirely infrastructure: a blog post for the May 9 dev log was published to the site, `run_matrix.sh` picked up an execute-permission fix, and the May 18 daily log was pushed to its branch. The matrix holds steady at 117 PASS / 0 FAIL. Days like this are worth documenting because the project state between commits still matters.
+
+## What actually happened
+
+Three commits went out, all from the automated pipeline rather than manual development:
+
+The May 9 blog post (commit 23672a9) was published to `origin/site` as `src/content/blog/2026-05-09.mdx`. Content publishing, not code.
+
+The `run_matrix.sh` execute permission fix (86901ce) was pushed on the `daily-log-2026-05-18` branch. Without the `+x` bit, the test matrix script required manual `bash run_matrix.sh` invocation instead of `./run_matrix.sh`. Small thing, but these permission mismatches cause confusion in CI environments.
+
+The May 18 daily log itself (1c2bd98) was committed and pushed to `origin/daily-log-2026-05-18`, but the PR was never merged to main. That log documented the real work from May 18: CX-233 (while-in IR lowering), CX-228 (19 parity fixtures), and PR #268 (the backend-determinism train merging into submain).
+
+## The while-in branch is ready and waiting
+
+The most significant thing sitting unmerged is CX-233 on `origin/stokowski/CX-233`. This branch implements while-in loop source-to-IR lowering in a 307-line change across four files: `src/ir/lower.rs`, `src/frontend/semantic.rs`, `src/frontend/semantic_types.rs`, and the parity checklist.
+
+The implementation uses a 5-block CFG: entry, header, body, increment, exit. It threads `arr_binding` and `arr_ty` through the semantic layer and adds `Op::Mul` cursor-deref unary lowering. With this work, WhileLoop parity moves from 6 PASS / 2 SKIP to 8 PASS / 0 SKIP. Once it merges to submain, all loop variants (while, for, while-in, loop/break/continue) will have full source-to-IR lowering.
+
+The remaining unsupported statement kinds after that merge would be `When` (match/when blocks) and `EnumDef`.
+
+## The submain gap
+
+The submain-to-main gap sits at 171 commits, unchanged from May 18. This number has been tracked in every daily log since May 6 and the growth has been steep: 16 on May 7, 40 on May 9, 164 on May 16, 171 on May 18. With CX-233, the actual divergence is 172 commits.
+
+Nothing is blocking the merge technically. The matrix passes at 117/117. The gap is purely merge latency, and the integration risk grows with every day it stays open.
+
+## What's next
+
+The obvious first move is merging CX-233 into submain. It is a clean single-commit PR that closes the last WhileLoop parity gap. After that, the parity targets shift to VariableDecl, DirectCall, InfiniteLoop, and BuiltinAssert categories.
+
+The submain-to-main merge needs to happen. At 171 commits of divergence, this is not something that gets easier with time.
