@@ -1,0 +1,52 @@
+---
+title: "Cx Dev Log — 2026-05-18"
+date: 2026-05-18
+description: "While-in loop source-to-IR lowering lands on a feature branch, the backend-determinism train merges into submain with 23 new parity fixtures, and the submain-main gap grows to 171 commits."
+---
+
+Two threads today: a large integration merge bringing backend determinism work into submain, and a real feature implementation that closes out the last WhileLoop parity gap. The while-in loop now has full source-to-IR lowering.
+
+## While-in loop IR lowering (CX-233)
+
+CX-233 is the headline. The `lower_while_in_single` function replaces the `unsupported!("WhileIn")` stub with roughly 210 lines of actual IR lowering in `src/ir/lower.rs`. The implementation emits a 5-block CFG: entry, header (counter comparison), body (array element load via `PtrOffset` + stride multiplication, store to `start_slot`, execute body statements), increment (counter + 1, back-edge to header), and exit.
+
+A few decisions worth noting:
+
+The lowering handles `inclusive` vs exclusive range by switching between `CompareOp::Le` and `CompareOp::Lt` at the header comparison. Element offset computation uses `Op::Mul` cursor-deref unary lowering. For `then in` chains, the implementation iterates over `then_chains` and threads the active block through successive `lower_while_in_single` calls, so chained iteration composes without special-casing.
+
+On the semantic side, `arr_binding` (BindingId) and `arr_ty` (SemanticType) are threaded through the WhileIn AST node and its then-chains. The decision to resolve the array variable via `lookup_var` during semantic analysis rather than re-resolving at IR time is consistent with how other lowering paths handle binding metadata.
+
+With this change, WhileLoop parity moves from 6 PASS / 2 SKIP to 8 PASS / 0 SKIP. Tests t34 (while-in range-based) and t35 (while-in-then) both pass. This is the first ranged iteration construct to get full IR lowering.
+
+The branch is committed and pushed to `origin/stokowski/CX-233` but not yet merged to submain. It will go through PR review first.
+
+## Backend determinism train merges into submain (PR #268)
+
+PR #268 merged the `train/backend-determinism` branch into submain. This follows the established pattern: accumulate related determinism and parity work on a train branch across multiple tickets (CX-223 through CX-230), then integrate via a single merge PR.
+
+The merge diff spans 28 files. The largest change is in `host_boundary.rs` at +2494/-588 lines, which picks up determinism test suites for multiple instruction categories that had been accumulating across those tickets. Other changes include `ir/lower.rs` (+144), `diff_harness.rs` (+116), and documentation updates to the JIT determinism and parity checklist docs.
+
+## CX-228: 19 new parity fixtures
+
+The most recent non-merge commit inside the train branch before its merge was CX-228, which adds 19 new `.cx` test fixtures to the verification matrix. These cover:
+
+- Direct calls: implicit return, explicit return, no-args, chained, forward-decl, recursive
+- Unary ops: neg int, not bool
+- Infinite loop variants
+- Compound assign in function
+- Builtin assert/assert_eq
+- t128 arithmetic
+- Const decl, block scope shadow
+- Impl basic/return/multi-alias
+
+The diff harness also picks up new support to handle these fixture categories. The fixtures are numbered t159 through t177, continuing the sequential test numbering.
+
+## The gap keeps growing
+
+Submain is now 171 commits ahead of main, up from 164 two days ago. This number has been flagged in every daily log since May 6 and has grown from 16 commits on May 7 to 171 today. Nothing is blocking the merge technically. The matrix holds at 117 PASS / 0 FAIL. This is purely merge latency, and the integration risk compounds with each passing day.
+
+## What's next
+
+The immediate move is merging CX-233 into submain. It is a clean single-commit change that closes the last WhileLoop parity gap. After that, the next parity targets are the remaining SKIPs in VariableDecl (5), DirectCall (5), InfiniteLoop (1), and BuiltinAssert (2).
+
+The submain-to-main merge remains overdue. At 171 commits of divergence, it is the largest gap the project has seen and it is still growing.
