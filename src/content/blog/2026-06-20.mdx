@@ -1,46 +1,44 @@
 ---
 title: "Cx Dev Log — 2026-06-20"
 date: 2026-06-20
-description: "No new code landed, but six weeks of missing roadmap updates were reconciled with confirmed submain work."
+description: "A quiet day with no new commits; the focus shifts to resolving a month-old batch of uncommitted example rewrites and the growing submain-to-main gap."
 ---
 
-No code commits today. The last engineering work was D2.2 (tag-only enum lowering) on submain, committed June 18. The working tree is clean. Matrix holds at 230/0 on main. What did happen is a roadmap catch-up that had been overdue since mid-May.
+No commits today across any branch. The last engineering work was D2.2 (tag-only enum lowering on submain), committed on June 18. Matrix holds steady at 230 PASS, 0 FAIL on main. This is a status-tracking day, not a development day.
 
-## Roadmap reconciliation
+## The uncommitted example rewrites
 
-The roadmap file had drifted since 2026-05-18, which means six weeks of confirmed submain work was missing from the living document. Today that gap was closed. The specific updates:
+The most notable thing in today's snapshot is not new work but old work that has been sitting untouched for nearly a month. Eight core example files have been modified in the working tree since late May but never committed. They live on the `daily-log-2026-06-13` branch and represent a documentation pass over the core Cx examples:
 
-The `when` block lowering trilogy is now marked complete in Phase 11. This covers three sub-steps that were all committed and verified on submain but never reflected in the roadmap:
+- `hello.cx` was rewritten as a first-program tutorial with block comments covering variables, types, print, and string interpolation.
+- `fibonacci.cx` was restructured to use an iterative while loop instead of recursive `fib()` calls, working around the current branch's stack depth constraints. It also adds a `classify()` helper to demonstrate explicit return.
+- `error_handling.cx` was expanded from a compact Result demo into a three-function chain (`divide`, `double_divide`, `triple_divide`) showing Result propagation and the `?` operator at each level.
+- `tbool_uncertainty.cx` was rewritten to focus on `TBool` fundamentals: the `?` literal, `is_known()`, unknown propagation through arithmetic, and short-circuit behavior.
+- `structs_and_methods.cx` renamed the `Player` example fields, added an `is_alive()` method, and added comments explaining `impl` block syntax.
+- `generics.cx` added a string-typed `Pair` instantiation alongside the integer one to demonstrate monomorphization.
+- `arrays_and_loops.cx` got comments explaining array declaration syntax, `for..in` range loops, and `while in` iteration with `*arr` dereferencing.
+- `fizzbuzz.cx` got tutorial comments with no logic changes.
 
-- D1.2a: statement/expression unification
-- D2.1: if-expression merge via shared branch-value blocks
-- D2.2: tag-only enum construct and match via variant_id
+These are documentation-quality improvements, not feature work. They need to be either committed and merged or discarded. A month of sitting uncommitted is long enough to call this out as the most obvious next action item outside of the compiler itself.
 
-The post-release hardening section was updated with the CR#1-4 range-check fix series (commits b8e92fb through cbba042) and the Gate-1a through 2b JIT arithmetic safety gates. These were committed between June 6 and June 15.
+## Submain gap: 16 commits, zero regressions
 
-Parity numbers were updated from the stale 110/72/0 across 182 fixtures to the current 205/81/0 across 286 fixtures. Frontend matrix count moved from 182/182 to 230/230. Both of these reflect real progress that had happened on submain but was invisible in the roadmap.
-
-## The submain gap continues
-
-Submain remains 16 commits ahead of main with zero regressions. The gap has been growing for 15 days since the last merge (PR #295, June 5). Those 16 commits include the full range-check series, all the arithmetic safety gates, and the when-block lowering trilogy. None of them are on main.
-
-This is the same story from recent logs, just with a larger number. The merge is low-risk by the evidence, but it keeps not happening.
-
-## The daily-log PR backlog
-
-PRs from June 13 through June 20 remain open and unmerged. This parallels the submain situation: a growing queue of clean, uncontroversial merges that are waiting on nothing technical.
+Submain continues to sit 16 commits ahead of main with no test failures. The gap has been growing since the last merge (PR #295). Those 16 commits include the tag-only enum lowering and earlier work, all passing against the full test matrix. There is no technical blocker to merging.
 
 ## Predictions vs. reality
 
-The June 19 log predicted four things for today: DotAccess in compound forms, submain merge, unknown-value lowering, and clearing the daily-log PR backlog. None happened. DotAccess has been predicted for four consecutive days without being started. It is the last unchecked Phase 11 sub-item and the natural target when active development resumes.
+The June 19 log predicted four things: DotAccess in compound forms, submain merge, unknown-value lowering, and clearing the daily-log PR backlog. None happened. DotAccess has now been predicted for four consecutive days without being started. It is the last unchecked Phase 11 sub-item.
+
+The daily-log PRs from June 13 through June 19 remain open on the remote but unmerged, adding to the queue of clean work waiting on nothing technical.
 
 ## What's next
 
-The priorities have not changed and the order is clear from the evidence:
+The priority list is unchanged and clear from the evidence:
 
-1. DotAccess in compound forms is the last Phase 11 item. It has been the predicted next step for days, so it is likely the first thing to land when work resumes.
-2. Merging submain to main. Sixteen commits with zero regressions. Straightforward.
-3. Unknown-value lowering (D2.x), which the D2.2 commit notes explicitly identified as the blocker for t47_edge_mix and other question-mark-dependent fixtures.
-4. Phase 8 Round 2 (str/strref layout, Handle<T>, TBool calling convention), logically gated behind finishing Phase 11.
+1. The uncommitted example rewrites need resolution. They have been sitting for a month.
+2. DotAccess in compound forms is the last Phase 11 item. It has been the predicted next step for days.
+3. Merging submain to main. Sixteen clean commits with zero regressions.
+4. Unknown-value lowering (D2.x), identified in the D2.2 commit notes as the blocker for `t47_edge_mix` and other `?`-dependent fixtures.
+5. Phase 8 Round 2 (str/strref, Handle<T>, TBool calling convention) is gated behind finishing Phase 11.
 
-Today was documentation maintenance, not development. The roadmap is now accurate, which matters for tracking, but the real work is still queued on submain waiting to land.
+Today was a quiet day. The compiler is stable, the test matrix is green, and the backlog of unmerged work continues to grow. The real question is when active development resumes and whether the first move is DotAccess or clearing the merge queue.
