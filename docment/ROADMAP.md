@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-06-21
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -10,7 +10,7 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ## Frontend — v0.1.0 Released
 
-All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 230/230 matrix tests passing. 8/8 examples passing.
 
 **Status:** v0.1.0 released (tagged at 9fc0d24). No known soundness holes. Syntax frozen.
 
@@ -21,6 +21,8 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] CR#1–4 range-check fixes: generic type args (CR#1), struct/call array elements (CR#2), return values (CR#3), if/when branch tails (CR#4) — b8e92fb..cbba042
+- [x] Gate-1a/1b0/1b/2a/2b arithmetic safety: INT_MIN/-1 guard, cx_trap host-exit, div-zero trap, width narrowing, array bounds-check — c4527a6..51e4e24
 
 ---
 
@@ -55,7 +57,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
   - [x] Method call actual lowering (0ab7e9b — synthesis-and-recurse via Call arm)
-  - [ ] `when` block lowering or structured rejection
+  - [x] `when` block lowering (D1.2a stmt/expr unification, D2.1 if-expression merge, D2.2 enum construct+match) — e4c0c77, a42f001, d12d161
+  - [x] Unknown/TBool lowering (D2.x-A1 bool-typed `?` construct + condition trap; D2.x-A2 Kleene `&&`/`||`/`!`) — ae37aa0, b1b92f7
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
@@ -66,7 +69,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 209 PASS / 77 SKIP / 0 PARITY_FAIL across 286 fixtures)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -92,6 +95,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-06-21:** D2.x-A1 + D2.x-A2 landed on submain — bool-typed unknown (`?`) lowering and three-valued Kleene logic (`&&`/`||`/`!` on TBool). 363 lines added to lower.rs. Parity 205→209 PASS, 81→77 SKIP, 0 FAIL across 286 fixtures. Submain 18 commits ahead of main. Matrix 230/0 on main.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
