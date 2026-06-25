@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-06-24"
+date: 2026-06-24
+description: "Print-time string interpolation and f64 print land on submain, closing out the static string subset of the JIT."
+---
+
+Two commits landed on submain today, both significant. D2.3d shipped print-time string interpolation and f64 print support. D2.3c (which slipped past yesterday's 24h window by four minutes) added compile-time literal string concatenation and content equality. Combined, they close out the entire static string subset for the JIT backend. Parity moved from 215/71/0 to 222/64/0 across 286 fixtures.
+
+## D2.3d: print-time interpolation and f64
+
+The bigger commit of the two. `print("a {x} b")` now decomposes at lowering time into a sequence of inline prints: literal chunks go through `cx_print_str_inline`, resolved `{x}` values dispatch via type-appropriate intrinsics, and one `cx_print_newline` closes the statement. No new string is constructed at runtime. This is a deliberate choice to avoid R6 (dynamic string allocation) entirely. The decomposition mirrors the interpreter's `expand_interpolation` path: bare identifiers only, unclosed `{` treated as a literal brace, non-identifier `{...}` content skipped.
+
+The implementation builds a flat per-function binding map via `collect_binding_names_stmt`, walking Decl/TypedAssign/For/ConstDecl nodes to produce a name-to-BindingId table. This diverges from the interpreter's scope-correct lookup in two corners: shadowed names after inner block exit, and use-before-declaration. No fixture exercises either case, and the limitation is filed explicitly rather than shipped silently. It is tied to the open interpolation-scoping question that has been deferred for weeks.
+
+Five new host intrinsics were registered in `HostBoundary`: `cx_print_str_inline`, `cx_printn_inline`, `cx_print_bool_inline`, `cx_print_f64_inline`, and `cx_print_newline`. The existing newline-adding print intrinsics are untouched, so normal (non-interpolated) print is byte-identical to before.
+
+f64 print also landed in this commit. Bare `print(some_f64)` now routes through `cx_print_f64_inline` plus `cx_print_newline`, matching the interpreter's `value_to_string(Float)` via Rust `Display`. Before this, f64 was the first member of the unsupported-print-arg set. Two fixtures converted: `t75_string_interpolation` and `t55_f64_basic`, both producing byte-for-byte matches against interpreter output.
+
+## D2.3c: literal concat folding and string equality
+
+This commit technically landed June 23 (four minutes outside yesterday's log window). `str + str` over compile-time-known operands now folds to a single new static descriptor at lowering time, using the same leak-to-static mechanism as D2.3b. Runtime operands still skip (R6 boundary).
+
+Content equality uses a `cx_str_eq(a_desc, b_desc)` host callback that reads `(ptr, len)` from each descriptor and does a length-check followed by memcmp. `!=` is the negation of `==`, and `assert_eq` on strings routes through the same path. Five fixtures converted: `t_concat_basic`, `t_concat_chain`, `t_concat_empty`, `t_concat_eq`, `t78_assert_eq_strings`.
+
+## Static string subset: done
+
+The D2.3d commit message declares the static string subset complete. The JIT now handles string literals, compile-time concatenation, content equality, and print-time interpolation. Anything requiring runtime allocation (dynamic concatenation with non-literal operands, runtime string construction, string values in non-print expression contexts) stays deferred to R6. This is a clean boundary: everything that can be done without a heap-allocated string type is now done.
+
+## Submain gap keeps growing
+
+Submain is 22 commits ahead of main with zero regressions. The gap is 19 days old. The parity numbers tell the story: submain sits at 222/64/0 across 286 fixtures while main is frozen at 230/230. A merge has been predicted for eight consecutive days and has not happened. There is no technical blocker.
+
+## What's next
+
+The natural next move is R6 (dynamic strings), which is a qualitative step up from the static string work. It requires allocation, lifetime management, and potentially a string representation change. DotAccess in compound forms is the last unchecked Phase 11 sub-item and has been predicted for eight consecutive days without being started. The submain merge remains the lowest-effort, highest-impact action available.
