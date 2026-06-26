@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-06-25"
+date: 2026-06-25
+description: "A rest day after completing the static string subset, with the submain branch sitting 22 commits ahead of main and the next frontier being runtime-allocated strings."
+---
+
+No code landed today. The static string subset wrapped up yesterday with D2.3d (print-time interpolation and f64 print lowering), and today was a genuine pause. Sometimes those are worth documenting too, because the project state right now is interesting.
+
+## Static strings: done
+
+The D2.3a through D2.3d arc is complete on submain. The JIT now handles string literals, compile-time concatenation, content equality, and print-time string interpolation. Every string operation that can avoid runtime allocation is covered.
+
+The approach to interpolation is worth noting: `print("a {x} b")` decomposes at lowering into a sequence of inline prints rather than building a new string in memory. That was a deliberate design call to keep R6 (dynamic string allocation) out of scope for this batch. It works for print statements; string interpolation in general expression context will need the allocation infrastructure that R6 brings.
+
+The parity numbers tell the story. Submain sits at 222 PASS / 64 SKIP / 0 PARITY_FAIL across 286 fixtures. Those 64 SKIPs are the dynamic string cases and JIT-unsound paths that need R6 or bounds checking to resolve. Main's matrix holds steady at 230/0.
+
+## The merge gap
+
+Submain is now 22 commits ahead of main. The last merge was PR #295 (the v0.2.0 batch), and that was 20 days ago. Every daily log for over a week has predicted a submain-to-main merge, and it keeps not happening.
+
+There are zero regressions on submain and no merge conflicts expected. The accumulated work includes range-check hardening, arithmetic safety gates, when block lowering, the full static string arc, and multiple rounds of parity improvements. It is a lot of verified work sitting in a branch.
+
+This is not a technical blocker. It is just a prioritization pattern where new feature work keeps winning over integration. At some point the gap gets unwieldy enough that the merge itself becomes a task worth scheduling explicitly.
+
+## Roadmap catch-up
+
+The roadmap on main was last updated 2026-05-18, which is over five weeks stale. Today's daily log branch brought it current by checking off all the submain work through D2.3d: range-check hardening (CR#1-4), arithmetic safety gates, when block lowering, and the full static string series. No new tasks were added since the natural next steps are already represented in existing items.
+
+## What is next
+
+The next real frontier is R6: dynamic strings. Everything the JIT handles today involves strings that are fully known at compile time or decomposed into inline print sequences. Dynamic concatenation with runtime operands, string values flowing through non-print expression contexts, runtime string construction -- all of that requires allocation infrastructure, lifetime management, and potentially a new string representation.
+
+That is a qualitative step up from the static subset. The static string work was a series of lowering patterns and host callbacks. R6 means building actual memory management into the runtime.
+
+The other long-deferred item is DotAccess in compound forms, the last unchecked non-string Phase 11 sub-item. It has been predicted in every daily log for over a week and not started. Whether it gets picked up before or after R6 remains to be seen.
