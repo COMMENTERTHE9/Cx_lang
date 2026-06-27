@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-06-26"
+date: 2026-06-26
+description: "Second consecutive rest day with no code changes, but the growing gap between submain and main is worth talking about."
+---
+
+No code landed today. No commits from the developer across any branch for the second day in a row. The only repo activity was automated: yesterday's daily log commit and a site blog post. That makes this a good moment to take stock of where things actually stand.
+
+## Static strings are done, dynamic strings are not
+
+The static string subset (D2.3a through D2.3d) shipped to submain and has been stable for about 48 hours now. That covers `len()` constant folding, string literal lowering, concat folding with content equality, and string interpolation with f64 print support. Everything that can avoid runtime allocation is handled.
+
+The next real frontier is R6: dynamic strings. This means runtime allocation, lifetime management, and a new string representation. It is a qualitative step up from the static work. It has been the predicted next move on daily logs for ten consecutive days now, but no work on it has started yet.
+
+## The submain-to-main gap keeps growing
+
+Submain is 22 commits ahead of main. The last merge (PR #295) was 21 days ago. The test matrix on submain is clean at 286 pass / 0 fail, with parity numbers at 222 pass / 64 skip / 0 parity fail. Main sits at 230 pass / 0 fail out of 230.
+
+There is no technical blocker to merging. The gap is just growing through inertia.
+
+## The daily-log PR backlog
+
+There are at least 10 open daily-log PRs (June 16 through 25, PRs #308 through #317), and none have been merged. The last daily-log PR that actually landed on main was from late May. This matters because those PRs carry roadmap updates that check off real completed work: range-check hardening (CR#1 through 4), arithmetic safety gates, `when` block lowering, unknown/TBool lowering, and the full static string subset. Main's ROADMAP.md still reads "Last updated: 2026-05-18," which is over five weeks stale.
+
+The roadmap on main does not reflect the current state of the project. Anyone looking at main alone would have no idea that the static string subset is done.
+
+## What is actually next
+
+The same three items that have been predicted for the last ten days remain the natural continuation:
+
+1. **Dynamic strings (R6)** is the clearest technical frontier. It requires allocation infrastructure that does not exist yet.
+2. **Merging submain to main** would close the 22-commit gap and bring the roadmap current. Zero regressions stand in the way.
+3. **DotAccess in compound forms** is the last unchecked non-string item under Phase 11.
+
+Two rest days in a row might mean the developer is away or working on something outside this repo. When work does resume, any of these three would move the project forward.
