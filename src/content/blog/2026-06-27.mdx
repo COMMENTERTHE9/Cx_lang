@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-06-27"
+date: 2026-06-27
+description: "Result<T> crossed the compiler boundary with two commits landing the packed-i128 representation and the ? (Try) operator through the JIT path."
+---
+
+Result<T> is now end-to-end through the Cx backend. Two commits on submain today brought error handling from the interpreter into the Cranelift JIT: D2.4a builds the packed representation, construction, and printing; D2.4b adds the `?` operator for unwrapping and propagation. Parity jumped from 222/64/0 to 229/58/0 across 287 fixtures. This is the first error-handling type to complete the full lowering path.
+
+## The packed-i128 representation
+
+Result<T> is stored as a packed i128: the tag occupies the high 64 bits (Ok = 0, Err = 1), and the payload sits in the low 64. The interesting design choice here is *how* the packing works. Arithmetic packing was rejected because sign-extending a negative payload (say, `Ok(-5)`) via `Cast i64 -> i128` would smear sign bits into the tag half, corrupting it. Instead, construction uses a memory round-trip: allocate 16 bytes, store the payload at offset 0, store the tag at offset 8, then load the whole slot as a single i128. It is mechanically heavier but keeps the two fields byte-isolated.
+
+This is not an incidental implementation detail. The commit includes a canary fixture, `t_result_ok_negative.cx`, that pins the negative-payload invariant. If a future optimization tries to collapse the round-trip into arithmetic, that test will catch it.
+
+The Cranelift side needed one additional flag: `enable_llvm_abi_extensions` in `host_boundary.rs`, because the x64 ABI rejects i128 arguments and returns without it. `print(Result)` is a tag-branch inline sequence that reuses the D2.3d host functions and matches the interpreter's `Ok(15)` / `Err(cannot be zero)` output byte-for-byte.
+
+## The ? operator
+
+D2.4b adds `expr?` on Result<T>. At the IR level, the packed i128 is unpacked via `result_unpack`, then the code branches on the tag. On Ok, the payload word is narrowed back to T with `ireduce` (reversing the construct's `widen`) and execution continues. On Err, the entire original i128 is early-returned from the enclosing function via the plain Return terminator, so the propagated error arrives at the caller byte-identical.
+
+The semantic analyser already enforces that `?` only appears inside a Result-returning function and only on a Result<T> operand (rejected by t85/t86), so the lowering itself does not need a return-type lookup. The EarlyReturn path is completely independent of the TBool `?` machinery, which uses different semantics for unknown-value propagation. The commit notes this explicitly to prevent the two arcs from being conflated later.
+
+There is a deliberate boundary: Result<T> only works when T fits in a single i64 word (scalars or static Ptr). Attempting `Result<Result<T>>` is refused at the `widen_payload_to_i64` entry point with a clear error pointing to R7-deferred. This is honest about the representation's limits rather than silently producing wrong code for nested Results.
+
+## Example suite rewrite
+
+Separately from the compiler work, all eight files in `examples/` received a tutorial-style documentation rewrite: block comments with section headers, more idiomatic code patterns, and expanded demonstrations. `error_handling.cx` now showcases the full Result + `?` operator chain that D2.4a/b just made possible in the backend. The rewrite adds roughly 280 lines across the suite. This work is not yet committed on any branch but looks deliberate and thorough.
+
+## What's next
+
+The most immediate follow-up is D2.4c, Result equality routing. `assert_eq` on Result currently works for free via i128 equality when Ok payloads produce canonical bit patterns, but Err equality needs to route through `cx_str_eq` for string comparison. The D2.4a commit notes flag this explicitly.
+
+Beyond that, the uncommitted example rewrite needs to be committed. The error-handling example in particular depends on D2.4a/b to actually run through the JIT, so it may be waiting on those commits reaching main. Submain is now 24 commits ahead of main with zero regressions and a 27-day gap since the last merge. Dynamic strings (R6) remain the next qualitative frontier, and DotAccess in compound forms is still the last unchecked Phase 11 item.
+
+Parity: 229 PASS / 58 SKIP / 0 PARITY_FAIL across 287 fixtures on submain. Main holds at 230 PASS / 0 FAIL.
