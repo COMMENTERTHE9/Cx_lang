@@ -1,0 +1,53 @@
+---
+title: "Cx Dev Log — 2026-06-28"
+date: 2026-06-28
+description: "Labeled break/continue shipped end-to-end across the lexer, parser, semantic analyser, interpreter, and JIT in two commits on submain."
+---
+
+Labeled break/continue went from zero to fully working today. Two commits on submain took it through the entire compiler: lexer, AST, parser, semantic analyser, IR lowering, interpreter, and JIT. The feature is a full vertical slice, and everything passes.
+
+## The lexer seam
+
+Labels use Rust-style `'ident` syntax: an apostrophe followed by an identifier, no closing quote. The interesting part is how this coexists with char literals. The `Label` token regex (`'[_\p{L}][_\p{L}\p{N}]*`) sits after `LiteralChar` in the logos enum, so longest-match does the work: `'x'` is three characters and wins as a char literal, while `'outer` (two or more characters, no closing quote) lexes as a label. Escape sequences like `'\n'` have a backslash after the opening quote, so they can't match the label regex either.
+
+A dedicated fixture (`t_char_literal_guard`) pins this invariant. If someone reorders the token enum or tweaks the regexes, it breaks immediately.
+
+## Two-commit split
+
+The work landed as two deliberate commits rather than one.
+
+Commit one (`f94c6a5`) adds all the frontend machinery: the `Label` token, optional labels on every loop form (while/for/while-in/loop), optional labels on break/continue in the AST, and semantic validation. The semantic analyser now maintains a loop-label scope stack. `break 'L` with no enclosing `'L` loop is rejected. Duplicate labels on overlapping nested loops are rejected. Both rejections have expected-fail fixtures pinning them.
+
+The backends got minimal guards in this commit. The interpreter raises a clean error for labeled jumps; the JIT skips them. This means the parser and semantic work can be tested independently without risk of a labeled break silently hitting the innermost loop instead of the named one. All 11 existing loop fixtures stay green.
+
+Commit two (`0f56f1e`) replaces the guards with real execution on both backends.
+
+## Interpreter changes
+
+`BreakSignal` and `ContinueSignal` now carry an `Option<label>`. Each loop catches a signal when the label is `None` (innermost loop, same as before) or when the label matches the loop's own label. Otherwise, the signal re-raises and walks outward to the named loop. Unlabeled break/continue behavior is byte-identical to before.
+
+## JIT changes
+
+The JIT required more structural work. `LoopContext` gains a label field, and what was a single optional context becomes a stack threaded through the entire statement-lowering call chain. `find_target_loop` walks the stack in reverse for labeled jumps and takes `.last()` for unlabeled ones. `break 'L` jumps to the named loop's exit block; `continue 'L` jumps to its header block. Both gather the target context's bindings from the live SSA environment.
+
+The backward compatibility story is clean: unlabeled jumps take the top of stack, which is exactly the single context they had before. No existing loop codegen changes.
+
+## Test fixtures
+
+Four new fixtures cover the feature:
+
+- `t_break_missing_label_reject` and `t_dup_label_reject` pin the semantic rejections from commit one.
+- `t_labeled_break_outer` tests breaking from an inner loop to exit an outer loop. An unlabeled break would loop forever here, so this is a discriminating test.
+- `t_labeled_continue_outer` tests continuing on an outer loop to re-iterate it from inside an inner loop.
+
+The matrix on submain is at 292 pass, 0 fail. Parity stands at 233 pass, 59 skip, 0 parity failures.
+
+## Other changes
+
+A site blog post covering yesterday's `Result<T>` packed-i128 representation and `?` operator work also landed on the site branch (`07bef03`).
+
+No merge to main happened today. Submain is now 26 commits ahead. The gap since the last merge (PR #295) is approaching 30 days with zero regressions, so that merge is increasingly overdue.
+
+## What's next
+
+The labeled breaks work touched `semantic.rs` and `lower.rs` extensively, which makes `when` block lowering a natural next step since it hits the same surfaces. DotAccess in compound forms and dynamic strings (R6) are still on the board but haven't started. The submain-to-main merge keeps getting flagged and keeps not happening.
