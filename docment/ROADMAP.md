@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-07-02
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -10,7 +10,7 @@ This file is a concise synthesis of the project's roadmap state. Detailed roadma
 
 ## Frontend — v0.1.0 Released
 
-All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing.
+All 9 hard blockers resolved. 230/230 matrix tests passing on main. 8/8 examples passing.
 
 **Status:** v0.1.0 released (tagged at 9fc0d24). No known soundness holes. Syntax frozen.
 
@@ -21,6 +21,9 @@ All 9 hard blockers resolved. 182/182 matrix tests passing. 8/8 examples passing
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] CR#1–4: integer-width refactoring, range-check hardening
+- [x] Gate-1a/1b: arithmetic safety (overflow trapping, signed narrowing)
+- [x] Gate-2a/2b: store-width narrowing, array bounds checking
 
 ---
 
@@ -38,7 +41,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [x] Phase 0.5 — Backend trait interface (&IrModule)
 - [x] Phase 7 — IR pretty printer and diagnostics
 - [x] Phase 6 — Function call lowering (direct calls, arity/type validation)
-- [x] Phase 10 — Loop lowering (while, for, break, continue)
+- [x] Phase 10 — Loop lowering (while, for, break, continue, labeled break/continue)
 - [x] Phase 8 Round 1 — ABI (scalars, structs, arrays, enums, calling convention)
 
 ### Active
@@ -55,7 +58,12 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
   - [x] Range structured error (CX-19)
   - [x] MethodCall structured error (CX-21)
   - [x] Method call actual lowering (0ab7e9b — synthesis-and-recurse via Call arm)
-  - [ ] `when` block lowering or structured rejection
+  - [x] `when` block lowering (if-expression + when-pattern unification on submain)
+  - [x] TBool lowering (submain)
+  - [x] String representation and operations (len folding, concat, interpolation on submain)
+  - [x] Result<T> packed representation + print (71c4160 on submain)
+  - [x] `?`/Try operator on Result (a32a242 on submain)
+  - [x] Labeled break/continue (f94c6a5, 0f56f1e on submain)
   - [ ] DotAccess in compound forms
 - [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
 
@@ -66,7 +74,7 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 - [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
 - [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
 - [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 110 PASS / 72 SKIP / 0 PARITY_FAIL across 182 fixtures)
+- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 233 PASS / 59 SKIP / 0 PARITY_FAIL across 292 fixtures on submain)
 
 ### Post-0.1
 - [ ] Cranelift AOT (Phase 16)
@@ -92,6 +100,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-07-02:** Fourth consecutive quiet day. No developer commits in 24h. Submain remains 26 commits ahead of main (last developer commit: 0f56f1e, 2026-06-28). Integration gap now 27 days since last submain→main merge (PR #295, June 5). 17+ daily-log PRs (#308–#324) open and unmerged. Matrix: 230/0 on main.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
