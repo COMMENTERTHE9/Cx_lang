@@ -47,9 +47,9 @@ Source: [`docs/backend/cx_jit_parity_checklist.md`](https://github.com/COMMENTER
 
 ## In Progress In The JIT
 
-The JIT lowers integer arithmetic, comparisons, variable declarations, `if` / `else`, parts of loop control, direct calls, struct field read/write, arrays, compound assignment, logical `&&` / `||`, integer casts, `print` / `println` / `printn` for `t64`, and assertion built-ins.
+The JIT lowers integer arithmetic, comparisons, variable declarations, `if` / `else`, parts of loop control, direct calls, method dispatch, struct field read/write, arrays, compound assignment, logical `&&` / `||`, integer casts, unary negation, `f64` arithmetic, `print` / `println` / `printn` for `t64` and `f64`, string interpolation, assertion built-ins, `when` over literal / range / bool / catch-all / enum-variant patterns, `Handle<T>` construct/read/drop for scalar payloads (`t8`/`t16`/`t32`/`t64`/`bool`), and `Result<T>` / `Ok` / `Err` / `?` when `T` fits a single i64 word (scalar payloads).
 
-The JIT does not yet lower `when`, method calls, `f64` operations, unary negation, enums, generics, handles, string arena operations, `Result<T>`, or `?`.
+The JIT does not yet lower generics, string arena operations (mutable/growable string internals), `read` / `input`, or non-scalar `Handle<T>` and `Result<T>` payloads (`Handle<str>`, `Handle<struct>`, wide or composite `Result<T>` values).
 
 ## Planned Or Thin
 

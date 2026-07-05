@@ -9,7 +9,7 @@ import SourceComment from "../../components/SourceComment.astro";
 
 ## Status
 
-The interpreter supports the 0.1 type surface. The JIT lowers integers, bool paths, arrays, structs, and part of `tbool`. Strings, `char`, `strref`, handles, generics, `Result<T>`, and `f64` operations are not complete in the JIT.
+The interpreter supports the 0.1 type surface. The JIT lowers integers, `f64` arithmetic, bool/`tbool` matching, arrays, structs, string interpolation, scalar `Handle<T>`, and scalar-payload `Result<T>`. `char`, `strref`, generics, and non-scalar `Handle<T>` / `Result<T>` payloads are not complete in the JIT.
 
 ## Integers
 
@@ -27,7 +27,7 @@ Integer arithmetic and compound assignment are JIT-lowered, with some width cove
 
 ## Floating Point
 
-`f64` works in the interpreter. Float operations are SKIP in the JIT.
+`f64` works in the interpreter. Arithmetic and printing lower to the JIT.
 
 <SourceComment source="origin/submain:src/tests/verification_matrix/t55_f64_basic.cx" />
 ```cx
@@ -59,11 +59,11 @@ when x {
 }
 ```
 
-Logical `&&` and `||` lower in the JIT. `when` over TBool does not.
+Logical `&&` and `||` lower in the JIT. `when` over a definite `true` / `false` value lowers, including an `unknown` arm that's never reached. An actual unknown-valued (`?`) TBool is not yet representable in the JIT, and `is_known(...)` is not yet JIT-lowered.
 
 ## Strings
 
-`str` works in the interpreter. String interpolation works in print calls. String arena operations are not JIT-lowered.
+`str` works in the interpreter. String interpolation lowers to the JIT in print calls. String arena operations (mutable/growable string internals) are not yet JIT-lowered.
 
 <SourceComment source="origin/submain:src/tests/verification_matrix/t75_string_interpolation.cx" />
 ```cx
@@ -92,7 +92,7 @@ print('a' == 'b')
 
 ## Handles
 
-`Handle<T>` works in the interpreter. It is not JIT-lowered.
+`Handle<T>` works in the interpreter. Construct, read, and drop lower to the JIT for scalar payloads (`t8`, `t16`, `t32`, `t64`, `bool`). Non-scalar payloads (`Handle<str>`, `Handle<struct>`) are not yet designed for the JIT.
 
 <SourceComment source="origin/submain:src/tests/verification_matrix/t24_full_system_regression.cx" />
 ```cx
@@ -101,3 +101,5 @@ h = Handle.new(99)
 print(h.val)
 h.drop()
 ```
+
+Printing a handle's `.val` directly is not yet supported on the JIT — `.val` widens to a 128-bit value for its validity check, and `print` does not yet format values wider than `t64`. Read `.val` into a same-width variable to use it under the JIT backend.

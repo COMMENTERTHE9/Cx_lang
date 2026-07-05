@@ -9,7 +9,7 @@ import SourceComment from "../../components/SourceComment.astro";
 
 ## Status
 
-`Result<T>`, `Ok`, `Err`, and `?` are stable in the interpreter. They are not JIT-lowered yet.
+`Result<T>`, `Ok`, `Err`, and `?` are stable in the interpreter. They lower to the JIT when `T` fits a single i64 word (scalar payloads, as in the examples below). Wider or composite `Result<T>` payloads are not yet supported.
 
 ## Result Values
 

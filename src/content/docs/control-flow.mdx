@@ -9,7 +9,7 @@ import SourceComment from "../../components/SourceComment.astro";
 
 ## Status
 
-Control flow is stable in the interpreter. `if` / `else` and `for` are JIT-lowered and parity-gated. `while` and `loop` have partial JIT coverage. `when` is interpreter-only today.
+Control flow is stable in the interpreter. `if` / `else` and `for` are JIT-lowered and parity-gated. `while` and `loop` have partial JIT coverage. `when` lowers to the JIT for literal, range, definite-bool, and enum-variant patterns; matching an actual unknown-valued (`?`) TBool does not yet lower.
 
 ## If And Else
 
@@ -111,7 +111,7 @@ print_odds(6)
 
 ## When
 
-`when` works in the interpreter. It is not JIT-lowered yet.
+`when` works in the interpreter. It lowers to the JIT for literal, range, definite-bool, and enum-variant patterns.
 
 <SourceComment source="origin/submain:examples/tbool_uncertainty.cx" />
 ```cx
@@ -124,6 +124,8 @@ when y {
     unknown => print("is unknown"),
 }
 ```
+
+This example assigns an actual unknown value (`?`) before matching it. Matching a definite `true` / `false` value lowers to the JIT even when an `unknown` arm is present and unreached, but matching a value that is actually unknown at runtime does not yet lower — this specific sample does not run under `--backend=cranelift` today.
 
 Source examples:
 [examples/fizzbuzz.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/fizzbuzz.cx),

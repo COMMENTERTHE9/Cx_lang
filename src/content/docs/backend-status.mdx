@@ -40,26 +40,25 @@ PARITY_FAIL means the JIT and interpreter disagree. That count must stay zero.
 - `if` / `else`
 - `for` ranges
 - parts of `while`, `loop`, `break`, and `continue`
-- direct function calls
+- direct function calls and method dispatch (field mutation through a method included)
 - struct literals and field read/write
 - fixed-size array allocation, read, write, and function use
-- `print`, `println`, `printn` for `t64`
+- `print`, `println`, `printn` for `t64` and `f64`
+- string interpolation
 - `assert` and `assert_eq`
-- integer casts
+- integer casts and unary negation
+- `f64` arithmetic
+- `when` over literal, range, definite-bool, and enum-variant patterns
+- `Handle<T>` for scalar payloads (construct, read, drop)
+- `Result<T>` / `Ok` / `Err` / `?` for scalar payloads (`T` fits a single i64 word)
 - void returns and exit-code propagation
 
 ## Not Yet JIT-Lowered
 
-- `when`
-- method calls
-- `f64` operations
-- unary negation
-- enums
 - generics
-- `Handle<T>`
-- string arena operations
-- `Result<T>` and `?`
+- string arena operations (mutable/growable string internals)
 - `read` and `input`
+- non-scalar `Handle<T>` and `Result<T>` payloads (`Handle<str>`, `Handle<struct>`, wide or composite `Result<T>` values)
 
 ## Per-Feature Doc Tier
 
@@ -67,23 +66,23 @@ PARITY_FAIL means the JIT and interpreter disagree. That count must stay zero.
 | --- | --- | --- | --- |
 | Functions | Y | Partial | Stable interp / In progress JIT |
 | Structs and methods | Y | Partial | Stable interp / In progress JIT |
-| Enums | Y | N | Stable interp / In progress JIT |
+| Enums | Y | Partial | Stable interp / In progress JIT |
 | Integers | Y | Partial | Stable interp / In progress JIT |
-| `f64` | Y | N | Stable interp / In progress JIT |
+| `f64` | Y | Partial | Stable interp / In progress JIT |
 | `bool` / `str` | Y | Partial | Stable interp / In progress JIT |
 | `char` | Y | N | Stable interp / Planned JIT |
 | `strref` | Partial | N | In progress |
 | `tbool` and unknown | Y | Partial | Stable interp / In progress JIT |
-| `when` | Y | N | Stable interp / In progress JIT |
+| `when` | Y | Partial | Stable interp / In progress JIT |
 | `if` / `else` | Y | Y | Stable |
 | Loops | Y | Partial | Stable interp / In progress JIT |
 | Arrays | Y | Partial | Stable interp / In progress JIT |
 | Generics | Y | N | Stable interp / In progress JIT |
-| `Result<T>` | Y | N | Stable interp / In progress JIT |
+| `Result<T>` | Y | Partial | Stable interp / In progress JIT |
 | Imports | Y | Partial / n/a | Stable interp / In progress JIT |
 | Testing | Y | Partial | Stable |
 | Compound assignment | Y | Y | Stable |
-| String interpolation | Y | N | Stable interp / In progress JIT |
+| String interpolation | Y | Y | Stable |
 | `print` | Y | Partial | Stable interp / In progress JIT |
 | `read` / stdin | Y | N | Stable interp / Planned JIT |
 | Type inference | Partial | Partial | In progress |

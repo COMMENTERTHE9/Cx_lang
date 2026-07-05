@@ -9,7 +9,7 @@ import SourceComment from "../../components/SourceComment.astro";
 
 ## Status
 
-Structs are stable in the interpreter. The JIT lowers struct literals and field read/write. Method calls are still SKIP.
+Structs are stable in the interpreter. The JIT lowers struct literals, field read/write, and method dispatch (including field mutation through a method). Calling `print` from inside a method body does not yet lower to the JIT.
 
 ## Struct Definition
 
@@ -25,7 +25,7 @@ struct Player {
 
 ## Impl Blocks
 
-Impl blocks attach methods. Method calls work in the interpreter and remain in progress for the JIT.
+Impl blocks attach methods. Method dispatch and field mutation through a method both lower to the JIT.
 
 <SourceComment source="origin/submain:examples/structs_and_methods.cx" />
 ```cx
@@ -58,6 +58,8 @@ p.show()
 p.heal(10)
 p.show()
 ```
+
+This example's `show()` method calls `print` internally. Struct construction, method dispatch, and field mutation all lower to the JIT, but calling `print` from inside a method body does not yet lower — this specific sample does not run under `--backend=cranelift` today.
 
 ## Struct Field JIT Fixtures
 
