@@ -132,7 +132,7 @@ assert_eq(sum, 10)
 fnc: t64 find_first_even(start: t64) {
     i: t64 = start
     loop {
-        if i % 2 == 0 {
+        if (i % 2) == 0 {
             break
         }
         i += 1
@@ -187,10 +187,8 @@ print(hits)
 <SourceComment source="origin/submain:src/tests/verification_matrix/t107_continue_in_func.cx" />
 ```cx
 fnc: print_odds(n: t64) {
-    i: t64 = 0
-    while (i < n) {
-        i += 1
-        if i % 2 == 0 {
+    for i in 0..n {
+        if (i % 2) == 0 {
             continue
         }
         print(i)
