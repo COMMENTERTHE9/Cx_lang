@@ -25,6 +25,22 @@ assert_eq(y, 100)
 
 Integer arithmetic and compound assignment are JIT-lowered, with some width coverage still marked SKIP.
 
+Arithmetic wraps at the declared width rather than overflowing or panicking:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t89_overflow_t8_add.cx" />
+```cx
+x: t8 = 100
+print(x + 100)
+```
+
+A literal that doesn't fit its declared width is rejected at compile time, not silently wrapped:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_neg_literal_overflow_t8.cx" />
+```cx
+x: t8 = -200
+print(x)
+```
+
 ## Floating Point
 
 `f64` works in the interpreter. Arithmetic and printing lower to the JIT.
@@ -73,6 +89,40 @@ print("Language: {name}")
 print("Version: {version}")
 x: f64 = 3.14
 print("Pi is about {x}")
+```
+
+Strings concatenate with `+`, and `len` returns a byte count:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_concat_basic.cx" />
+```cx
+s: str = "a" + "b"
+print(s)
+```
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_len_string.cx" />
+```cx
+print(len("hello"))
+```
+
+`len` counts bytes, not characters — `"é"` is one character but two UTF-8 bytes:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_len_bytes.cx" />
+```cx
+print(len("é"))
+```
+
+Concatenation does not implicitly convert other types to `str`:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_concat_mixed_type.cx" />
+```cx
+s: str = "count: " + 5
+print(s)
+```
+
+```text
+SEMANTIC ERROR: cannot concatenate `str` and `numeric literal` with `+` —
+Cx does not implicitly convert values to strings; use string interpolation
+instead, e.g. "total {x}"
 ```
 
 ## Char
