@@ -1,0 +1,95 @@
+---
+title: Enums
+description: Enum declaration, variant access, use in signatures, and when-matching.
+order: 6.5
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Enums are stable in the interpreter. The JIT lowers `when` matching over enum variants; other enum-shaped IR paths are still filling in.
+
+## Declaration
+
+Enum variants are declared in braces and accessed with `::`.
+
+<SourceComment source="origin/submain:examples/enums.cx" />
+```cx
+enum Light { Red, Green, Yellow }
+```
+
+## Enum Types In Function Signatures
+
+Enum types can appear in parameter and return position.
+
+<SourceComment source="origin/submain:examples/enums.cx" />
+```cx
+fnc: Light next(cur: Light) {
+    when cur {
+        Light::Red    => Light::Green,
+        Light::Green  => Light::Yellow,
+        Light::Yellow => Light::Red,
+        _             => Light::Red,
+    }
+}
+```
+
+## When Matching On Variants
+
+`when` matches enum variants as both an expression (`next`, above) and a statement. Matching lowers to the JIT.
+
+<SourceComment source="origin/submain:examples/enums.cx" />
+```cx
+fnc: name(cur: Light) {
+    when cur {
+        Light::Red    => print("red"),
+        Light::Green  => print("green"),
+        Light::Yellow => print("yellow"),
+        _             => print("?"),
+    }
+}
+
+cur: Light = Light::Red
+for i in 0..4 {
+    name(cur)
+    cur = next(cur)
+}
+```
+
+## Grouped Enums
+
+Variants can be declared in named groups. Matching a group name in `when` matches any variant inside it.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t27_enum_grouped.cx" />
+```cx
+enum EntityState {
+    group ::alive [
+        Running,
+        Walking,
+        Idle,
+    ],
+    group ::combat [
+        Attacking,
+        Blocking,
+        Stunned,
+    ],
+    group ::inactive [
+        Dead,
+        Despawned,
+    ],
+}
+
+let e;
+e = EntityState::Attacking
+
+when e {
+    alive    => print(1),
+    combat   => print(2),
+    inactive => print(3),
+}
+```
+
+Source example:
+[examples/enums.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/enums.cx).
