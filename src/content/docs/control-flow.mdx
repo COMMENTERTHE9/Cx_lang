@@ -33,6 +33,58 @@ while (i <= 20) {
 }
 ```
 
+## If And When As Expressions
+
+`if` and `when` both produce a value directly — the chosen branch (or arm) is the value, so either can be assigned or returned.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_if_expr_is_large.cx" />
+```cx
+fnc: bool is_large(n: t64) { if n > 100 { true } else { false } }
+print(is_large(50))
+print(is_large(200))
+```
+
+<SourceComment source="origin/submain:examples/when_match.cx" />
+```cx
+fnc: t64 tier(n: t64) {
+    when n {
+        0       => 0,
+        1..=9   => 1,
+        10..=99 => 2,
+        _       => 3,
+    }
+}
+
+print(tier(0))
+print(tier(7))
+print(tier(42))
+print(tier(500))
+
+level: t64 = 7
+size: str = when level {
+    0     => "none",
+    1..=9 => "small",
+    _     => "big",
+}
+print(size)
+```
+
+A consumed `if` (one whose value is used) must have an `else` — both branches produce the value. Used as a plain statement, `if` needs no `else`.
+
+An unknown-valued `if` condition is rejected the same way an unknown value can't choose a `when` arm:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_if_expr_unknown.cx" />
+```cx
+b: bool = ?
+x: t64 = if b { 1 } else { 2 }
+print(x)
+```
+
+```text
+RUNTIME ERROR: `if` condition is unknown; an unknown TBool can't choose a branch —
+use `when` to handle true, false, and unknown explicitly
+```
+
 ## While
 
 `while` works in the interpreter. The JIT has PASS and SKIP fixtures.
@@ -88,6 +140,44 @@ fnc: t64 find_first_even(start: t64) {
     return i
 }
 print(find_first_even(7))
+```
+
+## Labeled Break And Continue
+
+A loop can be labeled (`'name: loop { ... }`), and `break` / `continue` can target a label to act on an outer loop instead of the innermost one.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_labeled_break_outer.cx" />
+```cx
+let out;
+out = 0
+'outer: loop {
+    out = out + 1
+    loop {
+        break 'outer
+    }
+    out = out + 100
+}
+print(out)
+```
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_labeled_continue_outer.cx" />
+```cx
+let i;
+i = 0
+let hits;
+hits = 0
+'outer: loop {
+    i = i + 1
+    if i > 3 {
+        break 'outer
+    }
+    loop {
+        continue 'outer
+    }
+    hits = hits + 1
+}
+print(i)
+print(hits)
 ```
 
 ## Continue
