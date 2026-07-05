@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// Guard: fail the build if any blog MDX body has a bare `<Foo>`-style generic
-// outside inline code or fenced code blocks. MDX v3 parses those as unclosed
-// JSX tags, which is what breaks Vercel deploys (see AUDIT.md and the
-// 2026-06-06 incident). This runs as `prebuild`, before Astro reads MDX.
+// Guard: fail the build if any blog or docs MDX body has a bare `<Foo>`-style
+// generic outside inline code or fenced code blocks. MDX v3 parses those as
+// unclosed JSX tags, which is what breaks Vercel deploys (see AUDIT.md and
+// the 2026-06-06 incident). Docs pages carry the same risk -- they're full of
+// Handle<T> / Result<T> prose -- so both trees are scanned. Runs as a chained
+// step before `astro build`.
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
-const BLOG_DIR = "src/content/blog";
+const SCAN_DIRS = ["src/content/blog", "src/content/docs"];
 // Pattern MDX misreads as JSX: identifier immediately followed by `<…>`.
 // Deliberately dumb: no attempt to understand valid JSX, just the shape that
 // bites us (Handle<T>, Result<T>, Handle<str>, Result<T, E>, Vec<Type>,
@@ -74,7 +76,7 @@ function scan(path) {
   return hits;
 }
 
-const files = listMdx(BLOG_DIR);
+const files = SCAN_DIRS.flatMap(listMdx);
 let total = 0;
 
 for (const path of files) {
@@ -93,7 +95,7 @@ for (const path of files) {
 if (total > 0) {
   console.error("");
   console.error(
-    `check-mdx-generics: ${total} bare generic${total === 1 ? "" : "s"} in blog MDX. ` +
+    `check-mdx-generics: ${total} bare generic${total === 1 ? "" : "s"} in blog/docs MDX. ` +
       `MDX v3 parses '<T>' as an unclosed JSX tag and the build will fail on Vercel. ` +
       `Wrap each token in backticks.`,
   );
