@@ -49,4 +49,4 @@ The immediate priority is merging CR#1-3 from submain to main. It's only 3 commi
 
 After that, CR#4 (range-checking inside if/when branches) is the natural next step to complete the sweep. The Cranelift negative-element segfault that CR#2 exposed is worth investigating but sits in the JIT codegen layer rather than the semantic analysis layer where the current work is happening.
 
-The larger remaining frontier is Phase 8 Round 2 and Phase 15: str/strref layout, Handle<T>, TBool calling convention, and closing the remaining JIT instruction coverage gaps. v0.2.0 cleared the integration backlog. Now the path forward is backend work.
+The larger remaining frontier is Phase 8 Round 2 and Phase 15: str/strref layout, `Handle<T>`, TBool calling convention, and closing the remaining JIT instruction coverage gaps. v0.2.0 cleared the integration backlog. Now the path forward is backend work.

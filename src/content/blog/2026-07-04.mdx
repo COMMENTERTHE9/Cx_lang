@@ -4,7 +4,7 @@ date: 2026-07-04
 description: "Handle<T> construct and read lowered through Cranelift as packed-i64 values with a host-side registry, landing three commits on submain and pushing the matrix to 297/0."
 ---
 
-Handle<T> compiles now. Two back-to-back commits on submain landed the IR lowering for both sides of the Handle type: `Handle.new` (D2.5a) constructs a handle from a value, and `Handle.val` (D2.5b) reads the value back out. This is the first time Handles go through Cranelift as real machine values instead of stubs, and it's the central piece Phase 8 Round 2 has been waiting for.
+`Handle<T>` compiles now. Two back-to-back commits on submain landed the IR lowering for both sides of the Handle type: `Handle.new` (D2.5a) constructs a handle from a value, and `Handle.val` (D2.5b) reads the value back out. This is the first time Handles go through Cranelift as real machine values instead of stubs, and it's the central piece Phase 8 Round 2 has been waiting for.
 
 ## The packed-i64 representation
 

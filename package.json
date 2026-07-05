@@ -4,7 +4,8 @@
   "version": "0.1.0-rc",
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "check:mdx": "node scripts/check-mdx-generics.mjs",
+    "build": "node scripts/check-mdx-generics.mjs && astro build",
     "preview": "astro preview",
     "astro": "astro"
   },
