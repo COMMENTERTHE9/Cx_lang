@@ -7,8 +7,8 @@ import { SITE } from "../lib/site";
 
 const featuresNow = [
   { name: "Functions", desc: "Stable in the interpreter. Direct calls lower in the JIT.", href: "/docs/functions" },
-  { name: "Control flow", desc: "if/else and for lower. when JIT lowering is in progress.", href: "/docs/control-flow" },
-  { name: "Structs and methods", desc: "Struct fields lower. Method calls stay in progress.", href: "/docs/structs-and-methods" },
+  { name: "Control flow", desc: "if/else, for, and when lower for most patterns in the JIT.", href: "/docs/control-flow" },
+  { name: "Structs and methods", desc: "Struct fields and method dispatch lower in the JIT.", href: "/docs/structs-and-methods" },
   { name: "Arrays", desc: "Fixed-size arrays work. JIT read/write fixtures pass.", href: "/docs/arrays" },
   { name: "Generics", desc: "Stable in the interpreter. JIT work remains.", href: "/docs/generics" },
   { name: "Result<T>", desc: "Ok, Err, and ? work in the interpreter.", href: "/docs/error-handling" },
@@ -19,7 +19,7 @@ const featuresNow = [
 
 const featuresLater = [
   { name: "Type inference", desc: "Local inference works. Broader inference is in progress.", href: "/docs/variables-and-assignment" },
-  { name: "JIT gaps", desc: "when, methods, f64 ops, generics, Result, strings.", href: "/docs/backend-status" },
+  { name: "JIT gaps", desc: "Generics, string internals, read/input, wide Handle/Result payloads.", href: "/docs/backend-status" },
   { name: "strref surface", desc: "Boundary type. Constructor syntax is unsettled.", href: "/docs/data-types" },
   { name: "C interop", desc: "Post-0.1." },
   { name: "Standard library", desc: "Minimal core first." },
