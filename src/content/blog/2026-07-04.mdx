@@ -1,0 +1,48 @@
+---
+title: "Cx Dev Log — 2026-07-04"
+date: 2026-07-04
+description: "Handle<T> construct and read lowered through Cranelift as packed-i64 values with a host-side registry, landing three commits on submain and pushing the matrix to 297/0."
+---
+
+Handle<T> compiles now. Two back-to-back commits on submain landed the IR lowering for both sides of the Handle type: `Handle.new` (D2.5a) constructs a handle from a value, and `Handle.val` (D2.5b) reads the value back out. This is the first time Handles go through Cranelift as real machine values instead of stubs, and it's the central piece Phase 8 Round 2 has been waiting for.
+
+## The packed-i64 representation
+
+A Handle is a single i64: `slot | (gen << 32)`. Both slot and generation are unsigned u32s, and the shift uses a u64 reinterpretation to avoid sign-extension corruption. `lower_type(SemanticType::Handle(_))` returns `IrType::I64`.
+
+The runtime state backing these handles lives in a `HandleRegistry<i64>` behind a `OnceLock<Mutex<...>>` static in `host_boundary.rs`. This design was forced by a Cranelift constraint: `jit_builder.symbol()` registers by raw function pointer and can't accept a state-capturing closure. It's safe because `run_jit_subprocess` spawns a fresh OS process per fixture, so there's no cross-test state leakage.
+
+A `widen_handle_payload_to_i64` helper converts the inner expression's lowered type to i64, scoped to `{I8, I16, I32, I64, Bool}`. Two types are deliberately excluded:
+
+- **Ptr** would recreate the `Handle<str>` landmine. A later `.val` read couldn't distinguish a raw scalar from a string descriptor pointer.
+- **F64** would silently truncate via `fcvt_to_sint_sat` (3.14 becomes 3). Not acceptable for a type that promises round-trip fidelity.
+
+These exclusions are intentional design decisions, not TODOs.
+
+## Handle.val and the out-parameter pattern
+
+The read side (D2.5b) turned out to be the harder half. Early investigation falsified a "uniform-i64" hypothesis for the return type: `ensure_type_match` enforces strict equality everywhere downstream, and HandleVal's semantic claim is I128, not i64. So `.val` produces a genuine `IrType::I128`, widened from the i64 payload via sign-extending Cast.
+
+The validity check uses an out-parameter, not a sentinel. The packed slot+gen bit-space is fully dense. There's no reserved bit pattern that wouldn't collide with a legitimate handle, so a sentinel approach was ruled out. Instead, the read path calls `cx_handle_val(handle: i64, out_valid: *mut i8) -> i64`, checks the out-parameter, and branches to `IrTerminator::Trap` on invalid. The out-parameter mechanics reuse the same Alloca/Store/Load pattern that Result already uses, scaled down to a 1-byte scratch slot.
+
+The invalid-handle Trap path is structurally wired up but can't be empirically tested yet. There's no way to construct an invalid Handle from Cx source today: HandleDrop doesn't exist, and uninitialized reads are rejected at semantic analysis. That proof is explicitly deferred to D2.5c, where generational reuse will naturally produce stale handles.
+
+## Handle+array composition
+
+A third commit (from late on July 3rd) pinned Handle+array composition as correct. This retracted an earlier audit finding that turned out to be a syntax error in the test itself: `arr[i]` vs Cx's actual array-index syntax `arr:[i]`. With the corrected syntax, Handles stored in array literals read back correctly. New fixture: `t_handle_array_no_drop`.
+
+## Test matrix
+
+Matrix on submain is now 297/0, up from 292 at v0.3.0. Parity stands at 237 PASS / 60 SKIP / 0 PARITY_FAIL across 297 fixtures. Six new test fixtures came in with these commits:
+
+- `t_handle_construct_cross_fn` (provisional, from D2.5a)
+- `t_handle_val_positive` (baseline round-trip)
+- `t_handle_val_negative` (negative i32 payload via function parameter, proving sign-extension across both widening stages)
+- `t_handle_val_bool` (true/false discrimination via cross-comparison of independently-constructed Handles)
+- `t_handle_array_no_drop`
+
+All three commits are branch-local to submain. Nothing has reached main yet.
+
+## What's next
+
+HandleDrop (D2.5c) is the explicit next step. That's where generational reuse lands, and where the stale-handle Trap path gets its empirical proof. After that, merging submain to main is a natural integration point, since submain is now 4 commits ahead of the v0.3.0 baseline. DotAccess in compound forms is still the last unchecked Phase 11 item waiting in the wings, and 280 lines of uncommitted tutorial rewrites across the example files need to land somewhere.
