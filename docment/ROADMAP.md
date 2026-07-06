@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-07-06
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -94,6 +94,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ## Working Notes
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
+
+**2026-07-06:** Guard clauses on `when` arms landed on submain (`d4a7373`) — second slice of 0.3.2 pattern matching, full-stack across AST/parser/semantic/IR/runtime with 10 new fixtures. Interpreter float comparison bugfix (`c5e8e22`) adds missing `Value::Float` arms for `<`, `>`, `<=`, `>=` — reference-side only, JIT was already correct. 5 new float comparison fixtures. Submain 8 commits ahead of main. Matrix on main: 292/0 unchanged. Note: the reconciled roadmap on submain (`10ac2ed`) supersedes this file's phase structure and will arrive when submain merges.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
