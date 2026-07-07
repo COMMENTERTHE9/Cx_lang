@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-05-18
+Last updated: 2026-07-07
 
 This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0)
@@ -92,6 +92,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 ---
 
 ## Working Notes
+
+**2026-07-07:** Quiet day — no commits. Submain 8 commits ahead of main with D2.5 scalar Handle core, 0.3.2 pattern matching (as-v binding + guard clauses), interpreter float comparison fix, and roadmap reconciliation all pending integration. Matrix 292/0 stable. The authoritative roadmap now lives on submain at `10ac2ed` (2026-07-04) with a corrected version sequence through 1.0+; this main-branch copy will be superseded when submain merges.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
