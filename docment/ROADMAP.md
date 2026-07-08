@@ -93,6 +93,8 @@ The backend pipeline converts verified SemanticProgram → IR → machine output
 
 ## Working Notes
 
+**2026-07-08:** Submain 9 commits ahead of main. Known-issues tracker created on submain (`docs/known_issues.md`, `cff4e2d`) — catalogues 5 interpreter/JIT divergences (1 fixed, 4 open). Three complete feature scopes on submain awaiting merge: D2.5 scalar Handle core, pattern matching (guard clauses + as-v binding), interpreter f64 comparison fix. Authoritative roadmap now on submain (`10ac2ed`, 2026-07-04) with corrected version sequence (0.3.1–1.0+). Matrix 292/0 stable.
+
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
