@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-10
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -33,31 +33,35 @@ release notes match the approved changelog. Landed:
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
 
+**0.3.1** — tagged `3430e4e`, 2026-07-09. Merged submain → main. Shipped more
+than originally scoped for 0.3.1 (Handle core only) — absorbed the 0.3.2
+pattern-matching scope as well. Landed:
+- Scalar Handle core (D2.5a/b/c): `Handle<T>` construct, read, drop for scalar
+  `T` (`{I8, I16, I32, I64, Bool}`), generational safety and double-drop
+  non-aliasing empirically proven on both backends
+- Pattern matching first slices: `as v` named binding on `when` enum arms,
+  guard clauses on `when` arms
+- Interpreter float comparison fix (`<`, `>`, `<=`, `>=`) — reference-side bug,
+  JIT was already correct
+- Known-issues tracker (`docs/known_issues.md`) — 5 cataloged interpreter/JIT
+  divergences, 1 fixed, 4 open
+- Roadmap reconciliation — corrected version sequence, stale items fixed
+- 29 new verification matrix fixtures (292 → 321)
+
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
-
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
-`T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
-the interpreter. Generational safety and double-drop non-aliasing empirically
-proven on both backends (interpreter and Cranelift JIT).
-
----
-
-The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
-sequence — this is the first time it's being formally recorded, not a
-correction to an existing plan.
+The sequence below reflects the project's current stated direction, updated
+2026-07-10 after the 0.3.1 release absorbed the originally-planned 0.3.2
+pattern-matching scope.
 
 ## Corrected Version Sequence
 
-- **0.3.1** — Scalar Handle core (D2.5). *(Already landed on `submain` at
-  `3ea986d` — this slot documents where it lands once tagged, not new work.)*
-- **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
-  from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
-- **0.3.4** — gene + phen implementation, operator overloading, generics v3
-  (type bounds) — shifted from 0.3.3.
+- **0.3.1** — Scalar Handle core (D2.5) + pattern matching first slices.
+  *(Tagged `3430e4e`, 2026-07-09.)*
+- **0.3.2** — gene + phen design pass — shifted forward after pattern matching
+  landed in 0.3.1.
+- **0.3.3** — gene + phen implementation, operator overloading, generics v3
+  (type bounds).
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
@@ -100,6 +104,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-10:** v0.3.1 tagged (`3430e4e`), merging submain → main. Absorbed the originally-planned 0.3.2 pattern-matching scope. Matrix jumped 292 → 321 (29 new fixtures from Handle core, pattern matching, and f64 comparison work). Known-issues #4/#5 corrected — #5 (I128 printing) attempted and segfaulted; root cause is an I128 host-boundary ABI mismatch, not a missing match arm. Submain at parity with main post-merge. Version sequence renumbered: old 0.3.2 → 0.3.1 (shipped), old 0.3.3 → 0.3.2, old 0.3.4 → 0.3.3.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
