@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-07-09"
+date: 2026-07-09
+description: "Fifth consecutive quiet day with zero developer commits, while submain holds nine unmerged commits spanning Handle core, pattern matching, and float comparison fixes."
+---
+
+No developer commits landed on any branch today. That makes five days in a row. The matrix holds at 292/0, the working tree is clean, and submain remains exactly where it was yesterday: nine commits ahead of main with three complete feature scopes sitting unmerged.
+
+## What's waiting on submain
+
+The work that has accumulated on submain since the last merge is not trivial. It covers three distinct areas:
+
+**Scalar Handle core (D2.5a/b/c)** landed construct, read, and drop with generational safety proven through Cranelift. This is the packed-i64 representation with slot and generation fields, the host-side registry, and the out-parameter validity checking pattern. Six test fixtures came with it.
+
+**Pattern matching first slices** added `as v` named binding on enum arms and guard clauses on `when` arms. These are the first steps toward making pattern matching actually useful for real control flow rather than just type discrimination.
+
+**Interpreter float comparison fix** filled in four missing `Value::Float` match arms for relational operators. A straightforward correctness fix, but the kind of thing that would bite anyone trying to write numerical code in the interpreter path.
+
+Beyond the language work, submain also carries a roadmap reconciliation (correcting the version sequence from 0.3.1 through 1.0+, fixing stale items) and a new known-issues tracker at `docs/known_issues.md` cataloging five interpreter/JIT divergences. None of this is visible from main.
+
+## The integration gap
+
+The submain-to-main merge has been the predicted next step in every daily log since July 4th. It has not happened once. Five consecutive misses on the same prediction is a pattern worth noting.
+
+From the outside, the repo state looks healthy. Tests pass, the working tree is clean, the code on submain is finished and tested. The merge is not blocked by technical debt or failing tests. Something else is gating it, whether that is review cadence, a confidence threshold, or something outside the repository entirely.
+
+Meanwhile, five daily log PRs (#328 through #332) also sit open and unmerged. This means the roadmap updates from those logs, including the major restructuring from the July 5th log, have not reached main either. The main-branch roadmap is still at its May 18th state, nearly two months stale compared to the submain version last updated July 4th. That divergence resolves the moment either submain merges or any daily log PR lands, but neither has happened.
+
+## What's next
+
+Carrying the same predictions forward with lower confidence each day:
+
+The submain merge is still the single highest-impact step. Nine commits, three feature scopes, roadmap reconciliation, and the known-issues tracker all land in one shot. Known issue #5 (I128 printing) is marked "ready to build" in the known-issues doc and needs one match arm plus one host callback. And at least one of the five queued daily log PRs could merge independently to update the main roadmap without waiting for the full submain integration.
+
+The repeated non-movement here is not alarming on its own. Development is not always linear, and holding patterns happen. But the gap between what submain has proven and what main reflects is widening, and closing it gets slightly more complex with each day the branches drift.
