@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-11
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -30,34 +30,32 @@ release notes match the approved changelog. Landed:
 - Labeled breaks (`'outer: loop { break 'outer / continue 'outer }`), both
   parse+reject and execution commits
 
-**Post-release hardening (on submain):**
-- [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+**0.3.1** — tagged `3430e4e`, 2026-07-09. Merged submain → main. Absorbed the
+originally-planned 0.3.2 scope (pattern matching). Landed:
+- Scalar Handle core (D2.5a/b/c) — `Handle<T>` construct, read, drop for
+  scalar payloads. Generational safety and double-drop non-aliasing proven.
+- Pattern matching first slices — `as v` named binding on `when` arms, guard
+  clauses on `when` arms.
+- Interpreter f64 comparison fix (`<`, `>`, `<=`, `>=`).
+- Known-issues tracker (`docs/known_issues.md`) — 5 findings cataloged.
+- Composite literal type-checking (8169d33).
+- Matrix jumped from 292 to 321 tests.
+
+**Post-0.3.1 hardening (on submain, not yet tagged):**
+- [x] Parser fix: bare builtin in trailing position no longer promoted to
+  ret_expr — closes known-issues #2 (b6310fe). 5 JIT-SKIP fixtures recovered.
+- [x] Semantic scope fix: if/while/loop/while-in bodies now get proper scope
+  boundaries — closes audit finding 3.1 (603aa61). 4 new fixtures.
+- [x] Width-range enforcement at method-call args, reassignment, and
+  array-index assignment — closes audit finding 3.2 (2d9a70b). 6 new fixtures.
 
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
+## Version Sequence
 
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
-`T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
-the interpreter. Generational safety and double-drop non-aliasing empirically
-proven on both backends (interpreter and Cranelift JIT).
-
----
-
-The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
-sequence — this is the first time it's being formally recorded, not a
-correction to an existing plan.
-
-## Corrected Version Sequence
-
-- **0.3.1** — Scalar Handle core (D2.5). *(Already landed on `submain` at
-  `3ea986d` — this slot documents where it lands once tagged, not new work.)*
-- **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
-  from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
-- **0.3.4** — gene + phen implementation, operator overloading, generics v3
-  (type bounds) — shifted from 0.3.3.
+- **0.3.2** — gene + phen design pass.
+- **0.3.3** — gene + phen implementation, operator overloading, generics v3
+  (type bounds).
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
@@ -100,6 +98,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-11:** Known-issues #2 fixed (parser trailing-builtin, `b6310fe`), audit findings 3.1 (scope boundaries, `603aa61`) and 3.2 (width-range enforcement, `2d9a70b`) closed. 13 new fixtures on submain. Submain 4 commits ahead of main.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
