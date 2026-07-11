@@ -431,6 +431,7 @@ impl Analyzer {
 
                         if let Some(declared) = &info.declared {
                             let expected = semantic_type_from_decl(declared.clone(), &tp);
+                            check_semantic_num_fits(&semantic_expr, &expected, *pos_eq)?;
                             if !types_compatible(&expected, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(
                                     &expected,
@@ -510,6 +511,7 @@ impl Analyzer {
                             _ => return Err(sem_err!(*pos_eq, "index assignment target must be an array")),
                         };
                         if elem_ty != SemanticType::Unknown {
+                            check_semantic_num_fits(&semantic_expr, &elem_ty, *pos_eq)?;
                             if !types_compatible(&elem_ty, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(&elem_ty, &semantic_expr.ty, *pos_eq));
                             }
@@ -1746,6 +1748,7 @@ Expr::Unary(op, inner, pos) => {
                                     .get(user_idx)
                                     .and_then(|p| p.ty.clone());
                                 if let Some(expected) = expected {
+                                    check_semantic_num_fits(&sem_expr, &expected, *pos)?;
                                     if !types_compatible(&expected, &sem_expr.ty) {
                                         return Err(sem_err!(
                                             *pos,

@@ -1,0 +1,5 @@
+// CX-3.2: array-index assignment must range-check against the element width,
+// exactly like an array-literal element or a struct-field assignment.
+a: [3: t8] = [1, 2, 3]
+a:[0] = 300
+print(a:[0])

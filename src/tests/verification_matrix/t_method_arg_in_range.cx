@@ -1,0 +1,15 @@
+// CX-3.2: an in-range method-call argument must still be accepted — the
+// width-range check must not overcorrect into rejecting legitimate values.
+struct Box {
+    v: t32,
+}
+
+box_methods: impl (b: Box) {
+    fnc: set(x: t8) {
+        print(x)
+    }
+}
+
+let bx
+bx = Box { v: 0 }
+bx.set(100)
