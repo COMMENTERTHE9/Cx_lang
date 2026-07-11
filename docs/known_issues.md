@@ -36,15 +36,69 @@ so it flows through the same `(Float, Float)` arm.
 
 ## 2. Bare builtin call in trailing function/method-body position doesn't JIT-lower
 
-**Status: OPEN.**
+**Status: FIXED — commit `b6310fe`.**
 
 A bare `print(...)` call as a function or method body's *sole or last*
-statement, with no trailing semicolon, fails to lower on the JIT:
+statement, with no trailing semicolon, used to fail to lower on the JIT:
 
 ```
 unresolved semantic artifact reached lowering: function 'print'
 ```
-Exit code 127. The interpreter handles this correctly.
+Exit code 127. The interpreter always handled this correctly — this was a
+JIT-only gap.
+
+**Fix:** the parser's `func_body` combinator (`src/frontend/parser.rs:1207-1259`)
+no longer promotes a trailing bare call to `print`/`println`/`printn`/
+`assert`/`assert_eq` into the function's `ret_expr`. It's left as a normal
+body statement instead, where the existing `lower_stmt` builtin dispatch
+(`src/ir/lower.rs:864-880`, unchanged) already handles it correctly. No
+interpreter changes and no lowering changes were needed — both were already
+correct once the call stopped reaching them through the wrong path.
+
+**Isolation confirmed, not assumed:** `t16`'s implicit-return-type check and
+`t03`/`t160`/`t24`'s explicit-return-plus-trailing-expression check
+(`src/ir/lower.rs:670-714`) were re-run before and after the fix and produce
+**byte-for-byte identical** stdout and exit codes in both cases — confirmed
+by direct `diff`, not by re-reading the (unmodified) code alone. Both
+remain their own distinct, still-open bugs.
+
+**Fixture-count result — the real, diff-verified number, not the original
+estimate:** the investigation's static fixture search found 7 files (8
+call sites) with this shape and predicted all would convert from JIT-SKIP
+to JIT-PASS. The actual result, obtained by running the full fixture corpus
+through the JIT before and after the fix and diffing the two SKIP sets
+directly (not by re-checking the originally-named fixtures one at a time):
+
+- **5 fixtures genuinely converted from SKIP to PASS**: `t29_forward_decl`,
+  `t31_strref_forward_combined`, `t67_macro_outer_test`,
+  `t68_macro_outer_deprecated`, and `t_array_elem_arg_in_range` — the last
+  of these was **not** in the original investigation's list at all; its
+  static search missed it because its function body is condensed onto a
+  single line (`fnc: f(a: [3: t8]) { print(a:[2]) }`), a shape the
+  line-based search wasn't tuned for. Found only by actually running the
+  fixture corpus, not by re-reading source.
+- **2 of the originally-named fixtures were never actually SKIP**:
+  `t71_macro_unknown_outer_reject` and `t73_macro_reactive_reserved` are
+  `.expected_fail` fixtures that reject at the macro-processing step in
+  semantic analysis, before a function's `ret_expr` is ever considered —
+  both backends already converged on the same correct rejection before this
+  fix, so there was nothing for this fix to change for them. Confirmed
+  unaffected (identical error text and exit code, before and after).
+- **1 originally-named fixture correctly did not convert**:
+  `t50_nested_func_no_leak` remains SKIP, but for a completely separate,
+  pre-existing, already-documented JIT limitation — nested function
+  definitions aren't lowered at all (`unsupported semantic construct during
+  lowering: nested FuncDef`), independent of this bug. Confirmed identical
+  before and after via a real before/after diff (used `git stash` to build
+  the exact pre-fix binary and compare). `t50` is now cleanly isolated as
+  blocked *only* by the nested-function-lowering limitation — a natural
+  proof-fixture for whenever that limitation gets addressed.
+
+JIT parity moved from **261/60/0** to **267/55/0** across 322 fixtures
+(321 existing + 1 new permanent regression fixture,
+`t_print_trailing_position.cx`, added for the original reproducer shape).
+261 + 5 conversions + 1 new passing fixture = 267; 60 − 5 = 55 — the totals
+reconcile exactly.
 
 **Not method-specific** — confirmed via a plain free-function reproducer
 (`fnc: show(x: t32) { print(x) }`) with an identical failure and identical
@@ -86,16 +140,23 @@ since the JIT succeeded while the interpreter errored).
 **Relation to #3 below:** sits in the same code region (both concern a
 function's trailing-expression / `ret_expr` handling) but is **not a
 duplicate** — confirmed by direct mechanism/error-text comparison, not
-name-similarity. This bug raises `LoweringError::UnresolvedSemanticArtifact`
+name-similarity. This bug raised `LoweringError::UnresolvedSemanticArtifact`
 at `lower.rs:686-687` (the `lower_expr` call itself failing); #3 raises
 `LoweringError::InternalInvariantViolation` one step further down, at
 `lower.rs:677-684`. In the specific reproducer tested here (a void function,
 no `return` statement, `print(...)` as the only body statement), this bug
-fires first and **preempts** #3's check from ever being reached — if this
-bug were fixed, the exact same reproducer would then likely hit the
-*separate* implicit-return-type gap (see the `t16`-cluster audit) rather
-than #3 specifically, since #3 requires an explicit `return` statement to
-also be present.
+fired first and **preempted** #3's check from ever being reached.
+
+*Correction after actually fixing and testing it, not just predicting:*
+before the fix, this section speculated that fixing this bug would make the
+reproducer fall through to the *separate* `t16` implicit-return-type gap
+instead. That didn't happen. The fix (parser-level: don't promote the
+builtin call into `ret_expr` at all) means `ret_expr` stays `None` for this
+reproducer, not just "successfully lowered" — so neither this check nor
+`t16`'s (which specifically requires `ret_expr.is_some()`) ever fires. The
+prediction was reasonable at the time but wrong; the actual fix sidesteps
+the whole region rather than moving the failure point within it. Confirmed
+by running the reproducer post-fix: clean output, exit 0, on both backends.
 
 ---
 
