@@ -751,27 +751,34 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 if matches!(semantic_condition.ty, SemanticType::Unknown) {
                     return Err(sem_err!(*pos, "Unknown value cannot be used as an if condition — control-critical context"));
                 }
+                self.push_scope();
                 let semantic_then = then_body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.pop_scope();
                 let mut semantic_else_ifs = Vec::new();
                 for (cond, body) in else_ifs {
                     let sem_cond = self.analyze_expr(cond)?;
+                    self.push_scope();
                     let sem_body = body
                         .iter()
                         .map(|s| self.analyze_stmt(s))
                         .collect::<Result<Vec<_>, _>>()?;
+                    self.pop_scope();
                     semantic_else_ifs.push((sem_cond, sem_body));
                 }
-                let semantic_else = else_body
-                    .as_ref()
-                    .map(|body| {
-                        body.iter()
-                            .map(|s| self.analyze_stmt(s))
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .transpose()?;
+                let semantic_else = if let Some(body) = else_body.as_ref() {
+                    self.push_scope();
+                    let result = body
+                        .iter()
+                        .map(|s| self.analyze_stmt(s))
+                        .collect::<Result<Vec<_>, _>>();
+                    self.pop_scope();
+                    Some(result?)
+                } else {
+                    None
+                };
                 Ok(SemanticStmt::IfElse {
                     condition: semantic_condition,
                     then_body: semantic_then,
@@ -795,20 +802,25 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let sem_start = self.analyze_expr(range_start)?;
                 let sem_end = self.analyze_expr(range_end)?;
                 let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let sem_body = body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
                     .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 let sem_chains = then_chains
                     .iter()
                     .map(|chain| {
                         let cs = self.analyze_expr(&chain.range_start)?;
                         let ce = self.analyze_expr(&chain.range_end)?;
+                        self.push_scope();
                         let cb = chain
                             .body
                             .iter()
                             .map(|s| self.analyze_stmt(s))
-                            .collect::<Result<Vec<_>, _>>()?;
+                            .collect::<Result<Vec<_>, _>>();
+                        self.pop_scope();
+                        let cb = cb?;
                         Ok(SemanticWhileInChain {
                             arr: chain.arr.clone(),
                             start_slot: chain.start_slot,
@@ -845,10 +857,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     return Err(sem_err!(*pos, "Unknown value cannot be used as a loop condition -- control-critical context"));
                 }
                 let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let semantic_body = body
                     .iter()
                     .map(|stmt| self.analyze_stmt(stmt))
                     .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 self.exit_loop_label(pushed);
                 Ok(SemanticStmt::While {
                     label: label.clone(),
@@ -879,10 +893,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             }
             Stmt::Loop { label, body, pos } => {
                 let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let semantic_body = body
                     .iter()
                     .map(|stmt| self.analyze_stmt(stmt))
                     .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 self.exit_loop_label(pushed);
                 Ok(SemanticStmt::Loop {
                     label: label.clone(),

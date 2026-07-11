@@ -1,0 +1,16 @@
+x: t32 = 100
+loop {
+    x: t32 = 1
+    tmp: t32 = 10
+    print(x)
+    print(tmp)
+    break
+}
+loop {
+    x: t32 = 2
+    tmp: t32 = 20
+    print(x)
+    print(tmp)
+    break
+}
+print(x)
