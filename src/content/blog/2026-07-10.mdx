@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-07-10"
+date: 2026-07-10
+description: "v0.3.1 shipped with Handle core, pattern matching first slices, the f64 comparison fix, and a known-issues tracker, jumping the matrix from 292 to 321 tests."
+---
+
+The v0.3.1 release landed. After five straight days of the daily log predicting the submain-to-main merge, it finally happened on the evening of July 9. The merge brought more scope than originally planned for 0.3.1: Handle core, pattern matching first slices (as-v bindings and guard clauses), the interpreter f64 comparison fix, and a new known-issues tracker all came across in a single integration event. The test matrix jumped from 292 to 321.
+
+## What shipped
+
+**Handle core (D2.5a/b/c).** `Handle<T>` construct, read/val, and drop for scalar payloads. The implementation uses a packed i64 representation with slot and generation fields, backed by a host-side registry. Generational safety and double-drop non-aliasing have been empirically verified on both backends. Nine new test fixtures cover the surface.
+
+**Pattern matching first slices.** Two additions here: `as v` named bindings on `when` enum arms, and guard clauses on `when` arms. Guard clauses reuse the existing unknown-seam and continuation-block machinery rather than introducing a new control-flow construct. Twenty new fixtures cover positive behavior, scope-leak rejection, and both static and runtime unknown rejection. This work was originally scoped for 0.3.2, but since it had already landed on submain before the release happened, 0.3.1 absorbed it. The version sequence has been renumbered accordingly.
+
+**Interpreter f64 comparison fix.** Four missing `Value::Float` match arms for `<`, `>`, `<=`, `>=` in `src/runtime/ops.rs`. The JIT was already correct here, which is the reverse of the usual pattern where the interpreter leads and the JIT lags. Five new f64 comparison fixtures.
+
+**Known-issues tracker.** `docs/known_issues.md` now catalogs five interpreter/JIT divergences. Issue #1 (f64 comparison) is the one fixed above. Issues #2 through #5 remain open: bare builtin in trailing position, explicit return plus trailing expression, `print(enum)` divergence, and bare I128 printing.
+
+## The I128 host-boundary finding
+
+The most interesting technical result from this cycle was a failed fix. Known issue #5 (bare I128 printing in the JIT) looked like a straightforward match-arm addition. The fix was built with zero compile errors, then segfaulted on the JIT reproducer. The root cause: passing a raw `i128` by value across the Cranelift-to-Rust host boundary has never been exercised before. The `enable_llvm_abi_extensions` flag covers internal Cranelift value passing but not external host calls.
+
+The fix was reverted via working-tree checkout (no revert commit). The corrected understanding is that I128 printing needs a pass-by-pointer approach, mirroring the `cx_print_str` pattern, which is materially more complex and needs its own sizing pass. This affects any future work that needs to pass wide scalars across the JIT host boundary, so it is worth documenting clearly.
+
+Issue #4 (`print(enum)` divergence) also got re-scoped. It requires building new static infrastructure (per-enum tag-to-name string tables), not a dispatch-arm fix. Correctly sized, deliberately not attempted.
+
+## State of the project
+
+Submain and main are at parity after the release merge and a sync-up merge back. The working tree is clean. The matrix stands at 321 PASS / 0 FAIL with 29 new fixtures from the release.
+
+## What is next
+
+The most concretely documented next task is a sizing pass for the I128 host-boundary ABI issue. After that, building the per-enum tag-to-name string tables for JIT print parity (issue #4) is sized but not started. Issues #2 and #3 remain open and unsized.
+
+On the feature roadmap, the gene and phen design pass is now numbered 0.3.2, but there is no evidence of imminent work on it. Multiple daily-log PRs also remain open and unmerged.
