@@ -97,6 +97,26 @@ fn ifelse_to_if_expr(
     Expr::If(Box::new(condition), then_body, acc_else, pos)
 }
 
+/// Is `expr` a call to one of the statement-level builtins
+/// (print/println/printn/assert/assert_eq)? Used to keep a bare trailing
+/// call to one of these out of implicit-return position — see the
+/// `func_body` combinator's doc comment.
+fn is_statement_level_builtin_call(expr: &Expr) -> bool {
+    let Expr::Call(name, _, _) = expr else {
+        return false;
+    };
+    matches!(
+        crate::frontend::builtins::lookup(name).map(|b| b.kind),
+        Some(
+            crate::frontend::builtins::BuiltinKind::Print
+                | crate::frontend::builtins::BuiltinKind::Println
+                | crate::frontend::builtins::BuiltinKind::Printn
+                | crate::frontend::builtins::BuiltinKind::Assert
+                | crate::frontend::builtins::BuiltinKind::AssertEq
+        )
+    )
+}
+
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
@@ -1206,6 +1226,15 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             // Implicit return: trailing expression WITHOUT semicolon becomes ret_expr.
             // Trailing expression WITH semicolon is a statement — result discarded.
+            //
+            // A bare call to a statement-level builtin (print/println/printn/
+            // assert/assert_eq) is never promoted, even with no trailing
+            // semicolon: every one of these is void, and promoting it to
+            // ret_expr routes it through lower_expr's generic Call handling
+            // instead of lower_stmt's dedicated builtin interception, which
+            // has no case for it (tracker: print-in-trailing-position). Left
+            // as a normal body statement, it's already lowered correctly by
+            // the existing statement-level dispatch.
             let func_body = just(Token::PunctBraceOpen)
                 .ignore_then(body_stmt_tagged.repeated().collect::<Vec<(Stmt, bool)>>())
                 .then_ignore(just(Token::PunctBraceClose))
@@ -1214,10 +1243,12 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                     let mut stmts: Vec<Stmt> = Vec::with_capacity(len);
                     let mut ret_expr: Option<Expr> = None;
 
-                    let last_is_implicit_return = matches!(
-                        tagged.last(),
-                        Some((Stmt::ExprStmt { .. }, false))
-                    );
+                    let last_is_implicit_return = match tagged.last() {
+                        Some((Stmt::ExprStmt { expr, .. }, false)) => {
+                            !is_statement_level_builtin_call(expr)
+                        }
+                        _ => false,
+                    };
                     // #046: a trailing `if`/`else` is an implicit-return value
                     // ONLY when it is fully value-producing — every branch (then,
                     // each `else if`, and the final else) ends in a trailing
