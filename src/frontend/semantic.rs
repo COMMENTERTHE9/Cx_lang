@@ -2281,12 +2281,10 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
-                } else {
-                    if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
-                        let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
-                        lhs = insert_cast_if_needed(lhs, &compare_ty);
-                        rhs = insert_cast_if_needed(rhs, &compare_ty);
-                    }
+                } else if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
+                    let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
+                    lhs = insert_cast_if_needed(lhs, &compare_ty);
+                    rhs = insert_cast_if_needed(rhs, &compare_ty);
                     Ok(SemanticExpr {
                         ty: SemanticType::Bool,
                         kind: SemanticExprKind::Binary {
@@ -2296,6 +2294,8 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
+                } else {
+                    Err(sem_err!(op_pos, "cannot compare {} {:?} {}", type_name(&lhs.ty), op, type_name(&rhs.ty)))
                 }
             }
             Op::Not => unreachable!("Op::Not is unary only"),
