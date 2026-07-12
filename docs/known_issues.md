@@ -422,26 +422,59 @@ matching finding #7's shape rather than finding #6's.
 
 ## 9. Enum `==`/`!=` crashes on the interpreter
 
-**Status: OPEN.**
+**Status: FIXED — commit `7a4fd5f`.**
 
 Semantic analysis correctly allows equality comparison on same-typed `Enum`
 operands (the `EqEq`/`NotEq` branch's type-allowlist includes
 `SemanticType::Enum(_)`), but `runtime/ops.rs`'s `Op::EqEq`/`Op::NotEq` match
-has no arm for two enum-variant operands — it falls through to the generic
+had no arm for two enum-variant operands — it fell through to the generic
 `(l, r) => Err(RuntimeError::BadOperands)` catch-all. E.g. `a: Color =
-Color::Red; b: Color = Color::Blue; print(a == b)` crashes at runtime on the
+Color::Red; b: Color = Color::Blue; print(a == b)` crashed at runtime on the
 interpreter with `RUNTIME ERROR: operator 'EqEq' cannot be applied to enum
-variant and enum variant`. Cranelift handles this correctly (computes and
-prints the right `bool`).
+variant and enum variant`. Cranelift already handled this correctly (computes
+and prints the right `bool`) — for once, the JIT was the reference to copy
+from, not the interpreter.
 
 Found incidentally during audit finding 3.3's (#8 above) equality-branch
 regression verification. Confirmed pre-existing and completely unrelated to
 that fix via a stash-based before/after diff: byte-identical error, both
-before and after the fix, on both backends.
+before and after that fix, on both backends.
 
 **Same shape as finding #1 above** (the `f64`-comparison bug): the type
 system (semantic analysis) promises support that a downstream layer — here,
 the interpreter's runtime dispatch table; there, the same — doesn't actually
-implement. Third instance of this exact pattern found this project; worth
-treating as a recognizable class of bug when auditing the remaining runtime
-dispatch tables, not just a one-off.
+implement. Third instance of this exact pattern found this project.
+
+**Fix:** the interpreter's `Value::EnumVariant(String, String)`
+representation (`enum_name`, `variant_name` — confirmed by reading
+`runtime/eval.rs:178-179` and `runtime/exec.rs:548`'s existing pattern-match
+comparison, not assumed) has no numeric tag at all, unlike the JIT's IR
+representation, where an enum erases to a bare `IrType::I8` tag
+(`src/ir/lower.rs:4563`) and equality falls through Cranelift's generic
+scalar `Compare` lowering (`src/ir/lower.rs:2574-2612`) once `TBool`/`str`/
+composite `Ptr` cases are ruled out — i.e. Cranelift's "reference" logic here
+is just an ordinary integer-tag compare, confirmed by reading the actual
+lowering path rather than assumed from the pattern-matching arc's tag-only
+framing. Since the interpreter's `Value` has no tag field to compare, the fix
+adds one `(Value::EnumVariant(e1, v1), Value::EnumVariant(e2, v2))` arm to
+each of `Op::EqEq` and `Op::NotEq`, comparing both fields
+(`e1 == e2 && v1 == v2`), mirroring the exact style `exec.rs:548`'s
+pattern-match arm already uses for the identical comparison. `NotEq` needed
+its own explicit arm — confirmed, not assumed: `EqEq` and `NotEq` are two
+fully independent `match` blocks in `ops.rs`, each with its own complete set
+of per-type-pair arms, not a shared helper with negation, so nothing "falls
+out for free."
+
+Verified via a discriminating canary proving genuine discrimination, not
+just "didn't crash": same-variant operands compare equal in both directions
+(`==` → `true`, `!=` → `false`); different-variant operands compare unequal
+in both directions (`==` → `false`, `!=` → `true`) — matching Cranelift's
+output exactly, on all four combinations, both before (JIT only) and after
+(both backends) the fix. One new permanent regression fixture added,
+`t_enum_equality.cx`, covering both cases and both operators in a single
+program (no error path here to force splitting across files, unlike prior
+scoping/truncation fixes).
+
+JIT parity moved **280/56/0 → 281/56/0** across 337 fixtures (336 existing +
+1 new): a full PASS on both backends, no new SKIP — a pure interpreter-side
+runtime fix with no lowering-side change at all.
