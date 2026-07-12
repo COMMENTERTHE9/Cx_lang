@@ -36,57 +36,7 @@ jobs:
         run: cargo build
 
       - name: Run verification matrix
-        run: |
-          set +e
-          PASS=0
-          FAIL=0
-          ERRORS=()
-
-          for f in src/tests/verification_matrix/t*.cx; do
-            test_name=$(basename "$f")
-            expected_fail=false
-
-            if [ -f "${f}.expected_fail" ]; then
-              expected_fail=true
-            fi
-
-            cargo run --quiet -- "$f" > /dev/null 2>&1
-            exit_code=$?
-
-            if $expected_fail; then
-              if [ $exit_code -ne 0 ]; then
-                echo "PASS (expected fail): $test_name"
-                PASS=$((PASS + 1))
-              else
-                echo "FAIL (should have errored): $test_name"
-                FAIL=$((FAIL + 1))
-                ERRORS+=("$test_name")
-              fi
-            else
-              if [ $exit_code -eq 0 ]; then
-                echo "PASS: $test_name"
-                PASS=$((PASS + 1))
-              else
-                echo "FAIL: $test_name"
-                output=$(cargo run --quiet -- "$f" 2>&1)
-                echo "  Output: $output"
-                FAIL=$((FAIL + 1))
-                ERRORS+=("$test_name")
-              fi
-            fi
-          done
-
-          echo ""
-          echo "Matrix: $PASS passed, $FAIL failed out of $((PASS + FAIL)) total"
-
-          if [ ${#ERRORS[@]} -gt 0 ]; then
-            echo ""
-            echo "Failed tests:"
-            for e in "${ERRORS[@]}"; do
-              echo "  - $e"
-            done
-            exit 1
-          fi
+        run: bash src/tests/run_matrix.sh
 
   backend:
     name: Backend Build + Tests
