@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-07-11"
+date: 2026-07-11
+description: "Four commits on submain closing two known issues and two semantic audit findings, recovering 5 JIT fixtures and tightening scope and width-range enforcement."
+---
+
+The parser solved a JIT lowering failure without touching the lowering layer at all. That was the highlight of today: a correctness-hardening session that closed four open items across two subsystems, all on the submain branch.
+
+## The trailing-builtin parser fix (known-issues #2)
+
+A bare `print(x)` as the last line of a function body, without a trailing semicolon, was being promoted to `ret_expr` by the parser's `func_body` combinator. That promotion routed the call through `lower_expr`'s generic Call path, which has no case for statement-level builtins. The result was the dreaded `unresolved semantic artifact reached lowering: function 'print'` error.
+
+The fix was a new `is_statement_level_builtin_call()` predicate in `src/frontend/parser.rs` that recognizes calls to `print`, `println`, `printn`, `assert`, and `assert_eq`. When the parser sees one of these in trailing position, it leaves it as a normal body statement instead of promoting it. The call then flows through the existing `lower_stmt` builtin dispatch, which already handles these correctly.
+
+The interesting architectural note: this was a lowering failure caused entirely by parser misclassification. The lowering layer didn't need changes. The parser was handing it something it was never supposed to receive.
+
+This recovered 5 JIT-SKIP fixtures: `t29_forward_decl`, `t31_strref_forward_combined`, `t67_macro_outer_test`, `t68_macro_outer_deprecated`, and `t_array_elem_arg_in_range`. The original prediction was 8, but two of the predicted fixtures were actually rejecting earlier (at macro processing, before `ret_expr` matters), and one (`t50_nested_func_no_leak`) remains SKIP for a separate nested-function-lowering limitation. JIT parity moved from 261/60/0 to 267/55/0.
+
+## Scope boundaries for control-flow bodies (audit finding 3.1)
+
+Variables declared inside `if`, `else`, `else-if`, `while`, `loop`, and `while-in` bodies were leaking into the enclosing scope after the block ended. This was a straightforward `push_scope()`/`pop_scope()` gap in `src/frontend/semantic.rs`. The fix added the appropriate scope calls around each of these control-flow bodies.
+
+Four new test fixtures cover this: `t179_if_scope`, `t180_while_scope`, `t181_loop_scope`, `t182_whilein_scope`. Each verifies that names declared inside the block are not visible after it.
+
+This is the kind of bug where correct programs still work fine, but incorrect programs silently succeed when they shouldn't. A variable used-after-scope was previously accepted instead of rejected.
+
+## Width-range enforcement at three missed sites (audit finding 3.2)
+
+The semantic layer already had `check_semantic_num_fits()` for catching numeric values that don't fit their target type's width range. But three assignment contexts weren't calling it:
+
+1. Variable reassignment (e.g., `x = 300` where `x: u8`)
+2. Array-index assignment (e.g., `arr[0] = 300` where `arr: [u8; 4]`)
+3. Method-call arguments (e.g., `obj.method(300)` where the parameter is `u8`)
+
+The fix added the check at each site. Six new test fixtures cover this: in-range and out-of-range pairs for each of the three contexts.
+
+Like the scope fix, this is defensive correctness work. The type system should have been catching these all along. Now it does.
+
+## Direction
+
+Today was a deliberate pivot away from the harder predicted next steps (known-issues #5 I128 ABI sizing, #4 per-enum tag-to-name tables) toward closing smaller, more tractable correctness gaps first. The two semantic audit findings and the parser fix were all well-understood problems with clear solutions. Four commits, 11 new test fixtures, two known issues closed, two audit findings closed.
+
+All work is on submain, not merged to main. Main stays at v0.3.1.
+
+## What's next
+
+The submain branch is now 4 commits ahead of main with a clean fixture run. Merging to main (possibly as v0.3.2) is the natural next step. After that, known-issue #3 (explicit return plus trailing expression) sits in exactly the same `ret_expr`/implicit-return code that was just modified for #2, making it a natural follow-on while the parser code is fresh. The harder items (I128 ABI, enum tag-to-name tables) remain open but continue to be deprioritized in favor of tractable wins.
