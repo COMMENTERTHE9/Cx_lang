@@ -92,12 +92,10 @@ This is why the roadmap sequences gene/phen as its own dedicated design-then-imp
 
 ## Implementation Questions — Status
 
-These are not design questions. The design above is locked. These are implementation decisions, originally scoped for what was called the "A1/A2 sprint" in earlier planning. As of the last verified status check, most were still open and deferred to when 0.3.4 implementation actually begins.
+These are not design questions. The design above is locked. These are implementation decisions, originally scoped for what was called the "A1/A2 sprint" in earlier planning. 3 of 6 are now decided; 3 remain open: Self resolution and phen lookup are both pending a quick check of Cx's existing generics/declaration-registration patterns before deciding, and coherence is pending phen lookup's resolution, since cross-module duplicate detection likely falls out of that table's design.
 
-### 1. Dispatch strategy — OPEN
-Static monomorphization (one specialized function per concrete type, zero runtime cost, larger binary) versus dynamic dispatch (vtable, smaller binary, indirect call cost).
-
-Game engine bias favors static by default — Cx's whole positioning is GC-free, predictable-cost systems programming, and monomorphization matches that identity. Whether dynamic dispatch is offered at all in the 0.x line is still an open call. **Recommendation carried forward from original design: static by default, dynamic dispatch deferred or omitted until there's a concrete driving use case.**
+### 1. Dispatch strategy — DECIDED
+Static monomorphization only for 0.3.4. No dynamic dispatch in this release — but not permanently rejected. Deferred until a concrete use case emerges that justifies designing trait-object semantics, object-safety rules, ABI implications, ownership interactions, and performance tradeoffs properly, not speculatively. Every concrete gene/type combination compiles to a specialized implementation with no runtime dispatch table or hidden indirection.
 
 ### 2. Phen lookup — OPEN
 How the semantic pass resolves "does type X have a phen for gene G." Proposed mechanism: a `(GeneId, TypeId) → PhenId` table populated during the collection pass, before the main semantic analysis walks the rest of the program. This needs to be locked before implementation starts since it's the core data structure the rest of gene/phen sits on.
@@ -105,14 +103,14 @@ How the semantic pass resolves "does type X have a phen for gene G." Proposed me
 ### 3. Self resolution — OPEN (this was the specific "A2" blocker)
 Where in the semantic pass `Self` gets substituted with the concrete bound type, and how that interacts with the existing generics machinery. This was flagged as deferred to the implementation sprint in the most recent verified status and, as of the last check, was still the single open item blocking a clean start on 0.3.4. **This should be the first thing resolved when the 0.3.3 design-verification pass begins** — it is small in scope but load-bearing, since every phen body relies on `Self` resolving correctly.
 
-### 4. Operator gene mapping — OPEN
-The exact table mapping operator token to gene method — `+` → `Add::add`, `==` → `Eq::eq`, and so on — and how that table slots into the existing `analyze_binary` semantic path. Mechanical work once the gene/phen core lands, but needs to be scoped explicitly since it touches an existing, working code path.
+### 4. Operator gene mapping — DECIDED (for `Ord` specifically; other operators still follow the same 1:1 token-to-method pattern)
+Four separate methods for 0.3.4: `lt`, `gt`, `le`, `ge`, mapping directly to `<`, `>`, `<=`, `>=`. No `cmp`/`Ordering`-result-type convenience method in 0.3.4 — avoids introducing an unfinished ordering type for this release. The semantic and lowering path must be designed so a `cmp` method returning an `Ordering`-style type can be added later as a convenience without breaking the four operators or existing implementations. The required consistency laws between the four methods (standard total-order axioms) must be documented as an implementer requirement — no runtime enforcement of these laws in 0.3.4.
 
 ### 5. Coherence — OPEN
 Two phens binding the same gene to the same type must be a compile error. The open question is how cross-module phen collisions get detected by the resolver — a phen for `Damageable` on `Player` written in one module and another for the same pair written in a different module both need to be caught, not just same-file duplicates.
 
-### 6. Built-in gene provenance — OPEN
-Whether the operator genes (Add, Sub, Mul, etc.) are real Cx source living in a prelude, or hard-coded into the semantic pass as special cases. Leaning toward real prelude source for consistency and so the mechanism is fully inspectable/extensible, but this trades off against how much semantic-pass special-casing is acceptable for performance or simplicity at this stage.
+### 6. Built-in gene provenance — DECIDED
+Prelude source is the canonical, permanent architecture for built-in operator genes (`Add`, `Sub`, `Mul`, `Div`, `Eq`, `Ord`, etc.) — never a permanent second hardcoded system. For 0.3.4 bootstrapping specifically, the compiler may recognize narrowly-scoped primitive intrinsics for built-in numeric implementations if the prelude cannot yet fully compile through the ordinary gene/phen path, under five hard constraints: (1) public contracts and method names must come from the prelude, never compiler-invented; (2) primitive intrinsics must conform exactly to those prelude-defined contracts; (3) user-defined types must always use normal gene/phen resolution, never the bootstrap shortcut; (4) no user-visible semantic behavior may exist only in compiler magic — everything an intrinsic does must be expressible as real gene/phen source; (5) the bootstrap path must be clearly marked, tested, and designed for removal once self-hosted prelude resolution works. Architecture is prelude-first with temporary primitive bootstrap support — not permanently hardcoded operator genes.
 
 ---
 
