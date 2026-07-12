@@ -1,0 +1,15 @@
+// Regression fixture: enum == and != used to crash the interpreter with
+// RuntimeError::BadOperands (ops.rs had no EnumVariant arm); JIT already
+// handled this correctly. Proves genuine discrimination, not just
+// "didn't crash" — same variant compares equal, different variant compares
+// unequal, both operators, both directions.
+enum Color { Red, Green, Blue }
+
+a: Color = Color::Red
+b: Color = Color::Red
+c: Color = Color::Blue
+
+print(a == b)
+print(a != b)
+print(a == c)
+print(a != c)
