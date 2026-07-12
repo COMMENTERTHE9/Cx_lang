@@ -295,3 +295,153 @@ JIT to spill the `I128` SSA value to a stack slot and pass its address, then
 have the callback dereference it — a materially different (and larger)
 shape than "one new match arm plus one host callback." Not attempted; needs
 its own sizing pass before a second attempt.
+
+---
+
+## 6. `if`/`while`/`loop`/`while-in` bodies not scoped in semantic analysis
+
+**Status: FIXED — commit `603aa61`.**
+
+`semantic.rs`'s `Stmt::IfElse`/`Stmt::While`/`Stmt::Loop`/`Stmt::WhileIn` didn't
+push/pop a scope around their bodies, unlike sibling `Stmt::Block`/`Stmt::For`/
+`Stmt::When` in the same file, and unlike the interpreter (`runtime/exec.rs`),
+which already scoped all four correctly and symmetrically. Result: two
+sibling branches or loop bodies each declaring an unrelated same-named local
+were rejected outright with `SEMANTIC ERROR: variable already declared in
+this scope` — valid, ordinary programs, on both backends.
+
+**Fix:** added `self.push_scope()`/`self.pop_scope()` pairs around each body,
+mirroring the existing `Stmt::Block` pattern (push once, analyze via the
+existing `?`/`.collect()` chain, pop once on success) rather than
+`analyze_for`'s more complex explicit-pop-on-every-error-path pattern, which
+doesn't apply here since these four constructs have no equivalent
+early-return-from-within-the-body logic. `IfElse` gets three independent
+scopes (then-body, each `else if` body, else-body); `WhileIn` gets one for
+the main body plus one independent scope per `then_chains` chain.
+
+Verified via a discriminating shadowing canary for all four constructs — not
+just "two unrelated same-named locals stop colliding" (which wouldn't rule
+out a fix that simply disabled the collision check entirely, a worse
+regression than the bug it fixes): an outer-scope variable plus an inner
+same-named local proves the inner one shadows correctly (reads inside the
+body see the inner value), does not leak (a read after the body sees the
+outer value, unchanged), and does not corrupt the outer binding. Four new
+regression fixtures added (`t179_if_scope.cx` through
+`t182_whilein_scope.cx`), each covering both the sibling-blocks case and the
+shadowing case.
+
+JIT parity moved **267/55/0 → 270/56/0** across 326 fixtures (322 existing +
+4 new): +3 PASS for `if`/`while`/`loop`, +1 SKIP for `while-in` — confirmed,
+not assumed, to be a pre-existing, unrelated Cranelift lowering gap: an
+existing, scope-collision-free fixture (`t34_while_in.cx`) hits the identical
+`unsupported semantic construct during lowering: WhileIn` error regardless of
+this fix, via a stash-based before/after diff. `WhileIn` simply isn't lowered
+to Cranelift IR yet, independent of scoping.
+
+---
+
+## 7. Silent integer truncation at method-call args, plain reassignment, array-index assignment
+
+**Status: FIXED — commit `2d9a70b`.**
+
+`check_semantic_num_fits` (the width-range check) claimed in its own doc
+comment to be the single entry point for every relevant site, but was not
+actually called at three of them: method-call args (`semantic.rs`
+~1738-1760), plain reassignment (`Stmt::Assign`'s `Expr::Ident` arm,
+~429-464), and array-index assignment (`Stmt::Assign`'s `Expr::Index` arm,
+~505-524) — each has a sibling site in the same file (struct-field
+assignment, typed declaration, free-function call args) that calls it
+correctly. Result: `x: t8 = 5; x = 300; print(x)` printed `44` (300 mod 256)
+with zero error, on the interpreter.
+
+**Fix:** added the missing `check_semantic_num_fits(...)` call at each of
+the three sites, mirroring the working sibling sites' exact call shape and
+ordering (check num-fits, then check type-compat, then insert cast). Verified
+via a discriminating in-range canary at all three sites — proving legitimate
+in-range values are not overcorrected into rejection — plus 6 new regression
+fixtures (a reject/accept pair per site).
+
+**Correction to this finding's own premise, found during verification, not
+assumed:** Cranelift was never silently truncating the way the interpreter
+was. It already refused these cases via a lowering-time check
+(`unsupported semantic construct during lowering: integer literal 300 does
+not fit in I8`, exit 127/SKIP) — a pre-existing, independent backstop,
+confirmed via a stash-based before/after diff. The bug's live impact was
+interpreter-only; the fix's actual improvement on Cranelift is replacing that
+ad-hoc, late, SKIP-coded lowering rejection with a clean, early
+`SemanticError`, produced identically on both backends before either
+backend's execution begins.
+
+JIT parity moved **270/56/0 → 276/56/0** across 332 fixtures (326 existing +
+6 new): all six new fixtures land as full PASS on both backends (no new
+SKIP), since both backends now reject at the semantic layer before ever
+diverging.
+
+---
+
+## 8. `<`/`>`/`<=`/`>=` silently accepted on non-numeric operands
+
+**Status: FIXED — commit `3ad89b7`.**
+
+The ordering-comparison semantic branch (`Op::Lt | Op::Gt | Op::LtEq |
+Op::GtEq`, `semantic.rs` ~2273-2299) had no type-allowlist, unlike its
+sibling `EqEq`/`NotEq` branch immediately above it. Result: `Color::Red <
+Color::Blue` was correctly rejected by the interpreter (`RUNTIME ERROR:
+operator 'Lt' cannot be applied to enum variant and enum variant`) but
+silently accepted by the JIT, computing a nonsensical `true`, exit 0.
+Reproduced identically for `bool` operands and for all four operators
+(`<`/`>`/`<=`/`>=`), not just `<`.
+
+**Fix:** added an `else` arm to the branch, mirroring the equality branch's
+shape (`Unknown` pass-through → numeric fast path → `sem_err!` otherwise).
+Confirmed via a stash-based before/after diff that the equality branch
+itself is completely untouched by this change.
+
+**Scope generalization, found and folded in during the fix, not originally
+in the audit's finding:** the audit named `Bool`/`Enum` specifically, but
+`runtime/ops.rs` only ever supported ordering on `Num`/`Float` operands —
+`Char` reproduces the identical bug shape (interpreter: a late
+`RuntimeError`; JIT behavior not independently confirmed for `Char`, but
+presumed the same class). Rather than special-case exactly the two named
+types, the fix rejects any non-numeric operand pair, matching what the
+runtime actually supports and closing the whole class in one change instead
+of leaving a near-identical gap unaddressed for `Char`/`Str`.
+
+Verified via a discriminating canary: numeric ordering (including `f64`)
+unaffected on both backends; equality comparison on `bool`/`enum` unaffected,
+confirmed byte-identical pre/post-fix via stash diff. Four new regression
+fixtures added (reject-on-enum, reject-on-bool, accept-on-numeric,
+accept-equality-on-bool).
+
+JIT parity moved **276/56/0 → 280/56/0** across 336 fixtures (332 existing +
+4 new): all four land as full PASS on both backends (no new SKIP) — a pure
+semantic-time catch that fires identically before either backend executes,
+matching finding #7's shape rather than finding #6's.
+
+---
+
+## 9. Enum `==`/`!=` crashes on the interpreter
+
+**Status: OPEN.**
+
+Semantic analysis correctly allows equality comparison on same-typed `Enum`
+operands (the `EqEq`/`NotEq` branch's type-allowlist includes
+`SemanticType::Enum(_)`), but `runtime/ops.rs`'s `Op::EqEq`/`Op::NotEq` match
+has no arm for two enum-variant operands — it falls through to the generic
+`(l, r) => Err(RuntimeError::BadOperands)` catch-all. E.g. `a: Color =
+Color::Red; b: Color = Color::Blue; print(a == b)` crashes at runtime on the
+interpreter with `RUNTIME ERROR: operator 'EqEq' cannot be applied to enum
+variant and enum variant`. Cranelift handles this correctly (computes and
+prints the right `bool`).
+
+Found incidentally during audit finding 3.3's (#8 above) equality-branch
+regression verification. Confirmed pre-existing and completely unrelated to
+that fix via a stash-based before/after diff: byte-identical error, both
+before and after the fix, on both backends.
+
+**Same shape as finding #1 above** (the `f64`-comparison bug): the type
+system (semantic analysis) promises support that a downstream layer — here,
+the interpreter's runtime dispatch table; there, the same — doesn't actually
+implement. Third instance of this exact pattern found this project; worth
+treating as a recognizable class of bug when auditing the remaining runtime
+dispatch tables, not just a one-off.
