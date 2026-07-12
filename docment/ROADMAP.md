@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-12
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -30,32 +30,29 @@ release notes match the approved changelog. Landed:
 - Labeled breaks (`'outer: loop { break 'outer / continue 'outer }`), both
   parse+reject and execution commits
 
-**Post-release hardening (on submain):**
+**0.3.1** — tagged `3430e4e`. Scalar Handle core (D2.5a/b/c): `Handle<T>` for
+scalar `T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked
+against the interpreter. Generational safety and double-drop non-aliasing
+empirically proven on both backends.
+
+**Post-release hardening (on submain, not yet tagged):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
+- [x] Parser trailing-builtin fix — known-issues #2, `print()` in trailing position no longer misclassified as `ret_expr` (b6310fe)
+- [x] Scope boundaries for control-flow bodies — audit finding 3.1, `push_scope()`/`pop_scope()` for if/while/loop/while-in (603aa61)
+- [x] Width-range enforcement at missed assignment sites — audit finding 3.2, reassignment/index-assignment/method-call args (2d9a70b)
+- [x] Ordering comparison type rejection — audit finding 3.3, non-numeric operands now rejected at compile time (3ad89b7)
+- [x] CI matrix consolidation — audit finding 3.4, inline CI reimplementation replaced with canonical run_matrix.sh (bdc7c8c)
+- [x] Enum ==/!= interpreter fix — known-issues #9, missing EnumVariant arms in ops.rs (7a4fd5f)
 
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
+## Version Sequence
 
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
-`T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
-the interpreter. Generational safety and double-drop non-aliasing empirically
-proven on both backends (interpreter and Cranelift JIT).
-
----
-
-The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
-sequence — this is the first time it's being formally recorded, not a
-correction to an existing plan.
-
-## Corrected Version Sequence
-
-- **0.3.1** — Scalar Handle core (D2.5). *(Already landed on `submain` at
-  `3ea986d` — this slot documents where it lands once tagged, not new work.)*
+- **0.3.1** — Scalar Handle core (D2.5). *(Tagged at `3430e4e`.)*
 - **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
   from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
+- **0.3.3** — gene + phen design pass — shifted from 0.3.2. See
+  `docs/post_0_1/gene_phen_design.md` for the full spec (v1.1, design locked).
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
   (type bounds) — shifted from 0.3.3.
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
@@ -108,3 +105,5 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
+
+**2026-07-12:** Closed audit findings 3.3 (ordering comparison type rejection) and 3.4 (CI matrix consolidation). Fixed enum ==/!= interpreter crash (known issue #9). Committed gene/phen design spec v1.1 to repo (`docs/post_0_1/gene_phen_design.md`). All four audit findings (3.1–3.4) now resolved. Submain 10 commits ahead of main. Matrix 321/0 on main.
