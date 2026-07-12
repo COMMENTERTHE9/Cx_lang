@@ -55,7 +55,8 @@ correction to an existing plan.
   `3ea986d` — this slot documents where it lands once tagged, not new work.)*
 - **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
   from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
+- **0.3.3** — gene + phen design pass — shifted from 0.3.2. See
+  `docs/post_0_1/gene_phen_design.md` for the full spec.
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
   (type bounds) — shifted from 0.3.3.
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
