@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-14
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -33,29 +33,36 @@ release notes match the approved changelog. Landed:
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
 
----
-
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
-
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
-`T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
-the interpreter. Generational safety and double-drop non-aliasing empirically
-proven on both backends (interpreter and Cranelift JIT).
+**0.3.1** — tagged `3430e4e`, shipped. Scalar Handle core (D2.5a/b/c):
+`Handle<T>` for scalar `T` (`{I8, I16, I32, I64, Bool}`): construct, read,
+drop. Generational safety and double-drop non-aliasing verified on both
+backends. Also includes post-0.3.0 correctness hardening merged from submain.
 
 ---
 
-The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
-sequence — this is the first time it's being formally recorded, not a
-correction to an existing plan.
+## Post-0.3.1 — landed on `submain`, not yet in a tagged release
+
+Post-0.3.1 hardening on submain (12 commits ahead of main):
+- [x] Parser trailing-builtin ret_expr fix (known-issues #2)
+- [x] Scope boundary fix for if/while/loop/while-in (audit finding 3.1)
+- [x] Width-range enforcement at method-call args, reassignment, array-index (audit finding 3.2)
+- [x] Ordering comparison rejection on Bool/Enum (audit finding 3.3)
+- [x] CI matrix consolidation (audit finding 3.4)
+- [x] Enum ==/!= interpreter fix (known-issues #9)
+- [x] Gene/phen design spec committed (`docs/post_0_1/gene_phen_design.md`)
+- [x] Gene/phen implementation decisions: 5 of 6 resolved (dispatch, phen lookup, Self resolution, Ord mapping, built-in provenance). Cross-module coherence still open.
+
+---
 
 ## Corrected Version Sequence
 
-- **0.3.1** — Scalar Handle core (D2.5). *(Already landed on `submain` at
-  `3ea986d` — this slot documents where it lands once tagged, not new work.)*
+- **0.3.1** — Scalar Handle core (D2.5). *(Tagged and shipped.)*
 - **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
   from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
+- **0.3.3** — gene + phen design pass — shifted from 0.3.2. Design spec at
+  `docs/post_0_1/gene_phen_design.md` (v1.1, design locked). 5 of 6
+  implementation questions resolved on submain; cross-module coherence
+  remains open.
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
   (type bounds) — shifted from 0.3.3.
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
@@ -100,6 +107,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-14:** Quiet day — zero developer commits across all branches. Submain 12 commits ahead of main (unchanged since July 12). Matrix 321/0 on main (unchanged since July 10). Daily log PRs #331–#340 open and unmerged; roadmap on main was stale since July 4 — this branch carries consolidated updates.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
