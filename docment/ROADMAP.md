@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-15
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -33,14 +33,25 @@ release notes match the approved changelog. Landed:
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
 
+**0.3.1** — tagged `3430e4e`. Scalar Handle core (D2.5a/b/c).
+
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
+## Post-0.3.1 — landed on `submain`, not yet in a tagged release
 
 **Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
 `T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
+
+**Post-release hardening (submain, 13 commits ahead of main):**
+- [x] Parser trailing-builtin ret_expr fix (known-issues #2)
+- [x] Scope boundary fixes for if/while/loop/while-in (audit 3.1)
+- [x] Width-range enforcement at method-call args, reassignment, array-index assignment (audit 3.2)
+- [x] Ordering comparison rejection on Bool/Enum (audit 3.3)
+- [x] CI matrix consolidation (audit 3.4)
+- [x] Enum ==/!= interpreter fix (known-issues #9)
+- [x] Gene/phen design spec — all six implementation questions closed (design phase complete)
 
 ---
 
@@ -51,11 +62,12 @@ correction to an existing plan.
 
 ## Corrected Version Sequence
 
-- **0.3.1** — Scalar Handle core (D2.5). *(Already landed on `submain` at
-  `3ea986d` — this slot documents where it lands once tagged, not new work.)*
+- **0.3.1** — Scalar Handle core (D2.5). *(Shipped: tagged `3430e4e`.)*
 - **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
   from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
+- **0.3.3** — gene + phen design pass — shifted from 0.3.2. *(Design phase
+  complete as of 2026-07-14: all six implementation questions closed in
+  `docs/post_0_1/gene_phen_design.md` v1.1.)*
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
   (type bounds) — shifted from 0.3.3.
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
@@ -108,3 +120,5 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
+
+**2026-07-15:** Gene/phen design phase complete. Cross-module coherence (item 5) closed with `3b7b7f8` on submain — whole-graph registration pass, canonical key `(gene_name, receiver_type)`, collision detection, semantic-pass ordering, and 0.3.4 test matrix all specified. All six implementation questions now decided or explicitly deferred with extension points. Submain 13 commits ahead of main. Matrix 321/0.
