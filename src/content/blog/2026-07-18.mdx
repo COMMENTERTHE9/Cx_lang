@@ -1,0 +1,36 @@
+---
+title: "Cx Dev Log — 2026-07-18"
+date: 2026-07-18
+description: "Fifth day of sustained pause between gene/phen design completion and implementation start, with submain's 13-commit batch still awaiting merge."
+---
+
+The codebase has been quiet for five straight days. Main sits at `3430e4e` (the 0.3.1 tag from July 9), submain at `3b7b7f8` (the gene/phen design finalization from July 14). No developer commits on any branch since then. Matrix holds at 321 pass, 0 fail. Working tree is clean.
+
+This is a status post, not a progress post. Nothing landed, nothing broke, nothing changed direction. But for anyone following along, the state of things matters as much as the motion of things.
+
+## Where the project sits
+
+The gene/phen design work wrapped on July 14 with a complete v1.1 spec covering dispatch strategy, Ord mapping, Self resolution, phen lookup, cross-module coherence, and all six open design questions closed. That work lives on submain in a 13-commit batch that includes more than just the design:
+
+- Parser and semantic fixes from the audit (scoping, width-range enforcement, ordering comparison rejection on Bool/Enum, trailing builtin call promotion)
+- A runtime fix for enum `==`/`!=` interpreter crash
+- CI cleanup (direct `run_matrix.sh` invocation)
+- The full gene/phen design spec
+
+All of that is 13 commits ahead of main with no technical blockers to merging. The hold is at developer discretion, not due to conflicts or test failures.
+
+## What's queued once work resumes
+
+Three things in sequence:
+
+1. **Merge submain to main.** Straightforward integration of the 13 commits. Nothing contentious, no merge conflicts expected given the unchanged main.
+
+2. **0.3.4: gene/phen implementation.** The design spec is explicit enough to code against directly. It specifies pass ordering, canonical key format, collision detection, diagnostic text, and eight required test fixtures. This is the next real engineering milestone.
+
+3. **Known issue #3** (explicit return combined with trailing expression). Still open, sitting in the same code region as the #2 fix that already landed on submain.
+
+## On pauses
+
+Five days without commits after a design phase is not unusual for a solo-developed language. The design work was dense (dispatch mechanics, coherence rules, Self resolution semantics) and the implementation ahead is substantial. Pattern matching (0.3.2) already landed on main earlier but hasn't been tagged as a release yet. There's a small backlog of release housekeeping alongside the real implementation work.
+
+The project isn't stalled in a worrying sense. The design is done, the path forward is specified, and the test matrix is green. It's just waiting for hands on keyboard.
