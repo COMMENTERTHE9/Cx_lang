@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-20
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -57,7 +57,9 @@ correction to an existing plan.
   from 0.3.1.
 - **0.3.3** — gene + phen design pass — shifted from 0.3.2.
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
-  (type bounds) — shifted from 0.3.3.
+  (type bounds) — shifted from 0.3.3. *(Implementation started: slice 1 of 6
+  — declarations + Pass-0 coherence registry — landed on `submain` at
+  `d53784b`, 2026-07-20.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
