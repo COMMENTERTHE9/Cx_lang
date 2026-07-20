@@ -4,7 +4,7 @@ Cx is a compiled, GC-free systems programming language for game engines, tools, 
 
 The goal of Cx is to give engine-facing code predictable memory behavior, explicit value movement, deterministic teardown, and low-level control without forcing every feature to become allocator plumbing.
 
-**Status: 0.2.0 — released 2026-06-05.** Last tagged release: **v0.2.0**.
+**Status: 0.3.1 — released 2026-07-19.** Last tagged release: **v0.3.1**.
 
 This README describes the current `submain` branch. The reference interpreter is the source of truth for language semantics; every code sample below was compiled and run against it.
 
@@ -62,12 +62,12 @@ cargo run -- --backend=validate examples/fibonacci.cx
 
 ## Current Verification Status
 
-As of `v0.2.0`:
+As of `v0.3.1`:
 
-- **243 unit tests passing** (`cargo test`)
-- **418 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **230 verification fixtures**
-- **JIT parity: 140 PASS / 90 SKIP / 0 PARITY_FAIL** across all 230 fixtures
+- **Unit tests passing** (`cargo test`) — count not yet disclosed
+- **Unit tests passing** with the JIT enabled (`cargo test --features jit`) — count not yet disclosed
+- **321 verification fixtures**
+- **JIT parity: 261 PASS / 60 SKIP / 0 PARITY_FAIL** across all 321 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -332,14 +332,14 @@ All currently JIT-lowered fixtures match interpreter behavior (0 PARITY_FAIL). A
 
 ### JIT Parity Baseline
 
-As of `v0.2.0`:
+As of `v0.3.1`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 140 |
-| SKIP | 90 |
+| PASS | 261 |
+| SKIP | 60 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **230** |
+| **Total fixtures** | **321** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 
