@@ -1,0 +1,19 @@
+// 0.3.4 slice 2: the leak canary's negative control — Self in this phen's
+// body must resolve to Player (the receiver), so annotating an Enemy literal
+// as Self is a type mismatch. Proves Self resolves to the RIGHT concrete
+// type, not merely to "some type that unifies with anything".
+struct Player { health: t32 }
+struct Enemy { shield: t32 }
+
+gene Spawner {
+    fnc spawn(v: t32) -> Self
+}
+
+phen Spawner (p: Player) {
+    fnc: Self spawn(v: t32) {
+        made: Self = Enemy { shield: v }
+        made
+    }
+}
+
+print(1)

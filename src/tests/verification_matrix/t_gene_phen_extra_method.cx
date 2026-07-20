@@ -1,0 +1,15 @@
+// 0.3.4 slice 2 (method-ownership rule, application 1): a phen may not
+// declare methods beyond its gene's contract — extras belong in impl blocks.
+struct Player { health: t32 }
+gene Damageable {
+    fnc is_alive() -> bool
+}
+phen Damageable (p: Player) {
+    fnc: bool is_alive() {
+        p.health > 0
+    }
+    fnc: bool helper() {
+        true
+    }
+}
+print(1)

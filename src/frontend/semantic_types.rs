@@ -333,18 +333,18 @@ pub enum SemanticStmt {
         methods: Vec<(String, Vec<Option<SemanticType>>, Option<SemanticType>)>,
         pos: usize,
     },
-    /// 0.3.4 slice 1: header-only mirror — gene/receiver identity and method
-    /// names only. Method bodies are deliberately NOT carried here: nothing in
-    /// this slice analyzes, type-checks, or executes them (that's method-call
-    /// resolution / Self-substitution / conformance-checking, slices 2-6).
-    /// Coherence registration itself happens earlier, in Pass 0, directly over
-    /// the raw AST — this mirror exists only so PhenDef has a place in the
-    /// analyzed tree at all.
+    /// 0.3.4 slice 2: methods are now fully analyzed (receiver bound as a
+    /// typed param then stripped, exactly the ImplBlock shape — see
+    /// `method_receiver_params`), with `Self` already substituted to the
+    /// concrete receiver type before analysis. Contract conformance against
+    /// the gene was verified in Pass 0. Still NOT callable — nothing
+    /// registers these in `method_registry`; dispatch is slice 3.
     PhenDef {
         gene_name: String,
         receiver_name: String,
         receiver_type: SemanticType,
-        methods: Vec<String>,
+        methods: Vec<SemanticFunction>,
+        method_receiver_params: Vec<Vec<SemanticParam>>,
         pos: usize,
     },
     Decl {

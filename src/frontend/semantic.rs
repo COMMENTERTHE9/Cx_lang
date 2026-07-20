@@ -61,6 +61,11 @@ pub struct Analyzer {
     structs: HashMap<String, Vec<(String, Type)>>,
     pub method_registry: HashMap<(String, String), SemanticFunction>,
     pub method_alias_counts: HashMap<(String, String), usize>,
+    /// Whole-graph phen-provided method names, injected from Pass 0's
+    /// registry (0.3.4 slice 2). Consulted at impl-block registration to
+    /// enforce the method-ownership locked rule, application 2: an impl
+    /// method and a phen method may not share a name on one type.
+    pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     pub module_aliases: HashMap<String, ExportTable>,
@@ -89,6 +94,7 @@ impl Analyzer {
             structs: HashMap::new(),
             method_registry: HashMap::new(),
             method_alias_counts: HashMap::new(),
+            phen_methods: HashMap::new(),
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -367,6 +373,24 @@ impl Analyzer {
                     }
                 }
 
+                // Method-ownership locked rule, application 2: an impl method
+                // and a phen method may not share a name on one type — neither
+                // side wins, rejected here at analysis time.
+                for sem_func in &semantic_methods {
+                    for (_, alias_type) in &semantic_aliases {
+                        if let Some(origin) = self.phen_methods.get(&(alias_type.clone(), sem_func.name.clone())) {
+                            return Err(sem_err!(
+                                *pos,
+                                "method '{}' on '{}' is already provided by a phen of gene '{}' at {} — impl and phen methods may not share a name",
+                                sem_func.name,
+                                type_name(alias_type),
+                                origin.gene,
+                                origin.location
+                            ));
+                        }
+                    }
+                }
+
                 // Register methods in method_registry for return type resolution
                 for sem_func in &semantic_methods {
                     for (_, alias_type) in &semantic_aliases {
@@ -418,20 +442,54 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
-            // 0.3.4 slice 1: header-only mirror. The receiver's method bodies
-            // are deliberately NOT analyzed here — no binding declared for
-            // the receiver, no body walked, no Self substitution, no
-            // method-call resolution. That is slices 2-6's job. Coherence
-            // (does this (gene, type) pair collide with another phen
-            // anywhere in the reachable graph) is already fully handled by
-            // Pass 0, before this pass ever runs.
+            // 0.3.4 slice 2: methods are fully analyzed. `Self` is a
+            // compile-time alias for the receiver's concrete type (design
+            // doc, decision 3) — substituted at the AST level across every
+            // type position (signatures, local annotations, nested
+            // Array/Handle/Result) BEFORE analysis, so bodies type-check at
+            // the real concrete type. Substituting to a floating
+            // `TypeParam("Self")` instead would check nothing:
+            // `types_compatible` unifies any TypeParam with anything.
+            // Contract conformance against the gene was already verified in
+            // Pass 0. Each method is analyzed exactly like an impl-block
+            // method (receiver prepended as a typed param, captured, then
+            // stripped) inside a throwaway scope so method names don't
+            // collide across phens — but NOT registered in method_registry:
+            // calling a phen method is slice 3.
             Stmt::PhenDef { gene_name, receiver, methods, pos } => {
                 let receiver_type = semantic_type_from_decl(receiver.1.clone(), &[]);
+                let recv_ast = &receiver.1;
+                let mut semantic_methods: Vec<SemanticFunction> = Vec::new();
+                let mut method_receiver_params: Vec<Vec<SemanticParam>> = Vec::new();
+                for (mname, params, ret_ty, body, ret_expr) in methods {
+                    let full_params: Vec<ParamKind> =
+                        std::iter::once(ParamKind::Typed(receiver.0.clone(), receiver.1.clone()))
+                            .chain(params.iter().cloned().map(|p| match p {
+                                ParamKind::Typed(n, t) => ParamKind::Typed(n, substitute_self_type(t, recv_ast)),
+                                other => other,
+                            }))
+                            .collect();
+                    let sub_ret = ret_ty.clone().map(|t| substitute_self_type(t, recv_ast));
+                    let sub_body: Vec<Stmt> = body
+                        .iter()
+                        .map(|s| map_stmt_types(s.clone(), &|t| substitute_self_type(t, recv_ast)))
+                        .collect();
+                    self.push_scope();
+                    let analyzed = self.analyze_function(mname, &[], &full_params, &sub_ret, &sub_body, ret_expr, *pos, false);
+                    self.pop_scope();
+                    if let SemanticStmt::FuncDef(mut sem_func) = analyzed? {
+                        let captured: Vec<SemanticParam> = sem_func.params.iter().take(1).cloned().collect();
+                        sem_func.params = sem_func.params.into_iter().skip(1).collect();
+                        semantic_methods.push(sem_func);
+                        method_receiver_params.push(captured);
+                    }
+                }
                 Ok(SemanticStmt::PhenDef {
                     gene_name: gene_name.clone(),
                     receiver_name: receiver.0.clone(),
                     receiver_type,
-                    methods: methods.iter().map(|(mname, ..)| mname.clone()).collect(),
+                    methods: semantic_methods,
+                    method_receiver_params,
                     pos: *pos,
                 })
             }
@@ -2603,6 +2661,25 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
                 ret_expr,
             )).collect(),
         },
+        Stmt::GeneDef { name, methods, pos } => Stmt::GeneDef {
+            name, pos,
+            methods: methods.into_iter().map(|(mname, params, ret)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+            )).collect(),
+        },
+        Stmt::PhenDef { gene_name, receiver, methods, pos } => Stmt::PhenDef {
+            gene_name, pos,
+            receiver: (receiver.0, normalize_enum_type(receiver.1, enums)),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+                normalize_enum_stmts(body, enums),
+                ret_expr,
+            )).collect(),
+        },
         Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
             name, value, is_pub, pos, ty: normalize_enum_type(ty, enums),
         },
@@ -2646,6 +2723,166 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         // No type annotation and no nested statement bodies: ImportBlock, EnumDef,
         // Assign, CompoundAssign, ExprStmt, Return, Break, Continue.
         other => other,
+    }
+}
+
+/// 0.3.4 slice 2: `Self` → the phen's receiver type, at the AST level.
+/// Recurses through the same composite type shapes `semantic_type_from_decl`
+/// handles (Array/Handle/Result), so nested generic type expressions resolve
+/// per decision 3.
+fn substitute_self_type(ty: Type, recv: &Type) -> Type {
+    match ty {
+        Type::Struct(ref n) if n == "Self" => recv.clone(),
+        Type::Array(size, inner) => Type::Array(size, Box::new(substitute_self_type(*inner, recv))),
+        Type::Handle(inner) => Type::Handle(Box::new(substitute_self_type(*inner, recv))),
+        Type::Result(inner) => Type::Result(Box::new(substitute_self_type(*inner, recv))),
+        other => other,
+    }
+}
+
+/// Apply `f` to every type-annotation position in a statement tree — the same
+/// coverage as `normalize_enum_stmt` (struct fields, impl aliases/methods,
+/// const/decl/typed-assign annotations, function params/returns, and every
+/// nested statement body). Used for phen-body `Self` substitution and the
+/// Self-outside-phen scan.
+fn map_stmt_types(stmt: Stmt, f: &dyn Fn(Type) -> Type) -> Stmt {
+    match stmt {
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
+            name, type_params, is_pub, pos,
+            fields: fields.into_iter().map(|(fname, t)| (fname, f(t))).collect(),
+        },
+        Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
+            name, is_pub, pos,
+            aliases: aliases.into_iter().map(|(a, t)| (a, f(t))).collect(),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| map_param_type(p, f)).collect(),
+                ret.map(f),
+                body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+                ret_expr,
+            )).collect(),
+        },
+        Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
+            name, value, is_pub, pos, ty: f(ty),
+        },
+        Stmt::Decl { name, ty, pos } => Stmt::Decl { name, pos, ty: ty.map(f) },
+        Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
+            name, expr, pos_type, ty: f(ty),
+        },
+        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, is_pub, macros, pos,
+            params: params.into_iter().map(|p| map_param_type(p, f)).collect(),
+            ret_ty: ret_ty.map(f),
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            ret_expr,
+        },
+        Stmt::Block { stmts, _pos } => Stmt::Block {
+            stmts: stmts.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            _pos,
+        },
+        Stmt::While { label, cond, body, pos } => Stmt::While {
+            label, cond, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::For { label, var, start, end, inclusive, body, pos } => Stmt::For {
+            label, var, start, end, inclusive, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::Loop { label, body, pos } => Stmt::Loop {
+            label, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::IfElse { condition, then_body, else_ifs, else_body, pos } => Stmt::IfElse {
+            condition, pos,
+            then_body: then_body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            else_ifs: else_ifs.into_iter().map(|(c, b)| (c, b.into_iter().map(|s| map_stmt_types(s, f)).collect())).collect(),
+            else_body: else_body.map(|b| b.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+        },
+        Stmt::WhileIn { label, arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
+            label, arr, start_slot, range_start, range_end, inclusive, result, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            then_chains: then_chains.into_iter().map(|c| WhileInChain {
+                body: c.body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+                ..c
+            }).collect(),
+        },
+        Stmt::When { expr, arms, pos } => Stmt::When {
+            expr, pos,
+            arms: arms.into_iter().map(|arm| WhenArm {
+                pattern: arm.pattern,
+                guard: arm.guard,
+                pos: arm.pos,
+                body: match arm.body {
+                    WhenBody::Stmts(stmts) => WhenBody::Stmts(stmts.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+                    WhenBody::SuperGroup(handlers) => WhenBody::SuperGroup(
+                        handlers.into_iter().map(|h| match h {
+                            SuperGroupHandler::Stmts(stmts) => SuperGroupHandler::Stmts(stmts.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+                            SuperGroupHandler::Placeholder => SuperGroupHandler::Placeholder,
+                        }).collect(),
+                    ),
+                },
+            }).collect(),
+        },
+        other => other,
+    }
+}
+
+fn map_param_type(p: ParamKind, f: &dyn Fn(Type) -> Type) -> ParamKind {
+    match p {
+        ParamKind::Typed(n, t) => ParamKind::Typed(n, f(t)),
+        other => other,
+    }
+}
+
+fn type_uses_self(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(n) => n == "Self",
+        Type::Array(_, inner) | Type::Handle(inner) | Type::Result(inner) => type_uses_self(inner),
+        _ => false,
+    }
+}
+
+/// Does any type-annotation position in this statement tree mention `Self`?
+/// Reuses `map_stmt_types`'s coverage via a side-channel flag so the scan and
+/// the substituter can never drift apart.
+fn stmt_uses_self_type(stmt: &Stmt) -> bool {
+    let found = std::cell::Cell::new(false);
+    let _ = map_stmt_types(stmt.clone(), &|t| {
+        if type_uses_self(&t) {
+            found.set(true);
+        }
+        t
+    });
+    found.get()
+}
+
+/// Best-effort source anchor for a top-level statement, for diagnostics that
+/// reject the statement as a whole (e.g. `Self` outside a gene/phen).
+fn stmt_anchor_pos(stmt: &Stmt) -> usize {
+    match stmt {
+        Stmt::StructDef { pos, .. }
+        | Stmt::ImplBlock { pos, .. }
+        | Stmt::GeneDef { pos, .. }
+        | Stmt::PhenDef { pos, .. }
+        | Stmt::ConstDecl { pos, .. }
+        | Stmt::EnumDef { pos, .. }
+        | Stmt::Decl { pos, .. }
+        | Stmt::Return { pos, .. }
+        | Stmt::FuncDef { pos, .. }
+        | Stmt::While { pos, .. }
+        | Stmt::For { pos, .. }
+        | Stmt::Loop { pos, .. }
+        | Stmt::IfElse { pos, .. }
+        | Stmt::WhileIn { pos, .. }
+        | Stmt::When { pos, .. }
+        | Stmt::CompoundAssign { pos, .. }
+        | Stmt::Break { pos, .. }
+        | Stmt::Continue { pos, .. } => *pos,
+        Stmt::TypedAssign { pos_type, .. } => *pos_type,
+        Stmt::Assign { pos_eq, .. } => *pos_eq,
+        Stmt::Block { _pos, .. } => *_pos,
+        Stmt::ExprStmt { _pos, .. } => *_pos,
+        Stmt::ImportBlock { pos, .. } => *pos,
     }
 }
 
@@ -2863,13 +3100,31 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
 /// file set, not an incremental per-file walk.
 fn collect_gene_phen_registry(
     resolved: &crate::frontend::resolver::ResolvedProgram,
-) -> Result<(), Vec<SemanticError>> {
-    let mut known_genes: std::collections::HashSet<String> = std::collections::HashSet::new();
+) -> Result<GenePhenRegistry, Vec<SemanticError>> {
+    // 0a: every gene's name + full signature list. `Self` in a signature
+    // resolves to `TypeParam("Self")` (the generic-struct machinery's shape),
+    // substituted per-phen below via `substitute_type_params` — the exact
+    // reuse the design doc's Self-resolution decision specifies.
+    let self_param = ["Self".to_string()];
+    let resolve_sig_params = |params: &[ParamKind]| -> Vec<Option<SemanticType>> {
+        params.iter().map(|p| match p {
+            ParamKind::Typed(_, ty) => Some(semantic_type_from_decl(ty.clone(), &self_param)),
+            _ => None,
+        }).collect()
+    };
+
+    type GeneSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+    let mut genes: HashMap<String, Vec<GeneSig>> = HashMap::new();
     for &module_id in &resolved.topo_order {
         if let Some(file) = resolved.files.get(&module_id) {
             for stmt in &file.program.stmts {
-                if let Stmt::GeneDef { name, .. } = stmt {
-                    known_genes.insert(name.clone());
+                if let Stmt::GeneDef { name, methods, .. } = stmt {
+                    let sigs = methods.iter().map(|(mname, params, ret)| (
+                        mname.clone(),
+                        resolve_sig_params(params),
+                        ret.clone().map(|t| semantic_type_from_decl(t, &self_param)),
+                    )).collect();
+                    genes.insert(name.clone(), sigs);
                 }
             }
         }
@@ -2879,7 +3134,19 @@ fn collect_gene_phen_registry(
         module_id: crate::frontend::resolver::ModuleId,
         pos: usize,
     }
+    let source_location = |module_id: crate::frontend::resolver::ModuleId, pos: usize| -> String {
+        let (path, line) = resolved.files.get(&module_id)
+            .map(|f| {
+                let line = std::fs::read_to_string(&f.path).ok()
+                    .map(|src| src[..pos.min(src.len())].bytes().filter(|&b| b == b'\n').count() + 1)
+                    .unwrap_or(0);
+                (f.path.display().to_string(), line)
+            })
+            .unwrap_or_default();
+        format!("{}:{}", path, line)
+    };
     let mut phen_registry: HashMap<(String, SemanticType), PhenRegistration> = HashMap::new();
+    let mut phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin> = HashMap::new();
     let mut errors: Vec<SemanticError> = Vec::new();
 
     for &module_id in &resolved.topo_order {
@@ -2888,49 +3155,162 @@ fn collect_gene_phen_registry(
             None => continue,
         };
         for stmt in &file.program.stmts {
-            let (gene_name, receiver_ty, pos) = match stmt {
-                Stmt::PhenDef { gene_name, receiver, pos, .. } => (gene_name, &receiver.1, *pos),
+            let (gene_name, receiver_ty, methods, pos) = match stmt {
+                Stmt::PhenDef { gene_name, receiver, methods, pos } => (gene_name, &receiver.1, methods, *pos),
                 _ => continue,
             };
-            if !known_genes.contains(gene_name) {
-                errors.push(sem_err!(pos, "phen implements undeclared gene '{}'", gene_name));
-                continue;
-            }
+            let gene_sigs = match genes.get(gene_name) {
+                Some(sigs) => sigs,
+                None => {
+                    errors.push(sem_err!(pos, "phen implements undeclared gene '{}'", gene_name));
+                    continue;
+                }
+            };
             let receiver_type = semantic_type_from_decl(receiver_ty.clone(), &[]);
             let key = (gene_name.clone(), receiver_type.clone());
             if let Some(existing) = phen_registry.get(&key) {
-                let other_line = resolved.files.get(&existing.module_id)
-                    .and_then(|other_file| std::fs::read_to_string(&other_file.path).ok())
-                    .map(|src| src[..existing.pos.min(src.len())].bytes().filter(|&b| b == b'\n').count() + 1)
-                    .unwrap_or(0);
-                let other_path = resolved.files.get(&existing.module_id)
-                    .map(|f| f.path.display().to_string())
-                    .unwrap_or_default();
                 errors.push(sem_err!(
                     pos,
-                    "gene '{}' already implemented for '{}' — conflicting phen at {}:{}",
+                    "gene '{}' already implemented for '{}' — conflicting phen at {}",
                     gene_name,
                     type_name(&receiver_type),
-                    other_path,
-                    other_line
+                    source_location(existing.module_id, existing.pos)
                 ));
                 continue;
             }
             phen_registry.insert(key, PhenRegistration { module_id, pos });
+
+            // Contract completeness (locked rule: a phen must implement every
+            // signature in the gene, exactly) — compared after substituting
+            // Self → the receiver type on BOTH sides, so a phen may spell a
+            // contract type either as `Self` or as its own concrete name.
+            let self_map: HashMap<String, SemanticType> =
+                std::iter::once(("Self".to_string(), receiver_type.clone())).collect();
+            let subst_ty = |t: &Option<SemanticType>| -> Option<SemanticType> {
+                t.clone().map(|t| substitute_type_params(t, &self_map))
+            };
+            let subst_params = |ps: &[Option<SemanticType>]| -> Vec<Option<SemanticType>> {
+                ps.iter().map(|p| p.clone().map(|t| substitute_type_params(t, &self_map))).collect()
+            };
+            type PhenSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+            let phen_sigs: Vec<PhenSig> = methods.iter().map(|(mname, params, ret, _, _)| (
+                mname.clone(),
+                subst_params(&resolve_sig_params(params)),
+                subst_ty(&ret.clone().map(|t| semantic_type_from_decl(t, &self_param))),
+            )).collect();
+
+            for (g_method, g_params, g_ret) in gene_sigs {
+                let want_params = subst_params(g_params);
+                let want_ret = subst_ty(g_ret);
+                match phen_sigs.iter().find(|(n, _, _)| n == g_method) {
+                    None => errors.push(sem_err!(
+                        pos,
+                        "phen for '{}' does not implement '{}' declared by gene '{}'",
+                        type_name(&receiver_type),
+                        render_method_sig(g_method, &want_params, &want_ret),
+                        gene_name
+                    )),
+                    Some((_, got_params, got_ret)) => {
+                        if got_params.len() != want_params.len() {
+                            errors.push(sem_err!(
+                                pos,
+                                "method '{}' in phen for '{}': gene '{}' declares {} parameter(s), this phen implements {}",
+                                g_method, type_name(&receiver_type), gene_name,
+                                want_params.len(), got_params.len()
+                            ));
+                        } else {
+                            for (i, (want, got)) in want_params.iter().zip(got_params.iter()).enumerate() {
+                                if want != got {
+                                    errors.push(sem_err!(
+                                        pos,
+                                        "method '{}' in phen for '{}': parameter {} must be {} per gene '{}', got {}",
+                                        g_method, type_name(&receiver_type), i + 1,
+                                        opt_type_name(want), gene_name, opt_type_name(got)
+                                    ));
+                                }
+                            }
+                        }
+                        if *got_ret != want_ret {
+                            errors.push(sem_err!(
+                                pos,
+                                "method '{}' in phen for '{}': gene '{}' declares return type {}, this phen returns {}",
+                                g_method, type_name(&receiver_type), gene_name,
+                                opt_type_name(&want_ret), opt_type_name(got_ret)
+                            ));
+                        }
+                    }
+                }
+            }
+            // Method-ownership locked rule, application 1: no extras.
+            for (p_method, _, _) in &phen_sigs {
+                if !gene_sigs.iter().any(|(g, _, _)| g == p_method) {
+                    errors.push(sem_err!(
+                        pos,
+                        "method '{}' is not declared by gene '{}' — extra methods belong in impl blocks",
+                        p_method, gene_name
+                    ));
+                }
+            }
+            // Method-ownership locked rule, application 3: one implementation
+            // per method name per concrete type, across all genes.
+            for (p_method, _, _) in &phen_sigs {
+                let mkey = (receiver_type.clone(), p_method.clone());
+                if let Some(prev) = phen_methods.get(&mkey) {
+                    errors.push(sem_err!(
+                        pos,
+                        "method '{}' on '{}' is already provided by a phen of gene '{}' at {} — conflicting phen of gene '{}'",
+                        p_method, type_name(&receiver_type), prev.gene, prev.location, gene_name
+                    ));
+                } else {
+                    phen_methods.insert(mkey, PhenMethodOrigin {
+                        gene: gene_name.clone(),
+                        location: source_location(module_id, pos),
+                    });
+                }
+            }
         }
     }
 
     if errors.is_empty() {
-        Ok(())
+        Ok(GenePhenRegistry { phen_methods })
     } else {
         Err(errors)
+    }
+}
+
+/// A phen-provided method's origin — gene name + "path:line" — kept for the
+/// method-ownership collision diagnostics (locked rule, applications 2 & 3).
+#[derive(Debug, Clone)]
+pub(crate) struct PhenMethodOrigin {
+    pub gene: String,
+    pub location: String,
+}
+
+/// Whole-graph output of Pass 0 (0.3.4 slice 2): every phen-provided method,
+/// keyed `(receiver type, method name)`, injected into each per-file Analyzer
+/// for impl/phen same-name collision checks.
+pub(crate) struct GenePhenRegistry {
+    pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+}
+
+fn opt_type_name(t: &Option<SemanticType>) -> String {
+    t.as_ref().map(type_name).unwrap_or_else(|| "void".to_string())
+}
+
+fn render_method_sig(name: &str, params: &[Option<SemanticType>], ret: &Option<SemanticType>) -> String {
+    let ps: Vec<String> = params.iter()
+        .map(|p| p.as_ref().map(type_name).unwrap_or_else(|| "_".to_string()))
+        .collect();
+    match ret {
+        Some(r) => format!("{}({}) -> {}", name, ps.join(", "), type_name(r)),
+        None => format!("{}({})", name, ps.join(", ")),
     }
 }
 
 pub fn analyze_resolved_program(
     resolved: &crate::frontend::resolver::ResolvedProgram,
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
-    collect_gene_phen_registry(resolved)?;
+    let gene_phen_registry = collect_gene_phen_registry(resolved)?;
 
     let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
@@ -2952,6 +3332,7 @@ pub fn analyze_resolved_program(
         // Build analyzer with module aliases from already-processed dependencies
         let mut analyzer = Analyzer::new();
         analyzer.module_aliases = alias_exports.clone();
+        analyzer.phen_methods = gene_phen_registry.phen_methods.clone();
 
         // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
         // every `Type::Struct(name)` annotation that names an enum to
@@ -2997,6 +3378,20 @@ pub fn analyze_resolved_program(
         // Main analysis pass — skip ImportBlock statements
         let mut file_stmts = Vec::new();
         let mut errors = Vec::new();
+        // 'Self' is only meaningful inside a gene or phen (decision 3) —
+        // anywhere else it would silently analyze as an ordinary unknown
+        // struct named "Self". Reject before analysis.
+        for stmt in &normalized_stmts {
+            if matches!(stmt, Stmt::GeneDef { .. } | Stmt::PhenDef { .. }) {
+                continue;
+            }
+            if stmt_uses_self_type(stmt) {
+                errors.push(sem_err!(
+                    stmt_anchor_pos(stmt),
+                    "'Self' is only meaningful inside a gene or phen — name the concrete type here"
+                ));
+            }
+        }
         for stmt in &normalized_stmts {
             if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
             match analyzer.analyze_stmt(stmt) {
