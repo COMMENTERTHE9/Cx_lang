@@ -391,6 +391,50 @@ impl Analyzer {
                     pos: *pos,
                 })
             }
+            // 0.3.4 slice 1: header-only mirror. Coherence registration
+            // (Pass 0) already ran, over the raw AST, before this per-file
+            // pass ever started — this arm just resolves signature types for
+            // a future conformance-checking slice; it does not analyze,
+            // declare, or execute anything. No body exists for a gene to
+            // analyze in the first place.
+            Stmt::GeneDef { name, methods, pos } => {
+                let semantic_methods = methods
+                    .iter()
+                    .map(|(mname, params, ret_ty)| {
+                        let sem_params = params
+                            .iter()
+                            .map(|p| match p {
+                                ParamKind::Typed(_, ty) => Some(semantic_type_from_decl(ty.clone(), &[])),
+                                _ => None,
+                            })
+                            .collect();
+                        let sem_ret = ret_ty.clone().map(|t| semantic_type_from_decl(t, &[]));
+                        (mname.clone(), sem_params, sem_ret)
+                    })
+                    .collect();
+                Ok(SemanticStmt::GeneDef {
+                    name: name.clone(),
+                    methods: semantic_methods,
+                    pos: *pos,
+                })
+            }
+            // 0.3.4 slice 1: header-only mirror. The receiver's method bodies
+            // are deliberately NOT analyzed here — no binding declared for
+            // the receiver, no body walked, no Self substitution, no
+            // method-call resolution. That is slices 2-6's job. Coherence
+            // (does this (gene, type) pair collide with another phen
+            // anywhere in the reachable graph) is already fully handled by
+            // Pass 0, before this pass ever runs.
+            Stmt::PhenDef { gene_name, receiver, methods, pos } => {
+                let receiver_type = semantic_type_from_decl(receiver.1.clone(), &[]);
+                Ok(SemanticStmt::PhenDef {
+                    gene_name: gene_name.clone(),
+                    receiver_name: receiver.0.clone(),
+                    receiver_type,
+                    methods: methods.iter().map(|(mname, ..)| mname.clone()).collect(),
+                    pos: *pos,
+                })
+            }
             Stmt::EnumDef {
                 name,
                 variants,
@@ -2802,9 +2846,92 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
     }
 }
 
+/// Pass 0 (0.3.4 slice 1, `docs/post_0_1/gene_phen_design.md` — "Semantic-Pass
+/// Ordering"): a whole-graph gene/phen collection pass that runs once, before
+/// any per-file processing, over every file the resolver already assembled
+/// (`resolved.files`/`resolved.topo_order` — no new graph-traversal machinery
+/// needed). This is deliberately NOT a field on `Analyzer`: each file gets its
+/// own fresh `Analyzer::new()` in the loop below, so a table that must stay
+/// visible across the whole compilation cannot live there (design doc,
+/// coherence decision, item 5).
+///
+/// Registers every gene's name (so a phen naming an undeclared gene can be
+/// rejected) and every phen's canonical `(gene_name, receiver_type)` key,
+/// first-wins with collision-at-insert. A second registration of the same key
+/// is rejected with the design doc's exact two-location diagnostic — order-
+/// independent, since this is a single flat scan over the whole reachable
+/// file set, not an incremental per-file walk.
+fn collect_gene_phen_registry(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<(), Vec<SemanticError>> {
+    let mut known_genes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for &module_id in &resolved.topo_order {
+        if let Some(file) = resolved.files.get(&module_id) {
+            for stmt in &file.program.stmts {
+                if let Stmt::GeneDef { name, .. } = stmt {
+                    known_genes.insert(name.clone());
+                }
+            }
+        }
+    }
+
+    struct PhenRegistration {
+        module_id: crate::frontend::resolver::ModuleId,
+        pos: usize,
+    }
+    let mut phen_registry: HashMap<(String, SemanticType), PhenRegistration> = HashMap::new();
+    let mut errors: Vec<SemanticError> = Vec::new();
+
+    for &module_id in &resolved.topo_order {
+        let file = match resolved.files.get(&module_id) {
+            Some(f) => f,
+            None => continue,
+        };
+        for stmt in &file.program.stmts {
+            let (gene_name, receiver_ty, pos) = match stmt {
+                Stmt::PhenDef { gene_name, receiver, pos, .. } => (gene_name, &receiver.1, *pos),
+                _ => continue,
+            };
+            if !known_genes.contains(gene_name) {
+                errors.push(sem_err!(pos, "phen implements undeclared gene '{}'", gene_name));
+                continue;
+            }
+            let receiver_type = semantic_type_from_decl(receiver_ty.clone(), &[]);
+            let key = (gene_name.clone(), receiver_type.clone());
+            if let Some(existing) = phen_registry.get(&key) {
+                let other_line = resolved.files.get(&existing.module_id)
+                    .and_then(|other_file| std::fs::read_to_string(&other_file.path).ok())
+                    .map(|src| src[..existing.pos.min(src.len())].bytes().filter(|&b| b == b'\n').count() + 1)
+                    .unwrap_or(0);
+                let other_path = resolved.files.get(&existing.module_id)
+                    .map(|f| f.path.display().to_string())
+                    .unwrap_or_default();
+                errors.push(sem_err!(
+                    pos,
+                    "gene '{}' already implemented for '{}' — conflicting phen at {}:{}",
+                    gene_name,
+                    type_name(&receiver_type),
+                    other_path,
+                    other_line
+                ));
+                continue;
+            }
+            phen_registry.insert(key, PhenRegistration { module_id, pos });
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
 pub fn analyze_resolved_program(
     resolved: &crate::frontend::resolver::ResolvedProgram,
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
+    collect_gene_phen_registry(resolved)?;
+
     let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();

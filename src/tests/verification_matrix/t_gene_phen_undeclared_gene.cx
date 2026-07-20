@@ -1,0 +1,9 @@
+// 0.3.4 slice 1: a phen naming a gene that exists nowhere in the program is
+// a semantic error.
+phen Nope (v: t32) {
+    fnc: t32 add(rhs: t32) {
+        v + rhs
+    }
+}
+
+print(1)

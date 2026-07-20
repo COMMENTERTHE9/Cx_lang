@@ -1,0 +1,5 @@
+phen Add (v: t32) {
+    fnc: t32 add(rhs: t32) {
+        v + rhs
+    }
+}

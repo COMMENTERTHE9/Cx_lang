@@ -1,0 +1,9 @@
+// 0.3.4 slice 1: a gene is a contract — signatures only. A method body inside
+// a gene must be a clean parse error, not silently accepted.
+gene Damageable {
+    fnc take_damage(amount: t32) {
+        print(amount)
+    }
+}
+
+print(1)

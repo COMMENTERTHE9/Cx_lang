@@ -15,6 +15,11 @@ impl RunTime {
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
             SemanticStmt::Noop => Ok(()),
+            // 0.3.4 slice 1: gene/phen declarations are inert — nothing to
+            // execute. Coherence registration already happened in Pass 0,
+            // before this statement is ever reached.
+            SemanticStmt::GeneDef { .. } => Ok(()),
+            SemanticStmt::PhenDef { .. } => Ok(()),
 SemanticStmt::Decl { binding, name, ty, .. } => {
                 let rt_ty: Option<Type> = ty.as_ref().map(|t| t.clone().into());
                 self.declare(*binding, name.clone(), rt_ty, 0)

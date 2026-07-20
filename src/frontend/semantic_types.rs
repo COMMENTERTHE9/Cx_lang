@@ -13,7 +13,7 @@ pub struct EnumId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumVariantId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SemanticType {
     I8,
     I16,
@@ -322,6 +322,29 @@ pub enum SemanticStmt {
         enum_id: EnumId,
         name: String,
         variants: Vec<String>,
+        pos: usize,
+    },
+    /// 0.3.4 slice 1: header-only mirror. Signatures carry resolved types for
+    /// future conformance-checking; no bodies exist for a gene (contracts have
+    /// none). Nothing consumes this yet — genuinely inert (see runtime/exec.rs,
+    /// ir/lower.rs).
+    GeneDef {
+        name: String,
+        methods: Vec<(String, Vec<Option<SemanticType>>, Option<SemanticType>)>,
+        pos: usize,
+    },
+    /// 0.3.4 slice 1: header-only mirror — gene/receiver identity and method
+    /// names only. Method bodies are deliberately NOT carried here: nothing in
+    /// this slice analyzes, type-checks, or executes them (that's method-call
+    /// resolution / Self-substitution / conformance-checking, slices 2-6).
+    /// Coherence registration itself happens earlier, in Pass 0, directly over
+    /// the raw AST — this mirror exists only so PhenDef has a place in the
+    /// analyzed tree at all.
+    PhenDef {
+        gene_name: String,
+        receiver_name: String,
+        receiver_type: SemanticType,
+        methods: Vec<String>,
         pos: usize,
     },
     Decl {

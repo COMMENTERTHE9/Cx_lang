@@ -339,6 +339,14 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
         Stmt::EnumDef { name, variants, .. } => {
             eprintln!("{}EnumDef({}: {})", pad, name, variants.join(", "));
         }
+        Stmt::GeneDef { name, methods, .. } => {
+            let mnames: Vec<&str> = methods.iter().map(|(n, _, _)| n.as_str()).collect();
+            eprintln!("{}GeneDef({} [{}])", pad, name, mnames.join(", "));
+        }
+        Stmt::PhenDef { gene_name, receiver, methods, .. } => {
+            let mnames: Vec<&str> = methods.iter().map(|(n, _, _, _, _)| n.as_str()).collect();
+            eprintln!("{}PhenDef({} for {}: {:?} [{}])", pad, gene_name, receiver.0, receiver.1, mnames.join(", "));
+        }
         Stmt::Decl { name, ty, .. } => {
             eprintln!("{}Decl({}: {:?})", pad, name, ty);
         }

@@ -167,6 +167,12 @@ pub struct ImportDecl {
     pub pos: usize,
 }
 
+/// (name, params, return type, body, trailing implicit-return expr) — the
+/// same shape `ImplBlock::methods` already uses; `PhenDef` reuses it verbatim
+/// since a phen's methods are "full implementations" exactly like an impl
+/// block's.
+pub type PhenMethod = (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>);
+
 // AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
@@ -188,6 +194,17 @@ pub enum Stmt {
         methods: Vec<(String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>)>,
         #[allow(dead_code)] // visibility tag preserved for future module-scope work
         is_pub: bool,
+        pos: usize,
+    },
+    GeneDef {
+        name: String,
+        methods: Vec<(String, Vec<ParamKind>, Option<Type>)>,
+        pos: usize,
+    },
+    PhenDef {
+        gene_name: String,
+        receiver: (String, Type),
+        methods: Vec<PhenMethod>,
         pos: usize,
     },
     ConstDecl {

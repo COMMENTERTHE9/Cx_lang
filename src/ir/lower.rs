@@ -753,6 +753,10 @@ fn lower_stmt(
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     match stmt {
         SemanticStmt::Noop => Ok(Some(current)),
+        // 0.3.4 slice 1: gene/phen declarations are inert at lowering too —
+        // nothing to emit. Coherence registration already happened in Pass 0.
+        SemanticStmt::GeneDef { .. } => Ok(Some(current)),
+        SemanticStmt::PhenDef { .. } => Ok(Some(current)),
         SemanticStmt::Decl { ty, .. } => {
             if let Some(ty) = ty {
                 let _ = lower_type(ty)?;

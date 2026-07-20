@@ -684,6 +684,39 @@ where
                 }))
             .boxed();
 
+        // gene Name { fnc sig(params) -> RetTy? ... } — signatures only, no
+        // colon-prefix return type (unlike ordinary fnc definitions) and no
+        // body: a `{` here has nothing to match against and falls through to
+        // a parse error, which is exactly "reject a body with a clean parse
+        // error" without any special-cased detection logic. Defined here,
+        // before func_def's recursive block moves `param` by value.
+        let gene_method_sig = just(Token::KeywordFnc)
+            .ignore_then(ident)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(
+                param
+                    .clone()
+                    .separated_by(just(Token::PunctComma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::PunctParenClose))
+            .then(
+                just(Token::PunctArrow)
+                    .ignore_then(ty.clone())
+                    .or_not(),
+            )
+            .map(|((name, params), ret_ty)| (name, params, ret_ty));
+
+        let gene_def = just(Token::KeywordGene)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident)
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(gene_method_sig.repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, name), methods)| Stmt::GeneDef { name, methods, pos })
+            .boxed();
+
         let group = just(Token::KeywordGroup)
             .ignore_then(just(Token::PunctDoubleColon))
             .ignore_then(ident.clone())
@@ -1393,6 +1426,53 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             })
             .boxed();
 
+        // phen GeneName (recv: Type) { fnc: RetTy? full_impl(params) { body } ... }
+        // — the receiver-binding grammar mirrors impl_block's `(name: Type, ...)`
+        // exactly, restricted to exactly one receiver (a phen binds one gene to
+        // one concrete type); methods reuse func_def as-is (the same "full
+        // implementation" fnc syntax impl blocks already use), not gene's
+        // bare-signature grammar.
+        let phen_def = just(Token::KeywordPhen)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(
+                ident
+                    .then_ignore(just(Token::PunctColon))
+                    .then(ty.clone()),
+            )
+            .then_ignore(just(Token::PunctParenClose))
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(func_def.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|(((pos, gene_name), receiver), methods)| {
+                let method_data = methods
+                    .into_iter()
+                    .filter_map(|s| {
+                        if let Stmt::FuncDef {
+                            name,
+                            params,
+                            ret_ty,
+                            body,
+                            ret_expr,
+                            ..
+                        } = s
+                        {
+                            Some((name, params, ret_ty, body, ret_expr))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Stmt::PhenDef {
+                    gene_name,
+                    receiver,
+                    methods: method_data,
+                    pos,
+                }
+            })
+            .boxed();
+
         let const_decl = just(Token::KeywordConst)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
@@ -1429,6 +1509,8 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             const_decl,
             struct_def,
             impl_block,
+            gene_def,
+            phen_def,
             enum_def,
             decl,
             func_def,

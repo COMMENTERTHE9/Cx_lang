@@ -1,0 +1,22 @@
+// 0.3.4 slice 1: the forward-reference canary (decision 2's whole point) —
+// the identical declarations as t_gene_phen_basic.cx, but with the phen
+// declared BEFORE its gene. Must register and run identically regardless of
+// order — proving Pass 0 is genuinely order-independent, not just "happens
+// to work when written top-to-bottom."
+struct Player { health: t32 }
+
+phen Damageable (p: Player) {
+    fnc: take_damage(amount: t32) {
+        p.health -= amount
+    }
+    fnc: bool is_alive() {
+        p.health > 0
+    }
+}
+
+gene Damageable {
+    fnc take_damage(amount: t32)
+    fnc is_alive() -> bool
+}
+
+print(42)
