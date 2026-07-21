@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-21
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -55,9 +55,14 @@ correction to an existing plan.
   `3ea986d` — this slot documents where it lands once tagged, not new work.)*
 - **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
   from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2.
+- **0.3.3** — gene + phen design pass — shifted from 0.3.2. *(Design
+  complete — all six implementation questions closed, documented in
+  `docs/post_0_1/gene_phen_design.md`.)*
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
-  (type bounds) — shifted from 0.3.3.
+  (type bounds) — shifted from 0.3.3. *(In progress on `submain`: slices
+  1–3 of 6 landed — declarations, coherence, contract checking, Self
+  resolution, method-ownership rules, and interpreter method-call dispatch.
+  Remaining: JIT lowering, operator overloading, generics v3.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
@@ -100,6 +105,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-20:** 0.3.4 slices 2 and 3 landed on `submain` (`fcd3193`, `cbb095e`). Slice 2: gene contract checking (arity, param types, return types, missing/extra methods), Self resolution (AST-level substitution to concrete receiver type), method-ownership locked rule (impl/phen collision, cross-gene collision). 10 new negative test fixtures, 1 positive. Slice 3: phen method execution — methods registered into `semantic_impls` like impl methods, dispatched through the existing `call_semantic_method` machinery. 6 new test fixtures covering basic calls, multi-type dispatch, forward references, mutation semantics, Self at runtime, and missing-method rejection. Submain now 15 commits ahead of main. Matrix on main: 321/0.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
