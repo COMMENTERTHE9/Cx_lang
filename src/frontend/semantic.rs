@@ -3253,7 +3253,7 @@ fn collect_gene_phen_registry(
             }
             // Method-ownership locked rule, application 3: one implementation
             // per method name per concrete type, across all genes.
-            for (p_method, _, _) in &phen_sigs {
+            for (p_method, p_params, p_ret) in &phen_sigs {
                 let mkey = (receiver_type.clone(), p_method.clone());
                 if let Some(prev) = phen_methods.get(&mkey) {
                     errors.push(sem_err!(
@@ -3265,6 +3265,8 @@ fn collect_gene_phen_registry(
                     phen_methods.insert(mkey, PhenMethodOrigin {
                         gene: gene_name.clone(),
                         location: source_location(module_id, pos),
+                        params: p_params.clone(),
+                        ret: p_ret.clone(),
                     });
                 }
             }
@@ -3278,12 +3280,17 @@ fn collect_gene_phen_registry(
     }
 }
 
-/// A phen-provided method's origin — gene name + "path:line" — kept for the
-/// method-ownership collision diagnostics (locked rule, applications 2 & 3).
+/// A phen-provided method's origin — gene name + "path:line" for the
+/// method-ownership collision diagnostics (locked rule, applications 2 & 3),
+/// plus its Self-substituted signature (0.3.4 slice 3) so per-file analysis
+/// can inject a signature-only stub into `method_registry` and call sites
+/// resolve order-independently across the whole graph (decision 2).
 #[derive(Debug, Clone)]
 pub(crate) struct PhenMethodOrigin {
     pub gene: String,
     pub location: String,
+    pub params: Vec<Option<SemanticType>>,
+    pub ret: Option<SemanticType>,
 }
 
 /// Whole-graph output of Pass 0 (0.3.4 slice 2): every phen-provided method,
@@ -3372,6 +3379,40 @@ pub fn analyze_resolved_program(
                     ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                     type_params: type_params.clone(),
                 });
+            }
+        }
+
+        // Phen-method pre-pass (0.3.4 slice 3): inject signature-only stubs
+        // into method_registry so `value.method(args)` resolves to a phen
+        // method order-independently, across the whole reachable graph
+        // (decision 2 — forward-reference capable, unlike impl methods'
+        // declaration-order registration). Only the signature matters at a
+        // call site (arity, param types, return type); the analyzed bodies
+        // reach the runtime through SemanticStmt::PhenDef, not these stubs.
+        // The ownership rule (slice 2) guarantees no name can be claimed by
+        // both an impl and a phen, so this is a straight lookup extension,
+        // not a precedence scheme.
+        for ((recv_ty, mname), origin) in &gene_phen_registry.phen_methods {
+            if let SemanticType::Struct(sname) = recv_ty {
+                let func_id = analyzer.fresh_function();
+                let stub = SemanticFunction {
+                    id: func_id,
+                    name: mname.clone(),
+                    type_params: vec![],
+                    params: origin.params.iter().enumerate().map(|(i, ty)| SemanticParam {
+                        binding: BindingId(u32::MAX),
+                        name: format!("arg{}", i),
+                        kind: SemanticParamKind::Typed,
+                        ty: ty.clone(),
+                    }).collect(),
+                    return_ty: origin.ret.clone(),
+                    body: vec![],
+                    ret_expr: None,
+                    is_test: false,
+                    pos: 0,
+                };
+                analyzer.method_registry.insert((sname.clone(), mname.clone()), stub);
+                analyzer.method_alias_counts.insert((sname.clone(), mname.clone()), 1);
             }
         }
 

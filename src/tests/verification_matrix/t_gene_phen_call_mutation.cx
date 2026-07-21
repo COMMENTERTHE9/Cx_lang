@@ -1,0 +1,30 @@
+// 0.3.4 slice 3: receiver semantics — a phen body mutating a receiver field
+// behaves exactly like the equivalent impl method (mutation lands on the
+// caller's variable), proven side by side in one program.
+struct Player { health: t32 }
+
+gene Damageable {
+    fnc phen_hit(amount: t32)
+}
+
+phen Damageable (p: Player) {
+    fnc: phen_hit(amount: t32) {
+        p.health -= amount
+    }
+}
+
+pm: impl (p: Player) {
+    fnc: impl_hit(amount: t32) {
+        p.health -= amount
+    }
+}
+
+let a;
+a = Player { health: 100 }
+a.phen_hit(30)
+print(a.health)
+
+let b;
+b = Player { health: 100 }
+b.impl_hit(30)
+print(b.health)

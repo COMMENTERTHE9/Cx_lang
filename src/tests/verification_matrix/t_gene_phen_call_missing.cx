@@ -1,0 +1,6 @@
+// 0.3.4 slice 3: calling a method that no impl and no phen provides on the
+// receiver's type — the pre-existing unknown-method error, unchanged.
+struct Player { health: t32 }
+let p;
+p = Player { health: 1 }
+p.nonexistent(5)
