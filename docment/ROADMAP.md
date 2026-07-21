@@ -45,9 +45,9 @@ proven on both backends (interpreter and Cranelift JIT).
 ---
 
 The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
-sequence — this is the first time it's being formally recorded, not a
-correction to an existing plan.
+2026-07-21 (originally recorded 2026-07-04). No prior committed roadmap
+file contained a 0.2+ version sequence — this is the first time it's being
+formally recorded, not a correction to an existing plan.
 
 ## Corrected Version Sequence
 
