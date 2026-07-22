@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-07-21"
+date: 2026-07-21
+description: "Gene/phen trait system slices 2 and 3 landed on submain, adding contract checking, Self resolution, method-ownership rules, and interpreter dispatch for phen method calls."
+---
+
+Two substantial slices of the gene/phen implementation landed back-to-back on `submain` today. Yesterday's slice 1 gave us declarations and coherence. Today, slice 2 adds the full contract-checking machinery and slice 3 makes phen methods actually callable at runtime. The trait system went from "declarations parse and coherence works" to "methods type-check, Self resolves per-receiver, and calls execute" in a single day. Submain is now 15 commits ahead of main. Matrix holds at 321/0 on main.
+
+## Contract checking and Self resolution (slice 2)
+
+Commit `fcd3193` is the larger of the two -- 594 insertions across 23 files. The core of it is Pass 0 contract conformance: `collect_gene_phen_registry()` now fully validates every phen against its gene. It checks arity, positional parameter types (after Self-substitution), return types, missing methods, and extra methods. Each mismatch produces a targeted diagnostic naming the gene, method, position, and expected-vs-got types.
+
+Self resolution was a deliberate design choice. `Self` in phen signatures and bodies is substituted to the concrete receiver type at the AST level before analysis runs, via a `substitute_self_type()` function that recurses through `Array`, `Handle`, and `Result` wrappers. The alternative would have been a floating `TypeParam("Self")`, but that checks nothing because `types_compatible` unifies any TypeParam with anything. This matches design doc decision 3: Self is concrete, not parametric.
+
+Method-ownership is locked down with three enforcement points. No extra methods beyond the gene's contract (caught in Pass 0). No name collisions between impl methods and phen methods on one type (caught during per-file analysis via a new `phen_methods` field on `Analyzer`). No cross-gene method name collisions on one concrete type (also caught in Pass 0). The design doc specified locked ownership and the implementation enforces all three paths.
+
+The `PhenDef` semantic representation also got upgraded. `SemanticStmt::PhenDef` now carries `Vec<SemanticFunction>` and `Vec<Vec<SemanticParam>>` instead of bare method names. Methods are analyzed in throwaway scopes exactly like impl-block methods.
+
+Ten new negative test fixtures and one positive fixture exercise every rejection path: contract arity mismatches, missing methods, parameter type mismatches, return type mismatches, extra methods, impl/phen collisions, two-gene collisions on one type, and Self used outside a phen. The positive fixture (`t_gene_phen_contract_ok`) exercises two phens of one gene with Self in every type position as a leak canary.
+
+## Phen method calls at runtime (slice 3)
+
+Commit `cbb095e` (227 insertions, 15 files) is where phen methods become callable. The key insight: phen methods register into `semantic_impls` keyed on `(type_name, method_name)` with receiver bindings -- the exact same data structure impl-block methods use. This means `call_semantic_method` dispatches phen methods with zero changes to the existing call path. The design doc's position that phen methods are "full implementations exactly like an impl block's" is now literally true at runtime.
+
+Forward-reference support came along for free. The pre-registration pass in `run_with_interpreter_setup()` registers phen methods alongside impl methods, so a call site textually before the phen declaration dispatches correctly.
+
+Six new test fixtures cover the call paths: basic construct-call-use-return, multi-type dispatch (two phens of one gene proving each value runs its own phen's body), forward references, missing-method rejection, mutation parity between phen and impl methods, and Self-typed parameters and return values flowing through execution at runtime.
+
+## Design decisions confirmed
+
+Both slices implement decisions from the gene/phen design doc rather than inventing new ones:
+
+- Self is concrete, not parametric (decision 3). The `t_gene_phen_self_leak_reject` fixture proves this is real: annotating an Enemy literal as `Self` inside a Player phen is a type error.
+- Dispatch reuses impl-block machinery. The runtime cannot distinguish phen methods from impl methods. No parallel dispatch path was needed.
+- Method ownership is locked (decision 5). All three ownership constraints are enforced and tested.
+
+Slice 2 carries "rebuild" in its commit message, suggesting an earlier version was discarded and rewritten. The final version is clean.
+
+## What's ahead
+
+Three of six slices are done. Declarations, coherence, contract checking, Self resolution, ownership rules, and interpreter dispatch are all landed on submain. The remaining slices likely cover IR lowering for gene/phen constructs (so the JIT backend can handle them), operator overloading, and generics v3 type bounds -- all listed in the 0.3.4 roadmap line and all dependent on the core that just landed.
+
+Submain at 15 commits ahead of main is getting large. The merge continues to be deferred while the 0.3.4 sprint is active, but at some point the batch size becomes its own risk. Known issue #3 (explicit return combined with trailing expression) remains open and untouched while the gene/phen sprint runs.
