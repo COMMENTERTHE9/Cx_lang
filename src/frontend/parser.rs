@@ -1324,12 +1324,24 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             // Syntax: fnc: RetType? <T>? name(params) { body }
             // Generics parser reused in both branches
+            // 0.3.4 slice 4: each generic param may carry gene bounds —
+            // `<T>`, `<T: GeneName>`, `<T: GeneA + GeneB>`, comma-separated.
             let generic_params = just(Token::OpLessThan)
                 .ignore_then(
                     select! { Token::Identifier(s) => s }
+                        .then(
+                            just(Token::PunctColon)
+                                .ignore_then(
+                                    select! { Token::Identifier(s) => s }
+                                        .separated_by(just(Token::OpAdd))
+                                        .at_least(1)
+                                        .collect::<Vec<_>>(),
+                                )
+                                .or_not(),
+                        )
                         .separated_by(just(Token::PunctComma))
                         .at_least(1)
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<(String, Option<Vec<String>>)>>(),
                 )
                 .then_ignore(just(Token::OpGreaterThan))
                 .or_not()
@@ -1364,16 +1376,24 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                         .then(func_body)
                 )
                 .map(
-                    |((pub_tok, macros), (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
-                        name,
-                        type_params,
-                        params,
-                        ret_ty,
-                        body,
-                        ret_expr,
-                        is_pub: pub_tok.is_some(),
-                        macros,
-                        pos,
+                    |((pub_tok, macros), (((pos, (ret_ty, generic_pairs, name)), params), (body, ret_expr)))| {
+                        let type_params: Vec<String> = generic_pairs.iter().map(|(n, _)| n.clone()).collect();
+                        let type_bounds: Vec<(String, Vec<String>)> = generic_pairs
+                            .into_iter()
+                            .filter_map(|(n, b)| b.map(|genes| (n, genes)))
+                            .collect();
+                        Stmt::FuncDef {
+                            name,
+                            type_params,
+                            type_bounds,
+                            params,
+                            ret_ty,
+                            body,
+                            ret_expr,
+                            is_pub: pub_tok.is_some(),
+                            macros,
+                            pos,
+                        }
                     },
                 )
         })

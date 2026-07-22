@@ -254,6 +254,9 @@ ExprStmt {
     FuncDef {
         name: String,
         type_params: Vec<String>,
+        /// 0.3.4 slice 4: gene bounds per type parameter — `(param, genes)`
+        /// from `<T: GeneA + GeneB>`. Unbounded params carry no entry.
+        type_bounds: Vec<(String, Vec<String>)>,
         params: Vec<ParamKind>,
         ret_ty: Option<Type>,
         body: Vec<Stmt>,

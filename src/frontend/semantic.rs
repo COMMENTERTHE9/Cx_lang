@@ -33,6 +33,9 @@ struct FunctionInfo {
     params: Vec<SemanticParam>,
     ret_ty: Option<SemanticType>,
     type_params: Vec<String>,
+    /// 0.3.4 slice 4: gene bounds per type parameter, checked at each
+    /// instantiation site against the phen registry.
+    type_bounds: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,15 @@ pub struct Analyzer {
     /// enforce the method-ownership locked rule, application 2: an impl
     /// method and a phen method may not share a name on one type.
     pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+    /// Whole-graph gene signatures (0.3.4 slice 4), for resolving gene-method
+    /// calls on bounded type parameters inside generic bodies.
+    pub gene_defs: HashMap<String, Vec<GeneSig>>,
+    /// Whole-graph `(gene, receiver type)` phen keys (0.3.4 slice 4), for
+    /// bound-satisfaction checks at generic instantiation sites.
+    pub phen_keys: std::collections::HashSet<(String, SemanticType)>,
+    /// The enclosing function's `<T: Gene>` bounds while its body is being
+    /// analyzed (0.3.4 slice 4) — set/restored by the FuncDef arm.
+    current_type_bounds: Vec<(String, Vec<String>)>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     pub module_aliases: HashMap<String, ExportTable>,
@@ -95,6 +107,9 @@ impl Analyzer {
             method_registry: HashMap::new(),
             method_alias_counts: HashMap::new(),
             phen_methods: HashMap::new(),
+            gene_defs: HashMap::new(),
+            phen_keys: std::collections::HashSet::new(),
+            current_type_bounds: vec![],
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -715,7 +730,23 @@ impl Analyzer {
                     }
                 }
                 let is_test = macros.contains(&CxMacro::Test);
-                self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test)
+                // 0.3.4 slice 4: make this function's gene bounds visible to
+                // its own body (gene-method calls on bounded T), and carry
+                // them on the FunctionInfo for instantiation-site checks
+                // (analyze_function's own insert doesn't know about bounds).
+                let bounds = match stmt {
+                    Stmt::FuncDef { type_bounds, .. } => type_bounds.clone(),
+                    _ => vec![],
+                };
+                let prev_bounds = std::mem::replace(&mut self.current_type_bounds, bounds.clone());
+                let result = self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test);
+                self.current_type_bounds = prev_bounds;
+                if result.is_ok() {
+                    if let Some(info) = self.funcs.get_mut(name) {
+                        info.type_bounds = bounds;
+                    }
+                }
+                result
             }
 Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 expr: self.analyze_expr(expr)?,
@@ -1160,6 +1191,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 params: placeholders.clone(),
                 ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                 type_params: type_params.to_vec(),
+                // Bounds are stamped by the FuncDef arm right after this call
+                // returns (this function doesn't receive them).
+                type_bounds: vec![],
             },
         );
 
@@ -1786,9 +1820,115 @@ Expr::Unary(op, inner, pos) => {
                     None => return Err(sem_err!(*pos, "method call receiver '{}' is not in scope", instance)),
                 };
                 let instance_binding = instance_info.binding;
+                // Resolve the declared type against the enclosing function's
+                // type params (0.3.4 slice 4) so a `t: T` receiver surfaces
+                // as TypeParam("T") rather than an unknown struct named "T".
                 let instance_ty = instance_info.inferred.clone()
-                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params.clone())))
                     .unwrap_or(SemanticType::Unknown);
+
+                // 0.3.4 slice 4: gene-method call on a bounded type parameter.
+                // The bound is what grants access — resolution goes through the
+                // bounded genes' contracts; the concrete phen is picked at the
+                // instantiation (runtime dispatch resolves the receiver's
+                // actual value type, so each instantiation runs its own phen).
+                if let SemanticType::TypeParam(tp) = &instance_ty {
+                    let bounds: Vec<String> = self.current_type_bounds.iter()
+                        .find(|(n, _)| n == tp)
+                        .map(|(_, genes)| genes.clone())
+                        .unwrap_or_default();
+                    let mut found: Option<(Vec<Option<SemanticType>>, Option<SemanticType>)> = None;
+                    for gene in &bounds {
+                        if let Some(sigs) = self.gene_defs.get(gene) {
+                            if let Some((_, gparams, gret)) = sigs.iter().find(|(n, _, _)| n == method) {
+                                found = Some((gparams.clone(), gret.clone()));
+                                break;
+                            }
+                        }
+                    }
+                    let (gparams, gret) = match found {
+                        Some(x) => x,
+                        None => return Err(sem_err!(
+                            *pos,
+                            "method '{}.{}': type parameter '{}' has no gene bound providing '{}'",
+                            instance, method, tp, method
+                        )),
+                    };
+                    // Self in the gene's signature means "the bound type" —
+                    // substitute Self → TypeParam(tp) so it stays generic here.
+                    let self_map: HashMap<String, SemanticType> =
+                        std::iter::once(("Self".to_string(), SemanticType::TypeParam(tp.clone()))).collect();
+                    let want_params: Vec<Option<SemanticType>> = gparams.iter()
+                        .map(|p| p.clone().map(|t| substitute_type_params(t, &self_map)))
+                        .collect();
+                    if args.len() != want_params.len() {
+                        return Err(sem_err!(
+                            *pos,
+                            "method '{}.{}' expects {} argument{}, got {}",
+                            instance, method,
+                            want_params.len(), if want_params.len() == 1 { "" } else { "s" },
+                            args.len()
+                        ));
+                    }
+                    let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        match arg {
+                            CallArg::Expr(expr) => {
+                                let sem_expr = self.analyze_expr(expr)?;
+                                if let Some(Some(expected)) = want_params.get(index) {
+                                    check_semantic_num_fits(&sem_expr, expected, *pos)?;
+                                    if !types_compatible(expected, &sem_expr.ty) {
+                                        return Err(sem_err!(
+                                            *pos,
+                                            "argument {} to method '{}.{}': expected {}, got {}",
+                                            index + 1, instance, method,
+                                            type_name(expected), type_name(&sem_expr.ty)
+                                        ));
+                                    }
+                                }
+                                semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                            }
+                            CallArg::Copy(name) => {
+                                let binding = self.lookup_var(name)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(u32::MAX));
+                                semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
+                            }
+                            CallArg::CopyFree(name) => {
+                                let binding = self.lookup_var(name)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(u32::MAX));
+                                semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
+                            }
+                            CallArg::CopyInto(names) => {
+                                let resolved = names.iter().map(|n| {
+                                    let binding = self.lookup_var(n)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(u32::MAX));
+                                    ResolvedBinding { binding, name: n.clone() }
+                                }).collect();
+                                semantic_args.push(SemanticCallArg::CopyInto(resolved));
+                            }
+                        }
+                    }
+                    let ret_ty = gret
+                        .map(|t| substitute_type_params(t, &self_map))
+                        .unwrap_or(SemanticType::Void);
+                    return Ok(SemanticExpr {
+                        ty: ret_ty,
+                        kind: SemanticExprKind::MethodCall {
+                            instance: instance.clone(),
+                            method: method.clone(),
+                            args: semantic_args,
+                            instance_binding,
+                            // No concrete type at analysis time — the runtime
+                            // resolves the receiver's actual value type; the
+                            // JIT's mangled lookup misses this name and SKIPs.
+                            struct_name: tp.clone(),
+                            pos: *pos,
+                        },
+                    });
+                }
 
                 let struct_name = match &instance_ty {
                     SemanticType::Struct(tn) => tn.clone(),
@@ -2122,6 +2262,24 @@ Expr::Unary(op, inner, pos) => {
                                 type_param_map.insert(tname.clone(), analyzed.ty.clone());
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // 0.3.4 slice 4: bound satisfaction at the instantiation site —
+        // `T: GeneName` is satisfied only if a phen exists binding that gene
+        // to the concrete type substituted for T (design doc, Locked Rules);
+        // `T: GeneA + GeneB` requires phens for both.
+        for (tp_name, bound_genes) in &function.type_bounds {
+            if let Some(concrete) = type_param_map.get(tp_name) {
+                for gene in bound_genes {
+                    if !self.phen_keys.contains(&(gene.clone(), concrete.clone())) {
+                        return Err(sem_err!(
+                            pos,
+                            "type '{}' does not satisfy bound '{}: {}' in call to '{}' — no phen of gene '{}' for '{}'",
+                            type_name(concrete), tp_name, gene, name, gene, type_name(concrete)
+                        ));
                     }
                 }
             }
@@ -2689,8 +2847,8 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
             name, expr, pos_type, ty: normalize_enum_type(ty, enums),
         },
-        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
-            name, type_params, is_pub, macros, pos,
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, type_bounds, is_pub, macros, pos,
             params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
             ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
             body: normalize_enum_stmts(body, enums),
@@ -2769,8 +2927,8 @@ fn map_stmt_types(stmt: Stmt, f: &dyn Fn(Type) -> Type) -> Stmt {
         Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
             name, expr, pos_type, ty: f(ty),
         },
-        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
-            name, type_params, is_pub, macros, pos,
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, type_bounds, is_pub, macros, pos,
             params: params.into_iter().map(|p| map_param_type(p, f)).collect(),
             ret_ty: ret_ty.map(f),
             body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
@@ -3113,7 +3271,6 @@ fn collect_gene_phen_registry(
         }).collect()
     };
 
-    type GeneSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
     let mut genes: HashMap<String, Vec<GeneSig>> = HashMap::new();
     for &module_id in &resolved.topo_order {
         if let Some(file) = resolved.files.get(&module_id) {
@@ -3274,7 +3431,8 @@ fn collect_gene_phen_registry(
     }
 
     if errors.is_empty() {
-        Ok(GenePhenRegistry { phen_methods })
+        let phen_keys = phen_registry.keys().cloned().collect();
+        Ok(GenePhenRegistry { phen_methods, genes, phen_keys })
     } else {
         Err(errors)
     }
@@ -3293,11 +3451,18 @@ pub(crate) struct PhenMethodOrigin {
     pub ret: Option<SemanticType>,
 }
 
-/// Whole-graph output of Pass 0 (0.3.4 slice 2): every phen-provided method,
-/// keyed `(receiver type, method name)`, injected into each per-file Analyzer
-/// for impl/phen same-name collision checks.
+/// A gene method's declared signature: name, param types (None for untyped
+/// param kinds), return type — `Self` carried as `TypeParam("Self")`.
+pub(crate) type GeneSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+
+/// Whole-graph output of Pass 0: every phen-provided method keyed
+/// `(receiver type, method name)` (slice 2, impl/phen collision checks),
+/// every gene's signature list, and every `(gene, receiver type)` phen key
+/// (slice 4, bounded-generic resolution + instantiation-site bound checks).
 pub(crate) struct GenePhenRegistry {
     pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+    pub genes: HashMap<String, Vec<GeneSig>>,
+    pub phen_keys: std::collections::HashSet<(String, SemanticType)>,
 }
 
 fn opt_type_name(t: &Option<SemanticType>) -> String {
@@ -3340,6 +3505,8 @@ pub fn analyze_resolved_program(
         let mut analyzer = Analyzer::new();
         analyzer.module_aliases = alias_exports.clone();
         analyzer.phen_methods = gene_phen_registry.phen_methods.clone();
+        analyzer.gene_defs = gene_phen_registry.genes.clone();
+        analyzer.phen_keys = gene_phen_registry.phen_keys.clone();
 
         // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
         // every `Type::Struct(name)` annotation that names an enum to
@@ -3368,7 +3535,7 @@ pub fn analyze_resolved_program(
 
         // Function pre-pass
         for stmt in &normalized_stmts {
-            if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
+            if let Stmt::FuncDef { name, params, ret_ty, type_params, type_bounds, .. } = stmt {
                 let placeholders = params.iter()
                     .map(semantic_param_placeholder)
                     .collect::<Vec<_>>();
@@ -3378,6 +3545,7 @@ pub fn analyze_resolved_program(
                     params: placeholders,
                     ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                     type_params: type_params.clone(),
+                    type_bounds: type_bounds.clone(),
                 });
             }
         }
@@ -3622,6 +3790,7 @@ mod tests {
                 Stmt::FuncDef {
                     name: "foo".to_string(),
                     type_params: vec![],
+                    type_bounds: vec![],
                     params: vec![ParamKind::Typed("a".to_string(), Type::T64)],
                     ret_ty: Some(Type::T64),
                     body: vec![],
@@ -3746,6 +3915,7 @@ mod tests {
             stmts: vec![Stmt::FuncDef {
                 name: "main".to_string(),
                 type_params: vec![],
+                type_bounds: vec![],
                 params: vec![],
                 ret_ty: Some(Type::Void),
                 body: vec![],
