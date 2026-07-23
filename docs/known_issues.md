@@ -445,6 +445,51 @@ system (semantic analysis) promises support that a downstream layer — here,
 the interpreter's runtime dispatch table; there, the same — doesn't actually
 implement. Third instance of this exact pattern found this project.
 
+---
+
+## 10. Silent struct-return corruption on the JIT — all function kinds
+
+**Status: FIXED — same commit as this entry (caller-allocated return slot).**
+
+Any function returning a struct by value — free function, impl method, or
+phen method, all through the shared `lower_semantic_function` path — returned
+the `Ptr` of a callee-frame alloca. That frame is dead the moment the call
+returns, so the caller read garbage: probed empirically on the baseline
+binary, `make(13, 24)` printed `13` then `32758` on cranelift (interp:
+`13`/`24`), **exit 0, no error** — the worst failure class this project
+tracks, silent wrong output with matching exit codes.
+
+**The coverage blind spot, named explicitly:** this was live for every
+function kind and never surfaced as a PARITY_FAIL because **not one fixture
+in the entire corpus returned a struct from any function** — the parity
+harness can only compare shapes the corpus exercises. Found only when
+slice 5's ABI check (the bare-I128 lesson: enumerate what crosses a boundary,
+probe it, don't assume) probed a method-struct-return before reusing the
+path. Free functions were the worst exposure: methods briefly had slice 5's
+guard forcing clean SKIPs, but a free function returning a struct silently
+corrupted with no guard at all.
+
+**Fix:** caller-allocated return slot, one convention in the shared path for
+all three producer kinds. `FunctionSignature` carries the returned struct's
+identity; struct-returning functions receive a hidden trailing `$ret_slot:
+Ptr` param; every return site field-copies the result through the slot
+(same Load/PtrOffset/Store idiom as struct-literal lowering) and returns the
+slot pointer — no pointer into a dead frame ever escapes. Call sites alloca
+the slot in the caller's frame and pass its address. Nothing wider than a
+machine word crosses any boundary; nothing new crosses the Cranelift/host
+boundary at all. Slice 5's phen struct-return guard is lifted; ARRAY returns
+remain guarded (same dangling-frame shape, slot convention not yet built for
+array layouts — tracked follow-up).
+
+Regression fixtures: `t_struct_return_free` / `t_struct_return_impl` (the
+exact 13/32758 shapes, now asserting 13/24), double-call contamination
+canaries `t_struct_return_double_free` / `t_struct_return_double_method`
+(two calls, asymmetric inputs, both results independently correct — no slot
+reuse contamination), plus `t_gene_phen_call_self_runtime` converting from
+guarded SKIP to genuine PASS. A `v.method().x` nested-receiver case is not
+expressible in today's grammar (`DotAccess` containers are identifiers, not
+expressions) — noted, not forced.
+
 **Fix:** the interpreter's `Value::EnumVariant(String, String)`
 representation (`enum_name`, `variant_name` — confirmed by reading
 `runtime/eval.rs:178-179` and `runtime/exec.rs:548`'s existing pattern-match
