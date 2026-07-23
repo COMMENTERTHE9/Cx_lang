@@ -225,6 +225,84 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                 );
             }
         }
+        // 0.3.4 slice 5: phen methods register under the same mangled scheme
+        // as impl methods — `<ReceiverStruct>$<method>` — which the ownership
+        // locked rule makes collision-free by construction (one owner per
+        // method name per type; `$` cannot appear in user identifiers). Each
+        // phen is already per-concrete-type, so this IS the monomorphized
+        // specialization: one function per gene/type combination, called
+        // directly by name (decision 1 — no dispatch table).
+        //
+        // Struct/array RETURNS are deliberately not registered: method
+        // struct-return lowering is unsound today (the callee returns a
+        // pointer into its own dead frame — probed empirically against an
+        // equivalent impl method: interp 13/24, JIT 13/<garbage>, exit 0).
+        // Leaving the method unregistered makes a call site miss the
+        // signature table and SKIP cleanly (exit 127) instead of silently
+        // corrupting — while an inert (never-called) phen still lowers to
+        // nothing and its program keeps passing.
+        if let SemanticStmt::PhenDef { receiver_type, methods, method_receiver_params, .. } = stmt {
+            let tn = match receiver_type {
+                SemanticType::Struct(name) => name.clone(),
+                _ => continue,
+            };
+            for (i, method) in methods.iter().enumerate() {
+                if matches!(method.return_ty, Some(SemanticType::Struct(_)) | Some(SemanticType::Array(_, _))) {
+                    continue;
+                }
+                let mut param_types = Vec::new();
+                let mut all_params_ok = true;
+                if let Some(recv_params) = method_receiver_params.get(i) {
+                    for param in recv_params {
+                        match param.kind {
+                            SemanticParamKind::Typed => {
+                                let Some(ref ty) = param.ty else {
+                                    all_params_ok = false;
+                                    break;
+                                };
+                                match lower_type(ty) {
+                                    Ok(ir_ty) => param_types.push(ir_ty),
+                                    Err(_) => { all_params_ok = false; break; }
+                                }
+                            }
+                            _ => { all_params_ok = false; break; }
+                        }
+                    }
+                } else {
+                    all_params_ok = false;
+                }
+                if !all_params_ok { continue; }
+                for param in &method.params {
+                    match param.kind {
+                        SemanticParamKind::Typed => {
+                            let Some(ref ty) = param.ty else {
+                                all_params_ok = false;
+                                break;
+                            };
+                            match lower_type(ty) {
+                                Ok(ir_ty) => param_types.push(ir_ty),
+                                Err(_) => { all_params_ok = false; break; }
+                            }
+                        }
+                        _ => { all_params_ok = false; break; }
+                    }
+                }
+                if !all_params_ok { continue; }
+
+                let return_ty = match &method.return_ty {
+                    Some(ty) => match lower_return_type(ty) {
+                        Ok(opt) => opt,
+                        Err(_) => continue,
+                    },
+                    None => None,
+                };
+
+                table.insert(
+                    mangle_method(&tn, &method.name),
+                    FunctionSignature { param_types, return_ty },
+                );
+            }
+        }
     }
     table
 }
@@ -537,6 +615,50 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         None => continue,
                     };
                     let mut full_params = alias_params;
+                    full_params.extend(method.params.iter().cloned());
+                    let reconstructed = crate::frontend::semantic_types::SemanticFunction {
+                        id: method.id,
+                        name: mangled,
+                        type_params: method.type_params.clone(),
+                        params: full_params,
+                        return_ty: method.return_ty.clone(),
+                        body: method.body.clone(),
+                        ret_expr: method.ret_expr.clone(),
+                        is_test: method.is_test,
+                        pos: method.pos,
+                    };
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, trace, target)?);
+                }
+            }
+            // 0.3.4 slice 5: phen methods emit exactly like impl methods —
+            // one specialized IrFunction per gene/type combination under the
+            // mangled `<ReceiverStruct>$<method>` name, receiver re-prepended
+            // from the captured method_receiver_params. Struct/array-returning
+            // methods are skipped, matching the signature-table guard (their
+            // call sites SKIP cleanly; see build_signature_table).
+            SemanticStmt::PhenDef { receiver_type, methods, method_receiver_params, .. } => {
+                let tn = match receiver_type {
+                    SemanticType::Struct(name) => name.clone(),
+                    _ => continue,
+                };
+                for (i, method) in methods.iter().enumerate() {
+                    if matches!(method.return_ty, Some(SemanticType::Struct(_)) | Some(SemanticType::Array(_, _))) {
+                        continue;
+                    }
+                    let mangled = mangle_method(&tn, &method.name);
+                    if reserved_runtime_intrinsics.contains(mangled.as_str()) {
+                        return Err(LoweringError::UnsupportedSemanticConstruct {
+                            construct: format!(
+                                "function name '{}' is reserved for runtime intrinsics",
+                                mangled
+                            ),
+                        });
+                    }
+                    let recv_params = match method_receiver_params.get(i) {
+                        Some(rp) => rp.clone(),
+                        None => continue,
+                    };
+                    let mut full_params = recv_params;
                     full_params.extend(method.params.iter().cloned());
                     let reconstructed = crate::frontend::semantic_types::SemanticFunction {
                         id: method.id,
