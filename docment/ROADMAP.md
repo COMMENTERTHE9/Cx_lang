@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-23
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -57,7 +57,8 @@ correction to an existing plan.
   from 0.3.1.
 - **0.3.3** — gene + phen design pass — shifted from 0.3.2.
 - **0.3.4** — gene + phen implementation, operator overloading, generics v3
-  (type bounds) — shifted from 0.3.3.
+  (type bounds) — shifted from 0.3.3. *(Slices 1–5 of 6 landed on `submain`;
+  slice 6 remaining. Struct-return ABI fix landed as part of slice 5 scope.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
@@ -100,6 +101,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-23:** 0.3.4 slice 5 landed (`5093d78`): phen method IR lowering — static monomorphization under the `<ReceiverStruct>$<method>` mangling scheme, no dispatch table. Same commit discovered and guarded a live struct-return silent-corruption bug. Fix landed in `07dd14d`: caller-allocated return-slot convention across all function kinds (free, impl, phen), with 4 regression fixtures and known_issues #10. Submain 19 commits ahead of main. Matrix 321/0.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
