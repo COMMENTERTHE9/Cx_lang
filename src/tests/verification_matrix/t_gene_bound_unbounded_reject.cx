@@ -1,0 +1,22 @@
+// 0.3.4 slice 4: the bound is what grants access — calling a gene method on
+// an UNbounded type parameter is rejected, even when the concrete argument
+// type happens to have the phen.
+struct Adder { base: t32 }
+
+gene Compute {
+    fnc apply(v: t32) -> t32
+}
+
+phen Compute (a: Adder) {
+    fnc: t32 apply(v: t32) {
+        a.base + v
+    }
+}
+
+fnc: t32 <T> run_it(t: T, v: t32) {
+    t.apply(v)
+}
+
+let x;
+x = Adder { base: 10 }
+print(run_it(x, 5))

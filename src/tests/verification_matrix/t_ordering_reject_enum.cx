@@ -1,0 +1,9 @@
+// CX-3.3: ordering comparisons on enum operands must be rejected at semantic
+// time on both backends, mirroring the equality branch's type-allowlist.
+enum Color { Red, Green, Blue }
+
+let a;
+let b;
+a = Color::Red
+b = Color::Blue
+print(a < b)

@@ -1,0 +1,7 @@
+// 0.3.4 slice 2: 'Self' is only meaningful inside a gene or phen — using it
+// in a free function (or any other statement) is a clean semantic error, not
+// a silently-accepted unknown struct named "Self".
+fnc: describe(x: Self) {
+    print(1)
+}
+print(2)

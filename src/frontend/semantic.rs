@@ -33,6 +33,9 @@ struct FunctionInfo {
     params: Vec<SemanticParam>,
     ret_ty: Option<SemanticType>,
     type_params: Vec<String>,
+    /// 0.3.4 slice 4: gene bounds per type parameter, checked at each
+    /// instantiation site against the phen registry.
+    type_bounds: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,20 @@ pub struct Analyzer {
     structs: HashMap<String, Vec<(String, Type)>>,
     pub method_registry: HashMap<(String, String), SemanticFunction>,
     pub method_alias_counts: HashMap<(String, String), usize>,
+    /// Whole-graph phen-provided method names, injected from Pass 0's
+    /// registry (0.3.4 slice 2). Consulted at impl-block registration to
+    /// enforce the method-ownership locked rule, application 2: an impl
+    /// method and a phen method may not share a name on one type.
+    pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+    /// Whole-graph gene signatures (0.3.4 slice 4), for resolving gene-method
+    /// calls on bounded type parameters inside generic bodies.
+    pub gene_defs: HashMap<String, Vec<GeneSig>>,
+    /// Whole-graph `(gene, receiver type)` phen keys (0.3.4 slice 4), for
+    /// bound-satisfaction checks at generic instantiation sites.
+    pub phen_keys: std::collections::HashSet<(String, SemanticType)>,
+    /// The enclosing function's `<T: Gene>` bounds while its body is being
+    /// analyzed (0.3.4 slice 4) — set/restored by the FuncDef arm.
+    current_type_bounds: Vec<(String, Vec<String>)>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     pub module_aliases: HashMap<String, ExportTable>,
@@ -89,6 +106,10 @@ impl Analyzer {
             structs: HashMap::new(),
             method_registry: HashMap::new(),
             method_alias_counts: HashMap::new(),
+            phen_methods: HashMap::new(),
+            gene_defs: HashMap::new(),
+            phen_keys: std::collections::HashSet::new(),
+            current_type_bounds: vec![],
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -367,6 +388,24 @@ impl Analyzer {
                     }
                 }
 
+                // Method-ownership locked rule, application 2: an impl method
+                // and a phen method may not share a name on one type — neither
+                // side wins, rejected here at analysis time.
+                for sem_func in &semantic_methods {
+                    for (_, alias_type) in &semantic_aliases {
+                        if let Some(origin) = self.phen_methods.get(&(alias_type.clone(), sem_func.name.clone())) {
+                            return Err(sem_err!(
+                                *pos,
+                                "method '{}' on '{}' is already provided by a phen of gene '{}' at {} — impl and phen methods may not share a name",
+                                sem_func.name,
+                                type_name(alias_type),
+                                origin.gene,
+                                origin.location
+                            ));
+                        }
+                    }
+                }
+
                 // Register methods in method_registry for return type resolution
                 for sem_func in &semantic_methods {
                     for (_, alias_type) in &semantic_aliases {
@@ -388,6 +427,84 @@ impl Analyzer {
                     aliases: semantic_aliases,
                     methods: semantic_methods,
                     method_alias_params,
+                    pos: *pos,
+                })
+            }
+            // 0.3.4 slice 1: header-only mirror. Coherence registration
+            // (Pass 0) already ran, over the raw AST, before this per-file
+            // pass ever started — this arm just resolves signature types for
+            // a future conformance-checking slice; it does not analyze,
+            // declare, or execute anything. No body exists for a gene to
+            // analyze in the first place.
+            Stmt::GeneDef { name, methods, pos } => {
+                let semantic_methods = methods
+                    .iter()
+                    .map(|(mname, params, ret_ty)| {
+                        let sem_params = params
+                            .iter()
+                            .map(|p| match p {
+                                ParamKind::Typed(_, ty) => Some(semantic_type_from_decl(ty.clone(), &[])),
+                                _ => None,
+                            })
+                            .collect();
+                        let sem_ret = ret_ty.clone().map(|t| semantic_type_from_decl(t, &[]));
+                        (mname.clone(), sem_params, sem_ret)
+                    })
+                    .collect();
+                Ok(SemanticStmt::GeneDef {
+                    name: name.clone(),
+                    methods: semantic_methods,
+                    pos: *pos,
+                })
+            }
+            // 0.3.4 slice 2: methods are fully analyzed. `Self` is a
+            // compile-time alias for the receiver's concrete type (design
+            // doc, decision 3) — substituted at the AST level across every
+            // type position (signatures, local annotations, nested
+            // Array/Handle/Result) BEFORE analysis, so bodies type-check at
+            // the real concrete type. Substituting to a floating
+            // `TypeParam("Self")` instead would check nothing:
+            // `types_compatible` unifies any TypeParam with anything.
+            // Contract conformance against the gene was already verified in
+            // Pass 0. Each method is analyzed exactly like an impl-block
+            // method (receiver prepended as a typed param, captured, then
+            // stripped) inside a throwaway scope so method names don't
+            // collide across phens — but NOT registered in method_registry:
+            // calling a phen method is slice 3.
+            Stmt::PhenDef { gene_name, receiver, methods, pos } => {
+                let receiver_type = semantic_type_from_decl(receiver.1.clone(), &[]);
+                let recv_ast = &receiver.1;
+                let mut semantic_methods: Vec<SemanticFunction> = Vec::new();
+                let mut method_receiver_params: Vec<Vec<SemanticParam>> = Vec::new();
+                for (mname, params, ret_ty, body, ret_expr) in methods {
+                    let full_params: Vec<ParamKind> =
+                        std::iter::once(ParamKind::Typed(receiver.0.clone(), receiver.1.clone()))
+                            .chain(params.iter().cloned().map(|p| match p {
+                                ParamKind::Typed(n, t) => ParamKind::Typed(n, substitute_self_type(t, recv_ast)),
+                                other => other,
+                            }))
+                            .collect();
+                    let sub_ret = ret_ty.clone().map(|t| substitute_self_type(t, recv_ast));
+                    let sub_body: Vec<Stmt> = body
+                        .iter()
+                        .map(|s| map_stmt_types(s.clone(), &|t| substitute_self_type(t, recv_ast)))
+                        .collect();
+                    self.push_scope();
+                    let analyzed = self.analyze_function(mname, &[], &full_params, &sub_ret, &sub_body, ret_expr, *pos, false);
+                    self.pop_scope();
+                    if let SemanticStmt::FuncDef(mut sem_func) = analyzed? {
+                        let captured: Vec<SemanticParam> = sem_func.params.iter().take(1).cloned().collect();
+                        sem_func.params = sem_func.params.into_iter().skip(1).collect();
+                        semantic_methods.push(sem_func);
+                        method_receiver_params.push(captured);
+                    }
+                }
+                Ok(SemanticStmt::PhenDef {
+                    gene_name: gene_name.clone(),
+                    receiver_name: receiver.0.clone(),
+                    receiver_type,
+                    methods: semantic_methods,
+                    method_receiver_params,
                     pos: *pos,
                 })
             }
@@ -431,6 +548,7 @@ impl Analyzer {
 
                         if let Some(declared) = &info.declared {
                             let expected = semantic_type_from_decl(declared.clone(), &tp);
+                            check_semantic_num_fits(&semantic_expr, &expected, *pos_eq)?;
                             if !types_compatible(&expected, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(
                                     &expected,
@@ -510,6 +628,7 @@ impl Analyzer {
                             _ => return Err(sem_err!(*pos_eq, "index assignment target must be an array")),
                         };
                         if elem_ty != SemanticType::Unknown {
+                            check_semantic_num_fits(&semantic_expr, &elem_ty, *pos_eq)?;
                             if !types_compatible(&elem_ty, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(&elem_ty, &semantic_expr.ty, *pos_eq));
                             }
@@ -611,7 +730,23 @@ impl Analyzer {
                     }
                 }
                 let is_test = macros.contains(&CxMacro::Test);
-                self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test)
+                // 0.3.4 slice 4: make this function's gene bounds visible to
+                // its own body (gene-method calls on bounded T), and carry
+                // them on the FunctionInfo for instantiation-site checks
+                // (analyze_function's own insert doesn't know about bounds).
+                let bounds = match stmt {
+                    Stmt::FuncDef { type_bounds, .. } => type_bounds.clone(),
+                    _ => vec![],
+                };
+                let prev_bounds = std::mem::replace(&mut self.current_type_bounds, bounds.clone());
+                let result = self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test);
+                self.current_type_bounds = prev_bounds;
+                if result.is_ok() {
+                    if let Some(info) = self.funcs.get_mut(name) {
+                        info.type_bounds = bounds;
+                    }
+                }
+                result
             }
 Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 expr: self.analyze_expr(expr)?,
@@ -751,27 +886,34 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 if matches!(semantic_condition.ty, SemanticType::Unknown) {
                     return Err(sem_err!(*pos, "Unknown value cannot be used as an if condition — control-critical context"));
                 }
+                self.push_scope();
                 let semantic_then = then_body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.pop_scope();
                 let mut semantic_else_ifs = Vec::new();
                 for (cond, body) in else_ifs {
                     let sem_cond = self.analyze_expr(cond)?;
+                    self.push_scope();
                     let sem_body = body
                         .iter()
                         .map(|s| self.analyze_stmt(s))
                         .collect::<Result<Vec<_>, _>>()?;
+                    self.pop_scope();
                     semantic_else_ifs.push((sem_cond, sem_body));
                 }
-                let semantic_else = else_body
-                    .as_ref()
-                    .map(|body| {
-                        body.iter()
-                            .map(|s| self.analyze_stmt(s))
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .transpose()?;
+                let semantic_else = if let Some(body) = else_body.as_ref() {
+                    self.push_scope();
+                    let result = body
+                        .iter()
+                        .map(|s| self.analyze_stmt(s))
+                        .collect::<Result<Vec<_>, _>>();
+                    self.pop_scope();
+                    Some(result?)
+                } else {
+                    None
+                };
                 Ok(SemanticStmt::IfElse {
                     condition: semantic_condition,
                     then_body: semantic_then,
@@ -795,20 +937,25 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let sem_start = self.analyze_expr(range_start)?;
                 let sem_end = self.analyze_expr(range_end)?;
                 let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let sem_body = body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
                     .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 let sem_chains = then_chains
                     .iter()
                     .map(|chain| {
                         let cs = self.analyze_expr(&chain.range_start)?;
                         let ce = self.analyze_expr(&chain.range_end)?;
+                        self.push_scope();
                         let cb = chain
                             .body
                             .iter()
                             .map(|s| self.analyze_stmt(s))
-                            .collect::<Result<Vec<_>, _>>()?;
+                            .collect::<Result<Vec<_>, _>>();
+                        self.pop_scope();
+                        let cb = cb?;
                         Ok(SemanticWhileInChain {
                             arr: chain.arr.clone(),
                             start_slot: chain.start_slot,
@@ -845,10 +992,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     return Err(sem_err!(*pos, "Unknown value cannot be used as a loop condition -- control-critical context"));
                 }
                 let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let semantic_body = body
                     .iter()
                     .map(|stmt| self.analyze_stmt(stmt))
                     .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 self.exit_loop_label(pushed);
                 Ok(SemanticStmt::While {
                     label: label.clone(),
@@ -879,10 +1028,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             }
             Stmt::Loop { label, body, pos } => {
                 let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let semantic_body = body
                     .iter()
                     .map(|stmt| self.analyze_stmt(stmt))
                     .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 self.exit_loop_label(pushed);
                 Ok(SemanticStmt::Loop {
                     label: label.clone(),
@@ -1040,6 +1191,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 params: placeholders.clone(),
                 ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                 type_params: type_params.to_vec(),
+                // Bounds are stamped by the FuncDef arm right after this call
+                // returns (this function doesn't receive them).
+                type_bounds: vec![],
             },
         );
 
@@ -1462,6 +1616,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             Expr::Call(name, args, pos) => self.analyze_call(name, args, *pos),
 Expr::Unary(op, inner, pos) => {
                 let expr = self.analyze_expr(inner)?;
+                // 0.3.4 slice 6: unary `-` on a user struct with a phen for
+                // Neg dispatches to `neg()` (decision 4's 1:1 mapping).
+                if *op == Op::Minus {
+                    if let Some(rewritten) = self.try_operator_gene_dispatch(&expr, None, "Neg", "neg", "-", true, *pos)? {
+                        return Ok(rewritten);
+                    }
+                }
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool
                 } else {
@@ -1666,9 +1827,115 @@ Expr::Unary(op, inner, pos) => {
                     None => return Err(sem_err!(*pos, "method call receiver '{}' is not in scope", instance)),
                 };
                 let instance_binding = instance_info.binding;
+                // Resolve the declared type against the enclosing function's
+                // type params (0.3.4 slice 4) so a `t: T` receiver surfaces
+                // as TypeParam("T") rather than an unknown struct named "T".
                 let instance_ty = instance_info.inferred.clone()
-                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params.clone())))
                     .unwrap_or(SemanticType::Unknown);
+
+                // 0.3.4 slice 4: gene-method call on a bounded type parameter.
+                // The bound is what grants access — resolution goes through the
+                // bounded genes' contracts; the concrete phen is picked at the
+                // instantiation (runtime dispatch resolves the receiver's
+                // actual value type, so each instantiation runs its own phen).
+                if let SemanticType::TypeParam(tp) = &instance_ty {
+                    let bounds: Vec<String> = self.current_type_bounds.iter()
+                        .find(|(n, _)| n == tp)
+                        .map(|(_, genes)| genes.clone())
+                        .unwrap_or_default();
+                    let mut found: Option<(Vec<Option<SemanticType>>, Option<SemanticType>)> = None;
+                    for gene in &bounds {
+                        if let Some(sigs) = self.gene_defs.get(gene) {
+                            if let Some((_, gparams, gret)) = sigs.iter().find(|(n, _, _)| n == method) {
+                                found = Some((gparams.clone(), gret.clone()));
+                                break;
+                            }
+                        }
+                    }
+                    let (gparams, gret) = match found {
+                        Some(x) => x,
+                        None => return Err(sem_err!(
+                            *pos,
+                            "method '{}.{}': type parameter '{}' has no gene bound providing '{}'",
+                            instance, method, tp, method
+                        )),
+                    };
+                    // Self in the gene's signature means "the bound type" —
+                    // substitute Self → TypeParam(tp) so it stays generic here.
+                    let self_map: HashMap<String, SemanticType> =
+                        std::iter::once(("Self".to_string(), SemanticType::TypeParam(tp.clone()))).collect();
+                    let want_params: Vec<Option<SemanticType>> = gparams.iter()
+                        .map(|p| p.clone().map(|t| substitute_type_params(t, &self_map)))
+                        .collect();
+                    if args.len() != want_params.len() {
+                        return Err(sem_err!(
+                            *pos,
+                            "method '{}.{}' expects {} argument{}, got {}",
+                            instance, method,
+                            want_params.len(), if want_params.len() == 1 { "" } else { "s" },
+                            args.len()
+                        ));
+                    }
+                    let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        match arg {
+                            CallArg::Expr(expr) => {
+                                let sem_expr = self.analyze_expr(expr)?;
+                                if let Some(Some(expected)) = want_params.get(index) {
+                                    check_semantic_num_fits(&sem_expr, expected, *pos)?;
+                                    if !types_compatible(expected, &sem_expr.ty) {
+                                        return Err(sem_err!(
+                                            *pos,
+                                            "argument {} to method '{}.{}': expected {}, got {}",
+                                            index + 1, instance, method,
+                                            type_name(expected), type_name(&sem_expr.ty)
+                                        ));
+                                    }
+                                }
+                                semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                            }
+                            CallArg::Copy(name) => {
+                                let binding = self.lookup_var(name)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(u32::MAX));
+                                semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
+                            }
+                            CallArg::CopyFree(name) => {
+                                let binding = self.lookup_var(name)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(u32::MAX));
+                                semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
+                            }
+                            CallArg::CopyInto(names) => {
+                                let resolved = names.iter().map(|n| {
+                                    let binding = self.lookup_var(n)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(u32::MAX));
+                                    ResolvedBinding { binding, name: n.clone() }
+                                }).collect();
+                                semantic_args.push(SemanticCallArg::CopyInto(resolved));
+                            }
+                        }
+                    }
+                    let ret_ty = gret
+                        .map(|t| substitute_type_params(t, &self_map))
+                        .unwrap_or(SemanticType::Void);
+                    return Ok(SemanticExpr {
+                        ty: ret_ty,
+                        kind: SemanticExprKind::MethodCall {
+                            instance: instance.clone(),
+                            method: method.clone(),
+                            args: semantic_args,
+                            instance_binding,
+                            // No concrete type at analysis time — the runtime
+                            // resolves the receiver's actual value type; the
+                            // JIT's mangled lookup misses this name and SKIPs.
+                            struct_name: tp.clone(),
+                            pos: *pos,
+                        },
+                    });
+                }
 
                 let struct_name = match &instance_ty {
                     SemanticType::Struct(tn) => tn.clone(),
@@ -1730,6 +1997,7 @@ Expr::Unary(op, inner, pos) => {
                                     .get(user_idx)
                                     .and_then(|p| p.ty.clone());
                                 if let Some(expected) = expected {
+                                    check_semantic_num_fits(&sem_expr, &expected, *pos)?;
                                     if !types_compatible(&expected, &sem_expr.ty) {
                                         return Err(sem_err!(
                                             *pos,
@@ -2006,6 +2274,24 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
+        // 0.3.4 slice 4: bound satisfaction at the instantiation site —
+        // `T: GeneName` is satisfied only if a phen exists binding that gene
+        // to the concrete type substituted for T (design doc, Locked Rules);
+        // `T: GeneA + GeneB` requires phens for both.
+        for (tp_name, bound_genes) in &function.type_bounds {
+            if let Some(concrete) = type_param_map.get(tp_name) {
+                for gene in bound_genes {
+                    if !self.phen_keys.contains(&(gene.clone(), concrete.clone())) {
+                        return Err(sem_err!(
+                            pos,
+                            "type '{}' does not satisfy bound '{}: {}' in call to '{}' — no phen of gene '{}' for '{}'",
+                            type_name(concrete), tp_name, gene, name, gene, type_name(concrete)
+                        ));
+                    }
+                }
+            }
+        }
+
         let mut semantic_args = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
             let expected = function
@@ -2135,6 +2421,73 @@ Expr::Unary(op, inner, pos) => {
         Ok(insert_cast_if_needed(sem, expected))
     }
 
+    /// 0.3.4 slice 6: operator-gene dispatch. When the left operand is a user
+    /// struct whose type has a phen for the operator's gene, the operator IS
+    /// the gene method (design doc: "no separate operator-overloading syntax
+    /// — it is gene/phen end to end"), rewritten to the same MethodCall node
+    /// a hand-written `a.add(b)` produces — the proven slice 3/5 machinery,
+    /// no new dispatch mechanism.
+    ///
+    /// Returns Ok(None) when this isn't operator-gene territory (no struct
+    /// operand, or no phen) — the caller falls through to the existing
+    /// built-in behavior: the decision-6 bootstrap intrinsics for primitives,
+    /// and every existing rejection for types that don't opt in.
+    ///
+    /// Interim restriction (design doc): the left operand must be a named
+    /// variable — the method machinery is name-based end to end (runtime
+    /// receiver lookup and mutation write-back both key on the variable
+    /// name), so an expression receiver has no representation yet.
+    #[allow(clippy::too_many_arguments)]
+    fn try_operator_gene_dispatch(
+        &mut self,
+        lhs: &SemanticExpr,
+        rhs: Option<&SemanticExpr>,
+        gene: &str,
+        method: &str,
+        op_symbol: &str,
+        ret_is_self: bool,
+        op_pos: usize,
+    ) -> Result<Option<SemanticExpr>, SemanticError> {
+        let SemanticType::Struct(struct_name) = &lhs.ty else {
+            return Ok(None);
+        };
+        if !self.phen_keys.contains(&(gene.to_string(), lhs.ty.clone())) {
+            return Ok(None);
+        }
+        if let Some(r) = rhs {
+            if !types_compatible(&lhs.ty, &r.ty) {
+                return Err(sem_err!(
+                    op_pos,
+                    "operator '{}' on '{}': right operand must be {} per gene '{}', got {}",
+                    op_symbol, struct_name, struct_name, gene, type_name(&r.ty)
+                ));
+            }
+        }
+        let SemanticExprKind::VarRef { binding, name } = &lhs.kind else {
+            return Err(sem_err!(
+                op_pos,
+                "operator '{}' on '{}' dispatches to gene '{}' — this currently requires a named variable as the left operand",
+                op_symbol, struct_name, gene
+            ));
+        };
+        let args = match rhs {
+            Some(r) => vec![SemanticCallArg::Expr(r.clone())],
+            None => vec![],
+        };
+        let ty = if ret_is_self { lhs.ty.clone() } else { SemanticType::Bool };
+        Ok(Some(SemanticExpr {
+            ty,
+            kind: SemanticExprKind::MethodCall {
+                instance: name.clone(),
+                method: method.to_string(),
+                args,
+                instance_binding: *binding,
+                struct_name: struct_name.clone(),
+                pos: op_pos,
+            },
+        }))
+    }
+
     fn analyze_binary(
         &mut self,
         lhs: &Expr,
@@ -2164,6 +2517,18 @@ Expr::Unary(op, inner, pos) => {
                 // never an implicit value->string coercion (the silent-coercion
                 // class the soundness arc closed). Only `+` concatenates; the
                 // other arithmetic ops fall through to the numeric requirement.
+                // 0.3.4 slice 6: operator-gene dispatch for user structs —
+                // `v1 + v2` IS `v1.add(v2)` when Vec2 has a phen for Add.
+                let (gene, method, sym) = match op {
+                    Op::Plus => ("Add", "add", "+"),
+                    Op::Minus => ("Sub", "sub", "-"),
+                    Op::Mul => ("Mul", "mul", "*"),
+                    Op::Div => ("Div", "div", "/"),
+                    _ => ("Mod", "mod", "%"),
+                };
+                if let Some(rewritten) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), gene, method, sym, true, op_pos)? {
+                    return Ok(rewritten);
+                }
                 if op == Op::Plus {
                     let lhs_str = matches!(lhs.ty, SemanticType::Str | SemanticType::StrRef);
                     let rhs_str = matches!(rhs.ty, SemanticType::Str | SemanticType::StrRef);
@@ -2183,6 +2548,19 @@ Expr::Unary(op, inner, pos) => {
                         return Err(sem_err!(op_pos, "cannot concatenate `str` and `{}` with `+` — Cx does not implicitly convert values to strings; use string interpolation instead, e.g. \"total {{x}}\"", type_name(other)));
                     }
                 }
+                // Struct operands with NO phen for this operator's gene: name
+                // the type and the gene, not the generic numeric complaint.
+                if matches!((&lhs.ty, &rhs.ty), (SemanticType::Struct(_), SemanticType::Struct(_))) {
+                    return Err(sem_err!(
+                        op_pos,
+                        "no phen of gene '{}' for '{}' — operator '{}' on a struct requires it",
+                        gene, type_name(&lhs.ty), sym
+                    ));
+                }
+                // Decision-6 bootstrap intrinsic (primitives): the built-in
+                // numeric path below conforms to the prelude's Add/Sub/Mul/
+                // Div/Mod contracts (Self op Self -> Self at each width) and
+                // is designed for removal once primitives carry real phens.
                 if !is_numeric(&lhs.ty) || !is_numeric(&rhs.ty) {
                     return Err(sem_err!(op_pos, "arithmetic requires numeric operands, got {} and {}", type_name(&lhs.ty), type_name(&rhs.ty)));
                 }
@@ -2213,6 +2591,29 @@ Expr::Unary(op, inner, pos) => {
                     });
                 }
 
+                // 0.3.4 slice 6: user structs with a phen for Eq. Per the
+                // design doc's Eq contract (single `eq(rhs: Self) -> bool`),
+                // `!=` derives as the logical NOT of `eq` — no separate neq
+                // method. Types without the phen fall through to the existing
+                // allowlist/rejection, byte-identical to before.
+                let eq_sym = if op == Op::EqEq { "==" } else { "!=" };
+                if let Some(call) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), "Eq", "eq", eq_sym, false, op_pos)? {
+                    return Ok(if op == Op::EqEq {
+                        call
+                    } else {
+                        SemanticExpr {
+                            ty: SemanticType::Bool,
+                            kind: SemanticExprKind::Unary {
+                                op: Op::Not,
+                                expr: Box::new(call),
+                                pos: op_pos,
+                            },
+                        }
+                    });
+                }
+
+                // Decision-6 bootstrap intrinsic (primitives): built-in
+                // numeric equality conforms to the prelude Eq contract.
                 if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
                     let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
                     lhs = insert_cast_if_needed(lhs, &compare_ty);
@@ -2252,6 +2653,19 @@ Expr::Unary(op, inner, pos) => {
                 Err(sem_err!(op_pos, "cannot compare {} {:?} {}", type_name(&lhs.ty), op, type_name(&rhs.ty)))
             }
             Op::Lt | Op::Gt | Op::LtEq | Op::GtEq => {
+                // 0.3.4 slice 6: user structs with a phen for Ord — decision
+                // 4's 1:1 mapping (< → lt, > → gt, <= → le, >= → ge). Types
+                // without the phen keep the audit-hardened rejection below,
+                // byte-identical (Bool/Enum/Char ordering still rejects).
+                let (ord_method, ord_sym) = match op {
+                    Op::Lt => ("lt", "<"),
+                    Op::Gt => ("gt", ">"),
+                    Op::LtEq => ("le", "<="),
+                    _ => ("ge", ">="),
+                };
+                if let Some(rewritten) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), "Ord", ord_method, ord_sym, false, op_pos)? {
+                    return Ok(rewritten);
+                }
                 if lhs.ty == SemanticType::Unknown || rhs.ty == SemanticType::Unknown {
                     Ok(SemanticExpr {
                         ty: SemanticType::Unknown,
@@ -2262,12 +2676,12 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
-                } else {
-                    if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
-                        let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
-                        lhs = insert_cast_if_needed(lhs, &compare_ty);
-                        rhs = insert_cast_if_needed(rhs, &compare_ty);
-                    }
+                // Decision-6 bootstrap intrinsic (primitives): built-in
+                // numeric ordering conforms to the prelude Ord contract.
+                } else if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
+                    let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
+                    lhs = insert_cast_if_needed(lhs, &compare_ty);
+                    rhs = insert_cast_if_needed(rhs, &compare_ty);
                     Ok(SemanticExpr {
                         ty: SemanticType::Bool,
                         kind: SemanticExprKind::Binary {
@@ -2277,6 +2691,8 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
+                } else {
+                    Err(sem_err!(op_pos, "cannot compare {} {:?} {}", type_name(&lhs.ty), op, type_name(&rhs.ty)))
                 }
             }
             Op::Not => unreachable!("Op::Not is unary only"),
@@ -2540,6 +2956,25 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
                 ret_expr,
             )).collect(),
         },
+        Stmt::GeneDef { name, methods, pos } => Stmt::GeneDef {
+            name, pos,
+            methods: methods.into_iter().map(|(mname, params, ret)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+            )).collect(),
+        },
+        Stmt::PhenDef { gene_name, receiver, methods, pos } => Stmt::PhenDef {
+            gene_name, pos,
+            receiver: (receiver.0, normalize_enum_type(receiver.1, enums)),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+                normalize_enum_stmts(body, enums),
+                ret_expr,
+            )).collect(),
+        },
         Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
             name, value, is_pub, pos, ty: normalize_enum_type(ty, enums),
         },
@@ -2549,8 +2984,8 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
             name, expr, pos_type, ty: normalize_enum_type(ty, enums),
         },
-        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
-            name, type_params, is_pub, macros, pos,
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, type_bounds, is_pub, macros, pos,
             params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
             ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
             body: normalize_enum_stmts(body, enums),
@@ -2583,6 +3018,166 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         // No type annotation and no nested statement bodies: ImportBlock, EnumDef,
         // Assign, CompoundAssign, ExprStmt, Return, Break, Continue.
         other => other,
+    }
+}
+
+/// 0.3.4 slice 2: `Self` → the phen's receiver type, at the AST level.
+/// Recurses through the same composite type shapes `semantic_type_from_decl`
+/// handles (Array/Handle/Result), so nested generic type expressions resolve
+/// per decision 3.
+fn substitute_self_type(ty: Type, recv: &Type) -> Type {
+    match ty {
+        Type::Struct(ref n) if n == "Self" => recv.clone(),
+        Type::Array(size, inner) => Type::Array(size, Box::new(substitute_self_type(*inner, recv))),
+        Type::Handle(inner) => Type::Handle(Box::new(substitute_self_type(*inner, recv))),
+        Type::Result(inner) => Type::Result(Box::new(substitute_self_type(*inner, recv))),
+        other => other,
+    }
+}
+
+/// Apply `f` to every type-annotation position in a statement tree — the same
+/// coverage as `normalize_enum_stmt` (struct fields, impl aliases/methods,
+/// const/decl/typed-assign annotations, function params/returns, and every
+/// nested statement body). Used for phen-body `Self` substitution and the
+/// Self-outside-phen scan.
+fn map_stmt_types(stmt: Stmt, f: &dyn Fn(Type) -> Type) -> Stmt {
+    match stmt {
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
+            name, type_params, is_pub, pos,
+            fields: fields.into_iter().map(|(fname, t)| (fname, f(t))).collect(),
+        },
+        Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
+            name, is_pub, pos,
+            aliases: aliases.into_iter().map(|(a, t)| (a, f(t))).collect(),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| map_param_type(p, f)).collect(),
+                ret.map(f),
+                body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+                ret_expr,
+            )).collect(),
+        },
+        Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
+            name, value, is_pub, pos, ty: f(ty),
+        },
+        Stmt::Decl { name, ty, pos } => Stmt::Decl { name, pos, ty: ty.map(f) },
+        Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
+            name, expr, pos_type, ty: f(ty),
+        },
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, type_bounds, is_pub, macros, pos,
+            params: params.into_iter().map(|p| map_param_type(p, f)).collect(),
+            ret_ty: ret_ty.map(f),
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            ret_expr,
+        },
+        Stmt::Block { stmts, _pos } => Stmt::Block {
+            stmts: stmts.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            _pos,
+        },
+        Stmt::While { label, cond, body, pos } => Stmt::While {
+            label, cond, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::For { label, var, start, end, inclusive, body, pos } => Stmt::For {
+            label, var, start, end, inclusive, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::Loop { label, body, pos } => Stmt::Loop {
+            label, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::IfElse { condition, then_body, else_ifs, else_body, pos } => Stmt::IfElse {
+            condition, pos,
+            then_body: then_body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            else_ifs: else_ifs.into_iter().map(|(c, b)| (c, b.into_iter().map(|s| map_stmt_types(s, f)).collect())).collect(),
+            else_body: else_body.map(|b| b.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+        },
+        Stmt::WhileIn { label, arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
+            label, arr, start_slot, range_start, range_end, inclusive, result, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            then_chains: then_chains.into_iter().map(|c| WhileInChain {
+                body: c.body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+                ..c
+            }).collect(),
+        },
+        Stmt::When { expr, arms, pos } => Stmt::When {
+            expr, pos,
+            arms: arms.into_iter().map(|arm| WhenArm {
+                pattern: arm.pattern,
+                guard: arm.guard,
+                pos: arm.pos,
+                body: match arm.body {
+                    WhenBody::Stmts(stmts) => WhenBody::Stmts(stmts.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+                    WhenBody::SuperGroup(handlers) => WhenBody::SuperGroup(
+                        handlers.into_iter().map(|h| match h {
+                            SuperGroupHandler::Stmts(stmts) => SuperGroupHandler::Stmts(stmts.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+                            SuperGroupHandler::Placeholder => SuperGroupHandler::Placeholder,
+                        }).collect(),
+                    ),
+                },
+            }).collect(),
+        },
+        other => other,
+    }
+}
+
+fn map_param_type(p: ParamKind, f: &dyn Fn(Type) -> Type) -> ParamKind {
+    match p {
+        ParamKind::Typed(n, t) => ParamKind::Typed(n, f(t)),
+        other => other,
+    }
+}
+
+fn type_uses_self(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(n) => n == "Self",
+        Type::Array(_, inner) | Type::Handle(inner) | Type::Result(inner) => type_uses_self(inner),
+        _ => false,
+    }
+}
+
+/// Does any type-annotation position in this statement tree mention `Self`?
+/// Reuses `map_stmt_types`'s coverage via a side-channel flag so the scan and
+/// the substituter can never drift apart.
+fn stmt_uses_self_type(stmt: &Stmt) -> bool {
+    let found = std::cell::Cell::new(false);
+    let _ = map_stmt_types(stmt.clone(), &|t| {
+        if type_uses_self(&t) {
+            found.set(true);
+        }
+        t
+    });
+    found.get()
+}
+
+/// Best-effort source anchor for a top-level statement, for diagnostics that
+/// reject the statement as a whole (e.g. `Self` outside a gene/phen).
+fn stmt_anchor_pos(stmt: &Stmt) -> usize {
+    match stmt {
+        Stmt::StructDef { pos, .. }
+        | Stmt::ImplBlock { pos, .. }
+        | Stmt::GeneDef { pos, .. }
+        | Stmt::PhenDef { pos, .. }
+        | Stmt::ConstDecl { pos, .. }
+        | Stmt::EnumDef { pos, .. }
+        | Stmt::Decl { pos, .. }
+        | Stmt::Return { pos, .. }
+        | Stmt::FuncDef { pos, .. }
+        | Stmt::While { pos, .. }
+        | Stmt::For { pos, .. }
+        | Stmt::Loop { pos, .. }
+        | Stmt::IfElse { pos, .. }
+        | Stmt::WhileIn { pos, .. }
+        | Stmt::When { pos, .. }
+        | Stmt::CompoundAssign { pos, .. }
+        | Stmt::Break { pos, .. }
+        | Stmt::Continue { pos, .. } => *pos,
+        Stmt::TypedAssign { pos_type, .. } => *pos_type,
+        Stmt::Assign { pos_eq, .. } => *pos_eq,
+        Stmt::Block { _pos, .. } => *_pos,
+        Stmt::ExprStmt { _pos, .. } => *_pos,
+        Stmt::ImportBlock { pos, .. } => *pos,
     }
 }
 
@@ -2783,9 +3378,277 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
     }
 }
 
+/// Pass 0 (0.3.4 slice 1, `docs/post_0_1/gene_phen_design.md` — "Semantic-Pass
+/// Ordering"): a whole-graph gene/phen collection pass that runs once, before
+/// any per-file processing, over every file the resolver already assembled
+/// (`resolved.files`/`resolved.topo_order` — no new graph-traversal machinery
+/// needed). This is deliberately NOT a field on `Analyzer`: each file gets its
+/// own fresh `Analyzer::new()` in the loop below, so a table that must stay
+/// visible across the whole compilation cannot live there (design doc,
+/// coherence decision, item 5).
+///
+/// Registers every gene's name (so a phen naming an undeclared gene can be
+/// rejected) and every phen's canonical `(gene_name, receiver_type)` key,
+/// first-wins with collision-at-insert. A second registration of the same key
+/// is rejected with the design doc's exact two-location diagnostic — order-
+/// independent, since this is a single flat scan over the whole reachable
+/// file set, not an incremental per-file walk.
+fn collect_gene_phen_registry(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<GenePhenRegistry, Vec<SemanticError>> {
+    // 0a: every gene's name + full signature list. `Self` in a signature
+    // resolves to `TypeParam("Self")` (the generic-struct machinery's shape),
+    // substituted per-phen below via `substitute_type_params` — the exact
+    // reuse the design doc's Self-resolution decision specifies.
+    let self_param = ["Self".to_string()];
+    let resolve_sig_params = |params: &[ParamKind]| -> Vec<Option<SemanticType>> {
+        params.iter().map(|p| match p {
+            ParamKind::Typed(_, ty) => Some(semantic_type_from_decl(ty.clone(), &self_param)),
+            _ => None,
+        }).collect()
+    };
+
+    // "path:line" for a Pass-0 declaration. The prelude is a real source unit
+    // with real line spans — its text just lives in the binary, not on disk.
+    let source_location = |module_id: crate::frontend::resolver::ModuleId, pos: usize| -> String {
+        let (path, line) = resolved.files.get(&module_id)
+            .map(|f| {
+                let src = if f.path.as_os_str() == crate::frontend::resolver::PRELUDE_PATH {
+                    Some(crate::frontend::resolver::prelude_source().to_string())
+                } else {
+                    std::fs::read_to_string(&f.path).ok()
+                };
+                let line = src
+                    .map(|src| src[..pos.min(src.len())].bytes().filter(|&b| b == b'\n').count() + 1)
+                    .unwrap_or(0);
+                (f.path.display().to_string(), line)
+            })
+            .unwrap_or_default();
+        format!("{}:{}", path, line)
+    };
+    let mut errors: Vec<SemanticError> = Vec::new();
+
+    // 0a — gene collection, with duplicate-name rejection through the same
+    // deterministic collision machinery every other declaration kind uses:
+    // second declaration anywhere in the graph errors, naming the first's
+    // location. Because the prelude is injected as the FIRST source unit, a
+    // user redeclaring a prelude gene gets a diagnostic naming the prelude
+    // and its real line — no prelude-specific collision path.
+    type GeneEntry = (Vec<GeneSig>, crate::frontend::resolver::ModuleId, usize);
+    let mut gene_table: HashMap<String, GeneEntry> = HashMap::new();
+    for &module_id in &resolved.topo_order {
+        if let Some(file) = resolved.files.get(&module_id) {
+            for stmt in &file.program.stmts {
+                if let Stmt::GeneDef { name, methods, pos } = stmt {
+                    if let Some((_, prev_mid, prev_pos)) = gene_table.get(name) {
+                        errors.push(sem_err!(
+                            *pos,
+                            "gene '{}' is already declared at {}",
+                            name,
+                            source_location(*prev_mid, *prev_pos)
+                        ));
+                        continue;
+                    }
+                    let sigs = methods.iter().map(|(mname, params, ret)| (
+                        mname.clone(),
+                        resolve_sig_params(params),
+                        ret.clone().map(|t| semantic_type_from_decl(t, &self_param)),
+                    )).collect();
+                    gene_table.insert(name.clone(), (sigs, module_id, *pos));
+                }
+            }
+        }
+    }
+    let genes: HashMap<String, Vec<GeneSig>> = gene_table
+        .into_iter()
+        .map(|(name, (sigs, _, _))| (name, sigs))
+        .collect();
+
+    struct PhenRegistration {
+        module_id: crate::frontend::resolver::ModuleId,
+        pos: usize,
+    }
+    let mut phen_registry: HashMap<(String, SemanticType), PhenRegistration> = HashMap::new();
+    let mut phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin> = HashMap::new();
+
+    for &module_id in &resolved.topo_order {
+        let file = match resolved.files.get(&module_id) {
+            Some(f) => f,
+            None => continue,
+        };
+        for stmt in &file.program.stmts {
+            let (gene_name, receiver_ty, methods, pos) = match stmt {
+                Stmt::PhenDef { gene_name, receiver, methods, pos } => (gene_name, &receiver.1, methods, *pos),
+                _ => continue,
+            };
+            let gene_sigs = match genes.get(gene_name) {
+                Some(sigs) => sigs,
+                None => {
+                    errors.push(sem_err!(pos, "phen implements undeclared gene '{}'", gene_name));
+                    continue;
+                }
+            };
+            let receiver_type = semantic_type_from_decl(receiver_ty.clone(), &[]);
+            let key = (gene_name.clone(), receiver_type.clone());
+            if let Some(existing) = phen_registry.get(&key) {
+                errors.push(sem_err!(
+                    pos,
+                    "gene '{}' already implemented for '{}' — conflicting phen at {}",
+                    gene_name,
+                    type_name(&receiver_type),
+                    source_location(existing.module_id, existing.pos)
+                ));
+                continue;
+            }
+            phen_registry.insert(key, PhenRegistration { module_id, pos });
+
+            // Contract completeness (locked rule: a phen must implement every
+            // signature in the gene, exactly) — compared after substituting
+            // Self → the receiver type on BOTH sides, so a phen may spell a
+            // contract type either as `Self` or as its own concrete name.
+            let self_map: HashMap<String, SemanticType> =
+                std::iter::once(("Self".to_string(), receiver_type.clone())).collect();
+            let subst_ty = |t: &Option<SemanticType>| -> Option<SemanticType> {
+                t.clone().map(|t| substitute_type_params(t, &self_map))
+            };
+            let subst_params = |ps: &[Option<SemanticType>]| -> Vec<Option<SemanticType>> {
+                ps.iter().map(|p| p.clone().map(|t| substitute_type_params(t, &self_map))).collect()
+            };
+            type PhenSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+            let phen_sigs: Vec<PhenSig> = methods.iter().map(|(mname, params, ret, _, _)| (
+                mname.clone(),
+                subst_params(&resolve_sig_params(params)),
+                subst_ty(&ret.clone().map(|t| semantic_type_from_decl(t, &self_param))),
+            )).collect();
+
+            for (g_method, g_params, g_ret) in gene_sigs {
+                let want_params = subst_params(g_params);
+                let want_ret = subst_ty(g_ret);
+                match phen_sigs.iter().find(|(n, _, _)| n == g_method) {
+                    None => errors.push(sem_err!(
+                        pos,
+                        "phen for '{}' does not implement '{}' declared by gene '{}'",
+                        type_name(&receiver_type),
+                        render_method_sig(g_method, &want_params, &want_ret),
+                        gene_name
+                    )),
+                    Some((_, got_params, got_ret)) => {
+                        if got_params.len() != want_params.len() {
+                            errors.push(sem_err!(
+                                pos,
+                                "method '{}' in phen for '{}': gene '{}' declares {} parameter(s), this phen implements {}",
+                                g_method, type_name(&receiver_type), gene_name,
+                                want_params.len(), got_params.len()
+                            ));
+                        } else {
+                            for (i, (want, got)) in want_params.iter().zip(got_params.iter()).enumerate() {
+                                if want != got {
+                                    errors.push(sem_err!(
+                                        pos,
+                                        "method '{}' in phen for '{}': parameter {} must be {} per gene '{}', got {}",
+                                        g_method, type_name(&receiver_type), i + 1,
+                                        opt_type_name(want), gene_name, opt_type_name(got)
+                                    ));
+                                }
+                            }
+                        }
+                        if *got_ret != want_ret {
+                            errors.push(sem_err!(
+                                pos,
+                                "method '{}' in phen for '{}': gene '{}' declares return type {}, this phen returns {}",
+                                g_method, type_name(&receiver_type), gene_name,
+                                opt_type_name(&want_ret), opt_type_name(got_ret)
+                            ));
+                        }
+                    }
+                }
+            }
+            // Method-ownership locked rule, application 1: no extras.
+            for (p_method, _, _) in &phen_sigs {
+                if !gene_sigs.iter().any(|(g, _, _)| g == p_method) {
+                    errors.push(sem_err!(
+                        pos,
+                        "method '{}' is not declared by gene '{}' — extra methods belong in impl blocks",
+                        p_method, gene_name
+                    ));
+                }
+            }
+            // Method-ownership locked rule, application 3: one implementation
+            // per method name per concrete type, across all genes.
+            for (p_method, p_params, p_ret) in &phen_sigs {
+                let mkey = (receiver_type.clone(), p_method.clone());
+                if let Some(prev) = phen_methods.get(&mkey) {
+                    errors.push(sem_err!(
+                        pos,
+                        "method '{}' on '{}' is already provided by a phen of gene '{}' at {} — conflicting phen of gene '{}'",
+                        p_method, type_name(&receiver_type), prev.gene, prev.location, gene_name
+                    ));
+                } else {
+                    phen_methods.insert(mkey, PhenMethodOrigin {
+                        gene: gene_name.clone(),
+                        location: source_location(module_id, pos),
+                        params: p_params.clone(),
+                        ret: p_ret.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        let phen_keys = phen_registry.keys().cloned().collect();
+        Ok(GenePhenRegistry { phen_methods, genes, phen_keys })
+    } else {
+        Err(errors)
+    }
+}
+
+/// A phen-provided method's origin — gene name + "path:line" for the
+/// method-ownership collision diagnostics (locked rule, applications 2 & 3),
+/// plus its Self-substituted signature (0.3.4 slice 3) so per-file analysis
+/// can inject a signature-only stub into `method_registry` and call sites
+/// resolve order-independently across the whole graph (decision 2).
+#[derive(Debug, Clone)]
+pub(crate) struct PhenMethodOrigin {
+    pub gene: String,
+    pub location: String,
+    pub params: Vec<Option<SemanticType>>,
+    pub ret: Option<SemanticType>,
+}
+
+/// A gene method's declared signature: name, param types (None for untyped
+/// param kinds), return type — `Self` carried as `TypeParam("Self")`.
+pub(crate) type GeneSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+
+/// Whole-graph output of Pass 0: every phen-provided method keyed
+/// `(receiver type, method name)` (slice 2, impl/phen collision checks),
+/// every gene's signature list, and every `(gene, receiver type)` phen key
+/// (slice 4, bounded-generic resolution + instantiation-site bound checks).
+pub(crate) struct GenePhenRegistry {
+    pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+    pub genes: HashMap<String, Vec<GeneSig>>,
+    pub phen_keys: std::collections::HashSet<(String, SemanticType)>,
+}
+
+fn opt_type_name(t: &Option<SemanticType>) -> String {
+    t.as_ref().map(type_name).unwrap_or_else(|| "void".to_string())
+}
+
+fn render_method_sig(name: &str, params: &[Option<SemanticType>], ret: &Option<SemanticType>) -> String {
+    let ps: Vec<String> = params.iter()
+        .map(|p| p.as_ref().map(type_name).unwrap_or_else(|| "_".to_string()))
+        .collect();
+    match ret {
+        Some(r) => format!("{}({}) -> {}", name, ps.join(", "), type_name(r)),
+        None => format!("{}({})", name, ps.join(", ")),
+    }
+}
+
 pub fn analyze_resolved_program(
     resolved: &crate::frontend::resolver::ResolvedProgram,
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
+    let gene_phen_registry = collect_gene_phen_registry(resolved)?;
+
     let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
@@ -2806,6 +3669,9 @@ pub fn analyze_resolved_program(
         // Build analyzer with module aliases from already-processed dependencies
         let mut analyzer = Analyzer::new();
         analyzer.module_aliases = alias_exports.clone();
+        analyzer.phen_methods = gene_phen_registry.phen_methods.clone();
+        analyzer.gene_defs = gene_phen_registry.genes.clone();
+        analyzer.phen_keys = gene_phen_registry.phen_keys.clone();
 
         // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
         // every `Type::Struct(name)` annotation that names an enum to
@@ -2834,7 +3700,7 @@ pub fn analyze_resolved_program(
 
         // Function pre-pass
         for stmt in &normalized_stmts {
-            if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
+            if let Stmt::FuncDef { name, params, ret_ty, type_params, type_bounds, .. } = stmt {
                 let placeholders = params.iter()
                     .map(semantic_param_placeholder)
                     .collect::<Vec<_>>();
@@ -2844,13 +3710,62 @@ pub fn analyze_resolved_program(
                     params: placeholders,
                     ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                     type_params: type_params.clone(),
+                    type_bounds: type_bounds.clone(),
                 });
+            }
+        }
+
+        // Phen-method pre-pass (0.3.4 slice 3): inject signature-only stubs
+        // into method_registry so `value.method(args)` resolves to a phen
+        // method order-independently, across the whole reachable graph
+        // (decision 2 — forward-reference capable, unlike impl methods'
+        // declaration-order registration). Only the signature matters at a
+        // call site (arity, param types, return type); the analyzed bodies
+        // reach the runtime through SemanticStmt::PhenDef, not these stubs.
+        // The ownership rule (slice 2) guarantees no name can be claimed by
+        // both an impl and a phen, so this is a straight lookup extension,
+        // not a precedence scheme.
+        for ((recv_ty, mname), origin) in &gene_phen_registry.phen_methods {
+            if let SemanticType::Struct(sname) = recv_ty {
+                let func_id = analyzer.fresh_function();
+                let stub = SemanticFunction {
+                    id: func_id,
+                    name: mname.clone(),
+                    type_params: vec![],
+                    params: origin.params.iter().enumerate().map(|(i, ty)| SemanticParam {
+                        binding: BindingId(u32::MAX),
+                        name: format!("arg{}", i),
+                        kind: SemanticParamKind::Typed,
+                        ty: ty.clone(),
+                    }).collect(),
+                    return_ty: origin.ret.clone(),
+                    body: vec![],
+                    ret_expr: None,
+                    is_test: false,
+                    pos: 0,
+                };
+                analyzer.method_registry.insert((sname.clone(), mname.clone()), stub);
+                analyzer.method_alias_counts.insert((sname.clone(), mname.clone()), 1);
             }
         }
 
         // Main analysis pass — skip ImportBlock statements
         let mut file_stmts = Vec::new();
         let mut errors = Vec::new();
+        // 'Self' is only meaningful inside a gene or phen (decision 3) —
+        // anywhere else it would silently analyze as an ordinary unknown
+        // struct named "Self". Reject before analysis.
+        for stmt in &normalized_stmts {
+            if matches!(stmt, Stmt::GeneDef { .. } | Stmt::PhenDef { .. }) {
+                continue;
+            }
+            if stmt_uses_self_type(stmt) {
+                errors.push(sem_err!(
+                    stmt_anchor_pos(stmt),
+                    "'Self' is only meaningful inside a gene or phen — name the concrete type here"
+                ));
+            }
+        }
         for stmt in &normalized_stmts {
             if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
             match analyzer.analyze_stmt(stmt) {
@@ -2961,6 +3876,51 @@ mod tests {
         analyze_resolved_program(&resolved)
     }
 
+    /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must
+    /// parse and semantically validate — a malformed prelude fails CI here
+    /// rather than silently shipping inside the binary.
+    #[test]
+    fn prelude_parses_and_analyzes_clean() {
+        let prelude = crate::frontend::resolver::prelude_program()
+            .expect("embedded prelude must parse");
+        let result = analyze_program(&prelude);
+        assert!(result.is_ok(), "embedded prelude must analyze clean: {:?}", result.err());
+    }
+
+    /// Decision-6 constraint 2: the bootstrap intrinsics (the built-in
+    /// numeric operator paths) must conform to the prelude-declared
+    /// contracts — public contracts and method names come FROM the prelude,
+    /// never compiler-invented. This pins the operator→gene→method mapping
+    /// (decision 4, 1:1) against the shipped prelude source.
+    #[test]
+    fn prelude_operator_contracts_match_intrinsic_mapping() {
+        let prelude = crate::frontend::resolver::prelude_program()
+            .expect("embedded prelude must parse");
+        // (gene, method, user-arity) — binary ops take one rhs, neg takes none.
+        let expected: &[(&str, &str, usize)] = &[
+            ("Add", "add", 1),
+            ("Sub", "sub", 1),
+            ("Mul", "mul", 1),
+            ("Div", "div", 1),
+            ("Mod", "mod", 1),
+            ("Neg", "neg", 0),
+            ("Eq", "eq", 1),
+            ("Ord", "lt", 1),
+            ("Ord", "gt", 1),
+            ("Ord", "le", 1),
+            ("Ord", "ge", 1),
+        ];
+        for (gene, method, arity) in expected {
+            let found = prelude.stmts.iter().any(|s| matches!(
+                s,
+                Stmt::GeneDef { name, methods, .. }
+                    if name == gene
+                        && methods.iter().any(|(m, params, _)| m == method && params.len() == *arity)
+            ));
+            assert!(found, "prelude must declare gene '{}' with method '{}({} param)'", gene, method, arity);
+        }
+    }
+
     fn ident(name: &str) -> Expr {
         Expr::Ident(name.to_string(), 0)
     }
@@ -3040,6 +4000,7 @@ mod tests {
                 Stmt::FuncDef {
                     name: "foo".to_string(),
                     type_params: vec![],
+                    type_bounds: vec![],
                     params: vec![ParamKind::Typed("a".to_string(), Type::T64)],
                     ret_ty: Some(Type::T64),
                     body: vec![],
@@ -3164,6 +4125,7 @@ mod tests {
             stmts: vec![Stmt::FuncDef {
                 name: "main".to_string(),
                 type_params: vec![],
+                type_bounds: vec![],
                 params: vec![],
                 ret_ty: Some(Type::Void),
                 body: vec![],

@@ -258,6 +258,25 @@ fn parse_source(source: &str) -> Result<Program, String> {
         })
 }
 
+/// Sentinel path identifying the embedded prelude source unit in
+/// diagnostics ("<prelude>:LINE") and in source-text lookups.
+pub const PRELUDE_PATH: &str = "<prelude>";
+
+/// The prelude's canonical source: a real `.cx` file in the repo
+/// (`src/prelude.cx`), embedded at build time. The embedded text is the sole
+/// runtime path — no filesystem probing, no fallback (0.3.4 slice 6 ruling).
+pub fn prelude_source() -> &'static str {
+    include_str!("../prelude.cx")
+}
+
+/// Parse the embedded prelude through the ordinary lexer → parser pipeline —
+/// the prelude is a program unit, not a special case. Public so the test
+/// suite can validate the shipped prelude (a malformed prelude fails CI
+/// rather than silently shipping inside the binary).
+pub fn prelude_program() -> Result<Program, String> {
+    parse_source(prelude_source())
+}
+
 // Public entry point
 pub fn resolve(entry_path: &Path, entry_program: Program) -> Result<ResolvedProgram, ResolveError> {
     if !entry_path.exists() {
@@ -267,6 +286,24 @@ pub fn resolve(entry_path: &Path, entry_program: Program) -> Result<ResolvedProg
         });
     }
     let mut resolver = Resolver::new();
+
+    // Prelude injection: exactly once, as the FIRST source unit of every
+    // flattened program — before the root file and before all imports, so
+    // Pass 0 observes prelude declarations first. Not registered in
+    // path_to_id (nothing can import it) and contributes no edges.
+    let prelude = prelude_program().map_err(|msg| ResolveError::ParseError {
+        path: PathBuf::from(PRELUDE_PATH),
+        msg,
+    })?;
+    let prelude_id = resolver.next_module_id();
+    resolver.files.insert(prelude_id, ResolvedFile {
+        id: prelude_id,
+        path: PathBuf::from(PRELUDE_PATH),
+        program: prelude,
+        imports: Vec::new(),
+    });
+    resolver.topo_order.push(prelude_id);
+
     let canonical = canonicalize_path(entry_path)?;
     let imports = extract_imports(&entry_program);
     let entry_id = resolver.next_module_id();

@@ -1,0 +1,17 @@
+// Struct-return regression (impl method): the slice-5 probe case — printed
+// 13/32758 on cranelift before the caller-allocated-slot fix.
+struct Vec2 { x: t32, y: t32 }
+vm: impl (v: Vec2) {
+    fnc: Vec2 plus(other: Vec2) {
+        made: Vec2 = Vec2 { x: v.x + other.x, y: v.y + other.y }
+        made
+    }
+}
+let a;
+let b;
+a = Vec2 { x: 3, y: 4 }
+b = Vec2 { x: 10, y: 20 }
+let c;
+c = a.plus(b)
+print(c.x)
+print(c.y)

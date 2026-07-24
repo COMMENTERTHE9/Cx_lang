@@ -36,15 +36,69 @@ so it flows through the same `(Float, Float)` arm.
 
 ## 2. Bare builtin call in trailing function/method-body position doesn't JIT-lower
 
-**Status: OPEN.**
+**Status: FIXED — commit `b6310fe`.**
 
 A bare `print(...)` call as a function or method body's *sole or last*
-statement, with no trailing semicolon, fails to lower on the JIT:
+statement, with no trailing semicolon, used to fail to lower on the JIT:
 
 ```
 unresolved semantic artifact reached lowering: function 'print'
 ```
-Exit code 127. The interpreter handles this correctly.
+Exit code 127. The interpreter always handled this correctly — this was a
+JIT-only gap.
+
+**Fix:** the parser's `func_body` combinator (`src/frontend/parser.rs:1207-1259`)
+no longer promotes a trailing bare call to `print`/`println`/`printn`/
+`assert`/`assert_eq` into the function's `ret_expr`. It's left as a normal
+body statement instead, where the existing `lower_stmt` builtin dispatch
+(`src/ir/lower.rs:864-880`, unchanged) already handles it correctly. No
+interpreter changes and no lowering changes were needed — both were already
+correct once the call stopped reaching them through the wrong path.
+
+**Isolation confirmed, not assumed:** `t16`'s implicit-return-type check and
+`t03`/`t160`/`t24`'s explicit-return-plus-trailing-expression check
+(`src/ir/lower.rs:670-714`) were re-run before and after the fix and produce
+**byte-for-byte identical** stdout and exit codes in both cases — confirmed
+by direct `diff`, not by re-reading the (unmodified) code alone. Both
+remain their own distinct, still-open bugs.
+
+**Fixture-count result — the real, diff-verified number, not the original
+estimate:** the investigation's static fixture search found 7 files (8
+call sites) with this shape and predicted all would convert from JIT-SKIP
+to JIT-PASS. The actual result, obtained by running the full fixture corpus
+through the JIT before and after the fix and diffing the two SKIP sets
+directly (not by re-checking the originally-named fixtures one at a time):
+
+- **5 fixtures genuinely converted from SKIP to PASS**: `t29_forward_decl`,
+  `t31_strref_forward_combined`, `t67_macro_outer_test`,
+  `t68_macro_outer_deprecated`, and `t_array_elem_arg_in_range` — the last
+  of these was **not** in the original investigation's list at all; its
+  static search missed it because its function body is condensed onto a
+  single line (`fnc: f(a: [3: t8]) { print(a:[2]) }`), a shape the
+  line-based search wasn't tuned for. Found only by actually running the
+  fixture corpus, not by re-reading source.
+- **2 of the originally-named fixtures were never actually SKIP**:
+  `t71_macro_unknown_outer_reject` and `t73_macro_reactive_reserved` are
+  `.expected_fail` fixtures that reject at the macro-processing step in
+  semantic analysis, before a function's `ret_expr` is ever considered —
+  both backends already converged on the same correct rejection before this
+  fix, so there was nothing for this fix to change for them. Confirmed
+  unaffected (identical error text and exit code, before and after).
+- **1 originally-named fixture correctly did not convert**:
+  `t50_nested_func_no_leak` remains SKIP, but for a completely separate,
+  pre-existing, already-documented JIT limitation — nested function
+  definitions aren't lowered at all (`unsupported semantic construct during
+  lowering: nested FuncDef`), independent of this bug. Confirmed identical
+  before and after via a real before/after diff (used `git stash` to build
+  the exact pre-fix binary and compare). `t50` is now cleanly isolated as
+  blocked *only* by the nested-function-lowering limitation — a natural
+  proof-fixture for whenever that limitation gets addressed.
+
+JIT parity moved from **261/60/0** to **267/55/0** across 322 fixtures
+(321 existing + 1 new permanent regression fixture,
+`t_print_trailing_position.cx`, added for the original reproducer shape).
+261 + 5 conversions + 1 new passing fixture = 267; 60 − 5 = 55 — the totals
+reconcile exactly.
 
 **Not method-specific** — confirmed via a plain free-function reproducer
 (`fnc: show(x: t32) { print(x) }`) with an identical failure and identical
@@ -86,16 +140,23 @@ since the JIT succeeded while the interpreter errored).
 **Relation to #3 below:** sits in the same code region (both concern a
 function's trailing-expression / `ret_expr` handling) but is **not a
 duplicate** — confirmed by direct mechanism/error-text comparison, not
-name-similarity. This bug raises `LoweringError::UnresolvedSemanticArtifact`
+name-similarity. This bug raised `LoweringError::UnresolvedSemanticArtifact`
 at `lower.rs:686-687` (the `lower_expr` call itself failing); #3 raises
 `LoweringError::InternalInvariantViolation` one step further down, at
 `lower.rs:677-684`. In the specific reproducer tested here (a void function,
 no `return` statement, `print(...)` as the only body statement), this bug
-fires first and **preempts** #3's check from ever being reached — if this
-bug were fixed, the exact same reproducer would then likely hit the
-*separate* implicit-return-type gap (see the `t16`-cluster audit) rather
-than #3 specifically, since #3 requires an explicit `return` statement to
-also be present.
+fired first and **preempted** #3's check from ever being reached.
+
+*Correction after actually fixing and testing it, not just predicting:*
+before the fix, this section speculated that fixing this bug would make the
+reproducer fall through to the *separate* `t16` implicit-return-type gap
+instead. That didn't happen. The fix (parser-level: don't promote the
+builtin call into `ret_expr` at all) means `ret_expr` stays `None` for this
+reproducer, not just "successfully lowered" — so neither this check nor
+`t16`'s (which specifically requires `ret_expr.is_some()`) ever fires. The
+prediction was reasonable at the time but wrong; the actual fix sidesteps
+the whole region rather than moving the failure point within it. Confirmed
+by running the reproducer post-fix: clean output, exit 0, on both backends.
 
 ---
 
@@ -234,3 +295,231 @@ JIT to spill the `I128` SSA value to a stack slot and pass its address, then
 have the callback dereference it — a materially different (and larger)
 shape than "one new match arm plus one host callback." Not attempted; needs
 its own sizing pass before a second attempt.
+
+---
+
+## 6. `if`/`while`/`loop`/`while-in` bodies not scoped in semantic analysis
+
+**Status: FIXED — commit `603aa61`.**
+
+`semantic.rs`'s `Stmt::IfElse`/`Stmt::While`/`Stmt::Loop`/`Stmt::WhileIn` didn't
+push/pop a scope around their bodies, unlike sibling `Stmt::Block`/`Stmt::For`/
+`Stmt::When` in the same file, and unlike the interpreter (`runtime/exec.rs`),
+which already scoped all four correctly and symmetrically. Result: two
+sibling branches or loop bodies each declaring an unrelated same-named local
+were rejected outright with `SEMANTIC ERROR: variable already declared in
+this scope` — valid, ordinary programs, on both backends.
+
+**Fix:** added `self.push_scope()`/`self.pop_scope()` pairs around each body,
+mirroring the existing `Stmt::Block` pattern (push once, analyze via the
+existing `?`/`.collect()` chain, pop once on success) rather than
+`analyze_for`'s more complex explicit-pop-on-every-error-path pattern, which
+doesn't apply here since these four constructs have no equivalent
+early-return-from-within-the-body logic. `IfElse` gets three independent
+scopes (then-body, each `else if` body, else-body); `WhileIn` gets one for
+the main body plus one independent scope per `then_chains` chain.
+
+Verified via a discriminating shadowing canary for all four constructs — not
+just "two unrelated same-named locals stop colliding" (which wouldn't rule
+out a fix that simply disabled the collision check entirely, a worse
+regression than the bug it fixes): an outer-scope variable plus an inner
+same-named local proves the inner one shadows correctly (reads inside the
+body see the inner value), does not leak (a read after the body sees the
+outer value, unchanged), and does not corrupt the outer binding. Four new
+regression fixtures added (`t179_if_scope.cx` through
+`t182_whilein_scope.cx`), each covering both the sibling-blocks case and the
+shadowing case.
+
+JIT parity moved **267/55/0 → 270/56/0** across 326 fixtures (322 existing +
+4 new): +3 PASS for `if`/`while`/`loop`, +1 SKIP for `while-in` — confirmed,
+not assumed, to be a pre-existing, unrelated Cranelift lowering gap: an
+existing, scope-collision-free fixture (`t34_while_in.cx`) hits the identical
+`unsupported semantic construct during lowering: WhileIn` error regardless of
+this fix, via a stash-based before/after diff. `WhileIn` simply isn't lowered
+to Cranelift IR yet, independent of scoping.
+
+---
+
+## 7. Silent integer truncation at method-call args, plain reassignment, array-index assignment
+
+**Status: FIXED — commit `2d9a70b`.**
+
+`check_semantic_num_fits` (the width-range check) claimed in its own doc
+comment to be the single entry point for every relevant site, but was not
+actually called at three of them: method-call args (`semantic.rs`
+~1738-1760), plain reassignment (`Stmt::Assign`'s `Expr::Ident` arm,
+~429-464), and array-index assignment (`Stmt::Assign`'s `Expr::Index` arm,
+~505-524) — each has a sibling site in the same file (struct-field
+assignment, typed declaration, free-function call args) that calls it
+correctly. Result: `x: t8 = 5; x = 300; print(x)` printed `44` (300 mod 256)
+with zero error, on the interpreter.
+
+**Fix:** added the missing `check_semantic_num_fits(...)` call at each of
+the three sites, mirroring the working sibling sites' exact call shape and
+ordering (check num-fits, then check type-compat, then insert cast). Verified
+via a discriminating in-range canary at all three sites — proving legitimate
+in-range values are not overcorrected into rejection — plus 6 new regression
+fixtures (a reject/accept pair per site).
+
+**Correction to this finding's own premise, found during verification, not
+assumed:** Cranelift was never silently truncating the way the interpreter
+was. It already refused these cases via a lowering-time check
+(`unsupported semantic construct during lowering: integer literal 300 does
+not fit in I8`, exit 127/SKIP) — a pre-existing, independent backstop,
+confirmed via a stash-based before/after diff. The bug's live impact was
+interpreter-only; the fix's actual improvement on Cranelift is replacing that
+ad-hoc, late, SKIP-coded lowering rejection with a clean, early
+`SemanticError`, produced identically on both backends before either
+backend's execution begins.
+
+JIT parity moved **270/56/0 → 276/56/0** across 332 fixtures (326 existing +
+6 new): all six new fixtures land as full PASS on both backends (no new
+SKIP), since both backends now reject at the semantic layer before ever
+diverging.
+
+---
+
+## 8. `<`/`>`/`<=`/`>=` silently accepted on non-numeric operands
+
+**Status: FIXED — commit `3ad89b7`.**
+
+The ordering-comparison semantic branch (`Op::Lt | Op::Gt | Op::LtEq |
+Op::GtEq`, `semantic.rs` ~2273-2299) had no type-allowlist, unlike its
+sibling `EqEq`/`NotEq` branch immediately above it. Result: `Color::Red <
+Color::Blue` was correctly rejected by the interpreter (`RUNTIME ERROR:
+operator 'Lt' cannot be applied to enum variant and enum variant`) but
+silently accepted by the JIT, computing a nonsensical `true`, exit 0.
+Reproduced identically for `bool` operands and for all four operators
+(`<`/`>`/`<=`/`>=`), not just `<`.
+
+**Fix:** added an `else` arm to the branch, mirroring the equality branch's
+shape (`Unknown` pass-through → numeric fast path → `sem_err!` otherwise).
+Confirmed via a stash-based before/after diff that the equality branch
+itself is completely untouched by this change.
+
+**Scope generalization, found and folded in during the fix, not originally
+in the audit's finding:** the audit named `Bool`/`Enum` specifically, but
+`runtime/ops.rs` only ever supported ordering on `Num`/`Float` operands —
+`Char` reproduces the identical bug shape (interpreter: a late
+`RuntimeError`; JIT behavior not independently confirmed for `Char`, but
+presumed the same class). Rather than special-case exactly the two named
+types, the fix rejects any non-numeric operand pair, matching what the
+runtime actually supports and closing the whole class in one change instead
+of leaving a near-identical gap unaddressed for `Char`/`Str`.
+
+Verified via a discriminating canary: numeric ordering (including `f64`)
+unaffected on both backends; equality comparison on `bool`/`enum` unaffected,
+confirmed byte-identical pre/post-fix via stash diff. Four new regression
+fixtures added (reject-on-enum, reject-on-bool, accept-on-numeric,
+accept-equality-on-bool).
+
+JIT parity moved **276/56/0 → 280/56/0** across 336 fixtures (332 existing +
+4 new): all four land as full PASS on both backends (no new SKIP) — a pure
+semantic-time catch that fires identically before either backend executes,
+matching finding #7's shape rather than finding #6's.
+
+---
+
+## 9. Enum `==`/`!=` crashes on the interpreter
+
+**Status: FIXED — commit `7a4fd5f`.**
+
+Semantic analysis correctly allows equality comparison on same-typed `Enum`
+operands (the `EqEq`/`NotEq` branch's type-allowlist includes
+`SemanticType::Enum(_)`), but `runtime/ops.rs`'s `Op::EqEq`/`Op::NotEq` match
+had no arm for two enum-variant operands — it fell through to the generic
+`(l, r) => Err(RuntimeError::BadOperands)` catch-all. E.g. `a: Color =
+Color::Red; b: Color = Color::Blue; print(a == b)` crashed at runtime on the
+interpreter with `RUNTIME ERROR: operator 'EqEq' cannot be applied to enum
+variant and enum variant`. Cranelift already handled this correctly (computes
+and prints the right `bool`) — for once, the JIT was the reference to copy
+from, not the interpreter.
+
+Found incidentally during audit finding 3.3's (#8 above) equality-branch
+regression verification. Confirmed pre-existing and completely unrelated to
+that fix via a stash-based before/after diff: byte-identical error, both
+before and after that fix, on both backends.
+
+**Same shape as finding #1 above** (the `f64`-comparison bug): the type
+system (semantic analysis) promises support that a downstream layer — here,
+the interpreter's runtime dispatch table; there, the same — doesn't actually
+implement. Third instance of this exact pattern found this project.
+
+---
+
+## 10. Silent struct-return corruption on the JIT — all function kinds
+
+**Status: FIXED — same commit as this entry (caller-allocated return slot).**
+
+Any function returning a struct by value — free function, impl method, or
+phen method, all through the shared `lower_semantic_function` path — returned
+the `Ptr` of a callee-frame alloca. That frame is dead the moment the call
+returns, so the caller read garbage: probed empirically on the baseline
+binary, `make(13, 24)` printed `13` then `32758` on cranelift (interp:
+`13`/`24`), **exit 0, no error** — the worst failure class this project
+tracks, silent wrong output with matching exit codes.
+
+**The coverage blind spot, named explicitly:** this was live for every
+function kind and never surfaced as a PARITY_FAIL because **not one fixture
+in the entire corpus returned a struct from any function** — the parity
+harness can only compare shapes the corpus exercises. Found only when
+slice 5's ABI check (the bare-I128 lesson: enumerate what crosses a boundary,
+probe it, don't assume) probed a method-struct-return before reusing the
+path. Free functions were the worst exposure: methods briefly had slice 5's
+guard forcing clean SKIPs, but a free function returning a struct silently
+corrupted with no guard at all.
+
+**Fix:** caller-allocated return slot, one convention in the shared path for
+all three producer kinds. `FunctionSignature` carries the returned struct's
+identity; struct-returning functions receive a hidden trailing `$ret_slot:
+Ptr` param; every return site field-copies the result through the slot
+(same Load/PtrOffset/Store idiom as struct-literal lowering) and returns the
+slot pointer — no pointer into a dead frame ever escapes. Call sites alloca
+the slot in the caller's frame and pass its address. Nothing wider than a
+machine word crosses any boundary; nothing new crosses the Cranelift/host
+boundary at all. Slice 5's phen struct-return guard is lifted; ARRAY returns
+remain guarded (same dangling-frame shape, slot convention not yet built for
+array layouts — tracked follow-up).
+
+Regression fixtures: `t_struct_return_free` / `t_struct_return_impl` (the
+exact 13/32758 shapes, now asserting 13/24), double-call contamination
+canaries `t_struct_return_double_free` / `t_struct_return_double_method`
+(two calls, asymmetric inputs, both results independently correct — no slot
+reuse contamination), plus `t_gene_phen_call_self_runtime` converting from
+guarded SKIP to genuine PASS. A `v.method().x` nested-receiver case is not
+expressible in today's grammar (`DotAccess` containers are identifiers, not
+expressions) — noted, not forced.
+
+**Fix:** the interpreter's `Value::EnumVariant(String, String)`
+representation (`enum_name`, `variant_name` — confirmed by reading
+`runtime/eval.rs:178-179` and `runtime/exec.rs:548`'s existing pattern-match
+comparison, not assumed) has no numeric tag at all, unlike the JIT's IR
+representation, where an enum erases to a bare `IrType::I8` tag
+(`src/ir/lower.rs:4563`) and equality falls through Cranelift's generic
+scalar `Compare` lowering (`src/ir/lower.rs:2574-2612`) once `TBool`/`str`/
+composite `Ptr` cases are ruled out — i.e. Cranelift's "reference" logic here
+is just an ordinary integer-tag compare, confirmed by reading the actual
+lowering path rather than assumed from the pattern-matching arc's tag-only
+framing. Since the interpreter's `Value` has no tag field to compare, the fix
+adds one `(Value::EnumVariant(e1, v1), Value::EnumVariant(e2, v2))` arm to
+each of `Op::EqEq` and `Op::NotEq`, comparing both fields
+(`e1 == e2 && v1 == v2`), mirroring the exact style `exec.rs:548`'s
+pattern-match arm already uses for the identical comparison. `NotEq` needed
+its own explicit arm — confirmed, not assumed: `EqEq` and `NotEq` are two
+fully independent `match` blocks in `ops.rs`, each with its own complete set
+of per-type-pair arms, not a shared helper with negation, so nothing "falls
+out for free."
+
+Verified via a discriminating canary proving genuine discrimination, not
+just "didn't crash": same-variant operands compare equal in both directions
+(`==` → `true`, `!=` → `false`); different-variant operands compare unequal
+in both directions (`==` → `false`, `!=` → `true`) — matching Cranelift's
+output exactly, on all four combinations, both before (JIT only) and after
+(both backends) the fix. One new permanent regression fixture added,
+`t_enum_equality.cx`, covering both cases and both operators in a single
+program (no error path here to force splitting across files, unlike prior
+scoping/truncation fixes).
+
+JIT parity moved **280/56/0 → 281/56/0** across 337 fixtures (336 existing +
+1 new): a full PASS on both backends, no new SKIP — a pure interpreter-side
+runtime fix with no lowering-side change at all.

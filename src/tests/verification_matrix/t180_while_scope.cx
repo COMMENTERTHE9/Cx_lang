@@ -1,0 +1,18 @@
+x: t32 = 100
+i: t64 = 0
+while (i < 1) {
+    x: t32 = 1
+    tmp: t32 = 10
+    print(x)
+    print(tmp)
+    i = i + 1
+}
+i = 0
+while (i < 1) {
+    x: t32 = 2
+    tmp: t32 = 20
+    print(x)
+    print(tmp)
+    i = i + 1
+}
+print(x)

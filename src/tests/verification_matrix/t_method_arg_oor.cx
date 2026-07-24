@@ -1,0 +1,15 @@
+// CX-3.2: a method-call argument must range-check against the declared param
+// width, exactly like the free-function call-argument path.
+struct Box {
+    v: t32,
+}
+
+box_methods: impl (b: Box) {
+    fnc: set(x: t8) {
+        print(x)
+    }
+}
+
+let bx
+bx = Box { v: 0 }
+bx.set(300)

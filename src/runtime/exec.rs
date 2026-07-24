@@ -15,6 +15,33 @@ impl RunTime {
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
             SemanticStmt::Noop => Ok(()),
+            // Gene declarations are contracts — nothing to execute. Coherence
+            // and conformance were checked at analysis time (Pass 0/slice 2).
+            SemanticStmt::GeneDef { .. } => Ok(()),
+            // 0.3.4 slice 3: register phen methods into semantic_impls,
+            // mirroring ImplBlock exactly — the receiver is the single
+            // "alias" — so call_semantic_method dispatches phen methods
+            // through the same machinery as impl methods, unchanged.
+            SemanticStmt::PhenDef { receiver_type, methods, method_receiver_params, .. } => {
+                for (mi, sem_func) in methods.iter().enumerate() {
+                    let receiver_bindings: Vec<(BindingId, String, SemanticType)> = method_receiver_params
+                        .get(mi)
+                        .map(|params| {
+                            params
+                                .iter()
+                                .map(|p| (p.binding, p.name.clone(), receiver_type.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if let SemanticType::Struct(type_key) = receiver_type {
+                        self.semantic_impls.insert(
+                            (type_key.clone(), sem_func.name.clone()),
+                            (receiver_bindings, Arc::new(sem_func.clone())),
+                        );
+                    }
+                }
+                Ok(())
+            }
 SemanticStmt::Decl { binding, name, ty, .. } => {
                 let rt_ty: Option<Type> = ty.as_ref().map(|t| t.clone().into());
                 self.declare(*binding, name.clone(), rt_ty, 0)

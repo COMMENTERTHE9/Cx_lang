@@ -4,7 +4,14 @@ Cx is a compiled, GC-free systems programming language for game engines, tools, 
 
 The goal of Cx is to give engine-facing code predictable memory behavior, explicit value movement, deterministic teardown, and low-level control without forcing every feature to become allocator plumbing.
 
-**Status: 0.2.0 — released 2026-06-05.** Last tagged release: **v0.2.0**.
+**Status: 0.3.2 — released 2026-07-24.** Last tagged release: **v0.3.2**.
+
+> **Note:** the feature sections below predate 0.3.2 and describe 0.2.0-era
+> capability. They are accurate for what they cover but incomplete — gene/phen,
+> generic bounds, operator overloading, `Handle<T>`, and pattern matching are not
+> documented here yet. A content audit is pending; see `CHANGELOG` in the
+> [releases](https://github.com/COMMENTERTHE9/Cx_lang/releases) for what each
+> version actually shipped.
 
 This README describes the current `submain` branch. The reference interpreter is the source of truth for language semantics; every code sample below was compiled and run against it.
 
@@ -62,12 +69,12 @@ cargo run -- --backend=validate examples/fibonacci.cx
 
 ## Current Verification Status
 
-As of `v0.2.0`:
+As of `v0.3.2`:
 
-- **243 unit tests passing** (`cargo test`)
-- **418 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **230 verification fixtures**
-- **JIT parity: 140 PASS / 90 SKIP / 0 PARITY_FAIL** across all 230 fixtures
+- **245 unit tests passing** (`cargo test`)
+- **420 unit tests passing** with the JIT enabled (`cargo test --features jit`)
+- **380 verification fixtures**
+- **JIT parity: 319 PASS / 61 SKIP / 0 PARITY_FAIL** across all 380 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -332,14 +339,14 @@ All currently JIT-lowered fixtures match interpreter behavior (0 PARITY_FAIL). A
 
 ### JIT Parity Baseline
 
-As of `v0.2.0`:
+As of `v0.3.2`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 140 |
-| SKIP | 90 |
+| PASS | 319 |
+| SKIP | 61 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **230** |
+| **Total fixtures** | **380** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 

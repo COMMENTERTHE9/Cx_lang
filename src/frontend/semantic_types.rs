@@ -13,7 +13,7 @@ pub struct EnumId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumVariantId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SemanticType {
     I8,
     I16,
@@ -322,6 +322,29 @@ pub enum SemanticStmt {
         enum_id: EnumId,
         name: String,
         variants: Vec<String>,
+        pos: usize,
+    },
+    /// 0.3.4 slice 1: header-only mirror. Signatures carry resolved types for
+    /// future conformance-checking; no bodies exist for a gene (contracts have
+    /// none). Nothing consumes this yet — genuinely inert (see runtime/exec.rs,
+    /// ir/lower.rs).
+    GeneDef {
+        name: String,
+        methods: Vec<(String, Vec<Option<SemanticType>>, Option<SemanticType>)>,
+        pos: usize,
+    },
+    /// 0.3.4 slice 2: methods are now fully analyzed (receiver bound as a
+    /// typed param then stripped, exactly the ImplBlock shape — see
+    /// `method_receiver_params`), with `Self` already substituted to the
+    /// concrete receiver type before analysis. Contract conformance against
+    /// the gene was verified in Pass 0. Still NOT callable — nothing
+    /// registers these in `method_registry`; dispatch is slice 3.
+    PhenDef {
+        gene_name: String,
+        receiver_name: String,
+        receiver_type: SemanticType,
+        methods: Vec<SemanticFunction>,
+        method_receiver_params: Vec<Vec<SemanticParam>>,
         pos: usize,
     },
     Decl {

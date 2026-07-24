@@ -1,0 +1,16 @@
+// Double-call contamination canary (free function): two struct-returning
+// calls in one program with different, asymmetric inputs — both results
+// independently correct proves no return-slot reuse contamination.
+struct Vec2 { x: t32, y: t32 }
+fnc: Vec2 make(a: t32, b: t32) {
+    made: Vec2 = Vec2 { x: a, y: b }
+    made
+}
+let c;
+let d;
+c = make(1, 2)
+d = make(30, 40)
+print(c.x)
+print(c.y)
+print(d.x)
+print(d.y)

@@ -118,6 +118,12 @@ pub enum Token {
     #[token("impl")]
     KeywordImpl,
 
+    #[token("gene")]
+    KeywordGene,
+
+    #[token("phen")]
+    KeywordPhen,
+
     #[token("Result")]
     KeywordResult,
 
@@ -343,6 +349,8 @@ impl std::fmt::Display for Token {
             Token::KeywordHandle => "Handle",
             Token::KeywordStruct => "struct",
             Token::KeywordImpl => "impl",
+            Token::KeywordGene => "gene",
+            Token::KeywordPhen => "phen",
             Token::KeywordResult => "Result",
             Token::KeywordOk => "Ok",
             Token::KeywordErr => "Err",

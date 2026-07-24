@@ -1,0 +1,5 @@
+// CX-3.2: plain reassignment must range-check against the variable's declared
+// width, exactly like its declaration/struct-field/array-element siblings.
+x: t8 = 5
+x = 300
+print(x)

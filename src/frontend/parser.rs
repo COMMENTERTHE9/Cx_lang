@@ -97,6 +97,26 @@ fn ifelse_to_if_expr(
     Expr::If(Box::new(condition), then_body, acc_else, pos)
 }
 
+/// Is `expr` a call to one of the statement-level builtins
+/// (print/println/printn/assert/assert_eq)? Used to keep a bare trailing
+/// call to one of these out of implicit-return position — see the
+/// `func_body` combinator's doc comment.
+fn is_statement_level_builtin_call(expr: &Expr) -> bool {
+    let Expr::Call(name, _, _) = expr else {
+        return false;
+    };
+    matches!(
+        crate::frontend::builtins::lookup(name).map(|b| b.kind),
+        Some(
+            crate::frontend::builtins::BuiltinKind::Print
+                | crate::frontend::builtins::BuiltinKind::Println
+                | crate::frontend::builtins::BuiltinKind::Printn
+                | crate::frontend::builtins::BuiltinKind::Assert
+                | crate::frontend::builtins::BuiltinKind::AssertEq
+        )
+    )
+}
+
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
@@ -664,6 +684,39 @@ where
                 }))
             .boxed();
 
+        // gene Name { fnc sig(params) -> RetTy? ... } — signatures only, no
+        // colon-prefix return type (unlike ordinary fnc definitions) and no
+        // body: a `{` here has nothing to match against and falls through to
+        // a parse error, which is exactly "reject a body with a clean parse
+        // error" without any special-cased detection logic. Defined here,
+        // before func_def's recursive block moves `param` by value.
+        let gene_method_sig = just(Token::KeywordFnc)
+            .ignore_then(ident)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(
+                param
+                    .clone()
+                    .separated_by(just(Token::PunctComma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::PunctParenClose))
+            .then(
+                just(Token::PunctArrow)
+                    .ignore_then(ty.clone())
+                    .or_not(),
+            )
+            .map(|((name, params), ret_ty)| (name, params, ret_ty));
+
+        let gene_def = just(Token::KeywordGene)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident)
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(gene_method_sig.repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, name), methods)| Stmt::GeneDef { name, methods, pos })
+            .boxed();
+
         let group = just(Token::KeywordGroup)
             .ignore_then(just(Token::PunctDoubleColon))
             .ignore_then(ident.clone())
@@ -1206,6 +1259,15 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             // Implicit return: trailing expression WITHOUT semicolon becomes ret_expr.
             // Trailing expression WITH semicolon is a statement — result discarded.
+            //
+            // A bare call to a statement-level builtin (print/println/printn/
+            // assert/assert_eq) is never promoted, even with no trailing
+            // semicolon: every one of these is void, and promoting it to
+            // ret_expr routes it through lower_expr's generic Call handling
+            // instead of lower_stmt's dedicated builtin interception, which
+            // has no case for it (tracker: print-in-trailing-position). Left
+            // as a normal body statement, it's already lowered correctly by
+            // the existing statement-level dispatch.
             let func_body = just(Token::PunctBraceOpen)
                 .ignore_then(body_stmt_tagged.repeated().collect::<Vec<(Stmt, bool)>>())
                 .then_ignore(just(Token::PunctBraceClose))
@@ -1214,10 +1276,12 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                     let mut stmts: Vec<Stmt> = Vec::with_capacity(len);
                     let mut ret_expr: Option<Expr> = None;
 
-                    let last_is_implicit_return = matches!(
-                        tagged.last(),
-                        Some((Stmt::ExprStmt { .. }, false))
-                    );
+                    let last_is_implicit_return = match tagged.last() {
+                        Some((Stmt::ExprStmt { expr, .. }, false)) => {
+                            !is_statement_level_builtin_call(expr)
+                        }
+                        _ => false,
+                    };
                     // #046: a trailing `if`/`else` is an implicit-return value
                     // ONLY when it is fully value-producing — every branch (then,
                     // each `else if`, and the final else) ends in a trailing
@@ -1260,12 +1324,24 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             // Syntax: fnc: RetType? <T>? name(params) { body }
             // Generics parser reused in both branches
+            // 0.3.4 slice 4: each generic param may carry gene bounds —
+            // `<T>`, `<T: GeneName>`, `<T: GeneA + GeneB>`, comma-separated.
             let generic_params = just(Token::OpLessThan)
                 .ignore_then(
                     select! { Token::Identifier(s) => s }
+                        .then(
+                            just(Token::PunctColon)
+                                .ignore_then(
+                                    select! { Token::Identifier(s) => s }
+                                        .separated_by(just(Token::OpAdd))
+                                        .at_least(1)
+                                        .collect::<Vec<_>>(),
+                                )
+                                .or_not(),
+                        )
                         .separated_by(just(Token::PunctComma))
                         .at_least(1)
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<(String, Option<Vec<String>>)>>(),
                 )
                 .then_ignore(just(Token::OpGreaterThan))
                 .or_not()
@@ -1300,16 +1376,24 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                         .then(func_body)
                 )
                 .map(
-                    |((pub_tok, macros), (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
-                        name,
-                        type_params,
-                        params,
-                        ret_ty,
-                        body,
-                        ret_expr,
-                        is_pub: pub_tok.is_some(),
-                        macros,
-                        pos,
+                    |((pub_tok, macros), (((pos, (ret_ty, generic_pairs, name)), params), (body, ret_expr)))| {
+                        let type_params: Vec<String> = generic_pairs.iter().map(|(n, _)| n.clone()).collect();
+                        let type_bounds: Vec<(String, Vec<String>)> = generic_pairs
+                            .into_iter()
+                            .filter_map(|(n, b)| b.map(|genes| (n, genes)))
+                            .collect();
+                        Stmt::FuncDef {
+                            name,
+                            type_params,
+                            type_bounds,
+                            params,
+                            ret_ty,
+                            body,
+                            ret_expr,
+                            is_pub: pub_tok.is_some(),
+                            macros,
+                            pos,
+                        }
                     },
                 )
         })
@@ -1362,6 +1446,53 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             })
             .boxed();
 
+        // phen GeneName (recv: Type) { fnc: RetTy? full_impl(params) { body } ... }
+        // — the receiver-binding grammar mirrors impl_block's `(name: Type, ...)`
+        // exactly, restricted to exactly one receiver (a phen binds one gene to
+        // one concrete type); methods reuse func_def as-is (the same "full
+        // implementation" fnc syntax impl blocks already use), not gene's
+        // bare-signature grammar.
+        let phen_def = just(Token::KeywordPhen)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(
+                ident
+                    .then_ignore(just(Token::PunctColon))
+                    .then(ty.clone()),
+            )
+            .then_ignore(just(Token::PunctParenClose))
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(func_def.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|(((pos, gene_name), receiver), methods)| {
+                let method_data = methods
+                    .into_iter()
+                    .filter_map(|s| {
+                        if let Stmt::FuncDef {
+                            name,
+                            params,
+                            ret_ty,
+                            body,
+                            ret_expr,
+                            ..
+                        } = s
+                        {
+                            Some((name, params, ret_ty, body, ret_expr))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Stmt::PhenDef {
+                    gene_name,
+                    receiver,
+                    methods: method_data,
+                    pos,
+                }
+            })
+            .boxed();
+
         let const_decl = just(Token::KeywordConst)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
@@ -1398,6 +1529,8 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             const_decl,
             struct_def,
             impl_block,
+            gene_def,
+            phen_def,
             enum_def,
             decl,
             func_def,

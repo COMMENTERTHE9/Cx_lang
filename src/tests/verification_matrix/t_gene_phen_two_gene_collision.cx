@@ -1,0 +1,20 @@
+// 0.3.4 slice 2 (method-ownership rule, application 3): two phens of
+// different genes may not supply the same method name to one concrete type.
+struct Player { health: t32 }
+gene Attacker {
+    fnc act(v: t32)
+}
+gene Defender {
+    fnc act(v: t32)
+}
+phen Attacker (p: Player) {
+    fnc: act(v: t32) {
+        print(v)
+    }
+}
+phen Defender (p: Player) {
+    fnc: act(v: t32) {
+        print(v)
+    }
+}
+print(1)

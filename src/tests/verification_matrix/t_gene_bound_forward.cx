@@ -1,0 +1,22 @@
+// 0.3.4 slice 4: forward reference — the struct, gene, and phen satisfying
+// the bound are all declared AFTER the generic function and after the call
+// site, and everything still resolves (decision 2 end to end).
+fnc: t32 <T: Compute> run_it(t: T, v: t32) {
+    t.apply(v)
+}
+
+let x;
+x = Adder { base: 10 }
+print(run_it(x, 7))
+
+struct Adder { base: t32 }
+
+gene Compute {
+    fnc apply(v: t32) -> t32
+}
+
+phen Compute (a: Adder) {
+    fnc: t32 apply(v: t32) {
+        a.base + v
+    }
+}
