@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-24
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -45,7 +45,7 @@ proven on both backends (interpreter and Cranelift JIT).
 ---
 
 The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
+2026-07-24. No prior committed roadmap file contained a 0.2+ version
 sequence — this is the first time it's being formally recorded, not a
 correction to an existing plan.
 
@@ -102,6 +102,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-24:** v0.3.2 released — PR #352 merged `submain` → `main`, tagged `v0.3.2` at `54ab720`. Gene/phen trait system complete (all 6 slices): gene declarations, phen implementations, generic bounds (`T: GeneName`), operator overloading via the embedded prelude (`src/prelude.cx`), struct-return ABI fix, scope-variable hardening. 133 files changed, 3301 insertions. Matrix: 380 PASS / 0 FAIL. Submain fully reconciled with main.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
