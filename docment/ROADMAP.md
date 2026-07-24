@@ -51,14 +51,15 @@ correction to an existing plan.
 
 ## Corrected Version Sequence
 
-- **0.3.1** — Scalar Handle core (D2.5). *(Already landed on `submain` at
-  `3ea986d` — this slot documents where it lands once tagged, not new work.)*
-- **0.3.2** — Pattern matching (named binding `as v`, guard clauses) — shifted
-  from 0.3.1.
-- **0.3.3** — gene + phen design pass — shifted from 0.3.2. See
-  `docs/post_0_1/gene_phen_design.md` for the full spec.
-- **0.3.4** — gene + phen implementation, operator overloading, generics v3
-  (type bounds) — shifted from 0.3.3.
+- **0.3.1** — Scalar Handle core (D2.5) + pattern matching (named binding
+  `as v`, guard clauses). *(Shipped 2026-07-09 at `3430e4e`. Pattern matching
+  landed inside this release rather than 0.3.2 as originally planned.)*
+- **0.3.2** — gene + phen: design, implementation, generic bounds
+  (`T: GeneName`), operator overloading via the embedded prelude. Plus the
+  0.3.1-era audit fixes and the struct-return ABI fix. *(Shipped 2026-07-24.
+  See `docs/post_0_1/gene_phen_design.md` for the full spec.)*
+- **0.3.3** — Next: array-return lowering, generic-function lowering,
+  expression receivers. *(Scope not yet fixed.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
