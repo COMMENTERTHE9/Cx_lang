@@ -1,0 +1,7 @@
+// 0.3.4 slice 6: user redeclaration of a prelude gene goes through the same
+// duplicate-gene machinery as any collision — diagnostic names the prelude
+// (<prelude>) with its real line number.
+gene Add {
+    fnc add(rhs: Self) -> Self
+}
+print(1)

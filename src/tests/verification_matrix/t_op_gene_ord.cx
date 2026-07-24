@@ -1,0 +1,34 @@
+// 0.3.4 slice 6: Ord end-to-end — four methods, 1:1 with the four operators
+// (decision 4). The equal pair distinguishes lt from le (false vs true) and
+// gt from ge, proving each operator hits ITS method, not a neighbor.
+struct Score { v: t32 }
+
+phen Ord (s: Score) {
+    fnc: bool lt(rhs: Self) {
+        s.v < rhs.v
+    }
+    fnc: bool gt(rhs: Self) {
+        s.v > rhs.v
+    }
+    fnc: bool le(rhs: Self) {
+        s.v <= rhs.v
+    }
+    fnc: bool ge(rhs: Self) {
+        s.v >= rhs.v
+    }
+}
+
+let a;
+let b;
+a = Score { v: 5 }
+b = Score { v: 5 }
+print(a < b)
+print(a > b)
+print(a <= b)
+print(a >= b)
+let c;
+c = Score { v: 3 }
+print(c < b)
+print(c > b)
+print(c <= b)
+print(c >= b)

@@ -1616,6 +1616,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             Expr::Call(name, args, pos) => self.analyze_call(name, args, *pos),
 Expr::Unary(op, inner, pos) => {
                 let expr = self.analyze_expr(inner)?;
+                // 0.3.4 slice 6: unary `-` on a user struct with a phen for
+                // Neg dispatches to `neg()` (decision 4's 1:1 mapping).
+                if *op == Op::Minus {
+                    if let Some(rewritten) = self.try_operator_gene_dispatch(&expr, None, "Neg", "neg", "-", true, *pos)? {
+                        return Ok(rewritten);
+                    }
+                }
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool
                 } else {
@@ -2414,6 +2421,73 @@ Expr::Unary(op, inner, pos) => {
         Ok(insert_cast_if_needed(sem, expected))
     }
 
+    /// 0.3.4 slice 6: operator-gene dispatch. When the left operand is a user
+    /// struct whose type has a phen for the operator's gene, the operator IS
+    /// the gene method (design doc: "no separate operator-overloading syntax
+    /// — it is gene/phen end to end"), rewritten to the same MethodCall node
+    /// a hand-written `a.add(b)` produces — the proven slice 3/5 machinery,
+    /// no new dispatch mechanism.
+    ///
+    /// Returns Ok(None) when this isn't operator-gene territory (no struct
+    /// operand, or no phen) — the caller falls through to the existing
+    /// built-in behavior: the decision-6 bootstrap intrinsics for primitives,
+    /// and every existing rejection for types that don't opt in.
+    ///
+    /// Interim restriction (design doc): the left operand must be a named
+    /// variable — the method machinery is name-based end to end (runtime
+    /// receiver lookup and mutation write-back both key on the variable
+    /// name), so an expression receiver has no representation yet.
+    #[allow(clippy::too_many_arguments)]
+    fn try_operator_gene_dispatch(
+        &mut self,
+        lhs: &SemanticExpr,
+        rhs: Option<&SemanticExpr>,
+        gene: &str,
+        method: &str,
+        op_symbol: &str,
+        ret_is_self: bool,
+        op_pos: usize,
+    ) -> Result<Option<SemanticExpr>, SemanticError> {
+        let SemanticType::Struct(struct_name) = &lhs.ty else {
+            return Ok(None);
+        };
+        if !self.phen_keys.contains(&(gene.to_string(), lhs.ty.clone())) {
+            return Ok(None);
+        }
+        if let Some(r) = rhs {
+            if !types_compatible(&lhs.ty, &r.ty) {
+                return Err(sem_err!(
+                    op_pos,
+                    "operator '{}' on '{}': right operand must be {} per gene '{}', got {}",
+                    op_symbol, struct_name, struct_name, gene, type_name(&r.ty)
+                ));
+            }
+        }
+        let SemanticExprKind::VarRef { binding, name } = &lhs.kind else {
+            return Err(sem_err!(
+                op_pos,
+                "operator '{}' on '{}' dispatches to gene '{}' — this currently requires a named variable as the left operand",
+                op_symbol, struct_name, gene
+            ));
+        };
+        let args = match rhs {
+            Some(r) => vec![SemanticCallArg::Expr(r.clone())],
+            None => vec![],
+        };
+        let ty = if ret_is_self { lhs.ty.clone() } else { SemanticType::Bool };
+        Ok(Some(SemanticExpr {
+            ty,
+            kind: SemanticExprKind::MethodCall {
+                instance: name.clone(),
+                method: method.to_string(),
+                args,
+                instance_binding: *binding,
+                struct_name: struct_name.clone(),
+                pos: op_pos,
+            },
+        }))
+    }
+
     fn analyze_binary(
         &mut self,
         lhs: &Expr,
@@ -2443,6 +2517,18 @@ Expr::Unary(op, inner, pos) => {
                 // never an implicit value->string coercion (the silent-coercion
                 // class the soundness arc closed). Only `+` concatenates; the
                 // other arithmetic ops fall through to the numeric requirement.
+                // 0.3.4 slice 6: operator-gene dispatch for user structs —
+                // `v1 + v2` IS `v1.add(v2)` when Vec2 has a phen for Add.
+                let (gene, method, sym) = match op {
+                    Op::Plus => ("Add", "add", "+"),
+                    Op::Minus => ("Sub", "sub", "-"),
+                    Op::Mul => ("Mul", "mul", "*"),
+                    Op::Div => ("Div", "div", "/"),
+                    _ => ("Mod", "mod", "%"),
+                };
+                if let Some(rewritten) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), gene, method, sym, true, op_pos)? {
+                    return Ok(rewritten);
+                }
                 if op == Op::Plus {
                     let lhs_str = matches!(lhs.ty, SemanticType::Str | SemanticType::StrRef);
                     let rhs_str = matches!(rhs.ty, SemanticType::Str | SemanticType::StrRef);
@@ -2462,6 +2548,19 @@ Expr::Unary(op, inner, pos) => {
                         return Err(sem_err!(op_pos, "cannot concatenate `str` and `{}` with `+` — Cx does not implicitly convert values to strings; use string interpolation instead, e.g. \"total {{x}}\"", type_name(other)));
                     }
                 }
+                // Struct operands with NO phen for this operator's gene: name
+                // the type and the gene, not the generic numeric complaint.
+                if matches!((&lhs.ty, &rhs.ty), (SemanticType::Struct(_), SemanticType::Struct(_))) {
+                    return Err(sem_err!(
+                        op_pos,
+                        "no phen of gene '{}' for '{}' — operator '{}' on a struct requires it",
+                        gene, type_name(&lhs.ty), sym
+                    ));
+                }
+                // Decision-6 bootstrap intrinsic (primitives): the built-in
+                // numeric path below conforms to the prelude's Add/Sub/Mul/
+                // Div/Mod contracts (Self op Self -> Self at each width) and
+                // is designed for removal once primitives carry real phens.
                 if !is_numeric(&lhs.ty) || !is_numeric(&rhs.ty) {
                     return Err(sem_err!(op_pos, "arithmetic requires numeric operands, got {} and {}", type_name(&lhs.ty), type_name(&rhs.ty)));
                 }
@@ -2492,6 +2591,29 @@ Expr::Unary(op, inner, pos) => {
                     });
                 }
 
+                // 0.3.4 slice 6: user structs with a phen for Eq. Per the
+                // design doc's Eq contract (single `eq(rhs: Self) -> bool`),
+                // `!=` derives as the logical NOT of `eq` — no separate neq
+                // method. Types without the phen fall through to the existing
+                // allowlist/rejection, byte-identical to before.
+                let eq_sym = if op == Op::EqEq { "==" } else { "!=" };
+                if let Some(call) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), "Eq", "eq", eq_sym, false, op_pos)? {
+                    return Ok(if op == Op::EqEq {
+                        call
+                    } else {
+                        SemanticExpr {
+                            ty: SemanticType::Bool,
+                            kind: SemanticExprKind::Unary {
+                                op: Op::Not,
+                                expr: Box::new(call),
+                                pos: op_pos,
+                            },
+                        }
+                    });
+                }
+
+                // Decision-6 bootstrap intrinsic (primitives): built-in
+                // numeric equality conforms to the prelude Eq contract.
                 if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
                     let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
                     lhs = insert_cast_if_needed(lhs, &compare_ty);
@@ -2531,6 +2653,19 @@ Expr::Unary(op, inner, pos) => {
                 Err(sem_err!(op_pos, "cannot compare {} {:?} {}", type_name(&lhs.ty), op, type_name(&rhs.ty)))
             }
             Op::Lt | Op::Gt | Op::LtEq | Op::GtEq => {
+                // 0.3.4 slice 6: user structs with a phen for Ord — decision
+                // 4's 1:1 mapping (< → lt, > → gt, <= → le, >= → ge). Types
+                // without the phen keep the audit-hardened rejection below,
+                // byte-identical (Bool/Enum/Char ordering still rejects).
+                let (ord_method, ord_sym) = match op {
+                    Op::Lt => ("lt", "<"),
+                    Op::Gt => ("gt", ">"),
+                    Op::LtEq => ("le", "<="),
+                    _ => ("ge", ">="),
+                };
+                if let Some(rewritten) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), "Ord", ord_method, ord_sym, false, op_pos)? {
+                    return Ok(rewritten);
+                }
                 if lhs.ty == SemanticType::Unknown || rhs.ty == SemanticType::Unknown {
                     Ok(SemanticExpr {
                         ty: SemanticType::Unknown,
@@ -2541,6 +2676,8 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
+                // Decision-6 bootstrap intrinsic (primitives): built-in
+                // numeric ordering conforms to the prelude Ord contract.
                 } else if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
                     let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
                     lhs = insert_cast_if_needed(lhs, &compare_ty);
@@ -3271,30 +3408,17 @@ fn collect_gene_phen_registry(
         }).collect()
     };
 
-    let mut genes: HashMap<String, Vec<GeneSig>> = HashMap::new();
-    for &module_id in &resolved.topo_order {
-        if let Some(file) = resolved.files.get(&module_id) {
-            for stmt in &file.program.stmts {
-                if let Stmt::GeneDef { name, methods, .. } = stmt {
-                    let sigs = methods.iter().map(|(mname, params, ret)| (
-                        mname.clone(),
-                        resolve_sig_params(params),
-                        ret.clone().map(|t| semantic_type_from_decl(t, &self_param)),
-                    )).collect();
-                    genes.insert(name.clone(), sigs);
-                }
-            }
-        }
-    }
-
-    struct PhenRegistration {
-        module_id: crate::frontend::resolver::ModuleId,
-        pos: usize,
-    }
+    // "path:line" for a Pass-0 declaration. The prelude is a real source unit
+    // with real line spans — its text just lives in the binary, not on disk.
     let source_location = |module_id: crate::frontend::resolver::ModuleId, pos: usize| -> String {
         let (path, line) = resolved.files.get(&module_id)
             .map(|f| {
-                let line = std::fs::read_to_string(&f.path).ok()
+                let src = if f.path.as_os_str() == crate::frontend::resolver::PRELUDE_PATH {
+                    Some(crate::frontend::resolver::prelude_source().to_string())
+                } else {
+                    std::fs::read_to_string(&f.path).ok()
+                };
+                let line = src
                     .map(|src| src[..pos.min(src.len())].bytes().filter(|&b| b == b'\n').count() + 1)
                     .unwrap_or(0);
                 (f.path.display().to_string(), line)
@@ -3302,9 +3426,50 @@ fn collect_gene_phen_registry(
             .unwrap_or_default();
         format!("{}:{}", path, line)
     };
+    let mut errors: Vec<SemanticError> = Vec::new();
+
+    // 0a — gene collection, with duplicate-name rejection through the same
+    // deterministic collision machinery every other declaration kind uses:
+    // second declaration anywhere in the graph errors, naming the first's
+    // location. Because the prelude is injected as the FIRST source unit, a
+    // user redeclaring a prelude gene gets a diagnostic naming the prelude
+    // and its real line — no prelude-specific collision path.
+    type GeneEntry = (Vec<GeneSig>, crate::frontend::resolver::ModuleId, usize);
+    let mut gene_table: HashMap<String, GeneEntry> = HashMap::new();
+    for &module_id in &resolved.topo_order {
+        if let Some(file) = resolved.files.get(&module_id) {
+            for stmt in &file.program.stmts {
+                if let Stmt::GeneDef { name, methods, pos } = stmt {
+                    if let Some((_, prev_mid, prev_pos)) = gene_table.get(name) {
+                        errors.push(sem_err!(
+                            *pos,
+                            "gene '{}' is already declared at {}",
+                            name,
+                            source_location(*prev_mid, *prev_pos)
+                        ));
+                        continue;
+                    }
+                    let sigs = methods.iter().map(|(mname, params, ret)| (
+                        mname.clone(),
+                        resolve_sig_params(params),
+                        ret.clone().map(|t| semantic_type_from_decl(t, &self_param)),
+                    )).collect();
+                    gene_table.insert(name.clone(), (sigs, module_id, *pos));
+                }
+            }
+        }
+    }
+    let genes: HashMap<String, Vec<GeneSig>> = gene_table
+        .into_iter()
+        .map(|(name, (sigs, _, _))| (name, sigs))
+        .collect();
+
+    struct PhenRegistration {
+        module_id: crate::frontend::resolver::ModuleId,
+        pos: usize,
+    }
     let mut phen_registry: HashMap<(String, SemanticType), PhenRegistration> = HashMap::new();
     let mut phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin> = HashMap::new();
-    let mut errors: Vec<SemanticError> = Vec::new();
 
     for &module_id in &resolved.topo_order {
         let file = match resolved.files.get(&module_id) {
@@ -3709,6 +3874,51 @@ mod tests {
         };
 
         analyze_resolved_program(&resolved)
+    }
+
+    /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must
+    /// parse and semantically validate — a malformed prelude fails CI here
+    /// rather than silently shipping inside the binary.
+    #[test]
+    fn prelude_parses_and_analyzes_clean() {
+        let prelude = crate::frontend::resolver::prelude_program()
+            .expect("embedded prelude must parse");
+        let result = analyze_program(&prelude);
+        assert!(result.is_ok(), "embedded prelude must analyze clean: {:?}", result.err());
+    }
+
+    /// Decision-6 constraint 2: the bootstrap intrinsics (the built-in
+    /// numeric operator paths) must conform to the prelude-declared
+    /// contracts — public contracts and method names come FROM the prelude,
+    /// never compiler-invented. This pins the operator→gene→method mapping
+    /// (decision 4, 1:1) against the shipped prelude source.
+    #[test]
+    fn prelude_operator_contracts_match_intrinsic_mapping() {
+        let prelude = crate::frontend::resolver::prelude_program()
+            .expect("embedded prelude must parse");
+        // (gene, method, user-arity) — binary ops take one rhs, neg takes none.
+        let expected: &[(&str, &str, usize)] = &[
+            ("Add", "add", 1),
+            ("Sub", "sub", 1),
+            ("Mul", "mul", 1),
+            ("Div", "div", 1),
+            ("Mod", "mod", 1),
+            ("Neg", "neg", 0),
+            ("Eq", "eq", 1),
+            ("Ord", "lt", 1),
+            ("Ord", "gt", 1),
+            ("Ord", "le", 1),
+            ("Ord", "ge", 1),
+        ];
+        for (gene, method, arity) in expected {
+            let found = prelude.stmts.iter().any(|s| matches!(
+                s,
+                Stmt::GeneDef { name, methods, .. }
+                    if name == gene
+                        && methods.iter().any(|(m, params, _)| m == method && params.len() == *arity)
+            ));
+            assert!(found, "prelude must declare gene '{}' with method '{}({} param)'", gene, method, arity);
+        }
     }
 
     fn ident(name: &str) -> Expr {

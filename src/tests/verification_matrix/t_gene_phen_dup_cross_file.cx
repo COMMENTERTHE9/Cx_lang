@@ -8,7 +8,7 @@
 a: use "./t_gene_phen_dup_cross_file_a"
 b: use "./t_gene_phen_dup_cross_file_b"
 
-gene Add {
+gene Merge2 {
     fnc add(rhs: Self) -> Self
 }
 

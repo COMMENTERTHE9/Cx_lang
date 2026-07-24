@@ -289,6 +289,40 @@ gene '{gene}' already implemented for '{type}' — conflicting phen at {other_fi
 
 ---
 
+## The Prelude (0.3.4 slice 6 — implemented)
+
+- **Canonical source**: `src/prelude.cx` — a real Cx file in the repo, the
+  single source of truth for the eight operator gene contracts
+  (`Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`/`Eq`/`Ord`, decision 4's four-method
+  `Ord`, single-method `Eq` with `!=` derived as the logical NOT of `eq`).
+- **Embedding**: compiled into `cx.exe` via `include_str!` — the embedded
+  text is the sole runtime path; no filesystem probing, no fallback. Prelude
+  changes require rebuilding `cx.exe` (accepted by ruling).
+- **Injection**: exactly once, as the first source unit of every flattened
+  program — before the root file and all imports — through the ordinary
+  lexer → parser → semantic pipeline. Diagnostics into the prelude name it
+  as `<prelude>` with real line numbers; user redeclaration of a prelude
+  gene goes through the same duplicate-gene collision machinery as any
+  other collision, naming both locations.
+- **Primitives** satisfy the operator contracts through decision-6 bootstrap
+  intrinsics: the built-in numeric semantic paths, marked at their sites,
+  conforming to the prelude signatures, designed for removal once primitives
+  can carry real phens. (Known bootstrap gap, tracked: primitives do not yet
+  satisfy `T: Add`-style generic bounds, since bound checks consult the phen
+  registry and intrinsics are not registry entries.)
+
+### Interim restriction — operator dispatch requires a named variable
+
+Operator-gene dispatch rewrites `a + b` to the same method-call node a
+hand-written `a.add(b)` produces, and Cx's method machinery is name-based
+end to end (runtime receiver lookup and mutation write-back both key on the
+variable name). Until expression receivers exist, the LEFT operand of a
+gene-dispatched operator must be a named variable: `v1 + v2` works;
+`(v1 + v2) + v3` is a clean, explicit error. This is an interim restriction,
+not a design position — it lifts when method receivers become expressions.
+
+---
+
 ## Roadmap Placement (current, per merged master roadmap)
 
 - **0.3.2** — Pattern matching (immediately prior; gene/phen's `when`-over-gene-method-result convention depends on pattern matching being settled first)
