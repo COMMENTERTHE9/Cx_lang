@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-07-24"
+date: 2026-07-24
+description: "v0.3.2 shipped with the complete gene/phen trait system, operator overloading via an embedded prelude, and a full submain-to-main merge."
+---
+
+v0.3.2 is out. The gene/phen sprint that started six slices ago is done, merged to main via PR #352, and tagged. Submain and main sit at the same commit for the first time since this work began. The verification matrix went from 321 to 380 fixtures, all passing.
+
+The headline feature is operator overloading through an embedded prelude, which is the final architectural piece of the trait system. But the release is really the sum of all six slices: gene declarations, phen implementations, generic bounds, method dispatch, struct-return ABI fixes, and now operator contracts.
+
+## The embedded prelude
+
+The capstone commit (`e38024e`, 526 insertions across 24 files) introduced `src/prelude.cx`, a 52-line Cx source file that defines eight operator gene contracts: `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Eq`, and `Ord`.
+
+This file is compiled into `cx.exe` via `include_str!` and injected as the first source unit of every program, before the root file and all imports. It goes through the ordinary lexer-parser-semantic pipeline. There is no filesystem probing, no fallback path, no special syntax. The embedded text is the only runtime path.
+
+This was a deliberate architectural decision (decision 6 from the gene/phen design doc). The prelude is the permanent home for operator contracts, not a stopgap while something else gets built. There is no hardcoded operator-overloading syntax and no parallel system.
+
+## Operator-gene dispatch
+
+The new `try_operator_gene_dispatch()` method in `semantic.rs` (~240 insertions) handles all binary operators (`+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`) and unary `-`. When the left operand is a user struct that has a phen for the corresponding gene, the operator gets rewritten to the same `MethodCall` node that a hand-written `a.add(b)` call would produce. This reuses the dispatch machinery from slices 3 and 5 with no new mechanism added.
+
+`!=` is derived as the logical NOT of `eq()`, matching the Eq gene contract. Types that don't have a matching phen fall through to the existing built-in numeric paths unchanged.
+
+There is one interim restriction: operator dispatch requires a named variable as the left operand. Expression receivers like `(v1 + v2) + v3` produce a clean error rather than silently misbehaving. This is a known gap, not a design position. It lifts when method receivers become expressions, which is scoped for 0.3.3.
+
+## Prelude injection and collision detection
+
+The resolver now injects the prelude as module ID 0, before all other source units. Gene duplicate detection gained source-location tracking, so if a user redeclares a prelude gene, they get an error that names `<prelude>:LINE` using the same collision machinery every other declaration kind already uses.
+
+Eight new test fixtures cover the operator dispatch and prelude injection: arithmetic dispatch on user structs, unary neg and equality via genes, all four ordering operators, the expression-receiver restriction error, rejection when a struct lacks an `Add` phen, prelude behavior with multi-file imports, and collision between user-defined and prelude genes. Four existing duplicate-detection fixtures were updated for the new source-location diagnostics.
+
+## The merge and the release
+
+The full merge through PR #352 brought the entire gene/phen sprint into main: 133 files changed, 3301 insertions, 120 deletions. That covers all six slices of gene/phen implementation, the struct-return ABI fix, scope-variable hardening, and audit fixtures.
+
+The roadmap was reconciled in a separate commit (`71b5af4`). The version sequence now reflects what actually shipped: 0.3.1 included pattern matching, and 0.3.2 contains gene/phen, operator overloading, generic bounds, the struct-return fix, and audit hardening. README status was updated to 0.3.2 with current verification figures: 245 unit tests, 420 with JIT, 380 fixtures, 319 JIT PASS / 61 SKIP / 0 PARITY_FAIL.
+
+## Bootstrap intrinsics
+
+One detail worth noting: the built-in numeric paths in semantic analysis (addition, subtraction, comparison for primitives) now explicitly conform to the prelude gene contracts and are marked as bootstrap intrinsics. They are designed for removal. The known gap is that primitives do not yet satisfy `T: Add`-style generic bounds, since bound checks consult the phen registry and intrinsics are not registry entries. That will matter when generic functions lower through the JIT.
+
+## What is next
+
+0.3.3 is scoped with three items:
+
+1. **Expression receivers** for method and operator dispatch. This is the most visible gap in the freshly shipped system, and it unlocks chained operator expressions.
+2. **Array-return lowering**, the same dangling-frame ABI shape as the struct-return bug that was fixed in this sprint. The slot convention needs array-layout awareness.
+3. **Generic-function lowering** through the JIT. Generic functions with type bounds are semantically complete but not yet lowered.
+
+There is also a pending README content audit. The feature sections still describe 0.2.0-era capability and need a documentation pass covering gene/phen, Handle<T>, pattern matching, and operator overloading.
