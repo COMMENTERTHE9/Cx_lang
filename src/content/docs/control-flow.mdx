@@ -215,6 +215,57 @@ when y {
 
 This example assigns an actual unknown value (`?`) before matching it. Matching a definite `true` / `false` value lowers to the JIT even when an `unknown` arm is present and unreached, but matching a value that is actually unknown at runtime does not yet lower — this specific sample does not run under `--backend=cranelift` today.
 
+## Pattern Binding And Guards
+
+Since v0.3.1, an enum-variant arm can bind the matched value with `as v`, and any arm can carry an `if` guard. Both lower to the JIT.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_pattern_as_binding_catchall_fallback.cx" />
+```cx
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Blue
+
+when c {
+    Color::Red as v => print(1),
+    Color::Green as v => print(2),
+    _ => print(999),
+}
+```
+
+A guard is an `if` after the pattern. If the pattern matches but the guard is false, matching falls through to the next arm.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_pattern_guard_false_falls_through.cx" />
+```cx
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Green
+
+when c {
+    Color::Green if false => print(1),
+    Color::Green => print(2),
+    _ => print(0),
+}
+```
+
+The binding is usable inside the guard expression itself:
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_pattern_guard_as_v_in_guard.cx" />
+```cx
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Green
+
+when c {
+    Color::Green as v if when v { Color::Green => true, _ => false } => print(1),
+    _ => print(0),
+}
+```
+
+`as v` binds on enum-variant arms only — literal, range, and catch-all arms reject it. Bindings are arm-scoped and do not leak to other arms or outer scope.
+
 Source examples:
 [examples/fizzbuzz.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/fizzbuzz.cx),
 [examples/tbool_uncertainty.cx](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/examples/tbool_uncertainty.cx).
