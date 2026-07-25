@@ -1,0 +1,145 @@
+---
+title: Gene and Phen
+description: The Cx trait system — gene contracts, phen expressions, bounds, and operator overloading.
+order: 9.5
+section: Language
+---
+
+import SourceComment from "../../components/SourceComment.astro";
+
+## Status
+
+Gene and phen shipped in v0.3.2. Declarations, phen method calls, cross-type dispatch, and operator overloading are stable in the interpreter and lower to the JIT. Generic bounds (`T: GeneName`) work in the interpreter only — generic functions are not JIT-lowered yet.
+
+## The Split
+
+A **gene** is a contract. Pure signatures. It never names a concrete type.
+
+A **phen** binds one gene to one concrete type and supplies all bodies. The names come from biology: a gene is the abstract instruction, a phenotype is how it expresses in a specific organism.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_gene_phen_call_basic.cx" />
+```cx
+struct Counter { n: t32 }
+
+gene Readable {
+    fnc double() -> t32
+}
+
+phen Readable (c: Counter) {
+    fnc: t32 double() {
+        c.n * 2
+    }
+}
+
+let c;
+c = Counter { n: 21 }
+print(c.double())
+```
+
+A phen must implement every signature in its gene. A body inside a gene is a compile error — genes are signatures only.
+
+## Dispatch Across Types
+
+Two unrelated types can express the same gene with completely different bodies. Each value dispatches to its own type's phen.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_gene_phen_call_dispatch.cx" />
+```cx
+struct Adder { base: t32 }
+struct Muler { base: t32 }
+
+gene Compute {
+    fnc apply(v: t32) -> t32
+}
+
+phen Compute (a: Adder) {
+    fnc: t32 apply(v: t32) {
+        a.base + v
+    }
+}
+
+phen Compute (m: Muler) {
+    fnc: t32 apply(v: t32) {
+        m.base * v
+    }
+}
+
+let x;
+let y;
+x = Adder { base: 10 }
+y = Muler { base: 10 }
+print(x.apply(5))
+print(y.apply(5))
+```
+
+## Generic Bounds
+
+A type parameter can require a gene: `T: GeneName`. Inside the function, anything the gene promises is callable on `T`.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_gene_bound_dispatch.cx" />
+```cx
+fnc: t32 <T: Compute> run_it(t: T, v: t32) {
+    t.apply(v)
+}
+
+print(run_it(x, 5))
+print(run_it(y, 5))
+```
+
+Bounds work in the interpreter. They do not lower to the JIT yet — generic function lowering is a 0.3.3 target.
+
+## Operator Overloading
+
+Operators are genes. An embedded prelude declares `Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Eq`, and `Ord` — no import needed. Write a phen for the matching gene and the operator dispatches to it.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_op_gene_add.cx" />
+```cx
+struct Vec2 { x: t32, y: t32 }
+
+phen Add (v: Vec2) {
+    fnc: Self add(rhs: Self) {
+        made: Self = Vec2 { x: v.x + rhs.x, y: v.y + rhs.y }
+        made
+    }
+}
+
+let a;
+let b;
+a = Vec2 { x: 1, y: 2 }
+b = Vec2 { x: 10, y: 20 }
+let c;
+c = a + b
+print(c.x)
+print(c.y)
+```
+
+`Ord` uses four methods, one per operator: `lt`, `gt`, `le`, `ge`. Implementers must uphold total-order axioms across the four — this is a documented requirement, not runtime-enforced.
+
+<SourceComment source="origin/submain:src/tests/verification_matrix/t_op_gene_ord.cx" />
+```cx
+struct Score { v: t32 }
+
+phen Ord (s: Score) {
+    fnc: bool lt(rhs: Self) {
+        s.v < rhs.v
+    }
+    fnc: bool gt(rhs: Self) {
+        s.v > rhs.v
+    }
+    fnc: bool le(rhs: Self) {
+        s.v <= rhs.v
+    }
+    fnc: bool ge(rhs: Self) {
+        s.v >= rhs.v
+    }
+}
+
+let a;
+let b;
+a = Score { v: 5 }
+b = Score { v: 5 }
+print(a < b)
+print(a >= b)
+```
+
+Full specification:
+[docs/post_0_1/gene_phen_design.md](https://github.com/COMMENTERTHE9/Cx_lang/blob/submain/docs/post_0_1/gene_phen_design.md).
