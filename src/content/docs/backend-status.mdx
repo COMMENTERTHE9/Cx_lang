@@ -40,7 +40,7 @@ PARITY_FAIL means the JIT and interpreter disagree. That count must stay zero.
 - `if` / `else`
 - `for` ranges
 - parts of `while`, `loop`, `break`, and `continue`
-- direct function calls and method dispatch (field mutation through a method included)
+- direct function calls and method dispatch (field mutation through a method, and `print` inside method bodies, included)
 - struct literals and field read/write
 - fixed-size array allocation, read, write, and function use
 - `print`, `println`, `printn` for `t64` and `f64`
@@ -49,13 +49,15 @@ PARITY_FAIL means the JIT and interpreter disagree. That count must stay zero.
 - integer casts and unary negation
 - `f64` arithmetic
 - `when` over literal, range, definite-bool, and enum-variant patterns
+- pattern binding (`as v`) and guard clauses on `when` arms
+- phen method dispatch and operator overloading via prelude genes
 - `Handle<T>` for scalar payloads (construct, read, drop)
 - `Result<T>` / `Ok` / `Err` / `?` for scalar payloads (`T` fits a single i64 word)
 - void returns and exit-code propagation
 
 ## Not Yet JIT-Lowered
 
-- generics
+- generics, including `T: GeneName` bounds
 - string arena operations (mutable/growable string internals)
 - `read` and `input`
 - non-scalar `Handle<T>` and `Result<T>` payloads (`Handle<str>`, `Handle<struct>`, wide or composite `Result<T>` values)
@@ -78,6 +80,8 @@ PARITY_FAIL means the JIT and interpreter disagree. That count must stay zero.
 | Loops | Y | Partial | Stable interp / In progress JIT |
 | Arrays | Y | Partial | Stable interp / In progress JIT |
 | Generics | Y | N | Stable interp / In progress JIT |
+| gene / phen | Y | Partial | Stable interp / bounds not lowered |
+| Pattern binding and guards | Y | Y | Stable |
 | `Result<T>` | Y | Partial | Stable interp / In progress JIT |
 | Imports | Y | Partial / n/a | Stable interp / In progress JIT |
 | Testing | Y | Partial | Stable |
