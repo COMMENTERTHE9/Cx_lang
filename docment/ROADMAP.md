@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-25
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -108,5 +108,7 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
+
+**2026-07-25:** Documentation site sprint on the `site` branch: added first-ever gene-phen.mdx page (145 lines), pattern binding/guard docs in control-flow.mdx, refreshed all JIT parity numbers to 380/319/61/0, bumped version claims from v0.3.0 to v0.3.2, retired stale print-in-method caveat. 7 commits, 220 insertions. Branch-local, not yet on main. Matrix steady at 380/0.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
