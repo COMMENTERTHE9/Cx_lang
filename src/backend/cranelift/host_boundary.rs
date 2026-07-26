@@ -527,6 +527,30 @@ extern "C" fn cx_trap() -> ! {
     std::process::exit(JIT_TRAP_EXIT_CODE);
 }
 
+/// Backend-private symbol name for the `exit(code)` builtin host helper.
+const JIT_EXIT_SYMBOL: &str = "cx_exit";
+
+/// Runtime intrinsic: the `exit(code)` builtin (known-issues #11).
+///
+/// Mirrors `cx_trap`'s shape — an `extern "C"` host callback that never
+/// returns — with the exit code as an `i32` parameter instead of a constant.
+/// The interpreter carries the code as `i32` too (`RuntimeError::Exit(i32)`,
+/// runtime/call.rs), so nothing wider than a machine word crosses this
+/// boundary and the `i128`-class ABI hazard does not apply here.
+///
+/// **stdout is flushed before exiting.** `process::exit` skips `Drop` and does
+/// not flush, so `print(...); exit(N)` would lose piped output without this —
+/// exactly what the interpreter's own exit path does (main.rs, the
+/// `RuntimeError::Exit` arm). Without the flush the two backends would agree
+/// on the exit code and disagree on the output, which is the failure mode a
+/// code-only fixture would never catch.
+#[cfg(feature = "jit")]
+extern "C" fn cx_exit(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
+
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -591,6 +615,7 @@ impl HostBoundary {
         jit_builder.symbol("cx_print_newline", cx_print_newline as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         jit_builder.symbol(JIT_TRAP_SYMBOL, cx_trap as *const u8);
+        jit_builder.symbol(JIT_EXIT_SYMBOL, cx_exit as *const u8);
         jit_builder.symbol("cx_handle_new", cx_handle_new as *const u8);
         jit_builder.symbol("cx_handle_val", cx_handle_val as *const u8);
         jit_builder.symbol("cx_handle_drop", cx_handle_drop as *const u8);
@@ -734,6 +759,21 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert(JIT_TRAP_SYMBOL.to_string(), id);
+        }
+
+        // Pre-declare cx_exit(i32) -> ! : the `exit(code)` builtin. One i32
+        // param (the code), no returns — it never returns (process::exit).
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I32));
+            let id = module
+                .declare_function(JIT_EXIT_SYMBOL, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert(JIT_EXIT_SYMBOL.to_string(), id);
         }
 
         // cx_handle_new(i64) -> i64 (D2.5a): one scalar payload word in, one

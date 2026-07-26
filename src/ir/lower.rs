@@ -1056,6 +1056,7 @@ fn lower_stmt(
                         return lower_print_stmt(callee.as_str(), args, ctx, current)
                     }
                     Some(BuiltinKind::Printn) => return lower_printn_stmt(args, ctx, current),
+                    Some(BuiltinKind::Exit) => return lower_exit_stmt(args, ctx, current),
                     _ => {}
                 }
             }
@@ -4961,6 +4962,74 @@ fn lower_printn_stmt(
         dst: None,
         callee: callee.to_string(),
         args: vec![routed_value],
+        return_ty: None,
+    })?;
+    Ok(Some(current))
+}
+
+/// Lower `exit(code)` / `exit()` to a call to the `cx_exit` host intrinsic
+/// (known-issues #11). Mirrors `cx_trap`'s host-callback shape with the code as
+/// an `i32` parameter.
+///
+/// Semantics match the interpreter's `BuiltinKind::Exit` arm exactly
+/// (runtime/call.rs): the code is an `i32`, a missing argument means `0`, and
+/// the host side flushes stdout before `process::exit` so printed output
+/// survives. A code outside `i32` range is a semantic-time error in the
+/// interpreter, so it cannot reach lowering.
+///
+/// The call is emitted as an ordinary void `IrInst::Call`, not a terminator:
+/// `cx_exit` never returns at runtime, but keeping it an instruction means the
+/// surrounding block structure, and any statements the source places after it,
+/// lower unchanged — the same treatment `cx_trap`'s callers rely on.
+fn lower_exit_stmt(
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    if args.len() > 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("exit expects 0 or 1 arguments, got {}", args.len()),
+        });
+    }
+    // exit() with no argument is exit(0) — the interpreter's `None => 0`.
+    let code_value = match args.first() {
+        None => {
+            let zero = ctx.fresh_value();
+            current.emit(IrInst::ConstInt {
+                dst: zero,
+                ty: IrType::I32,
+                value: 0,
+            })?;
+            zero
+        }
+        Some(SemanticCallArg::Expr(e)) => {
+            let arg = lower_expr(e, ctx, &mut current)?;
+            // Narrow/widen the code to the i32 the host callback takes. Cx
+            // integer literals analyze as I64 by default, so a Cast is the
+            // normal path, not an edge case.
+            if arg.ty == IrType::I32 {
+                arg.value
+            } else {
+                let narrowed = ctx.fresh_value();
+                current.emit(IrInst::Cast {
+                    dst: narrowed,
+                    from: arg.ty.clone(),
+                    to: IrType::I32,
+                    value: arg.value,
+                })?;
+                narrowed
+            }
+        }
+        Some(_) => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "non-Expr argument to exit".to_string(),
+            });
+        }
+    };
+    current.emit(IrInst::Call {
+        dst: None,
+        callee: "cx_exit".to_string(),
+        args: vec![code_value],
         return_ty: None,
     })?;
     Ok(Some(current))

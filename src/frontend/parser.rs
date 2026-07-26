@@ -113,6 +113,13 @@ fn is_statement_level_builtin_call(expr: &Expr) -> bool {
                 | crate::frontend::builtins::BuiltinKind::Printn
                 | crate::frontend::builtins::BuiltinKind::Assert
                 | crate::frontend::builtins::BuiltinKind::AssertEq
+                // `exit` joins the list for the same reason as the others
+                // (known-issues #2): it is void and statement-level, so
+                // promoting it to `ret_expr` routes it through lower_expr,
+                // which has no builtin interception — the JIT then missed it
+                // (`unresolved semantic artifact ... 'exit'`) for any function
+                // whose body ends in a bare `exit(...)` call.
+                | crate::frontend::builtins::BuiltinKind::Exit
         )
     )
 }
