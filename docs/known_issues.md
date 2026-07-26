@@ -528,7 +528,7 @@ runtime fix with no lowering-side change at all.
 
 ## 11. `exit()` builtin does not lower on the JIT
 
-**Status: OPEN.**
+**Status: FIXED — commit `3d7a2cd`.**
 
 `exit(code)` runs correctly on the interpreter — it raises the Exit control-flow
 signal and the process exits with the given code — but has no lowering path.
@@ -549,7 +549,39 @@ with the right exit code*, which is exactly what a build script or a test
 harness keys on.
 
 The README listed `exit` among the working builtins with no backend caveat
-(corrected in the 0.3.2 accuracy pass — the "not yet lowered" list now names it).
+(corrected in the 0.3.2 accuracy pass — the "not yet lowered" list named it;
+that entry is now stale in the other direction and should drop on the next
+docs pass).
+
+**Fix:** a `cx_exit(code: i32) -> !` host callback mirroring `cx_trap`'s shape
+(symbol registration, Cranelift signature declaration, IR-validator intrinsic
+entry), plus a `lower_stmt` intercept keyed on `BuiltinKind::Exit` like the
+other statement-level builtins. `exit()` with no argument lowers as `exit(0)`,
+matching the interpreter's `None => 0`. Nothing wider than a machine word
+crosses the boundary — the code is an `i32` on both sides
+(`RuntimeError::Exit(i32)`), so the `i128`-class hazard does not apply.
+
+**stdout is flushed before `process::exit`** on the host side, mirroring the
+interpreter's own exit path. Without it, `print(...); exit(N)` would agree on
+the exit code and silently lose piped output — a failure a code-only fixture
+would never catch. Verified with piped stdout on both backends.
+
+**A second, distinct bug surfaced during verification** — six fixtures
+converted immediately but `t_exit_in_function` did not, still reporting
+`unresolved semantic artifact reached lowering: function 'exit'`. Cause: the
+parser's `is_statement_level_builtin_call` guard (added for known-issues #2)
+lists `print`/`println`/`printn`/`assert`/`assert_eq` but **not** `exit`, so a
+function whose body ends in a bare `exit(...)` had that call promoted into
+`ret_expr` and routed through `lower_expr`, which has no builtin interception.
+`exit` is void and statement-level exactly like the others; adding it to the
+guard fixed it. Same bug class as #2, one builtin missed when that list was
+written.
+
+Exit-code fidelity verified against the interpreter at 0, 1, 3, 42, 125, 126,
+127, 200, 255, and across the wrap boundary (256 → 0, 300 → 44) — identical on
+both backends at every value, including negative codes (both 127 on Windows).
+JIT parity moved **319/61/0 → 326/54/0** across 380 fixtures: exactly the seven
+`exit` fixtures converted, nothing else moved.
 
 ---
 
