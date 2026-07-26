@@ -67,7 +67,7 @@ As of `v0.3.2`:
 - **245 unit tests passing** (`cargo test`)
 - **420 unit tests passing** with the JIT enabled (`cargo test --features jit`)
 - **380 verification fixtures**
-- **JIT parity: 319 PASS / 61 SKIP / 0 PARITY_FAIL** across all 380 fixtures
+- **JIT parity: 326 PASS / 54 SKIP / 0 PARITY_FAIL** across all 380 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -382,8 +382,8 @@ As of `v0.3.2`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 319 |
-| SKIP | 61 |
+| PASS | 326 |
+| SKIP | 54 |
 | PARITY_FAIL | 0 |
 | **Total fixtures** | **380** |
 
@@ -393,10 +393,10 @@ As of `v0.3.2`:
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 61 of 380 fixtures):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 54 of 380 fixtures):
 
 - generic functions, and generic-struct instantiation
-- the `exit` and `input` builtins
+- the `input` builtin
 - nested function definitions
 - `while-in` loops
 - top-level `const` declarations
