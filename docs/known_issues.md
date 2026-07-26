@@ -587,7 +587,8 @@ JIT parity moved **319/61/0 → 326/54/0** across 380 fixtures: exactly the seve
 
 ## 12. Top-level `const` declarations do not lower on the JIT
 
-**Status: OPEN.**
+**Status: FIXED — commit `6c37339`** (with one narrowing and one finding, both
+below).
 
 `const NAME: T = value` at top level is a documented language feature that works
 on the interpreter and has no JIT path:
@@ -601,6 +602,70 @@ exit 0; cranelift emits the error above and SKIPs.
 
 **3 SKIPs.** Structured error, exit 127 — clean refusal, not corruption. Listed
 in the README's "not yet lowered" section as of the 0.3.2 accuracy pass.
+
+**What a Cx const actually is** (established before building, since the fix's
+shape depended on it): the grammar requires a type annotation and accepts an
+arbitrary expression on the right — not literals only. `const` is
+**top-level-only**; inside a function body it is a parse error. Semantic
+analysis gives it an ordinary `BindingId` via `declare()`, and the interpreter
+evaluates the RHS once and stores it like any typed binding
+(`runtime/exec.rs`'s ConstDecl arm → `set_var_typed`). A const is therefore an
+immutable *binding*, not a substituted literal.
+
+**Fix:** the `ConstDecl` lowering arm mirrors `TypedAssign`'s general path —
+lower the RHS, bind the SSA value to the const's binding — rather than
+introducing a module-level global the IR has no concept of. One addition
+`TypedAssign` did not need: a width `Cast` when the value's type differs from
+the declared type. The semantic ConstDecl arm, unlike TypedAssign's, never
+calls `insert_cast_if_needed`, so `const A: t32 = 5` reaches lowering with an
+I64 literal against an I32 target. Narrowing in the lowering arm (the same
+idiom struct-field stores use) keeps this a lowering-only change — the
+semantic tree the interpreter consumes is untouched.
+
+Verified byte-identical on both backends for `t32`/`t64`/`f64`/`bool`/`str`
+consts, and for consts used in arithmetic, comparisons, loop bodies, and as
+function arguments. Discriminating canary: two distinct same-type consts
+(`7` and `900`) in the same expression, checked in both operand orders
+(`893` / `-893`) so a substitution mixup could not produce a symmetric
+false pass.
+
+### Narrowing: assignment to a const is refused, not lowered
+
+`t57_const_reassign_reject` did **not** convert, deliberately. Lowering the
+whole construct made the JIT print `200` for a program the interpreter rejects
+— a genuine `PARITY_FAIL`, observed before the guard was added.
+
+**Root cause, and it is a real finding:** const immutability is enforced only
+by the **interpreter at runtime** (`invalid assignment target — only variables
+and container fields (t.x) can be assigned to`). Semantic analysis accepts
+`MAX_HP = 200` without complaint; there is no analysis-time const-immutability
+check anywhere. Any backend that does not happen to reproduce the interpreter's
+runtime check will therefore silently accept the assignment.
+
+The guard: lowering tracks `ConstDecl` bindings and refuses an `Assign`
+targeting one, with a structured `UnsupportedSemanticConstruct` (exit 127,
+clean SKIP). That is honest — the JIT declines to compile what it cannot match
+— but it is a workaround, not the fix.
+
+**The proper fix is an analysis-time rejection**, so both backends refuse
+identically for the same reason at the same phase. That changes
+interpreter-observable behavior (the error moves from runtime to semantic
+analysis, with different text), so it is filed here for a separate dispatch
+rather than smuggled into a lowering-only change.
+
+### Also not lowered: a const referenced inside a function body
+
+Top-level consts bind into synthetic main's SSA scope; a function lowers as a
+separate `IrFunction` that cannot see that binding, so
+`const K: t32 = 10` + `fnc f() { v + K }` fails with
+`binding 'K' referenced before any SSA value was assigned` — exit 127, a clean
+SKIP, never a wrong value. Supporting it needs real module-level globals in the
+IR, which is a larger change than this slice. Passing a const *as an argument*
+from a top-level call site works and is verified.
+
+JIT parity moved **326/54/0 → 328/52/0** across 380 fixtures: `t56_const_basic`
+and `t173_const_decl_exit` converted; `t57_const_reassign_reject` remains a
+SKIP by the narrowing above; nothing else moved.
 
 ---
 
