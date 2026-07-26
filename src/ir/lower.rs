@@ -433,6 +433,10 @@ struct LoweringCtx {
     /// params), last-wins. See `lower_interpolated_print` for the FILED
     /// scope-limitation note.
     binding_names: HashMap<String, BindingId>,
+    /// Bindings introduced by a `ConstDecl` (known-issues #12). Assignment to
+    /// one is refused at lowering — see the `SemanticLValue::Binding` arm of
+    /// `SemanticStmt::Assign` for why this guard exists.
+    const_bindings: std::collections::HashSet<BindingId>,
 }
 
 struct ActiveBlock {
@@ -495,6 +499,7 @@ impl LoweringCtx {
             trace,
             target,
             binding_names: HashMap::new(),
+            const_bindings: std::collections::HashSet::new(),
         }
     }
 
@@ -944,6 +949,23 @@ fn lower_stmt(
             let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
                 SemanticLValue::Binding { binding, ty, .. } => {
+                    // known-issues #12: assignment to a `const` is rejected by
+                    // the INTERPRETER AT RUNTIME ("invalid assignment target"),
+                    // but semantic analysis accepts it — there is no
+                    // analysis-time const-immutability check. Lowering the
+                    // assignment would therefore make the JIT silently accept
+                    // what the interpreter rejects (a real PARITY_FAIL, seen on
+                    // t57_const_reassign_reject before this guard). Refuse
+                    // instead: a clean SKIP, never a silent divergence.
+                    //
+                    // The proper fix is an analysis-time rejection so both
+                    // backends refuse identically — that changes interpreter-
+                    // observable behavior (error phase and text), so it is
+                    // filed separately rather than smuggled into a
+                    // lowering-only change.
+                    if ctx.const_bindings.contains(binding) {
+                        unsupported!("assignment to a const — const immutability is enforced only at interpreter runtime, so lowering this would diverge (known-issues #12)");
+                    }
                     // Numeric/Unknown: binding type is a placeholder; use the
                     // lowered expression's concrete type as authoritative.
                     let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
@@ -1375,7 +1397,65 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
         // any path (it currently does not — lower_program_inner filters it out
         // of the synthetic-main statement sequence).
         SemanticStmt::ImplBlock { .. } => Ok(Some(current)),
-        SemanticStmt::ConstDecl { .. } => { unsupported!("ConstDecl") },
+        // Top-level `const NAME: T = expr` (known-issues #12). A Cx const is an
+        // immutable *binding*, not a substituted literal: semantic analysis
+        // gives it a normal `BindingId` via `declare()`, and the interpreter
+        // evaluates the RHS once and stores it like any typed binding
+        // (runtime/exec.rs's ConstDecl arm → `set_var_typed`). Lowering
+        // therefore mirrors `TypedAssign`'s general path exactly — lower the
+        // RHS, bind the SSA value to the const's binding — rather than
+        // introducing a module-level global the IR has no concept of.
+        //
+        // Immutability needs no lowering-side enforcement: `const` is
+        // top-level-only in the grammar, and assignment to one is already
+        // rejected before lowering (the assign path takes an lvalue, and a
+        // const name is not one).
+        //
+        // The `?`/TBool special case from TypedAssign is deliberately not
+        // duplicated: `const X: bool = ?` is unreachable here because the
+        // unknown literal is not a const-expression form that reaches this arm
+        // with a Bool target. If that changes, this arm should gain the same
+        // ConstInt(I8,2)+Cast construction rather than silently binding wrong.
+        SemanticStmt::ConstDecl { binding, ty, value, .. } => {
+            let lowered = lower_expr(value, ctx, &mut current)?;
+            let target_ty = lower_type(ty)?;
+            let (bind_value, bind_ty) = if target_ty == IrType::Bool && lowered.ty == IrType::TBool {
+                (lowered.value, IrType::TBool)
+            } else if lowered.ty != target_ty
+                && is_integer_ir_ty(&lowered.ty)
+                && is_integer_ir_ty(&target_ty)
+            {
+                // Narrow/widen the value to the const's declared width, the same
+                // way struct-field stores do (Gate-2a). Needed because the
+                // semantic ConstDecl arm — unlike TypedAssign — does not call
+                // `insert_cast_if_needed`, so `const A: t32 = 5` arrives here
+                // with an I64-typed literal against an I32 target. Handling it
+                // in lowering keeps this a lowering-only change: the semantic
+                // tree the interpreter consumes is untouched.
+                let narrowed = ctx.fresh_value();
+                current.emit(IrInst::Cast {
+                    dst: narrowed,
+                    from: lowered.ty.clone(),
+                    to: target_ty.clone(),
+                    value: lowered.value,
+                })?;
+                (narrowed, target_ty)
+            } else {
+                ensure_type_match("const declaration", target_ty.clone(), lowered.ty)?;
+                (lowered.value, target_ty)
+            };
+            let dst = ctx.fresh_value();
+            current.emit(IrInst::SsaBind {
+                dst,
+                ty: bind_ty.clone(),
+                src: bind_value,
+            })?;
+            current
+                .bindings
+                .insert(*binding, LoweredValue { value: dst, ty: bind_ty });
+            ctx.const_bindings.insert(*binding);
+            Ok(Some(current))
+        },
     }
 }
 
@@ -4849,6 +4929,16 @@ fn emit_return_through_slot(
         active.emit(IrInst::Store { ptr: dst_ptr, value: val })?;
     }
     Ok(slot)
+}
+
+/// Is this IR type a plain signed integer (the widths a `Cast` can narrow or
+/// widen between)? Excludes `Bool`/`TBool`, whose wire encodings are not
+/// interchangeable with integer widths by a bare cast.
+fn is_integer_ir_ty(ty: &IrType) -> bool {
+    matches!(
+        ty,
+        IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 | IrType::I128
+    )
 }
 
 fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(), LoweringError> {
