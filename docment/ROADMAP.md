@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-26
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
