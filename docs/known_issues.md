@@ -523,3 +523,82 @@ scoping/truncation fixes).
 JIT parity moved **280/56/0 → 281/56/0** across 337 fixtures (336 existing +
 1 new): a full PASS on both backends, no new SKIP — a pure interpreter-side
 runtime fix with no lowering-side change at all.
+
+---
+
+## 11. `exit()` builtin does not lower on the JIT
+
+**Status: OPEN.**
+
+`exit(code)` runs correctly on the interpreter — it raises the Exit control-flow
+signal and the process exits with the given code — but has no lowering path.
+A call reaches the IR layer as an unresolved name:
+
+```
+unresolved semantic artifact reached lowering: function 'exit'
+```
+
+Exit code 127 (the JIT's SKIP code), so it fails cleanly rather than silently.
+Verified directly: `print(1); exit(3)` → interpreter prints `1` and exits `3`;
+cranelift prints the error above and exits `127`.
+
+**7 SKIPs** — the second-largest single cause in the 61-fixture SKIP set, behind
+generic functions (8). Worth calling out for what it means in practice: on the
+JIT this is the difference between a program *running* and a program *running
+with the right exit code*, which is exactly what a build script or a test
+harness keys on.
+
+The README listed `exit` among the working builtins with no backend caveat
+(corrected in the 0.3.2 accuracy pass — the "not yet lowered" list now names it).
+
+---
+
+## 12. Top-level `const` declarations do not lower on the JIT
+
+**Status: OPEN.**
+
+`const NAME: T = value` at top level is a documented language feature that works
+on the interpreter and has no JIT path:
+
+```
+unsupported semantic construct during lowering: ConstDecl
+```
+
+Verified directly: `const MAX: t32 = 100; print(MAX)` → interpreter prints `100`,
+exit 0; cranelift emits the error above and SKIPs.
+
+**3 SKIPs.** Structured error, exit 127 — clean refusal, not corruption. Listed
+in the README's "not yet lowered" section as of the 0.3.2 accuracy pass.
+
+---
+
+## 13. Library-only fixtures produce compile/link SKIPs — harness artifact, not a language gap
+
+**Status: NOT A BUG — recorded so it stops being re-investigated.**
+
+Four fixtures in the verification matrix are *library* files: they contain only
+`pub fnc` definitions and no `main` or top-level statements, and exist to be
+imported by a sibling fixture that does the actual asserting:
+
+- `t64_import_pub_only_lib.cx`
+- `t74_import_basic_lib.cx`
+- `t_prelude_multi_import_lib_a.cx`
+- `t_prelude_multi_import_lib_b.cx`
+
+`run_matrix.sh` and any SKIP-set enumeration glob `t*.cx`, so these are also run
+*standalone*, where a module with no entry point produces:
+
+```
+--- cx jit: compile/link failed — IR dump ---
+```
+
+exit 127. That is a SKIP in the totals, but it represents **no lost language
+coverage** — the feature they exist to test is exercised through their importing
+fixture, which passes.
+
+This has twice appeared as phantom "new SKIPs" in release SKIP-set diffs (once
+during the slice-5 JIT arc, once at the 0.3.2 release) and both times cost a
+round of stash-rebuild-retest to confirm it was baseline-identical. The shape to
+recognize: **a `*_lib.cx` name plus a `compile/link failed` first line means
+harness artifact, not regression.** A future fixture-organization pass could move
+library files to a non-`t*` prefix so the glob stops picking them up.
