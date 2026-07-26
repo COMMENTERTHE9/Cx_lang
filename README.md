@@ -6,13 +6,6 @@ The goal of Cx is to give engine-facing code predictable memory behavior, explic
 
 **Status: 0.3.2 — released 2026-07-24.** Last tagged release: **v0.3.2**.
 
-> **Note:** the feature sections below predate 0.3.2 and describe 0.2.0-era
-> capability. They are accurate for what they cover but incomplete — gene/phen,
-> generic bounds, operator overloading, `Handle<T>`, and pattern matching are not
-> documented here yet. A content audit is pending; see `CHANGELOG` in the
-> [releases](https://github.com/COMMENTERTHE9/Cx_lang/releases) for what each
-> version actually shipped.
-
 This README describes the current `submain` branch. The reference interpreter is the source of truth for language semantics; every code sample below was compiled and run against it.
 
 Cx is not production-ready. It is a working compiler foundation under active development.
@@ -283,6 +276,42 @@ print(compute(10, 2))          // Ok(10)
 print(compute(10, 0))          // Err(division by zero)
 ```
 
+### Genes, phens, and operator overloading
+
+A `gene` is a contract — signatures only, naming no concrete type. A `phen` binds one gene to one type and supplies the bodies. `Self` inside a phen is the type it is bound to.
+
+Operator overloading is not separate syntax: the eight operator genes (`Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Eq`, `Ord`) ship in the prelude, and `a + b` on a type with a phen for `Add` *is* `a.add(b)`.
+
+```cx
+struct Vec2 { x: t32, y: t32 }
+
+phen Add (v: Vec2) {
+    fnc: Self add(rhs: Self) {
+        made: Self = Vec2 { x: v.x + rhs.x, y: v.y + rhs.y }
+        made
+    }
+}
+
+let a;
+let b;
+a = Vec2 { x: 1, y: 2 }
+b = Vec2 { x: 10, y: 20 }
+let c;
+c = a + b
+print(c.x)                     // 11
+print(c.y)                     // 22
+```
+
+One restriction for now: the left operand of a gene-dispatched operator must be a **named variable**. Method receivers are name-based throughout the runtime, so a chained expression has nowhere to bind — it is an explicit error, not a silent fallback:
+
+```cx
+d = (a + b) + c                // error: operator '+' on 'Vec2' dispatches to gene
+                               // 'Add' — this currently requires a named variable
+                               // as the left operand
+```
+
+A phen must implement every signature its gene declares; two phens binding the same gene to the same type is a compile error, checked across the whole module graph. `T: GeneName` bounds a generic on "any type with a phen for that gene", and `T: GeneA + GeneB` requires both.
+
 ---
 
 ## What Works
@@ -303,6 +332,10 @@ print(compute(10, 0))          // Err(division by zero)
 - `Result<T>` with `Ok` / `Err` and the `?` propagation operator
 - comparisons, logical short-circuiting, compound assignment, dot access
 - built-ins: `print`, `println`, `printn`, `assert`, `assert_eq`, `read`, `input`, `exit`, `len`
+- `Handle<T>` for scalar `T`: `Handle.new`, `.val`, `.drop()` — generational safety and double-drop non-aliasing verified on both backends
+- `when`-arm named binding (`Variant as v`) and guard clauses (`if <expr>`)
+- gene/phen: `gene` contracts, `phen` implementations, `Self`, generic bounds (`T: GeneName`, `T: GeneA + GeneB`), whole-graph coherence checking
+- operator overloading for user types via the eight prelude operator genes (`Add`/`Sub`/`Mul`/`Div`/`Mod`/`Neg`/`Eq`/`Ord`)
 
 ### Memory Model
 
@@ -314,7 +347,7 @@ Cx includes the foundation for explicit value movement:
 - no garbage collector
 - no borrow checker
 
-Longer-term memory features such as a richer `Handle<T>` surface, string arenas, and broader ownership tools are planned.
+Scalar `Handle<T>` ships as of 0.3.1 (construct, read, drop, with generational safety). A richer `Handle<T>` surface, string arenas, and broader ownership tools are still planned.
 
 ---
 
@@ -334,6 +367,12 @@ The **Cranelift JIT** compiles a growing subset of Cx IR to native machine code.
 - unary negation, boolean NOT, integer and float casts
 - `f64` arithmetic and comparison
 - runtime intrinsics for print/assert; void returns and exit-code propagation
+- enum values and `EnumVariant` arms in `when`
+- `Result<T>`, `Ok`/`Err`, and the `?` operator
+- string interpolation of bare variables
+- `if` in expression position
+- phen method calls (one specialized function per gene/type; direct calls)
+- struct returns from free functions, impl methods, and phen methods
 
 All currently JIT-lowered fixtures match interpreter behavior (0 PARITY_FAIL). A fixture whose feature is not yet lowered is reported as SKIP, not as a failure.
 
@@ -354,15 +393,18 @@ As of `v0.3.2`:
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 61 of 380 fixtures):
 
-- `if`-expression lowering (the `if`/`else` *statement* form is lowered; the *expression* form is interpreter-only for now)
-- enum IR lowering and `EnumVariant` arms in `when`
-- `Result<T>` / `?` operator lowering
-- string interpolation lowering
-- `f64` / `t128` native print formatting (ABI extension)
-- `WhileIn` source-to-IR lowering
-- full TBool unknown propagation through arithmetic, comparison, and logical ops
+- generic functions, and generic-struct instantiation
+- the `exit` and `input` builtins
+- nested function definitions
+- `while-in` loops
+- top-level `const` declarations
+- `t128` printing, and `Result` payloads wider than a machine word
+- array returns from methods
+- `char`-typed values
+- `.copy` / `.copy.free` / `copy_into` parameter kinds
+- string interpolation of non-identifier expressions
 
 These are **not implemented in any backend yet**:
 
@@ -485,8 +527,8 @@ Do not use it for production applications yet.
 
 Near-term priorities:
 
-- freeze and stabilize 0.2
-- expand JIT lowering coverage toward the interpreter surface (enums, `Result`/`?`, string interpolation, `f64`/`t128` printing)
+- expand JIT lowering toward the interpreter surface (generic functions, array returns, `while-in`, `const`, `t128` printing)
+- lift the operator-dispatch named-variable restriction (expression receivers)
 - broaden examples and documentation
 - continue ownership and memory tooling
 
