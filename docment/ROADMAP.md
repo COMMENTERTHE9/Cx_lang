@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-27
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -102,6 +102,10 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-27:** Const-immutability fix landed on submain (`fa95c12`): `reject_const_assignment` in `semantic.rs` catches all six assignment forms (plain, compound, index, index-compound, field, field-compound) at analysis time. Removed the JIT lowering-side const guard from `6c37339` — no longer needed. Also uncovered and fixed a live language hole where writing *through* a const (index/field) was silently accepted on both backends. JIT parity: 333/51/0 across 384 fixtures. Submain 10 commits ahead of main.
+
+**2026-07-26:** Exit lowering (`3d7a2cd`), const lowering (`6c37339`), parser guard fix (`1f4945c`), README accuracy pass (`42cd499`), known-issues #11/#12/#13 filed and resolved. JIT parity moved 319/61 → 328/52. 8 new commits on submain.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
