@@ -433,10 +433,6 @@ struct LoweringCtx {
     /// params), last-wins. See `lower_interpolated_print` for the FILED
     /// scope-limitation note.
     binding_names: HashMap<String, BindingId>,
-    /// Bindings introduced by a `ConstDecl` (known-issues #12). Assignment to
-    /// one is refused at lowering — see the `SemanticLValue::Binding` arm of
-    /// `SemanticStmt::Assign` for why this guard exists.
-    const_bindings: std::collections::HashSet<BindingId>,
 }
 
 struct ActiveBlock {
@@ -499,7 +495,6 @@ impl LoweringCtx {
             trace,
             target,
             binding_names: HashMap::new(),
-            const_bindings: std::collections::HashSet::new(),
         }
     }
 
@@ -949,23 +944,6 @@ fn lower_stmt(
             let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
                 SemanticLValue::Binding { binding, ty, .. } => {
-                    // known-issues #12: assignment to a `const` is rejected by
-                    // the INTERPRETER AT RUNTIME ("invalid assignment target"),
-                    // but semantic analysis accepts it — there is no
-                    // analysis-time const-immutability check. Lowering the
-                    // assignment would therefore make the JIT silently accept
-                    // what the interpreter rejects (a real PARITY_FAIL, seen on
-                    // t57_const_reassign_reject before this guard). Refuse
-                    // instead: a clean SKIP, never a silent divergence.
-                    //
-                    // The proper fix is an analysis-time rejection so both
-                    // backends refuse identically — that changes interpreter-
-                    // observable behavior (error phase and text), so it is
-                    // filed separately rather than smuggled into a
-                    // lowering-only change.
-                    if ctx.const_bindings.contains(binding) {
-                        unsupported!("assignment to a const — const immutability is enforced only at interpreter runtime, so lowering this would diverge (known-issues #12)");
-                    }
                     // Numeric/Unknown: binding type is a placeholder; use the
                     // lowered expression's concrete type as authoritative.
                     let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
@@ -1453,7 +1431,6 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
             current
                 .bindings
                 .insert(*binding, LoweredValue { value: dst, ty: bind_ty });
-            ctx.const_bindings.insert(*binding);
             Ok(Some(current))
         },
     }

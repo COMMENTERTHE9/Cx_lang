@@ -78,6 +78,13 @@ pub struct Analyzer {
     /// The enclosing function's `<T: Gene>` bounds while its body is being
     /// analyzed (0.3.4 slice 4) — set/restored by the FuncDef arm.
     current_type_bounds: Vec<(String, Vec<String>)>,
+    /// Names declared by a `const` (known-issues #12). Assignment to one — in
+    /// any form — is rejected at analysis time, so both backends refuse
+    /// identically before either runs. Keyed by name rather than `BindingId`
+    /// because `const` is top-level-only, so a const name is unambiguous for
+    /// the whole file, and the index/field assignment forms carry only the
+    /// base name of the target.
+    const_names: std::collections::HashSet<String>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     pub module_aliases: HashMap<String, ExportTable>,
@@ -110,6 +117,7 @@ impl Analyzer {
             gene_defs: HashMap::new(),
             phen_keys: std::collections::HashSet::new(),
             current_type_bounds: vec![],
+            const_names: std::collections::HashSet::new(),
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -317,12 +325,32 @@ impl Analyzer {
         Ok(())
     }
 
+    /// Reject any assignment whose target is rooted at a `const` binding
+    /// (known-issues #12). Applies to plain reassignment, compound assignment,
+    /// array-index assignment, and struct-field assignment alike: writing
+    /// *through* a const is still writing to it.
+    ///
+    /// This is an analysis-time check so both backends refuse identically,
+    /// before either runs — the same reason the width checks and the
+    /// ordering-comparison allowlist live here rather than in a backend.
+    fn reject_const_assignment(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
+        if self.const_names.contains(name) {
+            return Err(sem_err!(
+                pos,
+                "cannot assign to '{}' — it is declared const",
+                name
+            ));
+        }
+        Ok(())
+    }
+
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
             Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
                 let semantic_value = self.analyze_expr(value)?;
                 let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
                 let binding = self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                self.const_names.insert(name.clone());
                 Ok(SemanticStmt::ConstDecl {
                     binding,
                     name: name.clone(),
@@ -537,6 +565,14 @@ impl Analyzer {
                 expr,
                 pos_eq,
             } => {
+                // known-issues #12: a `const` is immutable. Checked here, at the
+                // single entry point covering all three target forms, so every
+                // form is caught by construction rather than by remembering to
+                // patch each arm — the miss that let index/field assignment
+                // silently mutate a const on BOTH backends.
+                if let Some(base) = assign_target_base_name(target) {
+                    self.reject_const_assignment(base, *pos_eq)?;
+                }
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a variable — use an owned str instead"));
@@ -1075,6 +1111,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 operand,
                 pos,
             } => {
+                // known-issues #12 — same single choke point as Stmt::Assign,
+                // covering Var / Field / Index compound forms alike.
+                let base = match target {
+                    AssignTarget::Var(n) | AssignTarget::Field(n, _) | AssignTarget::Index(n, _) => n,
+                };
+                self.reject_const_assignment(base, *pos)?;
                 let tp = self.current_type_params.clone();
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
@@ -3126,6 +3168,20 @@ fn map_param_type(p: ParamKind, f: &dyn Fn(Type) -> Type) -> ParamKind {
     match p {
         ParamKind::Typed(n, t) => ParamKind::Typed(n, f(t)),
         other => other,
+    }
+}
+
+/// The root variable name an assignment target writes through, if it has one:
+/// `x = ..` → `x`, `x.f = ..` → `x`, `x:[i] = ..` → `x`. Used by the const
+/// immutability check (known-issues #12), where writing through a const is
+/// still writing to it. Returns `None` for target shapes with no simple base
+/// (which the assign arm then rejects on its own terms).
+fn assign_target_base_name(target: &Expr) -> Option<&str> {
+    match target {
+        Expr::Ident(name, _) => Some(name),
+        Expr::DotAccess(container, _) => Some(container),
+        Expr::Index(inner, _, _) => assign_target_base_name(inner),
+        _ => None,
     }
 }
 
