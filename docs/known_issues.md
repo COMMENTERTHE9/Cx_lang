@@ -629,7 +629,12 @@ function arguments. Discriminating canary: two distinct same-type consts
 (`893` / `-893`) so a substitution mixup could not produce a symmetric
 false pass.
 
-### Narrowing: assignment to a const is refused, not lowered
+### Narrowing: assignment to a const is refused, not lowered — RESOLVED in `fa95c12`
+
+*(The narrowing below described the state at `6c37339`. The underlying hole is
+now closed at the semantic layer — see "Const immutability moved to analysis
+time" at the end of this entry. The JIT guard has been removed and
+`t57_const_reassign_reject` is a genuine PASS on both backends.)*
 
 `t57_const_reassign_reject` did **not** convert, deliberately. Lowering the
 whole construct made the JIT print `200` for a program the interpreter rejects
@@ -666,6 +671,68 @@ from a top-level call site works and is verified.
 JIT parity moved **326/54/0 → 328/52/0** across 380 fixtures: `t56_const_basic`
 and `t173_const_decl_exit` converted; `t57_const_reassign_reject` remains a
 SKIP by the narrowing above; nothing else moved.
+
+### Const immutability moved to analysis time — FIXED in `fa95c12`
+
+The filed finding above is closed. `reject_const_assignment` in `semantic.rs`
+rejects any assignment rooted at a const binding, at analysis time, so both
+backends refuse identically before either runs — the same reasoning that put
+the width checks and the ordering-comparison allowlist in the semantic layer
+rather than in a backend.
+
+**Enumerating the assignment forms first turned up a worse bug than the one
+being fixed.** The interpreter's runtime guard (`scope.rs`, `set_var` /
+`set_var_by_id`) checks the const table *by name*, so it only ever covered
+name-based writes. Writing *through* a const was unguarded **on both
+backends**:
+
+```
+const A: [3: t32] = [1, 2, 3]    const S: P = P { x: 1 }
+A:[0] = 9                        S.x = 9
+print(A:[0])   // printed 9      print(S.x)   // printed 9
+```
+
+Silent const mutation, exit 0, no error — not a JIT divergence but a live
+language hole. Enumerating every form before fixing the obvious one is exactly
+what the width-check bug (#7, three missed sites) taught; it paid for itself
+here.
+
+All six forms now reject identically on both backends:
+
+| form | result |
+|---|---|
+| `K = 2` | `cannot assign to 'K' — it is declared const` |
+| `K += 2` / `K -= 2` | same |
+| `A:[0] = 9` | `cannot assign to 'A' — it is declared const` |
+| `A:[0] += 9` | same |
+| `S.x = 9` | `cannot assign to 'S' — it is declared const` |
+
+The check sits at the single entry point of `Stmt::Assign` and
+`Stmt::CompoundAssign`, before either arm's target match, with a shared
+`assign_target_base_name` helper resolving `x` / `x.f` / `x:[i]` to their root
+name. That placement is deliberate: a per-arm check is what allowed three forms
+to be missed in the first place, so the guard covers every form by construction
+rather than by remembering to patch each one.
+
+**Anti-overcorrection verified**: ordinary (non-const) bindings still mutate
+normally in every affected form — plain, compound, index, index-compound,
+field, field-compound — byte-identical on both backends
+(`t_const_mutation_still_works`). Const *reads* are unaffected.
+
+**Interpreter runtime check: kept.** It is now redundant for programs that pass
+analysis, but it is three lines, it costs one `is_empty()` on the write path,
+and it is the last line of defense if a future construct reaches a runtime
+write without going through `Stmt::Assign`/`Stmt::CompoundAssign` analysis
+(method write-back and string-interp targets both call `set_var` directly).
+Removing it would trade real defense-in-depth for no measurable gain.
+
+The JIT's const-assignment lowering guard from `6c37339` is **removed** — it
+existed only because the hole existed. Confirmed no divergence returns:
+analysis now rejects before either backend runs.
+
+Parity moved **328/52/0 → 333/51/0** across 384 fixtures (380 + 4 new):
+`t57_const_reassign_reject` converted SKIP → genuine PASS, the 4 new fixtures
+pass, nothing else moved.
 
 ---
 
