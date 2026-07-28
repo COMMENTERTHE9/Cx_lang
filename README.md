@@ -66,8 +66,8 @@ As of `v0.3.2`:
 
 - **246 unit tests passing** (`cargo test`)
 - **421 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **384 verification fixtures**
-- **JIT parity: 333 PASS / 51 SKIP / 0 PARITY_FAIL** across all 384 fixtures
+- **396 verification fixtures**
+- **JIT parity: 345 PASS / 51 SKIP / 0 PARITY_FAIL** across all 396 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -228,13 +228,15 @@ n: t32 = 3
 print("{name} v0.{n}")         // Cx v0.3
 ```
 
-Interpolation supports bare variable names only. A non-variable form (e.g. a call) is a compile-checked error rather than silent literal output:
+Interpolation supports bare variable names only. A non-variable form (e.g. a call) is an error rather than silent literal output:
 
 ```cx
-print("{f(2)}")                // error: string interpolation supports bare
-                               // variables only; compute `{f(2)}` into a
+print("{f(2)}")                // runtime error: string interpolation supports
+                               // bare variables only; compute `{f(2)}` into a
                                // variable first
 ```
+
+Note that this — and an interpolated name that isn't in scope — is checked at **runtime**, not at compile time, even though both are decidable from the string literal and the symbol table alone. The JIT does not lower interpolation at all, so these cases show up as parity SKIPs rather than as agreement. See `docs/known_issues.md` §16.
 
 ### Strings: concatenation and length
 
@@ -382,10 +384,10 @@ As of `v0.3.2`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 333 |
+| PASS | 345 |
 | SKIP | 51 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **384** |
+| **Total fixtures** | **396** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 
@@ -393,7 +395,7 @@ As of `v0.3.2`:
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 51 of 384 fixtures):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 51 of 396 fixtures):
 
 - generic functions, and generic-struct instantiation
 - the `input` builtin

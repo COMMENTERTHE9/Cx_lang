@@ -766,3 +766,193 @@ round of stash-rebuild-retest to confirm it was baseline-identical. The shape to
 recognize: **a `*_lib.cx` name plus a `compile/link failed` first line means
 harness artifact, not regression.** A future fixture-organization pass could move
 library files to a non-`t*` prefix so the glob stops picking them up.
+
+---
+
+## 14. Access-path enforcement holes (audit C1–C4) — FIXED in `2de51aa`
+
+**Status: FIXED.** The locked principle this produced lives in
+`docs/frontend/enforcement_layers.md`.
+
+A deliberate layer-enforcement audit asked one bounded question: for every error
+the interpreter can raise at runtime, does semantic analysis catch it first?
+Four holes came back, and they were one omission wearing four hats — **a fact
+validated on the construction path and never on the access path.** A struct's
+field list, an enum's variant list and every receiver's type are all carried in
+the semantic type; analysis had each of them in hand and used them only where a
+value is *constructed*.
+
+### What each hole did
+
+| | program | interpreter | JIT |
+|---|---|---|---|
+| **C1** | `a.zzz = 5; print(a.zzz)` on `struct P { x: t32 }` | **exit 0, printed `5`** — invented the field at runtime | exit 127 → counted a clean SKIP |
+| **C1** | `print(a.zzz)` | exit 1, `variable 'a.zzz' has not been declared — declare it with 'a.zzz: TYPE = value'` | exit 127 |
+| **C2** | `for i in 0..3 { if i >= 0 { i = 99 } print(i) }` | **exit 0, `99 99 99`** | **exit 0, `99`** |
+| **C3** | `enum L { Red, Green }` + `c: L = L::Blue` | **exit 0** — phantom variant, matched no real arm, compared equal to itself | exit 127 |
+| **C4** | `x: t64 = 5; print(x:[0])` | exit 1, but reported as an *assignment target* error for a read | exit 127, `lowering invariant violation` |
+
+C1's write form and C3 are silent wrong answers. C1's write also contradicts
+Cx's stable-layout guarantee: a typo'd field name grew the struct at runtime.
+
+**C2 was a live PARITY_FAIL with no fixture.** By the harness's
+`PassWithOutput` rule, `99 99 99` against `99` is a divergence — it escaped only
+because no fixture in the matrix exercised loop-counter mutation. The rule was
+implemented in three places, each documented as backup for another: analysis
+matched two statement shapes, the interpreter's `RuntimeError::ReadOnlyLoopVar`
+was `#[allow(dead_code)]` with a comment deferring to the IR layer, and the IR
+validator's `LoopVariableReassignment` did not fire (`--backend=validate`
+printed "IR validation passed" on the divergent program).
+
+### The fix — choke points, not arms
+
+Each hole closes at the single point where the fact and the access meet. The
+per-form shape is what let three earlier fixes each miss a form, so none of
+these adds a match arm per syntactic form:
+
+- **C1 + C4 (fields)** — `Analyzer::resolve_field_access`, replacing three
+  copies of the same lookup (rvalue read, `Stmt::Assign` lvalue,
+  `Stmt::CompoundAssign` lvalue) that each ended in `.unwrap_or(Unknown)`.
+- **C2** — `readonly_bindings`, checked beside `reject_const_assignment` at the
+  same two assignment choke points, replacing the flat body scan. Keyed by
+  `BindingId`, **not by name**: `for i { if c { i: t64 = 5; i = 6 } }` is legal
+  today and a name-keyed set would reject the write to the shadow.
+- **C3** — `resolve_enum_variant`, one resolver for value position, `when`
+  literal and range patterns, enum-variant arms, and `as v` arms.
+- **C4 (index)** — the rvalue arm of `Expr::Index`. Both assignment lvalue paths
+  already rejected a non-array target; only the read form fell through.
+
+`type_has_no_fields` and `type_is_not_indexable` are deliberately conservative:
+`Unknown`, `TypeParam`, `Container`, `Handle` and `Result` all answer `false`,
+because a check that only speaks where the fact is known must stay silent where
+it is not. Verified against generic struct fields (`Box<T>.v` still resolves)
+and `copy_into` containers.
+
+### Coverage-by-construction proof
+
+The check was demonstrated firing on nine forms for which **no case was
+written**: a loop-counter write inside a `when` arm inside an `if`; inside a
+`loop` inside an `if`; the index-write and field-write forms against a counter;
+and field accesses in a `when` arm body, a call argument, an array-literal
+element, a `return` expression, and a `for` inside an `if`. All nine reject
+identically on both backends.
+
+### Residual — C2 has a bypass path, currently unreachable
+
+Following the const precedent, the bypass question was asked rather than
+assumed. The interpreter has by-name write paths that never touch
+`Stmt::Assign`/`Stmt::CompoundAssign`: `read(var)` and `input(p, var)`
+(`src/runtime/call.rs:164,191`) and multi-alias method write-back
+(`src/runtime/call.rs:371-379`). All three call `set_var` on a caller-scope name
+directly.
+
+**They cannot currently reach a loop counter — but only because of a type
+check, not an immutability check.** `analyze_for` hard-declares the counter
+`Type::T64`, and every bypass path carries a `str` or struct payload, so the
+runtime refuses with `type mismatch — expected 't128' but got 'str'`. That is a
+coincidental barrier in a different layer for a different reason — precisely the
+shape this audit exists to eliminate.
+
+**Disposition:** the IR validator's `LoopVariableReassignment` check is **kept**
+as JIT-side defense-in-depth (different representation, own unit tests). No new
+interpreter-side guard was added: it would require the runtime to track which
+bindings are loop counters and to exempt the loop's own per-iteration write —
+a runtime feature, not the retention of an existing check. The hole is latent
+and unreachable by any source program today; it becomes reachable if loop
+counters ever gain a non-`t64` type (typed counters, or `for x in array`).
+**Anyone making that change must add the runtime guard in the same commit.**
+
+### Delta
+
+Matrix 384 → 396 PASS / 0 FAIL (12 new fixtures). `cargo test` 246/0,
+`--features jit` 421/0. Parity 333/51/0 → **345 PASS / 51 SKIP / 0 PARITY_FAIL**
+across 396. Clippy 111 → 110 warnings — the flat scan's redundant guard, removed
+with it; no new warnings.
+
+**The SKIP count did not move, and that is the expected result.** C1/C3/C4 exit
+127 on the JIT, so it would be natural to expect SKIPs converting to PASSes —
+but no *shipped* fixture exercised those holes; the 127-exits were all in audit
+probes. The observable proof is in the new fixtures: all 12 land as parity
+**PASS**, none as SKIP, because both backends now reject at analysis time before
+lowering is reached.
+
+---
+
+## 15. Statically decidable, but decided at runtime and differently per backend (audit C5, C6)
+
+**Status: OPEN — low severity, both backends do reject.**
+
+Two facts analysis already holds are left to runtime, and the two backends then
+reject through different mechanisms:
+
+```
+A: [3: t32] = [1, 2, 3]
+print(A:[5])       // interp: exit 1, "array index 5 out of bounds for array of
+                   //         length 3"
+                   // jit:    exit 126, "cx: runtime trap"
+print(10 / 0)      // same split
+const Z: t64 = 0
+print(10 / Z)      // same split — decidable since `fa95c12` tracks const names
+```
+
+An array's length is in its type, and a literal or const-zero divisor is known
+at analysis time. Also covers `A:[-1]` and the out-of-bounds *write* form.
+
+**Why this matters more than "both reject":** the parity harness cannot tell the
+two apart. `TestExpectation::Fail` is `outcome.exit_code != 0`, so a hard trap
+satisfies a fixture whose interpreter behavior is a clean line-numbered
+diagnostic. Verified on shipped fixtures: `t_div_by_zero.cx` and
+`t_oob_negative_index.cx` both carry `.expected_fail` and both PASS parity with
+the JIT exiting 126. Every divergence of this class is invisible to the
+project's strictest gate.
+
+Fix shape: constant-fold the index and the divisor where both are statically
+known and reject in analysis; the runtime checks stay for computed values, which
+are genuinely runtime-only. Strengthening `TestExpectation::Fail` to compare
+against the interpreter's exit code, or adding an `.expected_error` sidecar,
+is the harness-side counterpart.
+
+---
+
+## 16. String interpolation is runtime-checked, not compile-checked (audit C7)
+
+**Status: OPEN. The inaccurate README claim has been corrected.**
+
+Three `RuntimeError` variants — `BadInterpolation`, `TemplateInvalidPlaceholder`,
+`TemplateInvalidFormat` — all fire at runtime from `expand_template`
+(`src/runtime/runtime.rs:294,300`) and `src/runtime/print.rs:49`, on data that is
+a string *literal* plus scope. All are statically decidable:
+
+```
+print("{nope}")     // interp: runtime error;  jit: exit 127 (SKIP)
+print("{f(2)}")     // interp: runtime error;  jit: exit 127
+s: str = "v {1+2}"  // interp: runtime error;  jit: exit 127
+s: str = "v {x:%}"  // interp: runtime error;  jit: exit 127
+```
+
+The README described the non-identifier case as "a compile-checked error rather
+than silent literal output". That was inaccurate — it is runtime-checked, and
+the JIT skips all four rather than agreeing. Corrected.
+
+Fix shape: move the validation into analysis, where the interpolation segments
+and the scope are both available. This is the cleanest of the open items — the
+check is a pure function of a literal and the symbol table.
+
+---
+
+## 17. Diagnostics: hardcoded `pos: 0`, and `%` reporting `/`
+
+**Status: OPEN — cosmetic, but they misdirect.**
+
+**Position 0.** Fifteen runtime-error construction sites in `src/runtime/`
+(`exec.rs:72,76,102,106,123,184,188,378,382,393,422,464,493`, and others) pass
+`pos: 0`, which renders as **line 1** regardless of where the error occurred.
+Analysis has the same problem in two places, and there it is structural rather
+than an oversight: `Expr::DotAccess`, `Expr::Val` and `AstValue::EnumVariant`
+carry **no source position in the AST**, so the C1 field-read error and the C3
+value-position variant error both report line 1. Fixing those two requires
+adding positions to those AST nodes — worth doing, out of scope for a check.
+
+**Wrong operator in the divide-by-zero message.** `print(10 % 0)` reports
+*"division by zero — the right-hand side of `'/'` evaluated to 0"*. The `Mod`
+arm in `src/runtime/ops.rs` reuses the `Div` diagnostic verbatim.
