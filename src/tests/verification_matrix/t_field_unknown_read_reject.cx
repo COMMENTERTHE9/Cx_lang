@@ -1,0 +1,7 @@
+// Audit C1, read form: previously surfaced as a nonsense *variable* diagnostic
+// ("variable 'a.zzz' has not been declared — declare it with
+// 'a.zzz: TYPE = value'"). Now a field diagnostic that names the struct.
+struct P { x: t32 }
+let a;
+a = P { x: 1 }
+print(a.zzz)

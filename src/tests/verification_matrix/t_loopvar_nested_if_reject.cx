@@ -1,0 +1,10 @@
+// Audit C2: writing a `for` counter from inside a nested statement. The old
+// check scanned only the body's TOP-LEVEL statements for `i = ..` / `i += ..`,
+// so one level of nesting slipped past it — and the backends then DISAGREED:
+// the interpreter re-seeded the counter each iteration and printed 99/99/99,
+// while the JIT let the write stick and printed 99 once. A live PARITY_FAIL
+// with no fixture. Now rejected at analysis time by both.
+for i in 0..3 {
+    if i >= 0 { i = 99 }
+    print(i)
+}
