@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-28
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -102,6 +102,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-28:** Enforcement-layer audit (C1-C4) landed on `submain` (`2de51aa`, `0ee7766`). Four access-path holes closed in `semantic.rs` — struct field lookup, enum variant resolution, loop-counter write protection, and non-container dot/index access. New locked design principle: `docs/frontend/enforcement_layers.md`. Known issues #14 (fixed), #15-#17 (filed as open). Submain 12 commits ahead of main; 396 fixtures, 345/51/0 parity. Matrix on main: 380/0.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
