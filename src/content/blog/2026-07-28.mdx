@@ -1,0 +1,55 @@
+---
+title: "Cx Dev Log — 2026-07-28"
+date: 2026-07-28
+description: "An enforcement-layer audit closed four semantic analysis holes where facts known at analysis time were only validated on construction paths, never on access paths."
+---
+
+The parity harness has a blind spot. When a test expects failure, any non-zero exit satisfies it, and the JIT's exit-127 trap counts as a clean SKIP. That means a whole class of bugs can hide in plain sight: cases where semantic analysis knows something is wrong, rejects it on the write side, but silently accepts it on the read side. The interpreter runs the wrong program. The JIT refuses it for unrelated reasons. The harness sees green.
+
+Today's work was a systematic audit of that pattern across `submain`, producing two commits that close four of these holes and a locked design principle that codifies the fix as a rule.
+
+## The four holes
+
+All four follow the same shape. Semantic analysis validates a fact when a value is constructed or assigned, but not when it is accessed or used. The result is that the interpreter invents behavior for programs the language should reject.
+
+**C1 (struct fields):** `resolve_field_access()` had three copies of the same field lookup, each ending in `.unwrap_or(Unknown)`. Writing `a.zzz = 5` on a struct that only declares `x` made the interpreter invent the field at runtime, exit cleanly, and print 5. The JIT refused it and counted a SKIP. Invisible to parity.
+
+**C2 (loop-counter writes):** Immutability for loop counters was enforced by a flat scan of the loop body's top-level statements. One level of nesting defeated it. `for i in 0..3 { if i >= 0 { i = 99 } print(i) }` produced `99 99 99` on the interpreter and `99` on the JIT. This was a live PARITY_FAIL with no fixture covering it. The fix introduces a `readonly_bindings: HashSet<BindingId>` checked at the same two assignment choke points as `reject_const_assignment`, keyed by binding ID so shadowing works correctly.
+
+**C3 (enum variants):** `resolve_enum_variant()` now provides a single resolver for value position, `when` patterns, enum-variant arms, and `as v` arms. Before this, `c: L = L::Blue` on an enum declaring only `Red, Green` ran to completion as a phantom variant.
+
+**C4 (index/dot on non-container):** The lvalue paths for "index target must be array" and dot access on a receiver with no fields already rejected bad programs. Only the rvalue paths fell through.
+
+The predicates are conservative. `Unknown`, `TypeParam`, `Container`, and `Handle` receivers pass through without rejection, so the new checks only fire when analysis actually knows the answer.
+
+## Why the harness missed these
+
+The structural issue is that `TestExpectation::Fail` is satisfied by any non-zero exit code. When the JIT hits an unlowered or invalid construct, it traps with exit 127, which the harness scores as a clean SKIP. The interpreter, being more permissive at runtime, runs the program anyway and exits 0. Since the test only checks whether both backends agree on pass/fail, a case where the interpreter wrongly succeeds and the JIT wrongly refuses can register as "both handled it" rather than "both got it wrong in different ways."
+
+This is the same structural mistake that produced the f64 comparison bug, the enum equality bug, the width-check gaps, the ordering allowlist issue, and the const-immutability hole fixed last session. Six prior bugs, one pattern.
+
+## The locked design principle
+
+The second commit (`0ee7766`) adds `docs/frontend/enforcement_layers.md`, a 135-line document that locks the rule: if a fact is known to semantic analysis, semantic analysis rejects it. Any surviving backend check is defense-in-depth only.
+
+This is the project's second locked design principle, after the method-ownership principle in `gene_phen_design.md`. Locked means it is not revisited per-instance. The document records the choke-point structure, explains why these bugs are invisible to the parity harness, and provides the keep-or-remove decision framework for redundant backend checks.
+
+## C2 bypass disposition
+
+The audit found that the interpreter has by-name write paths (`read()`, `input()`, multi-alias method write-back) that bypass `Stmt::Assign` and could theoretically write to a loop counter. These are currently unreachable because the counter is typed `t64` and the bypass paths carry `str` or struct payloads, which means a type mismatch in a different layer stops them. The commit records this as a latent hole that becomes reachable if loop counters ever gain non-`t64` types, with an explicit instruction that whoever makes that change must add the runtime guard in the same commit.
+
+## New known issues
+
+Three issues were filed, not fixed:
+
+- **#15:** Constant-index out-of-bounds and literal-zero division are decidable at analysis time but currently left to runtime, where the two backends reject them differently.
+- **#16:** String interpolation validation is runtime-checked, not compile-checked. The README claimed otherwise and was corrected.
+- **#17:** Diagnostics bugs: hardcoded position 0 in some error spans, and `%` operations reporting `/` in their error messages.
+
+None of these block release, but #16 is called out in the known-issues doc as the cleanest follow-up target.
+
+## What is next
+
+Submain is now 12 commits ahead of main with no merge conflicts visible. The merge has been predicted in every recent log and has not happened yet. Verification on submain stands at 396 fixtures, 345 PASS / 51 SKIP / 0 PARITY_FAIL. Main holds at 380/0.
+
+The 0.3.3 targets (expression receivers, array-return lowering, generic-function lowering) remain unstarted. The most likely near-term work is the submain merge followed by triage on the newly filed known issues.
