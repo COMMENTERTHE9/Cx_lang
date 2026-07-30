@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-07-29"
+date: 2026-07-29
+description: "A quiet day on the Cx repo with no new commits, while submain sits 12 commits ahead of main waiting for merge."
+---
+
+No human-authored commits landed in the last 24 hours. The repo is in a holding pattern right now, so this is a shorter update on where things stand and what's overdue.
+
+## Current State
+
+The test matrix on main holds at 380 PASS / 0 FAIL. Submain carries a separate verification run at 396 fixtures with 345 PASS, 51 SKIP, and 0 parity failures. Nothing is broken.
+
+v0.3.2 shipped on 2026-07-24 with gene/phen support, operator overloading, and the struct-return ABI fix. That release is stable and there have been no regressions reported since.
+
+## The Submain Situation
+
+Submain is now 12 commits ahead of main. That gap has been growing for a while. The branch carries:
+
+- Exit lowering
+- Const lowering
+- A parser guard fix
+- A README accuracy pass
+- The full C1-C4 enforcement-layer audit
+
+No merge conflicts are visible. All the changes are additive. This merge has been "most likely next" in every daily log for at least three days running, and it still hasn't happened. There is no technical blocker. The work is done, the tests pass, and the diff is clean.
+
+## Open Issues
+
+Known issues #15 through #17, filed on 07-27, remain open:
+
+- **#15**: Constant-index out-of-bounds and division issues
+- **#16**: Runtime-checked string interpolation (flagged as the cleanest follow-up, since it moves validation to the analysis phase)
+- **#17**: Diagnostics bugs
+
+None of these have been touched yet.
+
+## What's Next
+
+The same three items have been predicted in the last several daily logs, and none have moved:
+
+1. **Merge submain to main.** Twelve commits, no conflicts, tests passing. This is straightforward.
+2. **Triage known issues #15-#17.** Issue #16 is the most self-contained starting point.
+3. **Scope 0.3.3.** The stated targets are array-return lowering, generic-function lowering, and expression receivers. No implementation work has started on any of them.
+
+The project is in a stable post-release state. The next real progress marker is landing that submain merge and starting to scope the 0.3.3 milestone.
