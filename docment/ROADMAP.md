@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-07-30
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -102,6 +102,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-07-30:** Test harness now records and asserts rejection shapes (diagnostic vs. trap) per backend, closing a blind spot where C5/C6-class divergences hid behind `exit != 0`. `.expected_exit` sidecar now honoured in Rust harness (was shell-only). `enforcement_layers.md` locked as a design principle. Submain 14 commits ahead of main. Matrix main 380/0.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
