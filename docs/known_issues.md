@@ -898,19 +898,70 @@ print(10 / Z)      // same split — decidable since `fa95c12` tracks const name
 An array's length is in its type, and a literal or const-zero divisor is known
 at analysis time. Also covers `A:[-1]` and the out-of-bounds *write* form.
 
-**Why this matters more than "both reject":** the parity harness cannot tell the
-two apart. `TestExpectation::Fail` is `outcome.exit_code != 0`, so a hard trap
-satisfies a fixture whose interpreter behavior is a clean line-numbered
-diagnostic. Verified on shipped fixtures: `t_div_by_zero.cx` and
-`t_oob_negative_index.cx` both carry `.expected_fail` and both PASS parity with
-the JIT exiting 126. Every divergence of this class is invisible to the
-project's strictest gate.
+**The harness half — RESOLVED in `1f92b39`.** This class used to be invisible to
+the parity gate: `TestExpectation::Fail` was `outcome.exit_code != 0`, so a hard
+trap satisfied a fixture whose interpreter emits a clean line-numbered
+diagnostic. `t_div_by_zero.cx` and `t_oob_negative_index.cx` both PASSed parity
+with the JIT exiting 126.
 
-Fix shape: constant-fold the index and the divisor where both are statically
-known and reject in analysis; the runtime checks stay for computed values, which
-are genuinely runtime-only. Strengthening `TestExpectation::Fail` to compare
-against the interpreter's exit code, or adding an `.expected_error` sidecar,
-is the harness-side counterpart.
+The survey that preceded the fix changed what the fix should be. Across all 137
+`.expected_fail` fixtures the interpreter's error *kind* predicts the pair
+exactly, with no exceptions:
+
+| interpreter raises | JIT exits | n |
+|---|---|---|
+| PARSE (9), RESOLVE (4), SEMANTIC (99) | 1 | 112 |
+| **RUNTIME** | 126 | 18 |
+| **RUNTIME** | 127 (SKIP) | 2 |
+
+The 112 agree because parse/resolve/semantic errors are raised *before* backend
+dispatch — there, the two backends are the same code path. Every fixture that
+reaches a **runtime** error is (1, 126). That is a documented contract, not
+drift: `host_boundary.rs` picked 126 so "expected-fail fixtures see a clean
+rejection", and states outright that "exact-message parity with the interpreter
+is not required (the parity harness only checks for a non-zero exit on
+expected-fail fixtures)". The harness's weakness was written into the backend as
+a design assumption.
+
+So a rule "interpreter diagnoses ⇒ JIT must diagnose" would not have flagged 18
+divergences — it would have flagged the JIT's entire designed runtime-error
+channel. The harness now **records** the pair instead, via a `#!` directive in
+`.expected_fail`:
+
+```text
+#! interp=diagnostic jit=trap
+```
+
+asserted in both directions and on both backends. A `jit=diagnostic` fixture
+that starts trapping is flagged; a `jit=trap` one that stops is flagged; the
+interpreter's shape is asserted too, where the sidecar previously said nothing
+about it at all. The 18 are enumerable rather than invisible —
+`grep -l 'jit=trap' src/tests/verification_matrix/*.expected_fail`, or the
+`differing_rejection_shapes_are_enumerable` test, which prints the list.
+
+**What remains open, and is explicitly NOT scoped here.** Two things:
+
+1. *The language half of C5/C6* — a constant array index and a literal or
+   const-zero divisor are decidable from what analysis already holds. Fix shape:
+   constant-fold and reject in analysis; the runtime checks stay for computed
+   values, which are genuinely runtime-only.
+2. *The underlying asymmetry* — the interpreter has fifteen distinct runtime
+   diagnostics, the JIT has one `cx_trap`. Giving the JIT real per-error
+   diagnostics would collapse the 18 to (1, 1) naturally and let a strict
+   same-shape rule land for free. That is a backend feature and a roadmap
+   candidate, not a harness change; recorded here so the annotation is not
+   mistaken for the end state.
+
+**`.expected_exit` — also fixed in `1f92b39`, found unasked during the survey.**
+The sidecar was honoured by `run_matrix.sh` only; `collect_matrix_tests` had no
+branch for it, so the five `exit()` fixtures were classified from their
+`.expected_fail` companion and their designed codes (3, 4, 5, 7, 9) went
+unasserted on both backends — any non-zero satisfied them. It is now a
+first-class `ExitCode` expectation at the top of the sidecar priority order,
+matching `run_matrix.sh`. The `.expected_fail` companions are now redundant for
+classification and were deliberately **kept**: removing them changes five
+sidecars for no behavioural gain, and `run_matrix.sh` reads `.expected_exit`
+first as well.
 
 ---
 

@@ -129,7 +129,41 @@ Recorded so they are not mistaken for the principle being satisfied:
   `docs/known_issues.md` §15.
 - **String interpolation** is validated entirely at runtime, including cases
   that are pure string-literal-plus-scope facts. See `docs/known_issues.md` §16.
-- **The parity harness cannot see the difference.** `TestExpectation::Fail` is
-  satisfied by any non-zero exit, so a fixture passes whether the JIT emitted a
-  diagnostic or trapped. Strengthening it is the standing counterpart to this
-  principle.
+- **The JIT has one runtime-error channel.** The interpreter raises fifteen
+  distinct runtime diagnostics; the JIT funnels all of them through `cx_trap`
+  (exit 126). Eighteen fixtures reject in genuinely different shapes on the two
+  backends because of it. See `docs/known_issues.md` §15.
+
+---
+
+## The Harness Is The Enforcement Layer For Parity Claims
+
+The principle above governs where a *language* rule is enforced. There is an
+exact counterpart one level up: **the parity harness is the only layer that
+enforces the project's parity claims, so a fact the harness does not assert is a
+fact the project does not actually guarantee** — however often it is repeated in
+a README.
+
+This is not hypothetical. `.expected_fail` asserted `exit_code != 0` and nothing
+else, so "0 PARITY_FAIL" was silently a weaker statement than it appeared: a JIT
+hard trap satisfied a fixture whose interpreter emitted a clean line-numbered
+diagnostic. Separately, `.expected_exit` was honoured by `run_matrix.sh` but not
+by the Rust harness, so five fixtures asserting exit codes 3, 4, 5, 7 and 9 were
+in fact asserting only "non-zero". Both are fixed (`1f92b39`), and both were
+found by auditing the instrument rather than by a failure.
+
+Two rules follow, and they mirror the ones above:
+
+1. **A gate must assert the property it is cited for.** Before quoting a harness
+   number as evidence, check what the harness compares. "0 PARITY_FAIL" means
+   what `parity_by_feature` actually tests, not what the phrase suggests.
+2. **When two backends legitimately differ, record the difference — do not widen
+   the assertion to cover it.** Weakening a check until every current fixture
+   passes is how the original hole appeared. The rejection-shape annotation
+   exists because forbidding the (diagnostic, trap) pair would have flagged the
+   JIT's entire designed runtime-error channel, while ignoring it left the gate
+   blind; recording it does neither.
+
+A corollary worth stating: sidecars are part of the enforcement surface. A typo
+in an annotation must fail loudly rather than fall back to a default, or the
+sidecar becomes a place where checks quietly stop applying.
