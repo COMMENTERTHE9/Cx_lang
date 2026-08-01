@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-08-01
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -108,5 +108,7 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
 
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
+
+**2026-08-01:** Generic struct instantiations now lower on the JIT (`5dcd548` on submain). Type arguments retained on `StructInstance`, per-instantiation layout via `struct_instance_keys`, four discriminating canary fixtures. SKIP 51 → 46 on submain; generic functions remain open (§19, 8 fixtures). Submain 16 commits ahead of main. `docs/known_issues.md` §18-21 filed.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
