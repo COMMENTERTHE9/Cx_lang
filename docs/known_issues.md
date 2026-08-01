@@ -1007,3 +1007,169 @@ adding positions to those AST nodes — worth doing, out of scope for a check.
 **Wrong operator in the divide-by-zero message.** `print(10 % 0)` reports
 *"division by zero — the right-hand side of `'/'` evaluated to 0"*. The `Mod`
 arm in `src/runtime/ops.rs` reuses the `Div` diagnostic verbatim.
+
+---
+
+## 18. Generic struct instantiations now lower — FIXED in `5dcd548`
+
+**Status: FIXED for structs. Generic FUNCTIONS remain open — see §19.**
+
+Both halves of the generics SKIP cluster shared one root cause: `lower_type`
+([lower.rs](../src/ir/lower.rs)) has no IR type for `SemanticType::TypeParam`.
+They reported differently only because three call sites handle that same `Err`
+differently — the FuncDef emission loop propagates it with `?`, while
+`build_struct_table` and `build_signature_table` swallow it with `continue`. The
+struct half therefore surfaced far from its cause, as
+`unresolved semantic artifact reached lowering: struct type 'Pair'`.
+
+Analysis had already computed the substitution — it needs it to type- and
+range-check the fields — and then threw it away. The fix retains it:
+`SemanticExprKind::StructInstance` carries `type_args: Vec<SemanticType>`, and
+mangling to a table key (`Pair$t8`) happens only at the lowering boundary,
+following the `PhenDef` / `mangle_method` precedent rather than baking a mangled
+name into the semantic layer.
+
+**The part that was not obvious.** Retaining the arguments at the literal is
+only half of it. A binding's type *erases* the instantiation — `p: Pair =
+Pair<t8> { .. }` and `q: Pair = Pair<t64> { .. }` are both `Struct("Pair")` —
+so a field access cannot pick a layout from the type alone, and laying both out
+under the bare name would hand them ONE shared layout. `struct_instance_keys`
+maps a binding to the layout its storage actually has: populated at the
+construct site, where the instantiation is known; consulted at the access site,
+where it is not. A binding the map does not cover falls back to the bare name,
+which for a generic struct is never in the table — so it SKIPs cleanly instead
+of reading someone else's layout.
+
+Two consequences of that same erasure are handled explicitly:
+
+- the semantic field type at an access site is a placeholder (`T` resolves
+  against an empty type-parameter scope), so `resolve_field_ptr`'s IR-type
+  cross-check is skipped **for instantiations only** — it still applies in full
+  to plain structs, which is where it catches real mismatches;
+- `print`'s f64 branch keys on the semantic type and so missed `v.x` on a
+  `Vec2<f64>`; it now also routes on the lowered type. Anything whose semantic
+  type was already F64 took the earlier branch, so no existing behaviour moved.
+
+**Canary.** Layout sharing across instantiations would be silent corruption of
+the same family as the struct-return-slot bug, so it is pinned by four fixtures
+chosen to be discriminating rather than symmetric: differing widths
+(`1000000` does not fit `t8`), differing kinds (`f64` against `t32`), reversed
+declaration order (so neither first-wins nor last-wins passes), and differing
+field **offsets** (`t8`: 0,1 — `t64`: 0,8, so a shared offset table reads the
+second field from the wrong address).
+
+**Delta.** SKIP 51 → 46, exactly the five named fixtures, zero additions.
+Corpus 396 → 401 (five new canary/control fixtures), 0 FAIL. `cargo test`
+250/0, `--features jit` 425/0, parity **355 PASS / 46 SKIP / 0 PARITY_FAIL**,
+clippy 110/110.
+
+**Known coverage limit.** A function *returning* a generic struct
+(`fnc: Pair mk(..)`) still SKIPs: the return-slot path keys on the bare name
+from the signature, where no instantiation is recorded. It is a clean SKIP, not
+a wrong answer, and no corpus fixture exercises it. Field *writes*, generic
+structs as parameters, and `impl` blocks on generic structs are all still
+rejected by analysis, so they are not reachable regardless.
+
+---
+
+## 19. Generic functions need an instantiation-collection pass that does not exist
+
+**Status: OPEN — 8 fixtures.** `t37_generics_multi`, `t38_generics_array`,
+`t42_generics_identity_chain`, `t52_generics_multi_param`,
+`t53_generics_two_same`, `t_gene_bound_dispatch`, `t_gene_bound_forward`,
+`t_gene_bound_multi`.
+
+The struct half needed no collection pass because the concrete types are present
+*at the literal*. A generic function learns its types only at call sites,
+possibly several, and **nothing records them**: `analyze_call` builds a local
+`type_param_map`, uses it for bound checking, argument substitution and the
+return type, then constructs `SemanticExprKind::Call { callee, function, args }`
+without it. The map dies with the call.
+
+The interpreter does not monomorphize at all — it executes one generic body over
+dynamic values, and for gene-bound method calls dispatches on the runtime
+value's struct name, ignoring the recorded `struct_name` (which is the type
+parameter's own name, `"T"`).
+
+Gene/phen slice 5's machinery transfers only in part. Its **emission** half —
+given a concrete `SemanticFunction` under a mangled name, emit it through the
+ordinary function path — is exactly what a specialization needs, and is already
+proven. Its **collection** half does not exist, because `phen Compute (a: Adder)`
+names the concrete type at the declaration and never had to search for it.
+
+Three prerequisites, none present:
+
+1. **A transitive instantiation worklist.** Generic-calling-generic is reachable
+   today (`fnc: T <T> wrap(x: T) { id(x) }` runs on the interpreter), so
+   specializing `wrap@i64` creates a demand for `id@i64`.
+2. **Suppression of eager template emission.** [lower.rs](../src/ir/lower.rs)'s
+   FuncDef arm pushes every function unconditionally with `?`, so a generic
+   template declared and *never called* still fails lowering. Verified.
+3. **Return-type substitution before the signature is built.** `ret_struct_of`
+   matches only `Some(Struct(_))`; a generic returning `T` gives `TypeParam` and
+   falls to `None`, so a specialization returning a struct would silently miss
+   its hidden `$ret_slot` parameter — the same silent-corruption shape the
+   caller-allocated-slot fix closed.
+
+Scale is not the risk: across all thirteen cluster fixtures the maximum is **two**
+distinct instantiations of any one template. Termination is — see §20.
+
+---
+
+## 20. Interpreter stack overflow on type-growing recursive generics
+
+**Status: OPEN — a crash, not a diagnostic.**
+
+Self-recursion at the same `T` is fine (`rec(7, 3)` → `7`, and it would
+monomorphize to a single self-calling specialization). But a generic function
+that recurses at a *larger* type is expressible, and invoking it kills the
+interpreter:
+
+```cx
+struct Box<T> { v: T }
+fnc: T <T> grow(x: T) { grow(Box { v: x }) }
+print(grow(1))
+```
+
+```
+thread 'cx-interpreter' (28196) has overflowed its stack
+[exit 127]
+```
+
+No diagnostic; the process dies. Two things make it worse than an ordinary
+crash: the type sequence `T`, `Box<T>`, `Box<Box<T>>`, … is infinite and
+analysis does not detect it, and the exit code **127 collides with the parity
+harness's SKIP sentinel** (`JIT_SKIP_EXIT_CODE`), so a crashing program is
+shaped like an unsupported construct.
+
+Declared-and-uncalled, both backends accept it, so this is reachable only by
+actually invoking such a function. It also sets the termination requirement for
+§19: monomorphization needs a depth or distinct-instantiation cap that produces
+a real diagnostic.
+
+---
+
+## 21. `build_signature_table` still swallows `lower_type` errors; `run_matrix.sh` drops `--features jit`
+
+**Status: OPEN — both filed rather than fixed, with reasons.**
+
+**The swallow.** `build_struct_table` and `build_signature_table` both discard a
+`lower_type` failure with `continue`, converting a precise type error into a
+missing-artifact error reported at a distant site — the anti-pattern
+`docs/frontend/enforcement_layers.md` warns about, and the reason the
+generic-struct cluster's message was confusing.
+
+For `build_struct_table` this is now benign, and that was measured rather than
+assumed: an instrumented build that logged every **non-generic** struct dropped
+by the `continue` was run across all 401 fixtures and reported **none**. The
+only case it swallows is a generic template, which genuinely has no layout.
+`build_signature_table` still swallows for generic *functions*, which is the §19
+path; propagating there is a decision about that slice, not this one.
+
+**The harness tax.** `src/tests/run_matrix.sh` invokes `cargo run --quiet` with
+no `--features jit`, so running the matrix silently replaces the JIT binary and
+any parity number derived afterwards is wrong (this cost a re-derivation during
+the generics audit). **Filed, not fixed**: it is two occurrences rather than one
+line, and it changes which binary the project's primary corpus gate exercises —
+validating that properly means a full matrix re-run and comparison, which is its
+own small change rather than a footnote to a lowering slice.
