@@ -151,6 +151,23 @@ pub enum SemanticExprKind {
     },
     StructInstance {
         type_name: String,
+        /// Concrete types substituted for the struct's generic parameters at
+        /// THIS literal, in declared-parameter order. Empty for a non-generic
+        /// struct.
+        ///
+        /// Both instantiation forms populate it: the explicit
+        /// `Pair<t32> { .. }` reads them off the literal, and the inferred
+        /// `Pair { a: 1, b: 2.5 }` derives them from the field values' analysed
+        /// types. Analysis already computed this substitution to type- and
+        /// range-check the fields (semantic.rs, the `instantiation` map) and
+        /// then discarded it; retaining it is what lets lowering build a
+        /// distinct layout per instantiation instead of dropping the struct.
+        ///
+        /// Kept as structured `SemanticType`s, NOT a pre-mangled name: the
+        /// mangling is a lowering-table-key concern and is applied at that
+        /// boundary, the same way `PhenDef` keeps a real `receiver_type` and
+        /// `mangle_method` builds the key.
+        type_args: Vec<SemanticType>,
         fields: Vec<(String, SemanticExpr)>,
     },
     When {

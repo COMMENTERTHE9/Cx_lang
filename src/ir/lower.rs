@@ -138,6 +138,61 @@ fn mangle_method(struct_name: &str, method: &str) -> String {
     format!("{}${}", struct_name, method)
 }
 
+/// Struct-layout table key for one instantiation: `Pair` when non-generic,
+/// `Pair$t8` / `Vec2$f64` when generic.
+///
+/// The `$` separator is the same convention `mangle_method` uses, and is
+/// collision-free for the same reason: `$` cannot appear in a user identifier.
+/// Mangling happens HERE, at the lowering boundary, and nowhere earlier — the
+/// semantic layer carries structured `SemanticType` arguments on the literal,
+/// mirroring how `PhenDef` keeps a real `receiver_type` and lets
+/// `mangle_method` build the key.
+fn mangle_struct_instance(base: &str, type_args: &[SemanticType]) -> String {
+    if type_args.is_empty() {
+        return base.to_string();
+    }
+    let mut key = base.to_string();
+    for arg in type_args {
+        key.push('$');
+        key.push_str(&crate::frontend::semantic::type_name(arg));
+    }
+    key
+}
+
+/// Build the layout for one instantiation of a generic struct by substituting
+/// its type arguments into the declared field types.
+///
+/// Returns `None` when any substituted field still has no IR type — an
+/// unresolved parameter, or a field type the backend does not lower yet. The
+/// caller then leaves the key absent, so the construct site SKIPs cleanly
+/// rather than producing a layout that is wrong for the instantiation.
+fn instantiate_struct_layout(
+    declared_fields: &[(String, SemanticType)],
+    type_params: &[String],
+    type_args: &[SemanticType],
+) -> Option<StructLayoutInfo> {
+    if type_params.len() != type_args.len() {
+        return None;
+    }
+    let subst: HashMap<String, SemanticType> = type_params
+        .iter()
+        .cloned()
+        .zip(type_args.iter().cloned())
+        .collect();
+
+    let mut ir_fields = Vec::new();
+    let mut field_types = Vec::new();
+    for (fname, fty) in declared_fields {
+        let concrete =
+            crate::frontend::semantic::substitute_type_params(fty.clone(), &subst);
+        let ir_ty = lower_type(&concrete).ok()?;
+        ir_fields.push((fname.clone(), ir_ty.clone()));
+        field_types.push(ir_ty);
+    }
+    let layout = compute_struct_layout(&field_types);
+    Some(StructLayoutInfo { fields: ir_fields, layout })
+}
+
 fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionSignature> {
     let mut table = HashMap::new();
     for stmt in &program.stmts {
@@ -340,6 +395,27 @@ struct StructLayoutInfo {
     layout: StructLayout,
 }
 
+/// Declared shape of every GENERIC struct, kept for on-demand instantiation.
+///
+/// `build_struct_table` cannot lay these out — their field types are still
+/// type parameters, so `lower_type` has no answer and the struct is skipped.
+/// That is correct: a template has no layout. What was missing is anything that
+/// remembers the template, so a concrete instantiation could be laid out when
+/// one is actually constructed. This is that record.
+type GenericStructTemplates = HashMap<String, (Vec<String>, Vec<(String, SemanticType)>)>;
+
+fn build_generic_struct_templates(program: &SemanticProgram) -> GenericStructTemplates {
+    let mut table = HashMap::new();
+    for stmt in &program.stmts {
+        if let SemanticStmt::StructDef { name, type_params, fields, .. } = stmt {
+            if !type_params.is_empty() {
+                table.insert(name.clone(), (type_params.clone(), fields.clone()));
+            }
+        }
+    }
+    table
+}
+
 fn build_struct_table(program: &SemanticProgram) -> HashMap<String, StructLayoutInfo> {
     let mut table = HashMap::new();
     for stmt in &program.stmts {
@@ -433,6 +509,23 @@ struct LoweringCtx {
     /// params), last-wins. See `lower_interpolated_print` for the FILED
     /// scope-limitation note.
     binding_names: HashMap<String, BindingId>,
+    /// Declared shape of each generic struct, for laying out an instantiation
+    /// the first time one is constructed.
+    generic_structs: GenericStructTemplates,
+    /// Which `struct_table` layout a binding's storage actually has.
+    ///
+    /// Needed because a binding's semantic type erases the instantiation:
+    /// `p: Pair = Pair<t8> { .. }` and `q: Pair = Pair<t64> { .. }` both type
+    /// as `Struct("Pair")`, so a field access has no way to tell them apart
+    /// from the type alone — and laying both out under the bare name would give
+    /// them ONE shared layout, silently reading `q.b` at t8's width. This map
+    /// is populated where the instantiation IS known (the construct site) and
+    /// consulted where it is not (the access site).
+    ///
+    /// A binding that is absent falls back to the bare struct name, which for a
+    /// generic struct is never in `struct_table` — so an access this map does
+    /// not cover SKIPs cleanly instead of reading a wrong layout.
+    struct_instance_keys: HashMap<BindingId, String>,
 }
 
 struct ActiveBlock {
@@ -484,6 +577,7 @@ impl LoweringCtx {
     fn new(
         signature_table: HashMap<String, FunctionSignature>,
         struct_table: HashMap<String, StructLayoutInfo>,
+        generic_structs: GenericStructTemplates,
         trace: bool,
         target: TargetConfig,
     ) -> Self {
@@ -495,6 +589,24 @@ impl LoweringCtx {
             trace,
             target,
             binding_names: HashMap::new(),
+            generic_structs,
+            struct_instance_keys: HashMap::new(),
+        }
+    }
+
+    /// Remember which instantiation a binding's storage has, whenever the
+    /// initialiser makes it knowable. Only generic instantiations are recorded
+    /// — a plain struct already resolves by its bare name.
+    fn note_struct_instance_binding(
+        &mut self,
+        binding: crate::frontend::semantic_types::BindingId,
+        expr: &SemanticExpr,
+    ) {
+        if let SemanticExprKind::StructInstance { type_name, type_args, .. } = &expr.kind {
+            if !type_args.is_empty() {
+                self.struct_instance_keys
+                    .insert(binding, mangle_struct_instance(type_name, type_args));
+            }
         }
     }
 
@@ -590,6 +702,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let mut has_real_main = false;
     let signature_table = build_signature_table(program);
     let struct_table = build_struct_table(program);
+    let generic_structs = build_generic_struct_templates(program);
     // Single place where the compilation target is chosen; threaded into every
     // lowering context so all target-dependent decisions use the same config.
     let target = TargetConfig::host();
@@ -608,7 +721,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, trace, target)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, trace, target)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
@@ -658,7 +771,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, trace, target)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, trace, target)?);
                 }
             }
             // 0.3.4 slice 5: phen methods emit exactly like impl methods —
@@ -704,7 +817,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, trace, target)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, trace, target)?);
                 }
             }
             other => top_level_stmts.push(other),
@@ -719,20 +832,20 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, trace, target)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, trace, target)?);
     }
 
     Ok(module)
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, trace: bool, target: TargetConfig) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, trace: bool, target: TargetConfig) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
         allow_return_stmt: false,
         ret_slot: None,
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target);
     // D2.3d: flat name→binding map for print-time string interpolation.
     for &stmt in stmts {
         collect_binding_names_stmt(stmt, &mut ctx.binding_names);
@@ -761,6 +874,7 @@ fn lower_semantic_function(
     function: &crate::frontend::semantic_types::SemanticFunction,
     signature_table: &HashMap<String, FunctionSignature>,
     struct_table: &HashMap<String, StructLayoutInfo>,
+    generic_structs: &GenericStructTemplates,
     trace: bool,
     target: TargetConfig,
 ) -> Result<IrFunction, LoweringError> {
@@ -772,7 +886,7 @@ fn lower_semantic_function(
         None => None,
     };
 
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), trace, target);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target);
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -961,6 +1075,7 @@ fn lower_stmt(
                     current
                         .bindings
                         .insert(*binding, LoweredValue { value: dst, ty: target_ty });
+                    ctx.note_struct_instance_binding(*binding, expr);
                     Ok(Some(current))
                 }
                 SemanticLValue::DotAccess { binding, container, field, ty, struct_name } => {
@@ -1040,6 +1155,7 @@ fn lower_stmt(
             current
                 .bindings
                 .insert(*binding, LoweredValue { value: dst, ty: bind_ty });
+            ctx.note_struct_instance_binding(*binding, expr);
             Ok(Some(current))
         }
         SemanticStmt::ExprStmt { expr, .. } => {
@@ -2448,10 +2564,26 @@ fn lower_expr(
         //
         // Field ordering in the literal need not match definition order; we look up
         // each canonical field name in the literal's field list by name.
-        SemanticExprKind::StructInstance { type_name, fields } => {
-            let layout_info = ctx.struct_table.get(type_name).cloned().ok_or_else(|| {
+        SemanticExprKind::StructInstance { type_name, type_args, fields } => {
+            // One layout per instantiation, laid out the first time this
+            // instantiation is constructed. `build_struct_table` cannot do it
+            // up front: it walks StructDefs, and a generic StructDef has no
+            // layout until its arguments are known — which happens here, at
+            // the literal. Distinct instantiations get distinct keys, so
+            // `Pair<t8>` and `Pair<t64>` never share storage.
+            let layout_key = mangle_struct_instance(type_name, type_args);
+            if !ctx.struct_table.contains_key(&layout_key) {
+                if let Some((params, decl_fields)) = ctx.generic_structs.get(type_name).cloned() {
+                    if let Some(info) =
+                        instantiate_struct_layout(&decl_fields, &params, type_args)
+                    {
+                        ctx.struct_table.insert(layout_key.clone(), info);
+                    }
+                }
+            }
+            let layout_info = ctx.struct_table.get(&layout_key).cloned().ok_or_else(|| {
                 LoweringError::UnresolvedSemanticArtifact {
-                    artifact: format!("struct type '{}'", type_name),
+                    artifact: format!("struct type '{}'", layout_key),
                 }
             })?;
 
@@ -4292,9 +4424,21 @@ fn resolve_field_ptr(
             ),
         });
     }
-    let info = ctx.struct_table.get(struct_name).cloned().ok_or_else(|| {
+    // The binding's own instantiation key when one was recorded at the
+    // construct site, else the bare semantic name. `struct_name` comes from the
+    // binding's type, which erases the instantiation — `Pair<t8>` and
+    // `Pair<t64>` are both `Struct("Pair")` — so for a generic struct the bare
+    // name is not enough to pick a layout, and is deliberately never present in
+    // `struct_table`. An unrecorded binding therefore SKIPs here rather than
+    // reading some other instantiation's layout.
+    let layout_key = ctx
+        .struct_instance_keys
+        .get(&binding_id)
+        .cloned()
+        .unwrap_or_else(|| struct_name.to_string());
+    let info = ctx.struct_table.get(&layout_key).cloned().ok_or_else(|| {
         LoweringError::UnresolvedSemanticArtifact {
-            artifact: format!("struct '{struct_name}' in field access '{container}.{field}'"),
+            artifact: format!("struct '{layout_key}' in field access '{container}.{field}'"),
         }
     })?;
 
@@ -4310,15 +4454,32 @@ fn resolve_field_ptr(
     let field_ir_ty = info.fields[field_idx].1.clone();
     let field_offset = info.layout.field_offsets[field_idx];
 
-    // Verify that the semantic field type agrees with what the struct table says.
-    let expected_ir_ty = lower_type(field_sem_ty)?;
-    if expected_ir_ty != field_ir_ty {
-        return Err(LoweringError::InternalInvariantViolation {
-            detail: format!(
-                "field access '{container}.{field}': IR type mismatch — \
-                 semantic layer says {expected_ir_ty:?}, struct layout says {field_ir_ty:?}"
-            ),
-        });
+    // Verify that the semantic field type agrees with what the struct table
+    // says — EXCEPT for a generic instantiation, where the semantic type is
+    // known to be a placeholder rather than a second opinion.
+    //
+    // At an access site the semantic layer has only the binding's type,
+    // `Struct("Pair")`, with the instantiation erased; it resolves `first: T`
+    // against an empty type-parameter scope, so `T` surfaces as an unresolved
+    // struct name and lowers to Ptr. The layout, by contrast, was built by
+    // substituting the arguments recorded at the CONSTRUCT site into the
+    // declared field types — strictly better information. Cross-checking a
+    // placeholder against the real thing would reject every correct access.
+    //
+    // The check still applies in full to non-generic structs, which is where it
+    // earns its keep; `is_instantiation` is true only when the construct site
+    // recorded a key for this binding.
+    let is_instantiation = ctx.struct_instance_keys.contains_key(&binding_id);
+    if !is_instantiation {
+        let expected_ir_ty = lower_type(field_sem_ty)?;
+        if expected_ir_ty != field_ir_ty {
+            return Err(LoweringError::InternalInvariantViolation {
+                detail: format!(
+                    "field access '{container}.{field}': IR type mismatch — \
+                     semantic layer says {expected_ir_ty:?}, struct layout says {field_ir_ty:?}"
+                ),
+            });
+        }
     }
 
     // 4. Advance the pointer to the field's address (skip if offset is 0).
@@ -5787,6 +5948,28 @@ fn lower_print_stmt(
         return Ok(Some(current));
     }
     let arg = lower_expr(arg_expr, ctx, &mut current)?;
+    // The f64 branch above keys on the SEMANTIC type, which is imprecise for a
+    // field read on a generic-struct instantiation: the binding types as
+    // `Struct("Pair")` with the instantiation erased, so `v.x` on a `Vec2<f64>`
+    // arrives here as an unresolved struct rather than F64. The LOWERED type is
+    // right — it came from the instantiated layout — so route on that. Anything
+    // whose semantic type was already F64 took the earlier branch, so this
+    // changes no existing behaviour.
+    if arg.ty == IrType::F64 {
+        current.emit(IrInst::Call {
+            dst: None,
+            callee: "cx_print_f64_inline".to_string(),
+            args: vec![arg.value],
+            return_ty: None,
+        })?;
+        current.emit(IrInst::Call {
+            dst: None,
+            callee: "cx_print_newline".to_string(),
+            args: vec![],
+            return_ty: None,
+        })?;
+        return Ok(Some(current));
+    }
     let (routed_value, callee) = route_print_arg(arg.value, arg.ty.clone(), ctx, &mut current)?
         .ok_or_else(|| LoweringError::UnsupportedSemanticConstruct {
             construct: format!(

@@ -1559,6 +1559,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         match expr {
             Expr::Val(AstValue::StructInstance(type_name, type_args, field_exprs, pos)) => {
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
+                // Concrete types bound to the struct's generic params at this
+                // literal. The explicit path fills it from `instantiation`; the
+                // inferred path accumulates it from the field values below.
+                let mut resolved_args: std::collections::HashMap<String, SemanticType> =
+                    std::collections::HashMap::new();
+                let mut declared_params_out: Vec<String> = Vec::new();
                 if let Some(struct_fields) = self.structs.get(type_name).cloned() {
                     // The struct's own generic parameters must be in scope when
                     // resolving its field types, so e.g. `first: T` resolves to a
@@ -1584,6 +1590,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             .zip(type_args.iter().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params)))
                             .collect()
                     };
+                    resolved_args = instantiation.clone();
+                    declared_params_out = declared_params.clone();
                     let mut field_type_params = declared_params;
                     field_type_params.extend(self.current_type_params.iter().cloned());
                     // strref fields cannot be stored in a struct — reject at instantiation
@@ -1620,6 +1628,31 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                                 if !types_compatible(&decl_sem, &sem_expr.ty) {
                                     return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
                                 }
+                                // Inferred instantiation: when the declared
+                                // field type is still a bare type parameter
+                                // (`instantiation` was empty, so no explicit
+                                // `<T>` pinned it), the value's analysed type
+                                // IS the binding for that parameter. First
+                                // field wins, matching how `analyze_call`
+                                // infers a function's type params from its
+                                // first typed argument.
+                                if let SemanticType::TypeParam(p) = &decl_sem {
+                                    resolved_args.entry(p.clone()).or_insert_with(|| {
+                                        // An unsuffixed literal is still
+                                        // `Numeric` here — nothing narrowed it,
+                                        // because the field's declared type was
+                                        // `T`. Pin it to the default integer so
+                                        // the instantiation is a concrete type;
+                                        // this matches what the interpreter
+                                        // stores (`Pair { a: 1, b: 300 }` reads
+                                        // back 300, so the width must be wide).
+                                        if sem_expr.ty == SemanticType::Numeric {
+                                            SemanticType::I64
+                                        } else {
+                                            sem_expr.ty.clone()
+                                        }
+                                    });
+                                }
                                 sem_expr
                             }
                         };
@@ -1638,10 +1671,20 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         semantic_fields.push((fname.clone(), sem_expr));
                     }
                 }
+                // Emit in declared-parameter order so the lowering key is
+                // stable regardless of field order. A parameter no field
+                // mentions stays unresolved: it is left out, which leaves the
+                // arity short and makes lowering skip the instantiation
+                // cleanly rather than guess.
+                let type_args_out: Vec<SemanticType> = declared_params_out
+                    .iter()
+                    .filter_map(|p| resolved_args.get(p).cloned())
+                    .collect();
                 Ok(SemanticExpr {
                     ty: SemanticType::Struct(type_name.clone()),
                     kind: SemanticExprKind::StructInstance {
                         type_name: type_name.clone(),
+                        type_args: type_args_out,
                         fields: semantic_fields,
                     },
                 })
@@ -3378,7 +3421,7 @@ fn stmt_anchor_pos(stmt: &Stmt) -> usize {
     }
 }
 
-fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
+pub(crate) fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
     match ty {
         SemanticType::TypeParam(name) => {
             map.get(&name).cloned().unwrap_or(SemanticType::TypeParam(name))
