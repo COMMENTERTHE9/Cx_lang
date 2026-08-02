@@ -1517,3 +1517,107 @@ pre-existing fixtures moved.
 The limit is documented in the README under "Limits that apply to every run",
 separately from the JIT-lowering list — it is an interpreter limit, so it binds
 every ordinary run, not only JIT-compiled ones.
+
+---
+
+## 25. JIT call-depth guard — the third crash-instead-of-rejection instance, FIXED in `664850d`
+
+**Status: FIXED. The pattern is closed** — this was the last backend that
+crashed where the other rejected.
+
+Compiled code recurses natively, so unbounded Cx recursion took the process's
+stack: `0xC00000FD` on Windows, no diagnostic. **Worse than the interpreter's
+old behaviour**, which at least exited 127 and so masqueraded as a SKIP — the
+raw crash code is `-1073741571`, which is nothing the harness recognises, so it
+parity-failed outright.
+
+Three instances of the same shape are now resolved, and they were found in
+sequence, each unblocking the next:
+
+1. §15 — the harness could not tell a diagnosis from a crash at all.
+2. §24 — the interpreter crashed on unbounded recursion.
+3. §25 — the JIT crashed on the same program.
+
+The evidence that it is closed is `t_interp_recursion_guard`, a fixture that
+**could not be written** while either backend crashed: the rejection-shape
+harness correctly refused to call a crash a rejection. It now lands, annotated
+`interp=diagnostic jit=diagnostic`, as a parity PASS.
+
+### Mechanism, and why not the cheaper one
+
+A **frame counter**, incremented by a host callback at each Cx function's entry
+and decremented before each return — the `cx_trap` / `cx_handle_new` precedent,
+with a process-lifetime `AtomicUsize` for the same reason `HANDLES` uses a
+static (`jit_builder.symbol()` registers raw function pointers, so a closure
+over state is not an option).
+
+**A stack probe is disqualified, not merely worse.** Comparing SP against a
+limit is far cheaper — two or three instructions, no call — but it terminates on
+*bytes consumed*, which varies per function. It could never agree with the
+interpreter's 256-**frame** limit, and approximate agreement between backends is
+a divergence. Matching semantics is what costs a counter.
+
+Exit **1**, not the 126 trap path, deliberately: both backends then reject in
+the same *shape*, so the fixture states agreement rather than papering over a
+difference with `jit=trap`.
+
+### Boundary agreement — exact, and it needed a fix
+
+The first version counted `main` and refused at 255 where the interpreter
+refused at 256. A one-frame disagreement between backends is a divergence, not a
+rounding difference. `main` is now excluded, matching the interpreter's guard,
+which lives in `call_semantic_func`/`call_semantic_method` and therefore counts
+nested *user* calls — top-level code is not inside one.
+
+| depth | 254 | 255 | 256 | 257 |
+|---|---|---|---|---|
+| interpreter exit | 0 | 0 | 1 | 1 |
+| JIT exit | 0 | 0 | 1 | 1 |
+
+The limit is shared, not duplicated: the backend reads
+`crate::runtime::runtime::MAX_CALL_DEPTH`.
+
+### The measured cost — recorded so it is findable, not folklore
+
+`fib(30)`, ~2.7M Cx calls, JIT, five runs each:
+
+```
+with guard:     151 · 123 · 141 · 123 · 123 ms      (min 123)
+without guard:  103 ·  97 · 109 ·  94 · 102 ms      (min  94)
+```
+
+**+29 ms, ≈ +31% on call-saturated code; ≈ 11 ns per Cx call** for the two host
+calls. That is the upper bound: a program with no calls pays nothing, and real
+code sits between in proportion to its call density.
+
+The cost was measured before the mechanism was recommended, and the number was
+ruled on rather than absorbed silently.
+
+### Filed follow-up: cycle-only guarding
+
+Only functions that can participate in a call cycle can recurse, so only they
+need a counter. The soundness precondition has been checked and **holds**: the
+static call graph is complete, because Cx has no indirect call of any kind —
+`IrInst::Call.callee` is a `String` and never a `ValueId`, the Cranelift backend
+emits no `call_indirect`, and neither `Type` nor `SemanticType` has a function or
+callable variant, so a function cannot be stored in a variable, a struct field,
+an array element, or a `Handle` payload. Every edge is a compile-time-known
+name: direct calls, methods and operator genes (desugared to
+`mangle_method`), phens (monomorphized at their declaration), and generic
+functions (monomorphized to `name$type`). Builtins are `cx_*` leaves.
+
+An inline counter (Cranelift `declare_data` / `declare_data_in_func` /
+`create_global_value`, all present in 0.115.1) would cut the per-call cost to
+roughly a tenth by replacing the two host calls with a load/add/store and a
+compare. Cycle-only guarding and the inline counter are independent and
+compose.
+
+### Delta
+
+Corpus 412 → 413 (`t_interp_recursion_guard`), 0 FAIL. `cargo test` 250/0,
+`--features jit` 425/0, parity 372/40/0 → **373 PASS / 40 SKIP / 0 PARITY_FAIL**,
+clippy 110/110. SKIP set unchanged — zero pre-existing fixtures moved; the new
+fixture lands as a PASS, not a SKIP, which is the whole point.
+
+The call-depth limit is documented in the README under "Limits that apply to
+every run", which is now literally accurate: it binds both backends identically.

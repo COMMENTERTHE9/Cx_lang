@@ -66,8 +66,8 @@ As of `v0.3.2`:
 
 - **250 unit tests passing** (`cargo test`)
 - **425 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **412 verification fixtures**
-- **JIT parity: 372 PASS / 40 SKIP / 0 PARITY_FAIL** across all 412 fixtures
+- **413 verification fixtures**
+- **JIT parity: 373 PASS / 40 SKIP / 0 PARITY_FAIL** across all 413 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -384,10 +384,10 @@ As of `v0.3.2`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 372 |
+| PASS | 373 |
 | SKIP | 40 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **412** |
+| **Total fixtures** | **413** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 
@@ -395,7 +395,7 @@ As of `v0.3.2`:
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 40 of 412 fixtures):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 40 of 413 fixtures):
 
 - the `input` builtin
 - nested function definitions
@@ -421,19 +421,17 @@ Two limits are visible from Cx itself rather than being backend details. Both
 refuse the program with a diagnostic rather than failing silently or running
 forever, and both sit far above anything real code does.
 
-- **Call depth: 256 nested calls.** A Cx call is a native recursion inside the
-  interpreter, so unbounded recursion used to take the process's stack with it —
-  no message and no line. It is now an ordinary runtime error naming the
-  function. For scale: the deepest recursion in the fixture corpus is `fib(15)`,
-  at depth 15, and the interpreter's measured crash point was around 492.
+- **Call depth: 256 nested calls — on both backends, at the same frame.** A Cx
+  call is a native recursion in the interpreter and in compiled code alike, so
+  unbounded recursion used to take the process's stack either way, with no
+  message and no line. Both now refuse with an ordinary runtime error, and they
+  refuse at exactly the same depth: 255 runs everywhere, 256 is refused
+  everywhere. For scale: the deepest recursion in the fixture corpus is
+  `fib(15)`, at depth 15.
 - **Instantiations of one generic function: 64 distinct type arguments.** A
   recursive call that instantiates itself at an ever-larger type will exceed it;
   the diagnostic names the function and shows the growth. This one is a JIT-side
   limit — the monomorphizer's — since the interpreter never specializes.
-
-Unbounded recursion in JIT-compiled code is **not** yet guarded: compiled code
-genuinely recurses until the native stack is gone. That guard is tracked
-separately.
 
 These are **not implemented in any backend yet**:
 
