@@ -66,8 +66,8 @@ As of `v0.3.2`:
 
 - **250 unit tests passing** (`cargo test`)
 - **425 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **406 verification fixtures**
-- **JIT parity: 359 PASS / 47 SKIP / 0 PARITY_FAIL** across all 406 fixtures
+- **410 verification fixtures**
+- **JIT parity: 371 PASS / 39 SKIP / 0 PARITY_FAIL** across all 410 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -384,10 +384,10 @@ As of `v0.3.2`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 359 |
-| SKIP | 47 |
+| PASS | 371 |
+| SKIP | 39 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **406** |
+| **Total fixtures** | **410** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 
@@ -395,9 +395,8 @@ As of `v0.3.2`:
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 47 of 406 fixtures):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 39 of 410 fixtures):
 
-- generic functions, and generic-struct instantiation
 - the `input` builtin
 - nested function definitions
 - `while-in` loops
@@ -408,6 +407,13 @@ These features **work in the interpreter** but are **not yet lowered to the JIT*
 - `char`-typed values
 - `.copy` / `.copy.free` / `copy_into` parameter kinds
 - string interpolation of non-identifier expressions
+
+Generic functions and generic structs **do** lower, by monomorphization — one
+specialized native function per distinct set of type arguments. One limit is
+visible from Cx: a single generic function may be instantiated at at most **64
+distinct types**, which a recursive call that instantiates itself at an
+ever-larger type will exceed. That is refused with a diagnostic naming the
+function and the growth, rather than compiling forever.
 
 These are **not implemented in any backend yet**:
 
@@ -530,7 +536,7 @@ Do not use it for production applications yet.
 
 Near-term priorities:
 
-- expand JIT lowering toward the interpreter surface (generic functions, array returns, `while-in`, `const`, `t128` printing)
+- expand JIT lowering toward the interpreter surface (array returns, `while-in`, `const`, `t128` printing)
 - lift the operator-dispatch named-variable restriction (expression receivers)
 - broaden examples and documentation
 - continue ownership and memory tooling

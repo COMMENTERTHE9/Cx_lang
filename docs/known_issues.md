@@ -1074,7 +1074,10 @@ rejected by analysis, so they are not reachable regardless.
 
 ## 19. Generic functions need an instantiation-collection pass that does not exist
 
-**Status: OPEN — 8 fixtures.** `t37_generics_multi`, `t38_generics_array`,
+**Status: FIXED in `959a980` — see §23, which supersedes this entry. Kept for the
+design record: the three prerequisites named below are what the fix implements.**
+
+~~**Status: OPEN — 8 fixtures.**~~ `t37_generics_multi`, `t38_generics_array`,
 `t42_generics_identity_chain`, `t52_generics_multi_param`,
 `t53_generics_two_same`, `t_gene_bound_dispatch`, `t_gene_bound_forward`,
 `t_gene_bound_multi`.
@@ -1272,3 +1275,132 @@ PARITY_FAIL**, clippy 110/110.
 earlier, it does not lower anything new. The single SKIP addition is
 `t_bound_method_still_works`, the new anti-overcorrection fixture: it exercises
 generic *functions*, which do not lower yet for the pre-existing §19 reason.
+
+---
+
+## 23. Generic functions monomorphize — FIXED in `959a980` (supersedes §19)
+
+**Status: FIXED, for the plain and the bounded case alike.** §19 listed three
+prerequisites and named the bounded case as a separate slice; all of it landed
+together, for a reason worth recording below.
+
+One specialized `SemanticFunction` per (template, concrete type arguments),
+emitted through the ordinary function-lowering path and called directly by a
+mangled name — the shape gene/phen slice 5 already ships for phens. The
+difference §19 identified holds: a phen names its concrete type at the
+*declaration*, while a generic function learns its types only at call sites.
+
+### What made it tractable
+
+`analyze_call` already derives the substitution — it needs it to check bounds,
+substitute argument types and compute the return type — and used to discard it.
+`Call` now records it as `type_args`.
+
+The record is **not always concrete**, and that is the useful part. A call inside
+a generic body records the enclosing function's parameters *symbolically*:
+`id(x)` inside `wrap<T>` records `[TypeParam("T")]`. Specializing `wrap` under
+`{T -> I64}` turns that into `[I64]` by ordinary substitution. So propagation is
+**map composition**, not re-derivation — no second inference engine outside the
+analyser, which is what the alternative would have required.
+
+One narrowing detail: an unsuffixed literal argument is still `Numeric` when it
+binds a type parameter, and a specialization's signature needs a concrete type.
+It is pinned to the default integer **in the recorded vector only**, never in
+`type_param_map` — narrowing the map would change what analysis accepts
+(`x: t8 = identity(100)` would stop type-checking).
+
+### The walker
+
+New, over `SemanticStmt` (23 variants) and `SemanticExprKind` (20), with **no
+catch-all arm**, so a future variant is a compile error in `monomorphize.rs`
+rather than a silently unvisited subtree. `map_stmt_types` was not reusable on
+three counts: it walks the AST not the semantic tree, maps AST `Type` not
+`SemanticType`, and never descends into expressions at all — which is where
+calls live. `collect_binding_names_stmt` was a partial precedent for the
+statement half only (7 of 23 variants, 0 expression variants).
+
+Four name-carrying fields are rewritten alongside the types: `Call.callee`,
+`MethodCall.struct_name`, `StructInstance.type_name`/`type_args`, and
+`DotAccess.struct_name`.
+
+### Why the bounded case came along
+
+§19 scoped `t_gene_bound_*` as a separate slice. It converted with this one,
+because the walker must rewrite `MethodCall.struct_name` to be exhaustive — and
+that substitution *was* the whole of the bounded case's job, exactly as the
+design predicted: it fixes both the callee (`mangle_method` then produces
+`Adder$apply`, already in the signature table) and the receiver argument's
+synthesized type, since the desugaring at `lower.rs` uses `struct_name` twice.
+
+`t_gene_bound_dispatch` prints **15 | 50** on both backends — the discriminating
+result its own comment names, where a monomorphization leak would print 15/15 or
+50/50. So this is real per-instantiation dispatch, not a collapse.
+
+### Termination, and what the cap actually catches
+
+A per-template cap of 64 distinct instantiations, with a diagnostic naming the
+template and the first few instantiation types so the growth is visible. A
+per-template count is the natural guard because the dedup map already tracks
+exactly that; a depth cap has no meaning in a worklist, which has no stack.
+
+**§20's `grow` program does not explode the worklist.** Worth recording, because
+it is the opposite of what the design assumed:
+
+```cx
+struct Box<T> { v: T }
+fnc: T <T> grow(x: T) { grow(Box { v: x }) }
+```
+
+`Box { v: x }` types as `Struct("Box")` — struct type arguments are erased from
+`SemanticType` — so `Box<Box<T>>` and `Box<T>` are the *same* key and the
+worklist converges after two instantiations. It terminates via the struct-return
+slot lookup instead, a clean SKIP in 0s.
+
+The cap does fire on array-growing recursion, where the types are genuinely
+distinct because `Array` carries its element type:
+
+```
+fnc: T <T> g(x: T) { g([x]) }
+
+unsupported semantic construct during lowering: generic function 'g' exceeded 64
+distinct instantiations — this usually means a recursive call instantiates it at
+an ever-larger type. First instantiations were: g$t64, g$[1: t64],
+g$[1: [1: t64]], g$[1: [1: [1: t64]]]
+```
+
+Exit 127, one second, no hang and no panic.
+
+### The cap has no matrix fixture yet, deliberately
+
+The obvious fixture is the array-growing program above. It cannot be added,
+because the **interpreter** still crashes on it (§20) — exiting `0xC00000FD`,
+a stack overflow, not a diagnostic. The rejection-shape harness (§15) caught
+this: an `.expected_fail` marker defaults to `interp=diagnostic`, and the
+harness correctly refused to accept a crash as a rejection.
+
+The available workaround would be to add a third `RejectionShape` meaning
+"crashes", which is recording a bug as an expectation — precisely what
+`docs/frontend/enforcement_layers.md` says not to do ("do not widen the
+assertion until every current fixture passes"). **The cap fixture lands with the
+§20 fix**, and until then the cap's proof lives in this entry and in the commit.
+
+That the harness caught a fixture about to assert a crash was a diagnosis is the
+clearest evidence so far that the §15 work was worth doing.
+
+### Delta
+
+SKIP 47 → 39, **converting exactly eight**: `t37_generics_multi`,
+`t38_generics_array`, `t42_generics_identity_chain`, `t52_generics_multi_param`,
+`t53_generics_two_same`, `t_gene_bound_dispatch`, `t_gene_bound_forward`,
+`t_gene_bound_multi`. Zero additions.
+
+Corpus 406 → 410 (four new fixtures), 0 FAIL. `cargo test` 250/0,
+`--features jit` 425/0, parity 359/47/0 → **371 PASS / 39 SKIP / 0
+PARITY_FAIL**, clippy 110/110.
+
+### The user-visible limit
+
+The instantiation cap is a language-visible limit, not an implementation detail
+— a program can hit it. It is documented in the README's JIT-limitations section
+alongside the other lowering boundaries, since that is where a user looks when
+the JIT refuses a program the interpreter runs.
