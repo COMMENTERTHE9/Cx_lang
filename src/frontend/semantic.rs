@@ -421,6 +421,40 @@ impl Analyzer {
                     None => Ok((struct_name.clone(), SemanticType::Unknown)),
                 }
             }
+            // A gene declares `fnc` signatures and nothing else (design doc,
+            // Locked Rules), so a bound promises METHODS, not fields. Reaching
+            // through `T` to a field was accepted here and compiled: it happened
+            // to work for whichever concrete type the author had in mind, and
+            // failed at RUNTIME for any other type satisfying the same bound —
+            // with the field-as-variable diagnostic (`variable 't.base' has not
+            // been declared`) that known-issues §17 records. Analysis holds the
+            // bound and the gene's contract, so analysis decides.
+            SemanticType::TypeParam(param) => {
+                let bounds: Vec<String> = self
+                    .current_type_bounds
+                    .iter()
+                    .find(|(n, _)| n == param)
+                    .map(|(_, genes)| genes.clone())
+                    .unwrap_or_default();
+                if bounds.is_empty() {
+                    Err(sem_err!(
+                        pos,
+                        "cannot access field '{}' on '{}' — '{}' is an unbounded type parameter, so nothing is known about its fields",
+                        field,
+                        receiver,
+                        param
+                    ))
+                } else {
+                    Err(sem_err!(
+                        pos,
+                        "cannot access field '{}' on '{}' — '{}' is bound by gene '{}', and a gene declares methods, not fields; call a method from the gene's contract instead",
+                        field,
+                        receiver,
+                        param,
+                        bounds.join(" + ")
+                    ))
+                }
+            }
             ty if type_has_no_fields(ty) => Err(sem_err!(
                 pos,
                 "cannot access field '{}' on '{}' of type {} — only structs and copy_into containers have fields",
@@ -713,8 +747,17 @@ impl Analyzer {
                         if !info.initialized {
                             return Err(sem_err!(*pos_eq, "use of uninitialized variable '{}'", container));
                         }
+                        // The receiver's own type must be resolved with the ENCLOSING function's
+                        // type parameters in scope, or a `t: T` param surfaces as an
+                        // unregistered struct named "T" instead of `TypeParam("T")` — and
+                        // the field check below then has nothing to reject. The MethodCall
+                        // path already resolves it this way; these sites did not, so the
+                        // same receiver typed differently depending on which access form
+                        // was used. Outside a generic function the list is empty and this
+                        // is identical to the previous behaviour.
+                        let tps = self.current_type_params.clone();
                         let instance_ty = info.inferred.clone()
-                            .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                            .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps)))
                             .unwrap_or(SemanticType::Unknown);
                         let (struct_name, field_ty) =
                             self.resolve_field_access(container, &instance_ty, field, *pos_eq)?;
@@ -1214,9 +1257,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     }
                     AssignTarget::Field(container, field) => {
                         let binding = self.lookup_var(container).map(|info| info.binding);
+                        let tps = self.current_type_params.clone();
                         let instance_ty = self.lookup_var(container)
                             .and_then(|info| info.inferred.clone()
-                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))))
+                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps))))
                             .unwrap_or(SemanticType::Unknown);
                         let (struct_name, field_ty) =
                             self.resolve_field_access(container, &instance_ty, field, *pos)?;
@@ -1713,8 +1757,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 if !info.initialized {
                     return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
+                let tps = self.current_type_params.clone();
                 let instance_ty = info.inferred.clone()
-                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps)))
                     .unwrap_or(SemanticType::Unknown);
                 let binding = info.binding;
                 let (resolved_struct_name, field_ty) =
@@ -3351,6 +3396,14 @@ fn type_is_not_indexable(ty: &SemanticType) -> bool {
             | SemanticType::Enum(_)
             | SemanticType::Numeric
             | SemanticType::Struct(_)
+            // A bare type parameter is not indexable for the same reason it has
+            // no fields: a gene's contract is `fnc` signatures only, so nothing
+            // promises indexable storage. `t:[0]` used to reach the interpreter
+            // and fail there with the assignment-target diagnostic (audit C4's
+            // wrong-message family). Note this is the BARE parameter — an
+            // `Array(_, TypeParam)` parameter (`a: [3: T]`) is still an array
+            // and stays indexable.
+            | SemanticType::TypeParam(_)
             | SemanticType::Void
     )
 }
