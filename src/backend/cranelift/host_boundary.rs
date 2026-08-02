@@ -527,6 +527,58 @@ extern "C" fn cx_trap() -> ! {
     std::process::exit(JIT_TRAP_EXIT_CODE);
 }
 
+// ── Call-depth guard (known-issues §20/§24, JIT side) ───────────────────────
+//
+// Compiled code recurses natively, so unbounded Cx recursion took the process's
+// stack: exit 0xC00000FD on Windows, with no diagnostic. Unlike the
+// interpreter's old crash that at least collided with 127, this code is not the
+// SKIP sentinel — the parity harness sees a crash and fails outright.
+//
+// The counter is a FRAME count, not a stack-byte probe. A stack probe is
+// cheaper (compare SP against a limit, no call) but it terminates on bytes
+// consumed, which varies per function — so it could never agree with the
+// interpreter's 256-frame limit, and approximate agreement between backends is
+// a divergence. Matching semantics costs a counter.
+//
+// `Relaxed` ordering is correct because execution is single-threaded: `execute`
+// transmutes and calls `main` on the calling thread. The same one-program-per-
+// process assumption the HANDLES registry documents applies here.
+static JIT_CALL_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Backend-private symbol names for the depth guard.
+#[cfg(feature = "jit")]
+const JIT_DEPTH_ENTER_SYMBOL: &str = "cx_depth_enter";
+#[cfg(feature = "jit")]
+const JIT_DEPTH_EXIT_SYMBOL: &str = "cx_depth_exit";
+
+/// Runtime intrinsic: entering a Cx call frame.
+///
+/// Diagnoses and exits 1 past the limit — deliberately NOT the 126 trap path,
+/// so both backends reject in the same SHAPE (a diagnostic) and the fixture can
+/// be annotated `interp=diagnostic jit=diagnostic` rather than papering over a
+/// difference with `jit=trap`.
+#[cfg(feature = "jit")]
+extern "C" fn cx_depth_enter() {
+    use std::sync::atomic::Ordering;
+    let depth = JIT_CALL_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+    if depth > crate::runtime::runtime::MAX_CALL_DEPTH {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "RUNTIME ERROR: call depth limit reached — {} nested calls, limit is {}. This is almost always unbounded recursion: check that the recursive call has a base case it can actually reach",
+            crate::runtime::runtime::MAX_CALL_DEPTH + 1,
+            crate::runtime::runtime::MAX_CALL_DEPTH
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Runtime intrinsic: leaving a Cx call frame.
+#[cfg(feature = "jit")]
+extern "C" fn cx_depth_exit() {
+    JIT_CALL_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Backend-private symbol name for the `exit(code)` builtin host helper.
 const JIT_EXIT_SYMBOL: &str = "cx_exit";
 
@@ -616,6 +668,8 @@ impl HostBoundary {
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         jit_builder.symbol(JIT_TRAP_SYMBOL, cx_trap as *const u8);
         jit_builder.symbol(JIT_EXIT_SYMBOL, cx_exit as *const u8);
+        jit_builder.symbol(JIT_DEPTH_ENTER_SYMBOL, cx_depth_enter as *const u8);
+        jit_builder.symbol(JIT_DEPTH_EXIT_SYMBOL, cx_depth_exit as *const u8);
         jit_builder.symbol("cx_handle_new", cx_handle_new as *const u8);
         jit_builder.symbol("cx_handle_val", cx_handle_val as *const u8);
         jit_builder.symbol("cx_handle_drop", cx_handle_drop as *const u8);
@@ -759,6 +813,15 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert(JIT_TRAP_SYMBOL.to_string(), id);
+        }
+        // Depth-guard intrinsics: both take no arguments and return nothing.
+        for name in [JIT_DEPTH_ENTER_SYMBOL, JIT_DEPTH_EXIT_SYMBOL] {
+            let call_conv = module.target_config().default_call_conv;
+            let sig = cranelift_codegen::ir::Signature::new(call_conv);
+            let id = module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+            func_id_map.insert(name.to_string(), id);
         }
 
         // Pre-declare cx_exit(i32) -> ! : the `exit(code)` builtin. One i32
@@ -1059,9 +1122,37 @@ fn compile_ir_function(
     }
 
     // Phase 2: emit each block's body.
+    //
+    // known-issues §24 (JIT side): the depth guard brackets every Cx function —
+    // increment in the entry block, decrement immediately before each return.
+    // Per FUNCTION rather than per call site: one prologue against many callers,
+    // and it cannot miss a call the emitter does not know about.
+    //
+    // `main` is deliberately EXCLUDED. The interpreter's guard sits in
+    // `call_semantic_func`/`call_semantic_method`, so it counts nested USER
+    // calls — top-level code is not inside one. Counting main here would make
+    // the JIT refuse at 255 where the interpreter refuses at 256, and a
+    // one-frame disagreement between backends is a divergence, not a rounding
+    // difference. Verified at the boundary rather than reasoned about.
+    let guard_this_function = ir_func.name != "main";
+    let depth_enter_ref = func_id_map
+        .get(JIT_DEPTH_ENTER_SYMBOL)
+        .filter(|_| guard_this_function)
+        .map(|id| module.declare_func_in_func(*id, builder.func));
+    let depth_exit_ref = func_id_map
+        .get(JIT_DEPTH_EXIT_SYMBOL)
+        .filter(|_| guard_this_function)
+        .map(|id| module.declare_func_in_func(*id, builder.func));
+    let entry_block_id = ir_func.blocks.first().map(|b| b.id);
+
     for ir_block in &ir_func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
+        if Some(ir_block.id) == entry_block_id {
+            if let Some(fref) = depth_enter_ref {
+                builder.ins().call(fref, &[]);
+            }
+        }
         // Sealing is deferred to after all blocks are emitted (see seal_all_blocks below).
         // Eager sealing would panic for back-edge CFGs: when block N jumps back to block M
         // (M < N), block M has already been switched to and would have been sealed, but
@@ -1433,6 +1524,9 @@ fn compile_ir_function(
 
         match &ir_block.term {
             IrTerminator::Return { value: Some(vid) } => {
+                if let Some(fref) = depth_exit_ref {
+                    builder.ins().call(fref, &[]);
+                }
                 let ret_val = *val_map.get(vid).ok_or_else(|| {
                     JitExecutionError::CodegenFailure {
                         detail: format!("undefined return value {:?}", vid),
@@ -1441,6 +1535,9 @@ fn compile_ir_function(
                 builder.ins().return_(&[ret_val]);
             }
             IrTerminator::Return { value: None } => {
+                if let Some(fref) = depth_exit_ref {
+                    builder.ins().call(fref, &[]);
+                }
                 builder.ins().return_(&[]);
             }
             IrTerminator::Jump { target, args } => {
