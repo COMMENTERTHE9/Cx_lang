@@ -2028,6 +2028,7 @@ Expr::Unary(op, inner, pos) => {
                                 callee: mangled,
                                 function: FunctionId(u32::MAX),
                                 args: semantic_args,
+                                type_args: Vec::new(),
                             },
                         });
                     } else {
@@ -2350,6 +2351,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: vec![SemanticCallArg::Expr(expr)],
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -2377,6 +2379,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: semantic_args,
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -2458,6 +2461,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: semantic_args,
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -2583,12 +2587,33 @@ Expr::Unary(op, inner, pos) => {
             &type_param_map,
         );
 
+        // Retain the substitution instead of discarding it. Declared-parameter
+        // order, so the monomorphizer's key and mangled name are stable
+        // regardless of which argument bound which parameter. A parameter no
+        // argument bound is left out, which shortens the vector and makes the
+        // worklist skip the call rather than guess.
+        // An unsuffixed literal argument is still `Numeric` here — nothing
+        // narrowed it, because the parameter's declared type was `T`. Pin it to
+        // the default integer so the recorded instantiation is a CONCRETE type,
+        // which is what a specialization's signature needs. The pin is applied
+        // to this recorded vector ONLY, never to `type_param_map`: the map
+        // drives the return type and the argument checks, so narrowing it there
+        // would change what analysis accepts (`x: t8 = identity(100)` would stop
+        // type-checking). This field exists solely for the monomorphizer.
+        let call_type_args: Vec<SemanticType> = function
+            .type_params
+            .iter()
+            .filter_map(|p| type_param_map.get(p).cloned())
+            .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
+            .collect();
+
         Ok(SemanticExpr {
             ty: ret_ty,
             kind: SemanticExprKind::Call {
                 callee: name.to_string(),
                 function: function.id,
                 args: semantic_args,
+                type_args: call_type_args,
             },
         })
     }

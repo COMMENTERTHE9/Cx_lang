@@ -110,6 +110,21 @@ pub enum SemanticExprKind {
         callee: String,
         function: FunctionId,
         args: Vec<SemanticCallArg>,
+        /// Types bound to the callee's generic parameters at THIS call, in the
+        /// callee's declared-parameter order. Empty for a non-generic callee.
+        ///
+        /// Analysis already derives this — `analyze_call` builds a local
+        /// `type_param_map` to check bounds, substitute argument types, and
+        /// compute the return type — and used to discard it when constructing
+        /// this node. Retaining it is what lets the monomorphizer specialize
+        /// without re-implementing inference outside the analyser.
+        ///
+        /// It is NOT always concrete. A call inside a generic body records the
+        /// ENCLOSING function's parameters symbolically — `id(x)` inside
+        /// `wrap<T>` records `[TypeParam("T")]` — which is exactly what the
+        /// worklist composes with the current substitution to get the concrete
+        /// instantiation.
+        type_args: Vec<SemanticType>,
     },
     #[allow(dead_code)] // rejected at lowering (CX-19); kept for analyzer completeness
     Range {

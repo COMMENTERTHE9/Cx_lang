@@ -687,6 +687,21 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
     let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
 
+    // known-issues §19: replace every generic call with a call to a concrete
+    // specialization, and append those specializations, BEFORE the signature
+    // table is built. The ordering is the point: `ret_struct_of` reads
+    // `function.return_ty` to decide whether a function gets the hidden
+    // caller-allocated `$ret_slot` param, so a specialization still carrying a
+    // `TypeParam` there would silently lose its slot and corrupt a struct
+    // return. Placement guarantees it; no check could.
+    //
+    // A program declaring no generic functions is returned unchanged, so the
+    // common case pays one scan and nothing else.
+    let owned = crate::ir::monomorphize::monomorphize(program).map_err(|e| {
+        LoweringError::UnsupportedSemanticConstruct { construct: e.to_string() }
+    })?;
+    let program = &owned;
+
     if program.stmts.is_empty() {
         return Ok(IrModule {
             debug_name: "cxir_v0".into(),
@@ -717,6 +732,14 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                             function.name
                         ),
                     });
+                }
+                // A generic template has no code of its own — its
+                // specializations were emitted by the monomorphizer above.
+                // Emitting the template would try to lower a `TypeParam`
+                // parameter and fail the whole program, which is exactly why an
+                // UNCALLED generic used to break lowering.
+                if !function.type_params.is_empty() {
+                    continue;
                 }
                 if function.name == "main" {
                     has_real_main = true;
@@ -1193,7 +1216,7 @@ fn lower_stmt(
             // Void function calls cannot go through lower_expr because that function
             // must return a LoweredValue, and void calls produce no value.
             // Detect and lower void calls here before falling through to lower_expr.
-            if let SemanticExprKind::Call { callee, function: _, args } = &expr.kind {
+            if let SemanticExprKind::Call { callee, function: _, args, .. } = &expr.kind {
                 let sig_info = ctx.signature_table.get(callee.as_str())
                     .map(|s| (s.return_ty.clone(), s.param_types.clone()));
                 if let Some((None, param_types)) = sig_info {
@@ -2310,7 +2333,7 @@ fn lower_expr(
         //    emitted into the active block.  The result ValueId is returned to
         //    the caller as a LoweredValue so it can flow into assignments,
         //    return statements, and sub-expressions.
-        SemanticExprKind::Call { callee, function: _, args } => {
+        SemanticExprKind::Call { callee, function: _, args, .. } => {
             // D2.3a: fold `len()` on a compile-time-known operand to its constant
             // integer length — no string representation needed. A `len` whose
             // length is not statically known (a dynamic string, which doesn't
@@ -2541,6 +2564,9 @@ fn lower_expr(
                     callee,
                     function: crate::frontend::semantic_types::FunctionId(u32::MAX),
                     args: full_args,
+                    // Desugared method call — the mangled callee is already
+                    // concrete, nothing generic left to record.
+                    type_args: Vec::new(),
                 },
             };
             lower_expr(&synthetic, ctx, active)
@@ -6996,6 +7022,7 @@ mod tests {
                         callee: "foo".to_string(),
                         function: FunctionId(0),
                         args: vec![],
+                        type_args: Vec::new(),
                     },
                 },
                 pos: 0,
@@ -7025,6 +7052,7 @@ mod tests {
                             callee: "foo".to_string(),
                             function: FunctionId(0),
                             args: vec![],
+                            type_args: Vec::new(),
                         },
                     },
                     pos: 0,
@@ -7060,6 +7088,7 @@ mod tests {
                             callee: "get_value".to_string(),
                             function: FunctionId(0),
                             args: vec![],
+                            type_args: Vec::new(),
                         },
                     },
                     pos: 0,
@@ -7107,6 +7136,7 @@ mod tests {
                             callee: "add_one".to_string(),
                             function: FunctionId(0),
                             args: vec![SemanticCallArg::Expr(int_expr(5, SemanticType::I64))],
+                            type_args: Vec::new(),
                         },
                     },
                     pos_type: 0,
@@ -7149,6 +7179,7 @@ mod tests {
                             callee: "needs_one".to_string(),
                             function: FunctionId(0),
                             args: vec![],
+                            type_args: Vec::new(),
                         },
                     },
                     pos: 0,
@@ -7185,6 +7216,7 @@ mod tests {
                             callee: "do_nothing".to_string(),
                             function: FunctionId(0),
                             args: vec![],
+                            type_args: Vec::new(),
                         },
                     },
                     pos: 0,
@@ -7247,6 +7279,7 @@ mod tests {
                                 "x",
                                 SemanticType::I64,
                             ))],
+                            type_args: Vec::new(),
                         },
                     },
                     pos: 0,
@@ -7296,6 +7329,7 @@ mod tests {
                                 binding: BindingId(5),
                                 name: "y".to_string(),
                             }],
+                            type_args: Vec::new(),
                         },
                     },
                     pos: 0,
@@ -7339,6 +7373,7 @@ mod tests {
                             callee: "get_val".to_string(),
                             function: FunctionId(0),
                             args: vec![],
+                            type_args: Vec::new(),
                         },
                     }),
                 ),
@@ -7381,6 +7416,7 @@ mod tests {
                 callee: "make_one".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let add_expr = SemanticExpr {
@@ -7451,6 +7487,7 @@ mod tests {
                                 SemanticCallArg::Expr(int_expr(10, SemanticType::I64)),
                                 SemanticCallArg::Expr(int_expr(20, SemanticType::I64)),
                             ],
+                            type_args: Vec::new(),
                         },
                     },
                 ),
@@ -9343,6 +9380,7 @@ mod tests {
                     callee: name.to_string(),
                     function: FunctionId(u32::MAX),
                     args,
+                    type_args: Vec::new(),
                 },
             },
             pos: 0,
@@ -10151,6 +10189,7 @@ mod tests {
                 callee: "side_effect_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let program = SemanticProgram {
@@ -10211,6 +10250,7 @@ mod tests {
                 callee: "side_effect_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let program = SemanticProgram {
@@ -10292,6 +10332,7 @@ mod tests {
                 callee: "side_effect_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let program = SemanticProgram {
@@ -10355,6 +10396,7 @@ mod tests {
                 callee: "side_effect_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let program = SemanticProgram {
@@ -10418,6 +10460,7 @@ mod tests {
                 callee: "lhs_cond_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let call_rhs = SemanticExpr {
@@ -10426,6 +10469,7 @@ mod tests {
                 callee: "side_effect_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let program = SemanticProgram {
@@ -10512,6 +10556,7 @@ mod tests {
                 callee: "lhs_cond_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let call_rhs = SemanticExpr {
@@ -10520,6 +10565,7 @@ mod tests {
                 callee: "side_effect_fn".to_string(),
                 function: FunctionId(0),
                 args: vec![],
+                type_args: Vec::new(),
             },
         };
         let program = SemanticProgram {
