@@ -1173,3 +1173,102 @@ the generics audit). **Filed, not fixed**: it is two occurrences rather than one
 line, and it changes which binary the project's primary corpus gate exercises —
 validating that properly means a full matrix re-run and comparison, which is its
 own small change rather than a footnote to a lowering slice.
+
+---
+
+## 22. Field access through a gene bound was unsound — FIXED in `e105e56`
+
+**Status: FIXED.** Cross-references §17 (the diagnostic it used to produce) and
+§19 (the monomorphizer, which now inherits a sound rule).
+
+A gene declares `fnc` signatures and nothing else (design doc, Locked Rules), so
+a bound promises **methods**. Reaching through a type parameter to a *field* was
+accepted anyway:
+
+```cx
+fnc: t32 <T: Compute> reach(t: T) { t.base }
+```
+
+That compiled, ran correctly for whichever concrete type the author had in mind,
+and failed at **runtime** for any other type satisfying the same bound. The
+failure was §17's field-as-variable diagnostic, on line 1:
+
+```
+5
+RUNTIME ERROR (line 1): variable 't.base' has not been declared —
+declare it with 't.base: TYPE = value' before use
+```
+
+So the first call printed its answer and the second one produced a message about
+a variable that was never written, pointing at the wrong line, for a field that
+the bound never promised. Analysis holds both the bound and the gene's contract;
+this is the C1 family and `docs/frontend/enforcement_layers.md` decides it.
+
+**Sequencing.** Fixed *before* the monomorphizer rather than after, so that pass
+is not built over an unsound access rule. A monomorphizing backend would
+otherwise have had to either reject at specialization time — discovering the
+rule late — or emit a specialization that is broken for some instantiations.
+
+### The rule
+
+One arm in `resolve_field_access`, the choke point the C1–C4 slice established,
+so field read / write / compound-write are covered by construction rather than
+one arm each. Two messages, because the two cases genuinely differ:
+
+| receiver | message |
+|---|---|
+| `T` with a bound | `cannot access field 'base' on 't' — 'T' is bound by gene 'G', and a gene declares methods, not fields; call a method from the gene's contract instead` |
+| `T` unbounded | `cannot access field 'base' on 't' — 'T' is an unbounded type parameter, so nothing is known about its fields` |
+
+`type_is_not_indexable` gains the **bare** type parameter for the same reason —
+`t:[0]` previously reached the interpreter and failed there with the C4-family
+wrong message (`invalid assignment target`, for a read). An
+`Array(_, TypeParam)` parameter is still an array and stays indexable, which is
+pinned by a fixture.
+
+### A prerequisite inconsistency, fixed on the way
+
+The rule could not fire until a real discrepancy was corrected. The three
+`DotAccess` sites resolved the receiver's type with an **empty** type-parameter
+scope (`semantic_type_from_decl(t, &[])`), so a `t: T` parameter surfaced as an
+unregistered struct named `"T"` rather than `TypeParam("T")` — while the
+`MethodCall` path already used the enclosing function's real scope. The same
+receiver therefore typed differently depending on which access form was used.
+All three now use the enclosing scope; outside a generic function the list is
+empty, so nothing else moves.
+
+This is worth remembering as its own shape: a check that cannot fire because an
+upstream resolution quietly produces the wrong type is indistinguishable from a
+check that is missing.
+
+### Access-form verdicts
+
+| form | before | after |
+|---|---|---|
+| field read `t.base` | accepted, ran | rejected at analysis |
+| field write `t.base = 9` | accepted, ran | rejected |
+| compound `t.base += 1` | accepted, ran | rejected |
+| index `t:[0]` | accepted at analysis, wrong runtime message | rejected |
+| **method call `t.go()`** | **works** | **unchanged — this is the feature** |
+| index on `[3: T]` | works | unchanged |
+| lvalue `t:[0] = 1` | parse error | unchanged |
+| compound `t:[0] += 1` | already rejected | unchanged |
+
+### Nothing relied on it
+
+Checked before building rather than discovered by breakage: the prelude has
+**zero** generic functions, and all eleven fixtures declaring a generic function
+use method calls only on the type parameter. Every `t_gene_bound_*` and
+`t_gene_phen_*` fixture behaves exactly as before (`15 50`, `17`, `31`, and the
+reject fixtures with their own messages).
+
+### Delta
+
+Corpus 401 → 406 (five new fixtures), 0 FAIL. `cargo test` 250/0,
+`--features jit` 425/0, parity 355/46/0 → **359 PASS / 47 SKIP / 0
+PARITY_FAIL**, clippy 110/110.
+
+**Zero pre-existing fixtures changed SKIP status** — this rejects programs
+earlier, it does not lower anything new. The single SKIP addition is
+`t_bound_method_still_works`, the new anti-overcorrection fixture: it exercises
+generic *functions*, which do not lower yet for the pre-existing §19 reason.

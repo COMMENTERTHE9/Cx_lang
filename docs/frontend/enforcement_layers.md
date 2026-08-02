@@ -90,6 +90,27 @@ The proven structure, from the const fix and reused for C1–C4:
 The test that the structure worked is not that the cases you wrote pass. It is
 that the check fires on a form you wrote **no** case for.
 
+### Check what the check is looking at
+
+A correct rule at the correct choke point still does nothing if the value
+reaching it is wrong. **A check that cannot fire is indistinguishable from a
+check that was never written**, and it fails silently in exactly the same way.
+
+The gene-bound fix (`e105e56`, `docs/known_issues.md` §22) is the clean instance.
+The rule — a bound promises methods, not fields — went into
+`resolve_field_access`, the right helper, in one arm. It rejected nothing,
+because the three `DotAccess` sites resolved the receiver's type with an *empty*
+type-parameter scope, so a `t: T` parameter arrived as an unregistered struct
+named `"T"` rather than `TypeParam("T")`. The `MethodCall` path had always used
+the enclosing function's real scope. The same receiver therefore typed
+differently depending on which access form was used, and the new check had
+nothing to match on.
+
+So: after writing a check, confirm the fact actually reaches it, and confirm
+that every path producing that fact agrees. Divergent resolution of the same
+value is the upstream form of the same disease this document is about — one
+fact, several places, no agreement.
+
 ### Deciding what to do with an existing backend check
 
 Decide explicitly; do not default either way. Both answers have been correct:
