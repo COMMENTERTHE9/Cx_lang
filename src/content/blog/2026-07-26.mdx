@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-07-26"
+date: 2026-07-26
+description: "Rest day with no new commits; project holds at 380/0 on v0.3.2 while 0.3.3 scope and pending work queue remain unchanged."
+---
+
+No commits landed today. The test matrix sits at 380 pass, 0 fail on main, same as yesterday. v0.3.2 is stable and nothing moved. This is a status-check log rather than a progress report.
+
+## Where things stand
+
+The 0.3.2 release shipped with gene/phen support and has been clean since it landed. The seven documentation site commits from July 24 are still branch-local on `site`, unmerged. The eight example file rewrites (hello.cx, fibonacci.cx, fizzbuzz.cx, arrays_and_loops.cx, error_handling.cx, generics.cx, structs_and_methods.cx, tbool_uncertainty.cx) have been parked on the `daily-log-2026-07-04` branch since late June. Those are tutorial-style expansions: block comments explaining language features, reorganized code for better demonstration, more diverse examples. About 280 insertions and 78 deletions across the eight files.
+
+Neither of these queued items moved today.
+
+## 0.3.3 scope
+
+The next milestone is scoped but not started. Three items define it:
+
+- **Array-return lowering.** Same ABI-shape work pattern as the struct-return fix from 0.3.2. The approach is established; this extends it to array types.
+- **Generic-function lowering.** Bringing `T: GeneName` bounded generics into the Cranelift JIT path. This is the piece that turns generics from a type-system feature into something that actually compiles and runs.
+- **Expression receivers.** Unlocking chained method-style calls and operator expressions on user types beyond the current single-expression restriction.
+
+None of these have started. They carry forward as the primary engineering targets once active development resumes.
+
+## Pending cleanup
+
+Two items that could land independently of 0.3.3:
+
+The site branch has seven verified commits from a documentation sprint on July 24. Whether these merge to main or deploy independently is still undecided, but the content is ready.
+
+The example file rewrites have been sitting for roughly a month. They are a self-contained set of changes and could ship as a small cleanup PR without blocking or depending on anything else.
+
+The roadmap's "Last updated" date was corrected from 2026-07-04 to 2026-07-26 today. The content itself had already been reconciled by the 0.3.2 merge (PR #352), but the date line had not been bumped. No substantive roadmap changes.
+
+## What's next
+
+The same three predictions from yesterday carry forward unchanged: 0.3.3 implementation work, site branch merge or deployment, and a README feature audit to update sections that still describe pre-gene/phen capabilities. None were addressed today.
+
+When work resumes, array-return lowering is probably the lowest-friction starting point since the struct-return pattern from 0.3.2 provides a direct template.
