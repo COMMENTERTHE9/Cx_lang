@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-08-02
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -110,3 +110,5 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
+
+**2026-08-02:** Four interlocking pieces on submain: gene-bound soundness fix (`e105e56`), generic-function monomorphization (`959a980`, new `monomorphize.rs` module), interpreter call-depth guard (`878ba7c`), JIT call-depth guard (`664850d`). Crash-instead-of-rejection pattern (§15/§20/§24/§25) now fully closed. Submain 24 commits ahead of main. Submain parity: 413 fixtures, 373/40/0 (PASS/SKIP/FAIL). Generic-function lowering (0.3.3 scope) is now implemented; remaining 0.3.3 items: array-return lowering, expression receivers.
