@@ -58,8 +58,8 @@ correction to an existing plan.
   (`T: GeneName`), operator overloading via the embedded prelude. Plus the
   0.3.1-era audit fixes and the struct-return ABI fix. *(Shipped 2026-07-24.
   See `docs/post_0_1/gene_phen_design.md` for the full spec.)*
-- **0.3.3** — Next: array-return lowering, generic-function lowering,
-  expression receivers. *(Scope not yet fixed.)*
+- **0.3.3** — Next: array-return lowering, ~~generic-function lowering~~
+  (landed on submain `959a980`), expression receivers. *(Scope not yet fixed.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
