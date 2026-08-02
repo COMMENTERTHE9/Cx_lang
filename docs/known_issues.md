@@ -1121,7 +1121,11 @@ distinct instantiations of any one template. Termination is — see §20.
 
 ## 20. Interpreter stack overflow on type-growing recursive generics
 
-**Status: OPEN — a crash, not a diagnostic.**
+**Status: FIXED in `878ba7c` — see §24, which supersedes this entry and covers
+plain unbounded recursion too (this was never generics-specific). The
+exit-code collision with the harness's SKIP sentinel is closed.**
+
+~~**Status: OPEN — a crash, not a diagnostic.**~~
 
 Self-recursion at the same `T` is fine (`rec(7, 3)` → `7`, and it would
 monomorphize to a single self-calling specialization). But a generic function
@@ -1404,3 +1408,112 @@ The instantiation cap is a language-visible limit, not an implementation detail
 — a program can hit it. It is documented in the README's JIT-limitations section
 alongside the other lowering boundaries, since that is where a user looks when
 the JIT refuses a program the interpreter runs.
+
+---
+
+## 24. Interpreter call-depth guard — §20 FIXED in `878ba7c`
+
+**Status: FIXED for the interpreter. The JIT still crashes on the same shape —
+see the end of this entry; that guard is its own work.**
+
+A Cx call is a native recursion inside the interpreter
+(`run_semantic_stmt` → `eval_semantic_expr` → `call_semantic_*`), so unbounded
+Cx recursion was unbounded native recursion and the thread's stack went with it:
+
+```
+thread 'cx-interpreter' (22916) has overflowed its stack
+[exit 127]
+```
+
+No message, no line, no function name. **And exit 127 is the parity harness's
+SKIP sentinel**, so an interpreter death was shaped exactly like an unsupported
+construct — that collision was half the danger, and it is now closed: the guard
+reports on the ordinary diagnostic path at **exit 1**.
+
+This was never generics-specific. Both shapes crashed identically, and both now
+diagnose:
+
+```
+fnc: t64 boom(n: t64) { boom(n + 1) }                     // plain recursion
+fnc: T <T> grow(x: T) { grow(Box { v: x }) }              // type-growing
+
+RUNTIME ERROR (line 1): call depth limit reached in 'boom' — 257 nested calls,
+limit is 256. This is almost always unbounded recursion: check that the
+recursive call has a base case it can actually reach
+```
+
+### The limit, and why 256
+
+Bounded by measurement on both sides rather than picked:
+
+| | value | how established |
+|---|---|---|
+| deepest legitimate recursion in the corpus | **15** | `fib(15)`, `t113_recursive_fib` |
+| interpreter crash point | **~492** | bisected: `down(490)` survives, `down(495)` overflows — debug build, 64 MB stack |
+| chosen limit | **256** | ~17× above real code, ~2× below the crash |
+
+The 2× headroom below the crash matters: a heavier native frame in some other
+build cannot overshoot the guard into a real overflow. The same shape as the
+monomorphizer's 64-instantiation cap against a corpus maximum of 2.
+
+Boundary behaviour is exact: `down(255)` runs (256 frames, at the limit),
+`down(256)` is refused (257 frames). The limit counts frames, so `down(n)` uses
+`n + 1`.
+
+### Cost
+
+One increment, one compare, one decrement per Cx call — placed on the call path
+only, nothing on the statement or expression path where the interpreter actually
+spends its time. Measured on `fib(24)` (~150k calls), three runs each: minimum
+**1177 ms with** the guard against **2202 ms without**. The guard is not a
+regression; run-to-run variance (roughly 2×) dwarfs anything it could cost, and
+structurally three integer ops sit on a path that already does a `HashMap`
+lookup, a `Vec` of resolved parameters, a scope push, and a `type_of_value` per
+argument.
+
+Both call entry points carry it — `call_semantic_func` and
+`call_semantic_method` — placed around each path's own `push_function_scope`,
+*after* the early rejections, so a failed lookup cannot leak the counter.
+
+### What it unblocked
+
+`t_mono_instantiation_cap` — the fixture §23 could not write. The interpreter
+used to die on it at exit 127, and the rejection-shape harness (§15) correctly
+refused to accept a crash as a diagnosis. It now lands: the interpreter
+diagnoses (call depth) and the JIT SKIPs (instantiation cap). That is the
+concrete proof this fix unblocked something real.
+
+### The JIT needs its own guard — reported, not fixed here
+
+Unbounded recursion in JIT-compiled code still dies, because compiled code
+genuinely recurses until the native stack is gone:
+
+```
+fnc: t64 boom(n: t64) { boom(n + 1) }
+--backend=cranelift → thread has overflowed its stack, exit 0xC00000FD
+```
+
+The raw Windows code is `-1073741571`, **not** 127 — so it does not even
+masquerade as a SKIP; the harness sees a crash and parity-fails. That is why
+`t_interp_recursion_guard`, the natural fixture for the interpreter fix, could
+not be added: the JIT crashes on the same program. The interpreter-side proof
+lives in this entry until the JIT guard lands, at which point that fixture
+becomes writable — the same pattern this fix just resolved one level down.
+
+A JIT-side guard is a different mechanism (a stack-depth check in compiled code
+or a recursion counter threaded through the runtime intrinsics), not an
+extension of this one.
+
+### Delta
+
+Corpus 410 → 412 (`t_mono_instantiation_cap`, `t_interp_deep_recursion_ok`),
+0 FAIL. `cargo test` 250/0, `--features jit` 425/0, parity 371/39/0 →
+**372 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110.
+
+SKIP 39 → 40: one addition, `t_mono_instantiation_cap`, which SKIPs on the JIT
+by design (the monomorphizer's cap refuses to lower it). Zero removals, zero
+pre-existing fixtures moved.
+
+The limit is documented in the README under "Limits that apply to every run",
+separately from the JIT-lowering list — it is an interpreter limit, so it binds
+every ordinary run, not only JIT-compiled ones.
