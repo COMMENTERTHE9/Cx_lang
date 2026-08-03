@@ -1577,47 +1577,77 @@ nested *user* calls — top-level code is not inside one.
 The limit is shared, not duplicated: the backend reads
 `crate::runtime::runtime::MAX_CALL_DEPTH`.
 
-### The measured cost — recorded so it is findable, not folklore
+### Refined to cycle-only in `ab62a6d`
 
-`fib(30)`, ~2.7M Cx calls, JIT, five runs each:
+The guard shipped uniformly, taxing every compiled call two host callbacks
+(~11 ns, +31% on call-saturated code in a debug build). It is now emitted **only
+for functions that can participate in a call cycle** — a function that cannot
+reach itself cannot recurse, so it needs no counter.
 
-```
-with guard:     151 · 123 · 141 · 123 · 123 ms      (min 123)
-without guard:  103 ·  97 · 109 ·  94 · 102 ms      (min  94)
-```
+Soundness rests on the call graph being complete, and it is: Cx has **no
+indirect call of any kind**. `IrInst::Call.callee` is a `String` and never a
+`ValueId`, the backend emits no `call_indirect`, and neither `Type` nor
+`SemanticType` has a function or callable variant — a function cannot be stored
+in a variable, a struct field, an array element, or a `Handle` payload. Every
+edge is a compile-time-known name: direct calls, methods and operator genes
+(desugared to `mangle_method`), phens (monomorphized at their declaration), and
+generic functions (monomorphized to `name$type`). Builtins are `cx_*` leaves and
+never call back into Cx, so an edge to one cannot close a cycle.
 
-**+29 ms, ≈ +31% on call-saturated code; ≈ 11 ns per Cx call** for the two host
-calls. That is the upper bound: a program with no calls pays nothing, and real
-code sits between in proportion to its call density.
+The graph is read off the IR **after** lowering rather than off the semantic
+tree, so it sees the calls actually emitted instead of re-deriving the mangling
+`lower.rs` performs — the shape that produced the C1-C4 family of bugs. Tarjan's
+SCC, written iteratively rather than recursively: this compiler must not
+overflow its own stack while adding a guard against stack overflow. A function
+is guarded iff it is in an SCC of size > 1 or carries a self-loop.
 
-The cost was measured before the mechanism was recommended, and the number was
-ruled on rather than absorbed silently.
+**Mutual recursion is the case a self-loop-only implementation misses**, and a
+missed cycle is an unguarded crash — strictly worse than the tax it replaces.
+`t_mutual_recursion_guard` covers it, and a unit test additionally pins
+length-3 cycles, a non-recursive *caller* of a recursive function staying
+unguarded, and host intrinsics not counting as edges.
 
-### Filed follow-up: cycle-only guarding
+### Measured cost — recorded so it is findable, not folklore
 
-Only functions that can participate in a call cycle can recurse, so only they
-need a counter. The soundness precondition has been checked and **holds**: the
-static call graph is complete, because Cx has no indirect call of any kind —
-`IrInst::Call.callee` is a `String` and never a `ValueId`, the Cranelift backend
-emits no `call_indirect`, and neither `Type` nor `SemanticType` has a function or
-callable variant, so a function cannot be stored in a variable, a struct field,
-an array element, or a `Handle` payload. Every edge is a compile-time-known
-name: direct calls, methods and operator genes (desugared to
-`mangle_method`), phens (monomorphized at their declaration), and generic
-functions (monomorphized to `name$type`). Builtins are `cx_*` leaves.
+Minima of 3-5 runs. `fib(30)` is ~2.7M recursive calls; the non-recursive
+benchmark is 6M calls through two non-recursive functions in a loop.
+
+| | debug: uniform | debug: cycle-only | release: none | release: uniform | release: cycle-only |
+|---|---|---|---|---|---|
+| `fib(30)` (recursive) | 141 ms | 139 ms | 98 ms | 104 ms | 112 ms |
+| non-recursive, 6M calls | 200 ms | **110 ms** | 103 ms | 128 ms | **106 ms** |
+
+Non-recursive code now matches unguarded — the whole point. Recursive code is
+unchanged, which is correct: it is the only code that can recurse.
+
+**Release compresses the per-call cost about fourfold** — roughly 3.7 ns against
+14.5 ns in debug — because the callback body optimises well. The debug figure
+that motivated this work overstates the shipped cost by a factor of four.
+
+### The inline counter stays deferred, and the release numbers are why
 
 An inline counter (Cranelift `declare_data` / `declare_data_in_func` /
-`create_global_value`, all present in 0.115.1) would cut the per-call cost to
-roughly a tenth by replacing the two host calls with a load/add/store and a
-compare. Cycle-only guarding and the inline counter are independent and
-compose.
+`create_global_value`, all present in 0.115.1) would replace the two host calls
+with a load/add/store and a compare, cutting the per-call cost to roughly a
+tenth. Two measurements now argue against spending that codegen work:
+
+1. Cycle-only already removes the cost entirely from non-recursive code, which
+   is most code.
+2. In release the residual on recursive code is ~3.7 ns/call — on `fib(30)`,
+   112 ms against 98 ms unguarded, and the run-to-run spread on that benchmark
+   (98-133 ms) is wider than the gap being optimised.
+
+Revisit if a real recursive workload shows the guard in a profile. The numbers
+above are the evidence base for that decision rather than an intuition about it.
 
 ### Delta
 
-Corpus 412 → 413 (`t_interp_recursion_guard`), 0 FAIL. `cargo test` 250/0,
-`--features jit` 425/0, parity 372/40/0 → **373 PASS / 40 SKIP / 0 PARITY_FAIL**,
-clippy 110/110. SKIP set unchanged — zero pre-existing fixtures moved; the new
-fixture lands as a PASS, not a SKIP, which is the whole point.
+Guard (`664850d`): corpus 412 -> 413 (`t_interp_recursion_guard`), parity
+372/40/0 -> 373/40/0. Cycle-only (`ab62a6d`): corpus 413 -> 414
+(`t_mutual_recursion_guard`), parity 373/40/0 -> **374 PASS / 40 SKIP / 0
+PARITY_FAIL across 414**, `--features jit` 425 -> 426. Both: 0 FAIL,
+`cargo test` 250/0, clippy 110/110, SKIP set unchanged throughout — the new
+fixtures land as PASSes, not SKIPs, which is the whole point.
 
 The call-depth limit is documented in the README under "Limits that apply to
 every run", which is now literally accurate: it binds both backends identically.
