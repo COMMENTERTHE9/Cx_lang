@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-04
+Last updated: 2026-08-09
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -58,8 +58,9 @@ correction to an existing plan.
   (`T: GeneName`), operator overloading via the embedded prelude. Plus the
   0.3.1-era audit fixes and the struct-return ABI fix. *(Shipped 2026-07-24.
   See `docs/post_0_1/gene_phen_design.md` for the full spec.)*
-- **0.3.3** — Next: array-return lowering, generic-function lowering,
-  expression receivers. *(Scope not yet fixed.)*
+- **0.3.3** — Next: array-return lowering, ~~generic-function lowering~~
+  *(landed on submain as `959a980`)*, expression receivers.
+  *(Scope not yet fixed.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)*
 - **1.0** — First stable release.
@@ -110,3 +111,5 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
+
+**2026-08-09:** Day seven of the development pause (last code commit: `ab62a6d` on submain, Aug 2). Blog post published on `site` branch documenting the submain backlog and pause state. Submain 27 commits ahead of main (code + multidimensional arrays roadmap commit `e3edab5` from Aug 8). Matrix 380/0 on main. 10 daily-log PRs (#359–#368) remain open and unmerged.
