@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-08-08"
+date: 2026-08-08
+description: "Day six of a development pause with 26 unmerged commits on submain covering monomorphization, call-depth guards, and const/exit lowering still waiting for merge."
+---
+
+Nothing landed today. The last real development commit was on August 2, and the repo has been quiet since then. Clean working tree, no staged changes, no branches moving. The test matrix on main holds at 380 pass, 0 fail, same as it has been all week.
+
+This is day six of the pause. Worth documenting because the state of the codebase itself is interesting right now, even if nothing is actively changing.
+
+## What's sitting on submain
+
+The `submain` branch is 26 commits ahead of main. That gap represents the bulk of what will become 0.3.3 when it merges. The core pieces:
+
+**Generic-function monomorphization** is the headline feature. Commit `959a980` introduced a worklist-driven instantiation system with a composition cap, living in a new `monomorphize.rs` module. Each concrete type combination gets its own instantiation. This is the piece that makes generic functions actually compile down to specialized code.
+
+**Generic-struct lowering** (`5dcd548`) follows from the same work: one memory layout per instantiation, so `Vec<i32>` and `Vec<String>` get distinct layouts.
+
+**Gene-bound soundness fix** (`e105e56`) closed a hole where field access through type-parameter bounds was allowed. A gene (Cx's trait-like construct) promises methods, not fields. Accessing a field through a gene bound was unsound because different concrete types behind that bound could have different field layouts. Now it's rejected at analysis time.
+
+**Call-depth guards** shipped in two forms. The interpreter version (`878ba7c`) turns recursion crashes into clean diagnostics. The JIT version (`664850d`) does the same for compiled code. Then `ab62a6d` (the last real commit, August 2) optimized both: it runs Tarjan's SCC algorithm on the static call graph at compile time and only instruments functions that participate in call cycles. Non-recursive code pays zero overhead for the guard.
+
+**Const lowering** (`6c37339`) and **exit lowering** (`3d7a2cd`) closed known-issues #12 and #11 respectively. Two long-standing gaps in the lowering pipeline, now handled.
+
+**Enforcement-layer fixes** (`2de51aa`, `fa95c12`) tightened the analysis pass: const immutability is now enforced, and field/variant/loop-counter facts are checked at analysis time rather than relying on runtime behavior.
+
+Each of these features has paired documentation commits and README accuracy passes, so the merge to main should be straightforward. No conflicts are visible.
+
+## The pause
+
+Six consecutive days with no development activity is unusual for this project. Nothing in the codebase itself suggests a technical blocker. The submain work is complete, tested, and documented. The merge to main has been the predicted next step since August 2, and it hasn't happened. The most likely explanation is that the pause is external to the codebase.
+
+Thirteen daily-log PRs (July 27 through today) have also accumulated without being merged. These are documentation-only and could be batch-merged whenever things pick back up.
+
+## When activity resumes
+
+The merge of submain to main is the clear first move. It brings 26 additive commits into the mainline and effectively constitutes 0.3.3 or the majority of it. After that, two 0.3.3 scope items remain: array-return lowering and expression receivers. Neither has been started yet.
+
+The matrix should stay green through the merge since submain's test additions are all additive. The interesting question is whether array-return lowering or expression receivers will introduce new complexity in the lowering pipeline, but that's a problem for a future log.
