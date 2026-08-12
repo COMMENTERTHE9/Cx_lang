@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-08-03"
+date: 2026-08-03
+description: "The JIT call-depth guard was refined from uniform instrumentation to cycle-only, eliminating overhead for non-recursive code entirely."
+---
+
+The uniform call-depth guard that landed yesterday inserted two host callbacks into every compiled call. About 11 ns per call in debug, roughly 14.5 ns debug-side. It worked, but it was blunt: functions that could never recurse still paid the cost. Today's follow-up fixes that. Non-recursive code now pays zero overhead for stack-depth protection.
+
+## How cycle-only guarding works
+
+The key insight is straightforward: a function that cannot reach itself through the call graph cannot recurse, so it does not need a depth counter. The implementation builds a static call graph from the IR (importantly, after lowering, not from the semantic tree, which avoids an entire class of bugs the project tracks as C1-C4). Then it runs Tarjan's strongly connected components algorithm to find every function that participates in a call cycle. Only those functions get the guard instrumented.
+
+About 130 lines of new code in `host_boundary.rs`. The main entry point, `functions_that_can_recurse()`, restricts the call graph to module-internal edges. Host intrinsics like `cx_*` are leaves and cannot close a cycle, so they are excluded. A function is guarded if it sits in an SCC of size greater than one or has a self-loop.
+
+The Tarjan implementation is iterative rather than recursive. This is a small but important detail: the compiler must not overflow its own stack while adding a guard against stack overflow in user code.
+
+Soundness depends on the call graph being complete. The argument for completeness rests on a property of Cx: no indirect calls. `IrInst::Call.callee` is a `String`, the backend emits no `call_indirect`, and neither `Type` nor `SemanticType` has a function or callable variant. As long as that holds, the static call graph covers every possible call edge.
+
+## Performance results
+
+Measured across 3-5 runs, taking minimums:
+
+For `fib(30)` (recursive, so it stays guarded): debug went from 141 ms (uniform) to 139 ms (cycle-only). Release went from 104 ms (uniform) to 112 ms (cycle-only). Essentially noise. Recursive code sees no meaningful change because it still gets the guard.
+
+For non-recursive code making 6 million calls: debug dropped from 200 ms (uniform) to 110 ms (cycle-only). Release dropped from 128 ms (uniform) to 106 ms (cycle-only). The cycle-only numbers match unguarded (103 ms release, 110 ms debug). Non-recursive code now runs as if the guard does not exist.
+
+The per-call cost in release for guarded functions is around 3.7 ns. The debug figure that originally motivated the optimization (~11 ns/call) overstates the shipped cost by roughly 4x.
+
+## Inline counter deferred on evidence
+
+Yesterday's docs filed an inline counter as a follow-up optimization: replacing the two host callbacks with a Cranelift `declare_data` load/add/store sequence. Today's update explicitly defers that work, and the reasoning is grounded in measurements rather than intuition. Cycle-only already eliminates the cost from non-recursive code, which covers most code. In release, the residual on recursive code (~3.7 ns/call) falls within the benchmark's run-to-run spread. There is nothing left worth optimizing at this point.
+
+This is a pattern the project follows consistently: measure, then decide, then document the evidence behind the decision.
+
+## Test coverage
+
+A new fixture, `t_mutual_recursion_guard`, targets the case a self-loop-only check would miss. Mutual recursion (A calls B, B calls A) is exactly the scenario where you need the full SCC analysis rather than just checking for self-edges. New unit tests pin self-loops, length-2 and length-3 mutual recursion cycles, non-recursive callers remaining unguarded, and host intrinsics not counting as graph edges. Boundary agreement was re-verified at 255/256 on both recursion shapes across both backends.
+
+Corpus grew from 413 to 414 fixtures. Parity moved from 373/40/0 to 374/40/0. JIT unit tests from 425 to 426. Clippy stays clean at 110/110.
+
+## State of the repo
+
+Submain is now 26 commits ahead of main (up from 24 yesterday). Main's matrix holds at 380/0. All this work lives on submain and has not been merged to main or tagged yet. The merge remains the obvious next step, and the gap continues to grow.
+
+After the merge, two 0.3.3 scope items remain: array-return lowering and expression receivers. Neither has been started.
