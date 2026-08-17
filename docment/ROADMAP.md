@@ -199,6 +199,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 
 ## Working Notes
 
+**2026-08-17:** PR #377 merged `submain` → main, tagged `v0.3.3`. Immediately after, `65736b5` on submain fixed silent array-return corruption (free functions and impl methods returned dangling frame pointers). Six new fixtures, corpus 414 → 420, parity 374 → 380 PASS. Submain now 2 commits ahead of main (down from 27). Array returns removed from the remaining-lowering-blockers list on submain's copy of this roadmap; next submain merge will bring that update to main.
+
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
