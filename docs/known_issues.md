@@ -1654,7 +1654,7 @@ every run", which is now literally accurate: it binds both backends identically.
 
 ---
 
-## 26. Array returns corrupted silently on two of three paths — FIXED in `de3b668`
+## 26. Array returns corrupted silently on two of three paths — FIXED in `65736b5`
 
 **Status: FIXED. This was not a lowering gap — it was a live silent-corruption
 bug on shipped code paths**, and it is recorded that way because the v0.3.3
