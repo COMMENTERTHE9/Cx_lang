@@ -1,0 +1,12 @@
+// The impl-method path. The array-return guard was PhenDef-only, so this shape
+// was never guarded and silently returned a dangling pointer.
+struct B { n: t64 }
+bm: impl (b: B) {
+    fnc: [3: t64] triple() { [b.n, b.n + 1, b.n + 2] }
+}
+let x
+x = B { n: 5 }
+r: [3: t64] = x.triple()
+print(r:[0])
+print(r:[1])
+print(r:[2])

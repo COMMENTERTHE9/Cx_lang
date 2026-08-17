@@ -1,0 +1,9 @@
+// Companion to t38_generics_array, which returns a length-1 array. Length 1 is
+// exactly the case that cannot detect the dangling-frame bug: element 0
+// survived the dead read, so t38 passed parity throughout while every longer
+// array was corrupt. This is the same generic path at a detecting length.
+fnc: [3: T] <T> spread(a: T) { [a, a, a] }
+r: [3: t64] = spread(7)
+print(r:[0])
+print(r:[1])
+print(r:[2])

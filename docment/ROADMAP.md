@@ -59,9 +59,17 @@ feature sets.
 
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
+## Post-0.3.3 — landed on `submain`, not yet in a tagged release
 
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
+**Array returns via the caller-allocated slot** — `docs/known_issues.md` §26.
+Not a lowering gap: free functions and impl methods returned a dangling frame
+pointer and silently produced wrong values on both shipped paths. The guard that
+existed covered only phen methods. Fixed for all three.
+
+---
+
+**Scalar Handle core (D2.5a/b/c)** — shipped in 0.3.1, tagged `3430e4e`; landed
+on `submain` at `3ea986d`. `Handle<T>` for scalar
 `T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
@@ -92,12 +100,13 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — array returns from methods, expression
-  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
+  **Remaining lowering blockers** — expression receivers for operator
+  dispatch, `.copy` / `.copy.free` / `copy_into`
   parameter kinds, nested function definitions, `while-in`, function-body
   `const`, `t128` printing, `char`, and non-identifier string interpolation.
-  Array returns and expression receivers were briefly carried as a prospective
-  0.3.4; they belong here, and inventing a version slot to hold them would
+  Expression receivers were briefly carried as a prospective 0.3.4 alongside
+  array returns (since fixed); they belong here, and inventing a version slot
+  to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
 - **0.5** — **Multidimensional arrays landed, or actively completing.**

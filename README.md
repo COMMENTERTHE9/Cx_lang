@@ -66,8 +66,8 @@ As of `v0.3.3`:
 
 - **250 unit tests passing** (`cargo test`)
 - **426 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **414 verification fixtures**
-- **JIT parity: 374 PASS / 40 SKIP / 0 PARITY_FAIL** across all 414 fixtures
+- **420 verification fixtures**
+- **JIT parity: 380 PASS / 40 SKIP / 0 PARITY_FAIL** across all 420 fixtures
 - **zero Clippy errors**
 
 A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
@@ -384,10 +384,10 @@ As of `v0.3.3`:
 
 | Status | Count |
 |--------|-------|
-| PASS | 374 |
+| PASS | 380 |
 | SKIP | 40 |
 | PARITY_FAIL | 0 |
-| **Total fixtures** | **414** |
+| **Total fixtures** | **420** |
 
 (Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
 
@@ -395,7 +395,7 @@ As of `v0.3.3`:
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 40 of 414 fixtures):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 40 of 420 fixtures):
 
 - the `input` builtin
 - nested function definitions
@@ -403,7 +403,6 @@ These features **work in the interpreter** but are **not yet lowered to the JIT*
 - a `const` referenced inside a function body (top-level `const` declarations
   and their use in top-level code do lower)
 - `t128` printing, and `Result` payloads wider than a machine word
-- array returns from methods
 - `char`-typed values
 - `.copy` / `.copy.free` / `copy_into` parameter kinds
 - string interpolation of non-identifier expressions

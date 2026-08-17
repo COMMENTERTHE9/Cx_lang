@@ -1,0 +1,13 @@
+// Contamination canary: two calls returning DIFFERENT arrays, each asserted
+// independently. Before the fix both calls came back holding the second call's
+// data — the first call's element 0 read as 100 rather than 10 — because they
+// shared one dead frame. A single-call fixture cannot see that.
+fnc: [3: t64] mk(a: t64) { [a, a + 1, a + 2] }
+p: [3: t64] = mk(10)
+q: [3: t64] = mk(100)
+print(p:[0])
+print(p:[1])
+print(p:[2])
+print(q:[0])
+print(q:[1])
+print(q:[2])

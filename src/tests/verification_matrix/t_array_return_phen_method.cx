@@ -1,0 +1,13 @@
+// The phen-method path — the one shape that WAS guarded, and so skipped rather
+// than corrupted. It lowers now like the other two.
+struct V { n: t64 }
+gene Spread { fnc out() -> [3: t64] }
+phen Spread (v: V) {
+    fnc: [3: t64] out() { [v.n, v.n * 2, v.n * 3] }
+}
+let a
+a = V { n: 4 }
+r: [3: t64] = a.out()
+print(r:[0])
+print(r:[1])
+print(r:[2])

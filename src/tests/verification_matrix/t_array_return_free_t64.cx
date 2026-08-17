@@ -1,0 +1,11 @@
+// Array returns travel through a caller-allocated slot, the same convention the
+// struct-return fix introduced. Before that convention covered arrays, the
+// callee alloca'd the array and returned a pointer into its own frame; the
+// frame died and the caller read garbage. Elements are asymmetric and every one
+// is asserted, because element 0 survived the dangling read and a first-element
+// check would have passed while elements 1+ were garbage.
+fnc: [3: t64] make() { [11, 22, 33] }
+r: [3: t64] = make()
+print(r:[0])
+print(r:[1])
+print(r:[2])

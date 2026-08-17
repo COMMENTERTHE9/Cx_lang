@@ -1651,3 +1651,98 @@ fixtures land as PASSes, not SKIPs, which is the whole point.
 
 The call-depth limit is documented in the README under "Limits that apply to
 every run", which is now literally accurate: it binds both backends identically.
+
+---
+
+## 26. Array returns corrupted silently on two of three paths — FIXED in `de3b668`
+
+**Status: FIXED. This was not a lowering gap — it was a live silent-corruption
+bug on shipped code paths**, and it is recorded that way because the v0.3.3
+release notes and the README both described it as merely "not yet lowered".
+
+A function returning an array alloca'd the array in its own frame and returned a
+pointer to it. The frame died on return and the caller read through a dangling
+pointer. Both backends exited **0**; the JIT simply produced wrong values.
+
+```
+fnc: [3: t64] make() { [11, 22, 33] }     interp  11 22 33
+                                          jit     11 77306400 140695085549632
+
+fnc: [3: t8]  small() { [1, 2, 3] }       interp  1 2 3
+                                          jit     1 -120 -104
+```
+
+Two calls shared the dead frame, so the first call's result came back holding
+the second's:
+
+```
+p = mk(10); q = mk(100)                   interp  10 11 12 · 100 101 102
+                                          jit     100 <garbage> · 100 <garbage>
+```
+
+### Why it survived: the guard covered one path of three
+
+An array-return guard existed, but both of its sites sat inside
+`SemanticStmt::PhenDef` arms. So:
+
+| path | guarded | behaviour before the fix |
+|---|---|---|
+| phen method | yes | clean SKIP |
+| **impl method** | **no** | **exit 0, corrupt** |
+| **free function** | **no** | **exit 0, corrupt** |
+
+Guarding one path of three was worse than guarding none: it made the gap look
+handled. The audit that found this was scoped to "lift the phen guard"; probing
+the other two paths rather than assuming them is what widened it.
+
+### Why no test caught it: length-1 blindness
+
+The corpus's only array-returning fixture, `t38_generics_array`, returns a
+**length-1** array — and length 1 is exactly the case that cannot detect a
+dangling-frame read. Element 0 sat at the top of the dead frame and survived;
+everything after it was clobbered:
+
+```
+[1: t64]   interp 42      jit 42          identical
+[2: t64]   interp 42 99   jit 42 -2       diverges
+```
+
+So `t38` passed parity for the entire life of the bug while every longer array
+was corrupt. A fixture can be green and blind at the same time; length was the
+variable nobody varied. `t_array_return_generic_len3` is its companion at a
+detecting length — `t38` itself is left alone.
+
+### The fix
+
+The caller-allocated slot convention — introduced for struct returns — now
+covers arrays. Three changes, all extending proven machinery:
+
+- `ret_struct_of` (which answered "is this a named struct?") becomes
+  `returns_via_slot` (which answers "does this need a slot?"). An array has no
+  `struct_table` entry to be named by, so the gate could not key on a name.
+- `ret_slot_plan` computes size, alignment and the (offset, type) parts once,
+  and **both ends read it** — the caller's `Alloca` and the callee's copy — so
+  the two cannot disagree about size or stride. Struct parts are fields at their
+  layout offsets; array parts are elements at `i * stride`.
+- `compute_array_layout` already supplied stride, total size and alignment.
+  Nothing about the convention needed inventing for arrays; it was a
+  layout-lookup gap, exactly as the recon predicted.
+
+The phen guard is lifted only now that all three paths are sound.
+
+### Verification
+
+Six fixtures were written **before** the fix and run failing first: five
+PARITY_FAILs and one SKIP, with the corrupted values captured. All six now pass,
+both backends byte-identical.
+
+A length sweep at 1, 2 and 3 elements across `t8` and `t64` confirms the
+length-1 blindness is genuinely gone rather than the fix accidentally covering
+only short arrays — every element correct at every length and width.
+
+### Delta
+
+Corpus 414 → 420, 0 FAIL. `cargo test` 250/0, `--features jit` 426/0, parity
+374/40/0 → **380 PASS / 40 SKIP / 0 PARITY_FAIL across 420**, clippy 110/110.
+SKIP set unchanged — the six new fixtures land as PASSes, and no pre-existing
+fixture moved.

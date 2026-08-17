@@ -122,13 +122,60 @@ struct FunctionSignature {
     /// result through the slot and returns the slot pointer — no pointer
     /// into the callee's dead frame ever escapes (the silent-corruption bug
     /// this convention closes: garbage fields, exit 0, zero prior coverage).
-    ret_struct: Option<String>,
+    ret_slot_ty: Option<SemanticType>,
 }
 
 /// The returned struct's name, when a function returns a struct by value.
-fn ret_struct_of(return_ty: &Option<SemanticType>) -> Option<String> {
+/// Does a value of this return type have to travel through a caller-allocated
+/// slot?
+///
+/// True for anything whose value lives in memory rather than in a register: a
+/// struct, or an array. Both lower to `IrType::Ptr`, and a callee returning a
+/// pointer into its OWN frame hands the caller a dangling pointer the moment it
+/// returns — which is exactly what happened to arrays. The gate keys on "needs
+/// a slot", not on "is a named struct", because an array has no entry in
+/// `struct_table` to be named by.
+fn returns_via_slot(return_ty: &Option<SemanticType>) -> bool {
+    matches!(
+        return_ty,
+        Some(SemanticType::Struct(_)) | Some(SemanticType::Array(_, _))
+    )
+}
+
+/// Size, alignment, and the (offset, type) parts of a slot-returned value.
+type RetSlotPlan = (usize, usize, Vec<(usize, IrType)>);
+
+/// Byte size, alignment, and the (offset, type) parts to copy for a
+/// slot-returned value.
+///
+/// One plan drives both ends of the convention — the caller's `Alloca` and the
+/// callee's copy — so the two cannot disagree about size or stride. A struct's
+/// parts are its fields at their layout offsets; an array's are its elements at
+/// `i * stride`. `compute_array_layout` already supplied stride and alignment;
+/// nothing about the convention itself needed inventing for arrays.
+fn ret_slot_plan(
+    return_ty: &SemanticType,
+    struct_table: &HashMap<String, StructLayoutInfo>,
+) -> Option<RetSlotPlan> {
     match return_ty {
-        Some(SemanticType::Struct(s)) => Some(s.clone()),
+        SemanticType::Struct(name) => {
+            let info = struct_table.get(name)?;
+            let parts = info
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(i, (_fname, ty))| (info.layout.field_offsets[i], ty.clone()))
+                .collect();
+            Some((info.layout.total_size, info.layout.alignment, parts))
+        }
+        SemanticType::Array(count, elem) => {
+            let elem_ir = lower_type(elem).ok()?;
+            let layout = crate::ir::types::compute_array_layout(&elem_ir, *count);
+            let parts = (0..*count)
+                .map(|i| (i * layout.stride, elem_ir.clone()))
+                .collect();
+            Some((layout.total_size, layout.alignment, parts))
+        }
         _ => None,
     }
 }
@@ -224,14 +271,16 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                 None => None,
             };
 
-            let ret_struct = ret_struct_of(&function.return_ty);
-            if ret_struct.is_some() {
+            let ret_slot_ty = returns_via_slot(&function.return_ty)
+                .then(|| function.return_ty.clone())
+                .flatten();
+            if ret_slot_ty.is_some() {
                 param_types.push(IrType::Ptr); // hidden trailing return slot
             }
             table.insert(function.name.clone(), FunctionSignature {
                 param_types,
                 return_ty,
-                ret_struct,
+                ret_slot_ty,
             });
         }
         // Impl-block methods are registered alongside free functions so calls
@@ -295,13 +344,15 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                     None => None,
                 };
 
-                let ret_struct = ret_struct_of(&method.return_ty);
-                if ret_struct.is_some() {
+                let ret_slot_ty = returns_via_slot(&method.return_ty)
+                    .then(|| method.return_ty.clone())
+                    .flatten();
+                if ret_slot_ty.is_some() {
                     param_types.push(IrType::Ptr); // hidden trailing return slot
                 }
                 table.insert(
                     mangle_method(&tn, &method.name),
-                    FunctionSignature { param_types, return_ty, ret_struct },
+                    FunctionSignature { param_types, return_ty, ret_slot_ty },
                 );
             }
         }
@@ -313,21 +364,18 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
         // specialization: one function per gene/type combination, called
         // directly by name (decision 1 — no dispatch table).
         //
-        // Struct returns are sound as of the caller-allocated-slot fix (the
-        // slice-5 guard is lifted). ARRAY returns remain unregistered: the
-        // same dangling-frame shape applies and the slot convention has only
-        // been built for struct layouts — array-return support is a tracked
-        // follow-up, and an unregistered method keeps its call sites on the
-        // clean SKIP path rather than corrupting.
+        // Struct AND array returns are sound as of the caller-allocated-slot
+        // convention covering both (`ret_slot_plan`). The array guard that used
+        // to sit here is lifted: it only ever covered phen methods, while free
+        // functions and impl methods returned a dangling frame pointer and
+        // silently corrupted. Guarding one of three paths was worse than
+        // guarding none, because it made the gap look handled.
         if let SemanticStmt::PhenDef { receiver_type, methods, method_receiver_params, .. } = stmt {
             let tn = match receiver_type {
                 SemanticType::Struct(name) => name.clone(),
                 _ => continue,
             };
             for (i, method) in methods.iter().enumerate() {
-                if matches!(method.return_ty, Some(SemanticType::Array(_, _))) {
-                    continue;
-                }
                 let mut param_types = Vec::new();
                 let mut all_params_ok = true;
                 if let Some(recv_params) = method_receiver_params.get(i) {
@@ -375,13 +423,15 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                     None => None,
                 };
 
-                let ret_struct = ret_struct_of(&method.return_ty);
-                if ret_struct.is_some() {
+                let ret_slot_ty = returns_via_slot(&method.return_ty)
+                    .then(|| method.return_ty.clone())
+                    .flatten();
+                if ret_slot_ty.is_some() {
                     param_types.push(IrType::Ptr); // hidden trailing return slot
                 }
                 table.insert(
                     mangle_method(&tn, &method.name),
-                    FunctionSignature { param_types, return_ty, ret_struct },
+                    FunctionSignature { param_types, return_ty, ret_slot_ty },
                 );
             }
         }
@@ -570,7 +620,7 @@ struct FunctionLoweringSpec {
     /// Caller-allocated return-slot param (value id + struct name) when this
     /// function returns a struct. Every return site copies the result struct
     /// through the slot and returns the slot pointer instead of the local's.
-    ret_slot: Option<(ValueId, String)>,
+    ret_slot: Option<(ValueId, SemanticType)>,
 }
 
 impl LoweringCtx {
@@ -811,9 +861,6 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                     _ => continue,
                 };
                 for (i, method) in methods.iter().enumerate() {
-                    if matches!(method.return_ty, Some(SemanticType::Array(_, _))) {
-                        continue;
-                    }
                     let mangled = mangle_method(&tn, &method.name);
                     if reserved_runtime_intrinsics.contains(mangled.as_str()) {
                         return Err(LoweringError::UnsupportedSemanticConstruct {
@@ -948,7 +995,8 @@ fn lower_semantic_function(
     // Caller-allocated return slot: a struct-returning function receives the
     // caller's slot address as a hidden trailing Ptr param; return sites copy
     // through it (see FunctionSignature::ret_struct for the convention).
-    let ret_slot = if let Some(struct_name) = ret_struct_of(&function.return_ty) {
+    let ret_slot = if returns_via_slot(&function.return_ty) {
+        let slot_ty = function.return_ty.clone().expect("returns_via_slot implies Some");
         ir_params.push(IrParam {
             name: "$ret_slot".to_string(),
             ty: IrType::Ptr,
@@ -959,7 +1007,7 @@ fn lower_semantic_function(
             ty: IrType::Ptr,
             read_only: false,
         });
-        Some((slot_value, struct_name))
+        Some((slot_value, slot_ty))
     } else {
         None
     };
@@ -2357,13 +2405,13 @@ fn lower_expr(
                     ),
                 });
             }
-            let (param_types, return_ty, ret_struct) = {
+            let (param_types, return_ty, ret_slot_ty) = {
                 let sig = ctx.signature_table.get(callee).ok_or_else(|| {
                     LoweringError::UnresolvedSemanticArtifact {
                         artifact: format!("function '{}'", callee),
                     }
                 })?;
-                (sig.param_types.clone(), sig.return_ty.clone(), sig.ret_struct.clone())
+                (sig.param_types.clone(), sig.return_ty.clone(), sig.ret_slot_ty.clone())
             };
 
             let return_ty = return_ty.ok_or_else(|| {
@@ -2378,7 +2426,7 @@ fn lower_expr(
             // A struct-returning callee's param list ends with the hidden
             // return-slot Ptr, which the caller supplies below — user args
             // exclude it.
-            let user_param_count = param_types.len() - usize::from(ret_struct.is_some());
+            let user_param_count = param_types.len() - usize::from(ret_slot_ty.is_some());
             if args.len() != user_param_count {
                 return Err(LoweringError::InternalInvariantViolation {
                     detail: format!(
@@ -2416,23 +2464,22 @@ fn lower_expr(
             // callee copies the result through it and returns this same
             // pointer — so the value the caller uses lives in the caller's
             // own frame, never in the callee's dead one.
-            if let Some(ref sname) = ret_struct {
-                let layout_info = ctx.struct_table.get(sname).cloned().ok_or_else(|| {
-                    LoweringError::UnresolvedSemanticArtifact {
-                        artifact: format!("struct type '{}' for return slot of '{}'", sname, callee),
-                    }
-                })?;
-                if layout_info.layout.total_size == 0 {
+            if let Some(ref slot_ty) = ret_slot_ty {
+                let (size, align, _parts) = ret_slot_plan(slot_ty, &ctx.struct_table)
+                    .ok_or_else(|| LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!(
+                            "return-slot layout for '{}' returning {}",
+                            callee,
+                            crate::frontend::semantic::type_name(slot_ty)
+                        ),
+                    })?;
+                if size == 0 {
                     return Err(LoweringError::UnsupportedSemanticConstruct {
-                        construct: format!("zero-size struct return from '{}'", callee),
+                        construct: format!("zero-size slot return from '{}'", callee),
                     });
                 }
                 let slot = ctx.fresh_value();
-                active.emit(IrInst::Alloca {
-                    dst: slot,
-                    size: layout_info.layout.total_size,
-                    align: layout_info.layout.alignment,
-                })?;
+                active.emit(IrInst::Alloca { dst: slot, size, align })?;
                 lowered_args.push(slot);
             }
 
@@ -5064,16 +5111,21 @@ fn emit_return_through_slot(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<ValueId, LoweringError> {
-    let Some((slot, ref struct_name)) = spec.ret_slot else {
+    let Some((slot, ref slot_ty)) = spec.ret_slot else {
         return Ok(src);
     };
-    let layout_info = ctx.struct_table.get(struct_name).cloned().ok_or_else(|| {
+    // Same plan the caller sized its Alloca from, so the two ends cannot
+    // disagree about size or stride. Struct parts are fields at their layout
+    // offsets; array parts are elements at i * stride.
+    let (_size, _align, parts) = ret_slot_plan(slot_ty, &ctx.struct_table).ok_or_else(|| {
         LoweringError::UnresolvedSemanticArtifact {
-            artifact: format!("struct type '{}' for return slot", struct_name),
+            artifact: format!(
+                "return-slot layout for {}",
+                crate::frontend::semantic::type_name(slot_ty)
+            ),
         }
     })?;
-    for (field_idx, (_fname, field_ir_ty)) in layout_info.fields.iter().enumerate() {
-        let field_offset = layout_info.layout.field_offsets[field_idx];
+    for (field_offset, field_ir_ty) in parts {
         let src_ptr = if field_offset == 0 {
             src
         } else {
