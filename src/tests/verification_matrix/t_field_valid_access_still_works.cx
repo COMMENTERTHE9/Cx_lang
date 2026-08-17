@@ -1,0 +1,11 @@
+// Audit C1 anti-overcorrection: every declared-field form still resolves —
+// read, plain write, compound write, and use in a larger expression.
+struct P { x: t32, y: t32 }
+let a;
+a = P { x: 1, y: 2 }
+print(a.x)
+a.y = 9
+print(a.y)
+a.x += 4
+print(a.x)
+print(a.x + a.y)

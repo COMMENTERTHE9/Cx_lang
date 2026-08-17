@@ -14,15 +14,40 @@
 //! ```text
 //! <name>.cx                   — Cx source program
 //! <name>.cx.expected_output   — expected stdout (present only for output-verified pass tests)
-//! <name>.cx.expected_fail     — zero-byte marker (present only for expected-failure tests)
+//! <name>.cx.expected_fail     — expected-failure marker; empty, or carrying a
+//!                               `#!` rejection-shape directive (see below)
+//! <name>.cx.expected_exit     — a bare integer: the exact exit code both
+//!                               backends must produce (exit() fixtures)
 //! <name>.cx.jit_known_unsound — zero-byte marker; excludes the fixture from the
 //!                               JIT parity gate because the JIT is known-unsound
 //!                               on the construct it exercises (tracker #003).
 //!                               Interpreter-side runs ignore this marker.
 //! ```
 //!
-//! A `.cx` file with neither companion file is a "pass-any" test: the interpreter
-//! must exit 0, but its stdout is not verified.
+//! Sidecars resolve in priority order — `.expected_exit`, then `.expected_fail`,
+//! then `.expected_output` — matching `run_matrix.sh`. A `.cx` file with no
+//! companion is a "pass-any" test: the interpreter must exit 0, but its stdout
+//! is not verified.
+//!
+//! # Rejection shapes
+//!
+//! `.expected_fail` used to assert only `exit_code != 0`, which could not tell a
+//! diagnosed rejection from a crash — a JIT hard trap satisfied a fixture whose
+//! interpreter emits a clean line-numbered message. It now records the shape of
+//! each backend's refusal and asserts it on both sides:
+//!
+//! ```text
+//! #! interp=diagnostic jit=trap
+//! ```
+//!
+//! Lines starting with `#!` are directives; anything else is free-text prose and
+//! is ignored, so the fixtures that already carried explanatory notes keep them.
+//! An empty marker means `interp=diagnostic jit=diagnostic`.
+//!
+//! `jit=trap` is not a defect marker. The interpreter has fifteen distinct
+//! runtime diagnostics; the JIT funnels all of them through one `cx_trap` exit
+//! (126). Eighteen fixtures legitimately differ this way, and listing them is
+//! `grep -l 'jit=trap' src/tests/verification_matrix/*.expected_fail`.
 //!
 //! # Comparison semantics
 //!
@@ -299,11 +324,67 @@ pub fn feature_of(fixture_name: &str) -> FeatureCategory {
 /// `backend::cranelift::host_boundary`.
 const JIT_SKIP_EXIT_CODE: i32 = 127;
 
+/// Exit code produced when a JIT-compiled program traps at runtime. Matches
+/// `JIT_TRAP_EXIT_CODE` / `JitExitCode::JIT_RUNTIME_FAILURE` in
+/// `backend::cranelift::host_boundary`.
+const JIT_TRAP_EXIT_CODE: i32 = 126;
+
 /// Maximum time to wait for a single JIT subprocess before killing it.
 #[cfg(feature = "jit")]
 const JIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ── Fixture types ─────────────────────────────────────────────────────────────
+
+/// How a backend refused a program.
+///
+/// A `Fail` fixture used to assert only `exit_code != 0`, which cannot tell
+/// "both backends diagnosed it" from "one diagnosed it and the other crashed".
+/// The audit found this is not a hypothetical: across all 137 `.expected_fail`
+/// fixtures the interpreter's error KIND predicts the pair exactly — a
+/// parse/resolve/semantic error gives (1, 1) because those are raised before
+/// backend dispatch, while every *runtime* error gives (1, 126), the JIT having
+/// exactly one trap channel against the interpreter's fifteen diagnostics.
+///
+/// So the pair is recorded rather than forbidden: 18 fixtures legitimately
+/// differ, and asserting the recorded shape catches a change in EITHER
+/// direction — a diagnosing fixture that starts trapping, or a trapping one
+/// that stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionShape {
+    /// Refused with a rendered diagnostic — exit 1.
+    Diagnostic,
+    /// Refused by trapping — exit 126 (`cx_trap` /
+    /// `JitExitCode::JIT_RUNTIME_FAILURE`). No interpreter path produces this
+    /// today; the shape is per-backend so that if one ever does, the annotation
+    /// can say so instead of the harness silently accepting it.
+    Trap,
+}
+
+impl RejectionShape {
+    /// The exit code this shape must produce.
+    pub fn exit_code(self) -> i32 {
+        match self {
+            RejectionShape::Diagnostic => 1,
+            RejectionShape::Trap => JIT_TRAP_EXIT_CODE,
+        }
+    }
+
+    /// Parse one annotation value.
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "diagnostic" => Some(RejectionShape::Diagnostic),
+            "trap" => Some(RejectionShape::Trap),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            RejectionShape::Diagnostic => "diagnostic",
+            RejectionShape::Trap => "trap",
+        }
+    }
+}
 
 /// What the interpreter is expected to do when given this fixture.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,8 +396,26 @@ pub enum TestExpectation {
     /// Test must exit 0. Stdout is not checked.
     PassAny,
 
-    /// Test must exit non-zero (`.expected_fail` marker present).
-    Fail,
+    /// Test must be refused by both backends, each in the recorded shape
+    /// (`.expected_fail` marker present). An empty marker means
+    /// `interp=diagnostic jit=diagnostic`.
+    Fail {
+        interp: RejectionShape,
+        jit: RejectionShape,
+    },
+
+    /// Test must exit with this exact code (`.expected_exit` sidecar), on both
+    /// backends, optionally also matching stored stdout.
+    ///
+    /// Previously `.expected_exit` was read by `run_matrix.sh` only —
+    /// `collect_matrix_tests` had no branch for it, so these fixtures were
+    /// classified from their other sidecars. All five happen to also carry
+    /// `.expected_fail`, so they were treated as "must exit non-zero" and their
+    /// designed codes (3, 4, 5, 7, 9) went unasserted on both backends.
+    ExitCode {
+        code: i32,
+        output: Option<String>,
+    },
 }
 
 /// One entry in the verification matrix.
@@ -382,6 +481,59 @@ fn normalise(s: &str) -> String {
 /// # Panics
 ///
 /// Panics if the `src/tests/verification_matrix/` directory cannot be read.
+/// Parse the rejection-shape annotation out of a `.expected_fail` body.
+///
+/// **Syntax.** Lines beginning with `#!` are directives; every other line is
+/// free-text prose and is ignored. A directive line carries whitespace-separated
+/// `key=value` pairs, keys `interp` and `jit`, values `diagnostic` or `trap`:
+///
+/// ```text
+/// #! interp=diagnostic jit=trap
+/// D2.5c: reading .val on a dropped Handle must reject on both backends.
+/// ```
+///
+/// The `#!` prefix is not invented here — `.cx` source already uses `#![imports]`
+/// for its directive block, so it is the repo's own "this line is for the tooling"
+/// marker. It is required because `.expected_fail` bodies were NOT reserved:
+/// four fixtures already carry explanatory prose, and treating the whole body as
+/// structured data would have broken them. Prose stays prose; directives opt in.
+///
+/// An empty marker — 133 of 137 fixtures, left untouched — means
+/// `interp=diagnostic jit=diagnostic`, the (1, 1) majority.
+///
+/// # Errors
+///
+/// Returns the offending text for an unknown key, an unknown value, or a
+/// malformed pair, so a typo in a sidecar fails loudly rather than silently
+/// falling back to the default and re-opening the hole this closes.
+fn parse_rejection_shapes(body: &str) -> Result<(RejectionShape, RejectionShape), String> {
+    let mut interp = RejectionShape::Diagnostic;
+    let mut jit = RejectionShape::Diagnostic;
+
+    for line in body.lines() {
+        let Some(directive) = line.trim().strip_prefix("#!") else {
+            continue; // free-text prose
+        };
+        for pair in directive.split_whitespace() {
+            let Some((key, value)) = pair.split_once('=') else {
+                return Err(format!("malformed directive token {:?} (want key=value)", pair));
+            };
+            let shape = RejectionShape::parse(value).ok_or_else(|| {
+                format!("unknown rejection shape {:?} (want 'diagnostic' or 'trap')", value)
+            })?;
+            match key {
+                "interp" => interp = shape,
+                "jit" => jit = shape,
+                other => {
+                    return Err(format!("unknown directive key {:?} (want 'interp' or 'jit')", other))
+                }
+            }
+        }
+    }
+
+    Ok((interp, jit))
+}
+
 pub fn collect_matrix_tests() -> Vec<TestFixture> {
     let matrix_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/tests/verification_matrix");
@@ -397,6 +549,7 @@ pub fn collect_matrix_tests() -> Vec<TestFixture> {
             if s.ends_with(".cx")
                 && !s.ends_with(".expected_output")
                 && !s.ends_with(".expected_fail")
+                && !s.ends_with(".expected_exit")
                 && !s.ends_with(".jit_known_unsound")
             {
                 Some(entry.path())
@@ -420,14 +573,38 @@ pub fn collect_matrix_tests() -> Vec<TestFixture> {
             let path_str = path.to_string_lossy();
             let expected_output_path = PathBuf::from(format!("{}.expected_output", path_str));
             let expected_fail_path = PathBuf::from(format!("{}.expected_fail", path_str));
+            let expected_exit_path = PathBuf::from(format!("{}.expected_exit", path_str));
             let jit_excluded_path = PathBuf::from(format!("{}.jit_known_unsound", path_str));
 
-            let expectation = if expected_fail_path.exists() {
-                TestExpectation::Fail
-            } else if expected_output_path.exists() {
+            let stored_output = || {
                 let raw = fs::read_to_string(&expected_output_path)
                     .expect("failed to read .expected_output file");
-                TestExpectation::PassWithOutput(normalise(&raw))
+                normalise(&raw)
+            };
+
+            // Priority order mirrors run_matrix.sh: an explicit exit-code
+            // assertion is the most specific and wins, then the fail marker,
+            // then stored output. `.expected_exit` is new here — the shell
+            // runner has honoured it since the exit() slice, the Rust harness
+            // never did.
+            let expectation = if expected_exit_path.exists() {
+                let raw = fs::read_to_string(&expected_exit_path)
+                    .expect("failed to read .expected_exit file");
+                let code = raw.trim().parse::<i32>().unwrap_or_else(|e| {
+                    panic!("{:?}: .expected_exit must hold an integer ({})", path, e)
+                });
+                TestExpectation::ExitCode {
+                    code,
+                    output: expected_output_path.exists().then(stored_output),
+                }
+            } else if expected_fail_path.exists() {
+                let body = fs::read_to_string(&expected_fail_path)
+                    .expect("failed to read .expected_fail file");
+                let (interp, jit) = parse_rejection_shapes(&body)
+                    .unwrap_or_else(|e| panic!("{:?}: bad .expected_fail annotation — {}", path, e));
+                TestExpectation::Fail { interp, jit }
+            } else if expected_output_path.exists() {
+                TestExpectation::PassWithOutput(stored_output())
             } else {
                 TestExpectation::PassAny
             };
@@ -712,7 +889,19 @@ pub fn parity_by_feature(
             entry.1 += 1; // skip
         } else {
             let is_parity_fail = match &fixture.expectation {
-                TestExpectation::Fail => outcome.exit_code == 0,
+                // Assert the RECORDED rejection shape, not merely "non-zero".
+                // `exit != 0` let a JIT hard trap satisfy a fixture whose
+                // interpreter emits a clean line-numbered diagnostic — the
+                // blind spot every C5/C6-class divergence hid in. Both
+                // directions are now caught: a `jit=diagnostic` fixture that
+                // starts trapping, and a `jit=trap` one that stops.
+                TestExpectation::Fail { jit, .. } => outcome.exit_code != jit.exit_code(),
+                TestExpectation::ExitCode { code, output } => {
+                    outcome.exit_code != *code
+                        || output
+                            .as_ref()
+                            .is_some_and(|e| normalise(&outcome.stdout) != *e)
+                }
                 TestExpectation::PassAny => outcome.exit_code != 0,
                 TestExpectation::PassWithOutput(expected) => {
                     outcome.exit_code != 0 || normalise(&outcome.stdout) != *expected
@@ -751,7 +940,20 @@ fn emit_parity_fail_diagnostic(
     eprintln!("\nPARITY_FAIL: {} [{}]", fixture.name, category);
 
     let expected_desc = match &fixture.expectation {
-        TestExpectation::Fail => "exit non-zero (expected-fail)".to_string(),
+        TestExpectation::Fail { interp, jit } => format!(
+            "JIT rejection shape '{}' (exit {}); interpreter annotated '{}'",
+            jit.as_str(),
+            jit.exit_code(),
+            interp.as_str()
+        ),
+        TestExpectation::ExitCode { code, output } => match output {
+            Some(s) => format!(
+                "exit {}, stdout = {:?}",
+                code,
+                s.lines().next().unwrap_or("(empty)")
+            ),
+            None => format!("exit {}", code),
+        },
         TestExpectation::PassAny => "exit 0".to_string(),
         TestExpectation::PassWithOutput(s) => {
             format!(
@@ -858,7 +1060,11 @@ mod tests {
 
         let fail_count = fixtures
             .iter()
-            .filter(|f| f.expectation == TestExpectation::Fail)
+            .filter(|f| matches!(f.expectation, TestExpectation::Fail { .. }))
+            .count();
+        let exit_code_count = fixtures
+            .iter()
+            .filter(|f| matches!(f.expectation, TestExpectation::ExitCode { .. }))
             .count();
         let pass_output_count = fixtures
             .iter()
@@ -876,9 +1082,106 @@ mod tests {
         );
         assert_eq!(
             total,
-            fail_count + pass_output_count + pass_any_count,
+            fail_count + exit_code_count + pass_output_count + pass_any_count,
             "fixture counts must be exhaustive"
         );
+    }
+
+    /// The rejection-shape annotation parses, defaults, and rejects typos.
+    #[test]
+    fn rejection_shape_parsing() {
+        use RejectionShape::{Diagnostic, Trap};
+
+        // Empty marker — the 117-fixture majority — defaults to both diagnostic.
+        assert_eq!(parse_rejection_shapes(""), Ok((Diagnostic, Diagnostic)));
+
+        // Prose-only bodies (two fixtures predate the annotation) still default,
+        // which is why prose had to stay legal rather than become a parse error.
+        assert_eq!(
+            parse_rejection_shapes("labeled-breaks (a): break 'nope has no enclosing loop.\n"),
+            Ok((Diagnostic, Diagnostic))
+        );
+
+        // A directive, with prose kept alongside it.
+        assert_eq!(
+            parse_rejection_shapes("#! interp=diagnostic jit=trap\nexplanatory note\n"),
+            Ok((Diagnostic, Trap))
+        );
+        assert_eq!(
+            parse_rejection_shapes("#! jit=trap"),
+            Ok((Diagnostic, Trap))
+        );
+
+        // A typo must fail loudly. Falling back to the default would silently
+        // re-open the hole this annotation exists to close.
+        assert!(parse_rejection_shapes("#! jit=crash").is_err());
+        assert!(parse_rejection_shapes("#! backend=trap").is_err());
+        assert!(parse_rejection_shapes("#! jittrap").is_err());
+    }
+
+    /// The shapes map to the exit codes the two backends actually use.
+    #[test]
+    fn rejection_shape_exit_codes() {
+        assert_eq!(RejectionShape::Diagnostic.exit_code(), 1);
+        assert_eq!(RejectionShape::Trap.exit_code(), JIT_TRAP_EXIT_CODE);
+        assert_eq!(JIT_TRAP_EXIT_CODE, 126);
+        assert_ne!(JIT_TRAP_EXIT_CODE, JIT_SKIP_EXIT_CODE);
+    }
+
+    /// The fixtures whose backends legitimately reject in different shapes must
+    /// stay enumerable — making them visible as a list was half the point of
+    /// recording the pair rather than accepting "non-zero" on both.
+    #[test]
+    fn differing_rejection_shapes_are_enumerable() {
+        let differing: Vec<&str> = collect_matrix_tests()
+            .iter()
+            .filter(|f| {
+                matches!(f.expectation, TestExpectation::Fail { interp, jit } if interp != jit)
+            })
+            .map(|f| Box::leak(f.name.clone().into_boxed_str()) as &str)
+            .collect();
+
+        assert!(
+            !differing.is_empty(),
+            "expected the known interp-diagnoses/JIT-traps set to be non-empty"
+        );
+        eprintln!(
+            "fixtures whose backends reject in different shapes ({}):\n  {}",
+            differing.len(),
+            differing.join("\n  ")
+        );
+    }
+
+    /// `.expected_exit` must be honoured by the Rust harness, not only by
+    /// `run_matrix.sh`, and must win the sidecar priority order.
+    #[test]
+    fn expected_exit_is_honoured_and_takes_priority() {
+        let fixtures = collect_matrix_tests();
+        let exit_fixtures: Vec<_> = fixtures
+            .iter()
+            .filter(|f| matches!(f.expectation, TestExpectation::ExitCode { .. }))
+            .collect();
+
+        assert!(
+            !exit_fixtures.is_empty(),
+            "matrix must have at least one .expected_exit fixture"
+        );
+
+        for f in &exit_fixtures {
+            let TestExpectation::ExitCode { code, .. } = &f.expectation else {
+                unreachable!()
+            };
+            assert_ne!(*code, 0, "{}: an exit-code fixture asserts a real code", f.name);
+
+            // Each also carries `.expected_fail`, which previously classified
+            // them. Priority must put ExitCode first — the stronger assertion.
+            let marker = PathBuf::from(format!("{}.expected_fail", f.path.to_string_lossy()));
+            assert!(
+                marker.exists(),
+                "{}: expected the redundant .expected_fail companion to still be present",
+                f.name
+            );
+        }
     }
 
     /// Every PassWithOutput expectation must be a non-empty normalised string
@@ -937,12 +1240,38 @@ mod tests {
             let outcome = run_interpreter(&binary, fixture);
 
             match &fixture.expectation {
-                TestExpectation::Fail => {
-                    if outcome.passed() {
+                // The interpreter half of the pair. Previously this asserted
+                // only "did not exit 0", so the sidecar carried nothing about
+                // the interpreter at all and a change in HOW it refuses went
+                // unnoticed. Now the recorded shape is asserted on this side
+                // too, which is what makes the annotation a pair rather than a
+                // JIT-only note.
+                TestExpectation::Fail { interp, .. } => {
+                    if outcome.exit_code != interp.exit_code() {
                         failures.push(format!(
-                            "FAIL [should-fail but exited 0]: {}",
-                            fixture.name
+                            "FAIL [rejection shape]: {} — annotated interp={} (exit {}), got exit {}",
+                            fixture.name,
+                            interp.as_str(),
+                            interp.exit_code(),
+                            outcome.exit_code
                         ));
+                    }
+                }
+
+                TestExpectation::ExitCode { code, output } => {
+                    if outcome.exit_code != *code {
+                        failures.push(format!(
+                            "FAIL [exit code]: {} — expected exit {}, got {}",
+                            fixture.name, code, outcome.exit_code
+                        ));
+                    } else if let Some(expected) = output {
+                        let actual = normalise(&outcome.stdout);
+                        if actual != *expected {
+                            failures.push(format!(
+                                "FAIL [output mismatch, exit {} ok]: {}\n  expected: {:?}\n  got:      {:?}",
+                                code, fixture.name, expected, actual
+                            ));
+                        }
                     }
                 }
 

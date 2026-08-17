@@ -1,0 +1,7 @@
+// Audit C4: indexing a non-array in EXPRESSION position. Both assignment
+// lvalue paths already rejected this ("index assignment target must be an
+// array"); only the read form fell through, reaching the interpreter (which
+// reported it as an *assignment target* error) and the JIT (which reported an
+// internal "lowering invariant violation").
+x: t64 = 5
+print(x:[0])

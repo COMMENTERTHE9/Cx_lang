@@ -84,6 +84,16 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
             has_return: false,
         },
     );
+    // cx_exit(code: I32) -> ! — the `exit(code)` builtin (known-issues #11).
+    // Never returns (process::exit on the host side), so has_return is false.
+    sigs.insert(
+        "cx_exit".to_string(),
+        ValidatorFunctionSig {
+            param_count: 1,
+            param_types: vec![IrType::I32],
+            has_return: false,
+        },
+    );
     sigs
 }
 

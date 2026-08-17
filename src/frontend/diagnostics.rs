@@ -249,6 +249,17 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             format!("{}", msg),
             *pos,
         ),
+        RuntimeError::CallDepthExceeded { pos, function } => (
+            format!(
+                "call depth limit reached in '{}' — {} nested calls, limit is {}. \
+                 This is almost always unbounded recursion: check that the recursive \
+                 call has a base case it can actually reach",
+                function,
+                crate::runtime::runtime::MAX_CALL_DEPTH + 1,
+                crate::runtime::runtime::MAX_CALL_DEPTH
+            ),
+            *pos,
+        ),
     }
 }
 

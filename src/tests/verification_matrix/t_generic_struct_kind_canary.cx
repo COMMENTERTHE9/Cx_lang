@@ -1,0 +1,9 @@
+// Layout canary, differing KINDS rather than widths: an f64 instantiation and
+// an integer one. Reading the f64 slot through an i32 layout produces garbage,
+// not a near-miss. Also covers the inferred form (Cell { v: 2.5 }) alongside
+// the explicit one.
+struct Cell<T> { v: T }
+i: Cell = Cell<t32> { v: 42 }
+f: Cell = Cell { v: 2.5 }
+print(i.v)
+print(f.v)

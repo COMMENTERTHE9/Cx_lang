@@ -1,0 +1,12 @@
+// The $ret_slot ordering trap. A struct-returning specialization gets its
+// hidden caller-allocated return slot only if `ret_struct_of` sees a
+// SUBSTITUTED return type — which is why monomorphization runs before
+// build_signature_table. If that ordering is wrong this produces garbage rather
+// than an error, so the exact field values are the assertion.
+struct P { x: t64, y: t64 }
+fnc: T <T> echo(v: T) { v }
+let a
+a = P { x: 111, y: 222 }
+b: P = echo(a)
+print(b.x)
+print(b.y)

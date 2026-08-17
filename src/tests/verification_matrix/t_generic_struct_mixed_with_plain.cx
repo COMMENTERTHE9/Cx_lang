@@ -1,0 +1,9 @@
+// A generic struct and a plain struct in one program, both used: the generic
+// template's absence from the layout table must not affect the plain struct.
+struct Pair<T> { a: T, b: T }
+struct Point { x: t64, y: t64 }
+p: Pair = Pair<t32> { a: 1, b: 2 }
+q: Point = Point { x: 7, y: 8 }
+print(p.b)
+print(q.x)
+print(q.y)
