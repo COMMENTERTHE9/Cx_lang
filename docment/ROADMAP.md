@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-08
+Last updated: 2026-08-16
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -33,6 +33,30 @@ release notes match the approved changelog. Landed:
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
 
+**0.3.3** — tagged `v0.3.3`, 2026-08-16. Detail for each item is in
+`docs/known_issues.md` at the cited section.
+
+- **Generic-struct instantiation lowering** (§18) and **generic-function
+  monomorphization** (§19/§23) — both now lower. Transitive worklist,
+  symbolic-map composition, per-template instantiation cap.
+- **`exit()` and top-level `const`** lower (§11, §12).
+- **Call-depth guards** (§24 interpreter, §25 JIT) — unbounded recursion is a
+  diagnostic on both backends at the same frame, not a crash. The JIT's guard is
+  emitted only for functions that can participate in a call cycle.
+- **Enforcement-layer audit** (§14) — field, enum-variant and receiver-type
+  facts moved from the access path's silence into semantic analysis, plus the
+  locked principle in `docs/frontend/enforcement_layers.md`.
+- **Const immutability** (§12) moved from runtime-only to analysis time,
+  including writes *through* a const that had silently mutated on both backends.
+- **Gene-bound soundness** (§22) — a bound promises methods, not fields.
+- **Rejection-shape harness** (§15) — `.expected_fail` records and asserts how
+  each backend refuses, and `.expected_exit` is honoured by the Rust harness
+  rather than by `run_matrix.sh` alone.
+
+Gate state at the tag: `cargo test` 250/0, `--features jit` 426/0, matrix
+414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110 on both
+feature sets.
+
 ---
 
 ## Post-0.3.0 — landed on `submain`, not yet in a tagged release
@@ -44,45 +68,11 @@ proven on both backends (interpreter and Cranelift JIT).
 
 ---
 
-## Post-0.3.2 — landed on `submain`, not yet in a tagged release
-
-Recorded here so the 0.4 blocker list below is the *remaining* work rather than
-a stale copy of what was open at 0.3.2. Detail for each is in
-`docs/known_issues.md` at the cited section.
-
-- **Generic-struct instantiation lowering** (§18) and **generic-function
-  monomorphization** (§19/§23) — both now lower. Worklist, symbolic-map
-  composition, per-template instantiation cap.
-- **Enforcement-layer audit** (§14) — field, enum-variant and receiver-type
-  facts moved from the access path's silence into semantic analysis, plus the
-  locked principle in `docs/frontend/enforcement_layers.md`.
-- **Rejection-shape harness** (§15) — `.expected_fail` records and asserts how
-  each backend refuses, and `.expected_exit` is finally honoured by the Rust
-  harness rather than by `run_matrix.sh` alone.
-- **Call-depth guards** (§24 interpreter, §25 JIT) — unbounded recursion is a
-  diagnostic on both backends at the same frame, not a crash. The JIT's guard is
-  emitted only for functions that can participate in a call cycle.
-- **Gene-bound soundness** (§22) — a bound promises methods, not fields.
-
-**Remaining lowering blockers, the 0.4 implementation half:**
-
-- array returns from methods
-- expression receivers for operator dispatch
-- `.copy` / `.copy.free` / `copy_into` parameter kinds
-- nested function definitions, `while-in`, function-body `const`, `t128`
-  printing, `char`, and non-identifier string interpolation
-
-Current gate state at `147c4ea`: `cargo test` 250/0, `--features jit` 426/0,
-matrix 414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110
-on both feature sets.
-
----
-
 The sequence below reflects the project's current stated direction. It was first
 formally recorded on 2026-07-04 — no prior committed roadmap file contained a
 0.2+ version sequence, so that was a first recording rather than a correction to
-an existing plan — and last amended on 2026-08-08, when 0.5 was added and 0.4
-gained the multidimensional-array design gate.
+an existing plan — and last amended on 2026-08-16, when 0.3.3 shipped and its
+remaining blockers folded into 0.4.
 
 ## Corrected Version Sequence
 
@@ -93,14 +83,23 @@ gained the multidimensional-array design gate.
   (`T: GeneName`), operator overloading via the embedded prelude. Plus the
   0.3.1-era audit fixes and the struct-return ABI fix. *(Shipped 2026-07-24.
   See `docs/post_0_1/gene_phen_design.md` for the full spec.)*
-- **0.3.3** — Next: array-return lowering, expression receivers.
-  *(Generic-function lowering, originally listed here, landed early on
-  `submain` — see "Post-0.3.2" above. Remaining scope not yet fixed.)*
+- **0.3.3** — Generic functions and structs lowered, call-depth guards on both
+  backends, the access-path enforcement audit. *(Shipped 2026-08-16. Full item
+  list under "Shipped" above.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
   begins/completes, math layer. *(Unchanged from prior sequencing.)* **Plus:**
   finish the remaining lowering blockers, and open the multidimensional-array
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
+
+  **Remaining lowering blockers** — array returns from methods, expression
+  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
+  parameter kinds, nested function definitions, `while-in`, function-body
+  `const`, `t128` printing, `char`, and non-identifier string interpolation.
+  Array returns and expression receivers were briefly carried as a prospective
+  0.3.4; they belong here, and inventing a version slot to hold them would
+  recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
+  0.3.4 is ever needed, it gets created when something actually justifies it.
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
 - **1.0+** — Graphics begins: Vulkan/DX12 bindings. *(Not before 1.0 — the
