@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-08-19
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -198,6 +198,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-08-18:** Expression receivers for operator dispatch landed on submain (`56983eb`). Lifts the named-left-operand restriction: `(a + b) + c` now dispatches through the gene, where before it was an explicit error. MethodCall gains an optional `receiver_expr` field; the interpreter, lowering, and monomorphizer each handle it in one branch. Four new test fixtures (chain, both-sides, call-operand, mutation canary) plus the old restriction test converted from `.expected_fail` to `.expected_output`. Corpus 420 → 424, 0 FAIL. This removes "expression receivers for operator dispatch" from the remaining lowering blockers list. Submain 3 commits ahead of main.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
