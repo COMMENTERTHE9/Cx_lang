@@ -1,0 +1,16 @@
+// Operator dispatch used to require a NAMED variable as the left operand: the
+// method machinery is name-based end to end, so an expression receiver had no
+// representation. `a + (b + c)` already worked — only the LEFT operand was
+// restricted, because the right travels as an ordinary call argument.
+struct V { x: t32 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+let a
+a = V { x: 1 }
+let b
+b = V { x: 2 }
+let c
+c = V { x: 4 }
+r: V = (a + b) + c
+print(r.x)

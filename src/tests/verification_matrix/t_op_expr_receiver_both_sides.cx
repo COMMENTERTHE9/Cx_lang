@@ -1,0 +1,16 @@
+// Expression on BOTH sides. The right operand was always unrestricted; this
+// pins that lifting the left does not disturb it.
+struct V { x: t32 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+let a
+a = V { x: 1 }
+let b
+b = V { x: 2 }
+let c
+c = V { x: 4 }
+let d
+d = V { x: 8 }
+r: V = (a + b) + (c + d)
+print(r.x)

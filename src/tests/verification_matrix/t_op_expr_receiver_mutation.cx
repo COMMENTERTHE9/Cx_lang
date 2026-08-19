@@ -1,0 +1,36 @@
+// The canary that protects what the design reasoned about. `bump` mutates its
+// receiver AND returns a value, so three things are observable at once:
+//
+//   1. a NAMED receiver still writes back — `a.x` must read 100 after `a + b`.
+//   2. a TEMPORARY receiver must not write back anywhere — the inner `(a + b)`
+//      result is unnamed, so its mutation is unobservable by construction, and
+//      nothing else may be corrupted by an attempt to write it somewhere.
+//   3. evaluation order is unchanged — operands evaluate left to right, so the
+//      running total below is order-sensitive and would shift visibly if the
+//      desugaring reordered anything.
+struct V { x: t32 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) {
+        v.x = 100
+        V { x: v.x + rhs.x }
+    }
+}
+let a
+a = V { x: 1 }
+let b
+b = V { x: 2 }
+let c
+c = V { x: 4 }
+// named receiver: a is mutated to 100, result is 100 + 2 = 102
+s: V = a + b
+print(s.x)
+print(a.x)
+// chained: inner (a + b) -> a is already 100, so 100 + 2 = 102 (temporary),
+// then temporary + c -> temporary mutated to 100 (unobservable), 100 + 4 = 104
+let p
+p = V { x: 1 }
+t: V = (p + b) + c
+print(t.x)
+print(p.x)
+print(b.x)
+print(c.x)

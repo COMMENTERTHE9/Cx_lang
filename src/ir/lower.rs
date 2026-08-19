@@ -1279,12 +1279,16 @@ fn lower_stmt(
             // lower_void_call so the receiver lowers through the existing
             // VarRef→Ptr path. Mirrors the Call arm above; same fall-through
             // to lower_expr for non-void.
-            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, .. } = &expr.kind {
-                let recv_arg = SemanticCallArg::Expr(SemanticExpr {
-                    ty: SemanticType::Struct(struct_name.clone()),
-                    kind: SemanticExprKind::VarRef {
-                        binding: *instance_binding,
-                        name: instance.clone(),
+            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, .. } = &expr.kind {
+                // Same receiver choice as the value-position arm above.
+                let recv_arg = SemanticCallArg::Expr(match receiver_expr {
+                    Some(rx) => (**rx).clone(),
+                    None => SemanticExpr {
+                        ty: SemanticType::Struct(struct_name.clone()),
+                        kind: SemanticExprKind::VarRef {
+                            binding: *instance_binding,
+                            name: instance.clone(),
+                        },
                     },
                 });
                 let mut full_args = Vec::with_capacity(args.len() + 1);
@@ -2586,7 +2590,7 @@ fn lower_expr(
         SemanticExprKind::Index { target, index, .. } => {
             lower_index(target, index, &expr.ty, ctx, active)
         }
-        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, pos: _ } => {
+        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, pos: _ } => {
             // Synthesize an equivalent Call and recurse into the existing Call
             // arm (which has the proven signature_table lookup, void-in-value-
             // position rejection, arity check, per-arg ensure_type_match, and
@@ -2594,11 +2598,19 @@ fn lower_expr(
             // that lowers to the receiver's Ptr SSA via the existing VarRef
             // arm. Arg order matches Stage 1's IrFunction param order
             // [receiver, extra_aliases..., user_params...].
-            let recv_arg = SemanticCallArg::Expr(SemanticExpr {
-                ty: SemanticType::Struct(struct_name.clone()),
-                kind: SemanticExprKind::VarRef {
-                    binding: *instance_binding,
-                    name: instance.clone(),
+            // An expression receiver (operator dispatch on a non-variable left
+            // operand) simply IS the argument-0 expression; a named receiver
+            // synthesizes the `VarRef` it always did. Either way the receiver
+            // occupies argument 0 and is evaluated there, so no evaluation
+            // order changes and no new lowering machinery is involved.
+            let recv_arg = SemanticCallArg::Expr(match receiver_expr {
+                Some(rx) => (**rx).clone(),
+                None => SemanticExpr {
+                    ty: SemanticType::Struct(struct_name.clone()),
+                    kind: SemanticExprKind::VarRef {
+                        binding: *instance_binding,
+                        name: instance.clone(),
+                    },
                 },
             });
             let mut full_args = Vec::with_capacity(args.len() + 1);
@@ -9393,6 +9405,7 @@ mod tests {
                     ty: SemanticType::I64,
                     kind: SemanticExprKind::MethodCall {
                         instance: "obj".to_string(),
+                        receiver_expr: None,
                         method: "foo".to_string(),
                         args: vec![],
                         instance_binding: BindingId(u32::MAX),

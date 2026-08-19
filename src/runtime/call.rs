@@ -275,9 +275,33 @@ impl RunTime {
         result
     }
 
-    pub(crate) fn call_semantic_method(&mut self, instance: &str, method: &str, args: &[SemanticCallArg], pos: usize) -> Result<Value, RuntimeError> {
-        // Get primary instance value and type
-        let instance_val = self.get_var(instance, pos)?;
+    /// Invoke a method.
+    ///
+    /// `receiver` is the already-evaluated receiver value when the caller has
+    /// one — an operator dispatched on a non-variable left operand, `(a + b) + c`
+    /// — and `None` when the receiver is the variable `instance`, which is then
+    /// resolved by name exactly as it always was.
+    ///
+    /// That same distinction decides the write-back: a named receiver has its
+    /// mutations written back to its name, a temporary has none. Dropping it for
+    /// a temporary is not a lost mutation — a temporary has no name through
+    /// which one could be observed, so there is nothing to write back to.
+    ///
+    /// One function rather than two: the named path is the `None` arm and is
+    /// byte-for-byte the behaviour it had.
+    pub(crate) fn call_semantic_method(
+        &mut self,
+        receiver: Option<Value>,
+        instance: &str,
+        method: &str,
+        args: &[SemanticCallArg],
+        pos: usize,
+    ) -> Result<Value, RuntimeError> {
+        let is_temporary = receiver.is_some();
+        let instance_val = match receiver {
+            Some(v) => v,
+            None => self.get_var(instance, pos)?,
+        };
         let type_name = match &instance_val {
             Value::Struct(name, _) => name.clone(),
             _ => return Err(RuntimeError::NotAContainer { pos, name: instance.to_string() }),
@@ -393,7 +417,10 @@ impl RunTime {
         if result.is_ok() {
             for (i, (_, mutated)) in mutated_aliases.iter().enumerate() {
                 if i == 0 {
-                    let _ = self.set_var(instance.to_string(), mutated.clone(), pos);
+                    // Named receiver only. A temporary has nowhere to write to.
+                    if !is_temporary {
+                        let _ = self.set_var(instance.to_string(), mutated.clone(), pos);
+                    }
                 } else if i <= extra_alias_count {
                     // Get the original variable name from the leading arg
                     if let Some(SemanticCallArg::Expr(e)) = args.get(i - 1) {

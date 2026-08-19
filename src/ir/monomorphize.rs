@@ -221,7 +221,12 @@ fn rw_expr(e: &mut SemanticExpr, r: &mut Rewriter) {
             rw_expr(target, r);
             rw_expr(index, r);
         }
-        SemanticExprKind::MethodCall { args, struct_name, .. } => {
+        SemanticExprKind::MethodCall { args, struct_name, receiver_expr, .. } => {
+            // An expression receiver is a subexpression like any other and may
+            // itself contain a generic call, so it must be walked.
+            if let Some(rx) = receiver_expr {
+                rw_expr(rx, r);
+            }
             // Slice 2 territory: substituting the receiver's type-parameter name
             // to a concrete struct is what makes `mangle_method` produce a name
             // the signature table already holds. Doing the substitution here is

@@ -157,11 +157,31 @@ pub enum SemanticExprKind {
         pos: usize,
     },
     MethodCall {
+        /// The receiver's variable name — and, when `receiver_expr` is `Some`,
+        /// only a label for diagnostics.
         instance: String,
         method: String,
         args: Vec<SemanticCallArg>,
         instance_binding: BindingId,
         struct_name: String,
+        /// An expression receiver, for operator dispatch on a non-variable left
+        /// operand — `(a + b) + c`.
+        ///
+        /// **Absent** is the ordinary case and means exactly what it always
+        /// meant: the receiver is the variable `instance`, resolved by name at
+        /// runtime, with the normal mutation write-back to that name.
+        ///
+        /// **Present** means the receiver is a temporary: evaluate this
+        /// expression in place and use its value, with **no write-back**. That
+        /// is not a lost mutation — a temporary has no name through which a
+        /// mutation could be observed, so there is nothing to write back to.
+        /// `instance`/`instance_binding` are not read in this case.
+        ///
+        /// Only `try_operator_gene_dispatch` produces it. An ordinary
+        /// `a.method()` cannot have an expression receiver: the AST's
+        /// `MethodCall(String, ...)` is name-bound, and `(expr).method()` does
+        /// not parse.
+        receiver_expr: Option<Box<SemanticExpr>>,
         pos: usize,
     },
     StructInstance {

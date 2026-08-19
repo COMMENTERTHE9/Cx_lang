@@ -2143,6 +2143,8 @@ Expr::Unary(op, inner, pos) => {
                         ty: ret_ty,
                         kind: SemanticExprKind::MethodCall {
                             instance: instance.clone(),
+                            // An ordinary `a.method()` receiver is always a name.
+                            receiver_expr: None,
                             method: method.clone(),
                             args: semantic_args,
                             instance_binding,
@@ -2267,6 +2269,8 @@ Expr::Unary(op, inner, pos) => {
                         args: semantic_args,
                         instance_binding,
                         struct_name,
+                        // An ordinary `a.method()` receiver is always a name.
+                        receiver_expr: None,
                         pos: *pos,
                     },
                 })
@@ -2705,12 +2709,24 @@ Expr::Unary(op, inner, pos) => {
                 ));
             }
         }
-        let SemanticExprKind::VarRef { binding, name } = &lhs.kind else {
-            return Err(sem_err!(
-                op_pos,
-                "operator '{}' on '{}' dispatches to gene '{}' — this currently requires a named variable as the left operand",
-                op_symbol, struct_name, gene
-            ));
+        // A named left operand keeps the receiver it always had. Anything else
+        // — `(a + b) + c`, `mk(1) + b` — travels as an expression receiver: a
+        // temporary, evaluated in place, with no write-back. Nothing is
+        // reordered by this: the receiver occupies argument 0 either way, so it
+        // is evaluated exactly where the named form's `VarRef` was.
+        //
+        // Only the LEFT operand ever needed this. The right has always accepted
+        // an arbitrary expression, because it travels as an ordinary call
+        // argument.
+        let (instance, instance_binding, receiver_expr) = match &lhs.kind {
+            SemanticExprKind::VarRef { binding, name } => (name.clone(), *binding, None),
+            _ => (
+                // Diagnostic label only — not resolved by name. See the
+                // `receiver_expr` doc on SemanticExprKind::MethodCall.
+                format!("({})", op_symbol),
+                BindingId(u32::MAX),
+                Some(Box::new(lhs.clone())),
+            ),
         };
         let args = match rhs {
             Some(r) => vec![SemanticCallArg::Expr(r.clone())],
@@ -2720,11 +2736,12 @@ Expr::Unary(op, inner, pos) => {
         Ok(Some(SemanticExpr {
             ty,
             kind: SemanticExprKind::MethodCall {
-                instance: name.clone(),
+                instance,
                 method: method.to_string(),
                 args,
-                instance_binding: *binding,
+                instance_binding,
                 struct_name: struct_name.clone(),
+                receiver_expr,
                 pos: op_pos,
             },
         }))

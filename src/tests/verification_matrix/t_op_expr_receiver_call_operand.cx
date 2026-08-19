@@ -1,0 +1,15 @@
+// A call result as the left operand, and a nested chain as the right — shape
+// variation so this proves the rule rather than one exact AST.
+struct V { x: t32 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+fnc: V mk(n: t32) { V { x: n } }
+let a
+a = V { x: 1 }
+let b
+b = V { x: 2 }
+let c
+c = V { x: 4 }
+r: V = mk(16) + ((a + b) + c)
+print(r.x)

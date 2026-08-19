@@ -115,8 +115,15 @@ impl RunTime {
                 self.pop_scope();
                 Ok(last_val)
             }
-            SemanticExprKind::MethodCall { instance, method, args, pos, .. } => {
-                self.call_semantic_method(instance, method, args, *pos)
+            SemanticExprKind::MethodCall { instance, method, args, receiver_expr, pos, .. } => {
+                // A temporary receiver is evaluated in place and passed by
+                // value; a named one is left for `call_semantic_method` to
+                // resolve, exactly as before.
+                let receiver = match receiver_expr {
+                    Some(rx) => Some(self.eval_semantic_expr(rx)?),
+                    None => None,
+                };
+                self.call_semantic_method(receiver, instance, method, args, *pos)
             }
             SemanticExprKind::Range { .. } => Ok(Value::Num(0)), // stub
             SemanticExprKind::HandleNew { value, .. } => {

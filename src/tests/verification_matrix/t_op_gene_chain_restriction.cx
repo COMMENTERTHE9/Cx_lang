@@ -1,6 +1,13 @@
-// 0.3.4 slice 6: the interim restriction — operator-gene dispatch requires a
-// named variable as the left operand; a chained (a + b) + c rejects with the
-// explicit interim error, not a confusing fallback.
+// 0.3.4 slice 6 introduced an interim restriction: operator-gene dispatch
+// required a NAMED variable as the left operand, so `(a + b) + c` was rejected
+// with an explicit error rather than a confusing fallback. This fixture pinned
+// that rejection.
+//
+// The restriction is lifted. A non-variable left operand now travels as an
+// expression receiver — a temporary, evaluated in place, with no write-back —
+// so the chain evaluates. The fixture is kept at the same shape it always had,
+// with its expectation converted from "rejects" to the value it produces, so
+// the history of what the restriction was and what replaced it stays visible.
 struct Vec2 { x: t32, y: t32 }
 phen Add (v: Vec2) {
     fnc: Self add(rhs: Self) {
