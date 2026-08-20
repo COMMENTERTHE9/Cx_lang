@@ -1,0 +1,56 @@
+---
+title: "Cx Dev Log — 2026-08-19"
+date: 2026-08-19
+description: "Expression receivers for operator dispatch landed, lifting the named-left-operand restriction and unblocking chained operator expressions."
+---
+
+The named-left-operand restriction on operator dispatch is gone. As of today, `(a + b) + c` works through gene dispatch where before it was an explicit error. This was the next lowering blocker after array returns, and it landed on submain with zero regressions.
+
+## What landed
+
+The core change is small in surface area but touches four subsystems. The operator-gene dispatch machinery required a named variable as the left operand because the method pipeline is name-based end to end. An expression like `(a + b)` simply had no representation. Now it does: `MethodCall` gains an optional `receiver_expr: Option<Box<SemanticExpr>>` field, and each layer handles it with a single branch.
+
+Six source files changed:
+
+- `semantic.rs` wraps a non-variable left operand in a `receiver_expr` instead of rejecting it. A synthetic instance name (`(+)`, `(-)`, etc.) labels diagnostics but is never resolved at runtime when `receiver_expr` is present.
+- `semantic_types.rs` adds the field with a doc block explaining the named-vs-temporary distinction: present means evaluate in place with no write-back, absent means the existing name-based path unchanged.
+- `call.rs` takes an optional already-evaluated `Value`. The named path is the `None` arm, byte-for-byte identical to the old behavior. Write-back is skipped for temporaries since a temporary has no name through which a mutation could be observed.
+- `lower.rs` uses the receiver expression when present, the synthesized `VarRef` when not. It occupies argument 0 either way, so nothing reorders.
+- `monomorphize.rs` descends into the receiver expression, which may itself contain a generic call.
+- `eval.rs` passes the receiver expression through to the interpreter's method call.
+
+The total diff is +219 / -30 lines across 17 files. No new control flow introduced, no changes to the IR or validator.
+
+## The design decision
+
+Two approaches were considered. The one that shipped is the hybrid approach: an optional field on the existing `MethodCall` form. The expression, when present, evaluates in place and occupies argument 0 exactly where the named variable's `VarRef` did.
+
+The rejected alternative was a value-producing expression variant, which would have required statements-in-expression-position. That means real CFG machinery in lowering, plus new handling in the interpreter and monomorphizer. The commit notes this was "not close" to being worth it.
+
+The temporary/named distinction has clean semantics. A named receiver writes back its mutations to its variable (existing behavior). A temporary does not, because there is nowhere to write to. This is not a limitation; it is the correct semantics for temporaries.
+
+## Test coverage
+
+Five new fixtures bring the corpus from 420 to 424:
+
+- `t_op_expr_receiver_chain.cx` covers `(a + b) + c` chaining.
+- `t_op_expr_receiver_both_sides.cx` covers expression receivers on both operands.
+- `t_op_expr_receiver_call_operand.cx` covers a function-call result as the left operand.
+- `t_op_expr_receiver_mutation.cx` is the canary: verifies named receivers still write back, temporaries do not, right operands are never written back, and evaluation order is unchanged.
+- `t_op_gene_chain_restriction.cx` converts the old restriction test from `.expected_fail` to `.expected_output`, preserving the history of the restriction in the fixture shape.
+
+Full matrix: `cargo test` 250/0, `--features jit` 426/0, parity 384 PASS / 40 SKIP / 0 PARITY_FAIL, clippy 110/110.
+
+## Submain status
+
+Submain is now 3 commits ahead of main:
+
+1. JIT array-return fix (caller-allocated slot for free functions and impl methods)
+2. Docs correction for the section 26 commit reference
+3. Expression receivers for operator dispatch (today's work)
+
+All three are clean, tested, and ready for the next submain-to-main merge.
+
+## What's next
+
+With array returns and expression receivers both done, the remaining lowering blockers for 0.4 are: `.copy`/`.copy.free`/`copy_into` parameter kinds, nested function definitions, `while-in`, function-body `const`, `t128` printing, `char`, and non-identifier string interpolation. The next likely moves are a submain-to-main merge (which should bring main's matrix from 414 to around 424) and picking up whichever lowering blocker comes next on the list.
