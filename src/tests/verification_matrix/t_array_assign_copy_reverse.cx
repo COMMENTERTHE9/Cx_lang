@@ -1,0 +1,12 @@
+// The other direction: mutate the ORIGINAL and assert the copy is unaffected.
+// Independence has to hold both ways — a one-directional test passes even if
+// the copy is shallow in the other direction.
+a: [3: t64] = [11, 22, 33]
+r: [3: t64] = a
+a:[2] = 77
+print(a:[0])
+print(a:[1])
+print(a:[2])
+print(r:[0])
+print(r:[1])
+print(r:[2])

@@ -1746,3 +1746,94 @@ Corpus 414 → 420, 0 FAIL. `cargo test` 250/0, `--features jit` 426/0, parity
 374/40/0 → **380 PASS / 40 SKIP / 0 PARITY_FAIL across 420**, clippy 110/110.
 SKIP set unchanged — the six new fixtures land as PASSes, and no pre-existing
 fixture moved.
+
+---
+
+## 27. Array and struct assignment aliased on the JIT — FIXED
+
+*(Fixed by the commit that introduces this entry — `copy_if_memory_resident`
+in `src/ir/lower.rs`. Cited by name rather than by hash because the fix and this
+entry are one commit, so no hash exists yet to cite.)*
+
+**Status: FIXED for every BINDING form. Parameter passing still diverges and is
+NOT fixed here — see the end of this entry; it is a language-semantics question,
+not a gap in this fix.**
+
+A live silent divergence on shipped flat-array paths. `r: [3: t64] = a` bound
+`r` to the same storage as `a` on the JIT, while the interpreter copied the
+value. Both backends exited 0 with different answers:
+
+```
+a: [3: t64] = [11, 22, 33]
+r: [3: t64] = a
+r:[1] = 99
+print(a:[1])          interp: 22      jit: 99
+```
+
+**Copy is the language's semantics.** Cx has explicit `.copy` / `.copy.free` /
+`copy_into` vocabulary, which presupposes that plain assignment is not aliasing;
+silent aliasing in a GC-free language is exactly what that vocabulary exists to
+make visible. The JIT was the bug.
+
+### Why nothing caught it
+
+**No fixture assigned one array variable to another and then mutated.** Searched
+before fixing: zero. Every array fixture in the corpus either initialises from a
+literal or reads elements, and neither shape can observe aliasing. The same
+blindness as the length-1 array-return fixture — the corpus tested the feature
+without testing the property.
+
+### Mechanism
+
+An array or struct lowers to `IrType::Ptr`, so a bare `SsaBind` copies the
+POINTER. `copy_if_memory_resident` allocates fresh storage and copies through it
+before the bind, at the single choke point every binding form funnels through.
+
+The copy plan is `ret_slot_plan` — already used by the caller-allocated return
+slot. One plan, several consumers, so the caller's `Alloca`, the callee's return
+copy and this bind copy cannot disagree about size or stride.
+
+A source that already owns fresh storage — an array literal or a struct literal
+— is exempt: nothing else holds a pointer to it, so there is nothing to alias,
+and `a: [3: t64] = [1, 2, 3]` is the commonest array assignment there is. That
+tests a PROPERTY of the source, not a list of statement forms; every binding
+form still routes through the one function.
+
+**Structs were fixed by the same change, and that was not planned.** They alias
+for the identical reason and `ret_slot_plan` already covered them, so writing
+the array-only version would have meant deliberately narrowing natural code.
+Verified: `b = a; b.x = 99` gave `11 99` / `99 99` before and `11 99` on both
+after — and no struct case was written for.
+
+### Cost
+
+No measurable cost. 200k array binds of 8 `t64` elements in a loop: minimum
+465 ms with the copy against 428 ms without, inside the run-to-run noise band.
+Array literals and struct literals — the common forms — are exempt and emit
+nothing extra, which a unit test asserting exactly three `Store`s for a
+three-element literal caught and pinned.
+
+### Still open: parameter passing diverges, and it collides with method receivers
+
+```
+fnc: t64 f(r: [3: t64]) { r:[0] += 88   return r:[0] }
+a: [3: t64] = [11, 22, 33]
+print(f(a))  print(a:[0])      interp: 99 11      jit: 99 99
+```
+
+The callee receives the caller's pointer. This is NOT fixed, deliberately: an
+impl or phen method's receiver is argument 0 of an ordinary call and shares the
+same parameter-binding path. Copying parameters would copy the receiver, and JIT
+method mutation depends on the receiver aliasing the caller's storage —
+`a.take(30)` prints 70 on both backends today only because of it.
+
+So "are parameters by value or by reference" is an open language question, not a
+missing branch. Note that only compound assignment can mutate an array parameter
+at all: `r:[0] = 99` inside a function body is a parse error, a separate
+pre-existing limitation.
+
+### Delta
+
+Corpus 424 → 429, 0 FAIL. `cargo test` 250/0, `--features jit` 426/0, parity
+384/40/0 → **389 PASS / 40 SKIP / 0 PARITY_FAIL across 429**, clippy 110/110.
+SKIP set unchanged.

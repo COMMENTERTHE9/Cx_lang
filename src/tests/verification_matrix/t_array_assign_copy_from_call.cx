@@ -1,0 +1,11 @@
+// The source is a function return rather than a variable. The return already
+// travels through a caller-allocated slot, so this also pins that copying at
+// the bind does not disturb that convention.
+fnc: [3: t64] mk() { [11, 22, 33] }
+a: [3: t64] = mk()
+r: [3: t64] = a
+r:[0] = 99
+print(a:[0])
+print(a:[1])
+print(a:[2])
+print(r:[0])

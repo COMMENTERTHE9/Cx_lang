@@ -140,8 +140,11 @@ things:
 - the **type**: `[3: t8]` — size, colon, element type
 - the **index operator**: `a:[2]` — colon *before* the bracket
 
-The colon-before-bracket indexing form was pinned deliberately: bare `a[2]`
-silently mis-parses. That constraint stands, and any multidimensional syntax has
+The colon-before-bracket indexing form was pinned deliberately. The precise
+shape it avoids: an expression followed by `[` on a subsequent line parses as
+two separate statements, because Cx has no statement terminator — `a` is an
+expression statement and `[2]` is an array literal, both discarded, exit 0, no
+error. (`a[2]` on ONE line is a clean parse error, not a silent mis-parse.) That constraint stands, and any multidimensional syntax has
 to live with a `:` that is already carrying two jobs. Nothing downstream can be
 locked until this is settled.
 

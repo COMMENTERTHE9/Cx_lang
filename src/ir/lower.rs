@@ -180,6 +180,78 @@ fn ret_slot_plan(
     }
 }
 
+/// Bind a value to a binding, giving it its own storage when the value lives in
+/// memory rather than a register.
+///
+/// A struct or an array lowers to `IrType::Ptr`, so a bare `SsaBind` copies the
+/// POINTER: `r: [3: t64] = a` made `r` and `a` name the same storage, and
+/// mutating one mutated the other. The interpreter copies the value, so the two
+/// backends silently disagreed — both exiting 0 with different answers.
+///
+/// Copy is the language's semantics. Cx has explicit `.copy` / `.copy.free` /
+/// `copy_into` vocabulary, which presupposes that plain assignment is not
+/// aliasing; silent aliasing in a GC-free language is exactly what that
+/// vocabulary exists to make visible.
+///
+/// This is the single choke point every binding form funnels through, rather
+/// than one arm per form — the same structure the const, loop-counter and
+/// field-access checks use, and for the same reason: a form nobody remembered
+/// to patch is how this class of bug recurs.
+///
+/// The copy plan is `ret_slot_plan`, already used by the caller-allocated
+/// return slot. One plan, several consumers, so the caller's `Alloca`, the
+/// callee's return copy and this bind copy cannot disagree about size or
+/// stride. A value that is not memory-resident returns `None` and binds
+/// unchanged, which is every scalar.
+fn copy_if_memory_resident(
+    sem_ty: &SemanticType,
+    source: &SemanticExpr,
+    src: ValueId,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<ValueId, LoweringError> {
+    // A literal allocated its storage in this very expression, so nothing else
+    // holds a pointer to it and there is nothing to alias. Copying it would be
+    // correct but pointless, and `a: [3: t64] = [1, 2, 3]` is the commonest
+    // array assignment there is. Note this tests a PROPERTY of the source —
+    // does it already own fresh storage — not a list of statement forms; every
+    // binding form still routes through this one function.
+    if matches!(
+        source.kind,
+        SemanticExprKind::ArrayLit { .. } | SemanticExprKind::StructInstance { .. }
+    ) {
+        return Ok(src);
+    }
+    let Some((size, align, parts)) = ret_slot_plan(sem_ty, &ctx.struct_table) else {
+        return Ok(src);
+    };
+    if size == 0 {
+        return Ok(src);
+    }
+    let dst_base = ctx.fresh_value();
+    active.emit(IrInst::Alloca { dst: dst_base, size, align })?;
+    for (offset, part_ty) in parts {
+        let src_ptr = if offset == 0 {
+            src
+        } else {
+            let fp = ctx.fresh_value();
+            active.emit(IrInst::PtrOffset { dst: fp, base: src, offset })?;
+            fp
+        };
+        let val = ctx.fresh_value();
+        active.emit(IrInst::Load { dst: val, ty: part_ty, ptr: src_ptr })?;
+        let dst_ptr = if offset == 0 {
+            dst_base
+        } else {
+            let fp = ctx.fresh_value();
+            active.emit(IrInst::PtrOffset { dst: fp, base: dst_base, offset })?;
+            fp
+        };
+        active.emit(IrInst::Store { ptr: dst_ptr, value: val })?;
+    }
+    Ok(dst_base)
+}
+
 /// Mangled IR name for an impl-block method: `<FirstAliasStruct>$<method>`.
 fn mangle_method(struct_name: &str, method: &str) -> String {
     format!("{}${}", struct_name, method)
@@ -1137,11 +1209,12 @@ fn lower_stmt(
                         lower_type(ty)?
                     };
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
+                    let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
                     let dst = ctx.fresh_value();
                     current.emit(IrInst::SsaBind {
                         dst,
                         ty: target_ty.clone(),
-                        src: lowered.value,
+                        src: src_value,
                     })?;
                     current
                         .bindings
@@ -1217,11 +1290,12 @@ fn lower_stmt(
                 ensure_type_match("typed assignment", target_ty.clone(), lowered.ty)?;
                 target_ty
             };
+            let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
             let dst = ctx.fresh_value();
             current.emit(IrInst::SsaBind {
                 dst,
                 ty: bind_ty.clone(),
-                src: lowered.value,
+                src: src_value,
             })?;
             current
                 .bindings

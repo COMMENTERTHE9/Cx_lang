@@ -1,0 +1,17 @@
+// Array assignment copies. An array lowers to a Ptr, so a bare SSA bind copied
+// the POINTER and the two bindings aliased on the JIT while the interpreter
+// copied the value — both exiting 0 with different answers. Copy is the
+// language's semantics: Cx has explicit `.copy` / `.copy.free` / `copy_into`
+// vocabulary, which presupposes plain assignment is not aliasing.
+//
+// Values are asymmetric and every element is asserted; a shared-storage bug
+// shows in the ORIGINAL, so printing only the copy would pass either way.
+a: [3: t64] = [11, 22, 33]
+r: [3: t64] = a
+r:[1] = 99
+print(a:[0])
+print(a:[1])
+print(a:[2])
+print(r:[0])
+print(r:[1])
+print(r:[2])

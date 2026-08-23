@@ -1,0 +1,10 @@
+// Same at t8. A hardcoded element size or stride in the copy would show here
+// and not at t64.
+a: [4: t8] = [11, 22, 33, 44]
+r: [4: t8] = a
+r:[2] = 99
+print(a:[0])
+print(a:[1])
+print(a:[2])
+print(a:[3])
+print(r:[2])
