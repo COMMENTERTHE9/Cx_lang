@@ -1,0 +1,29 @@
+---
+title: "Cx Dev Log — 2026-08-22"
+date: 2026-08-22
+description: "No new development work landed; three tested commits remain pending on submain for the fourth consecutive quiet day."
+---
+
+No development work today. No commits on any branch in the last 24 hours, no uncommitted changes, no modified source files. The matrix holds at 414/0 on main. This is the fourth consecutive day without new development landing.
+
+## Submain still waiting
+
+The real story is what continues to sit on submain, tested and ready. Three commits have been pending merge to main since August 16-18:
+
+1. **Array-return fix** (Aug 16) -- closes silent corruption on free functions, impl methods, and phen methods returning arrays. These functions were alloca'ing in their own frame and returning a pointer to dead stack. The guard only covered one of three dispatch paths (phen methods), leaving impl methods and free functions corrupting silently. This has been waiting 6 days.
+
+2. **Docs correction** (Aug 16) -- fixes the section 26 commit reference. Also 6 days pending.
+
+3. **Expression receivers for operator dispatch** (Aug 18) -- lifts the named-left-operand restriction so `(a + b) + c` works through gene dispatch. Hybrid approach over the value-producing expression form. 4 days pending.
+
+All three are clean on submain. The merge would bring main's test count up and close two items scoped under 0.3.3.
+
+## Daily log PR backlog
+
+Separately, daily-log branches from August 8 through August 21 remain as remote branches, many with unmerged PRs. These are documentation-only and could be batch-merged without risk, but they continue to accumulate.
+
+## What's next
+
+The submain-to-main merge is the single most overdue item. Once it lands, the remaining 0.4 lowering blockers include `.copy`/`.copy.free`/`copy_into` parameter kinds, nested function definitions, `while-in`, function-body `const`, `t128` printing, `char`, and non-identifier string interpolation. None of those have started.
+
+The predictions from yesterday's log (merge submain, pick up next lowering blocker, clear the daily log PR backlog) all carried over unchanged. Nothing moved.
