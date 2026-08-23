@@ -54,8 +54,16 @@ release notes match the approved changelog. Landed:
   rather than by `run_matrix.sh` alone.
 
 Gate state at the tag: `cargo test` 250/0, `--features jit` 426/0, matrix
-414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110 on both
-feature sets.
+414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy **111/111** on
+both feature sets.
+
+*(Clippy corrected 2026-08-23 from the 110/110 originally recorded. Re-measured
+by building the v0.3.3 tag in a worktree: it reports 111, and its lint multiset
+is byte-identical to this HEAD's — same lints, same counts. So no code change
+introduced a lint and there was never a drift to chase; the recorded 110 was
+simply not reproducible. Clippy counts are toolchain-dependent — this figure is
+clippy 0.1.96. `--all-targets` reports 119 without the `jit` feature and 113
+with it, also identical at the tag and at HEAD.)*
 
 ---
 

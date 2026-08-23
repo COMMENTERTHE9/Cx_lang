@@ -1937,11 +1937,19 @@ whether the value is written back on return.
 | `copy_into(x, y)` | bundles named outers into a container | no | — |
 
 `.copy` is copy-in/copy-out — the inverse of what the name suggests — and
-remains the language's only explicit mutation-out channel. `.copy.free` is a
-**confirmed no-op spelling**: same binding, same absence of write-back, and now
-that plain passing also copies on the JIT there is nothing left that
-distinguishes it. Whether to deprecate it is a language decision, not this
-slice's; recorded here so it is not rediscovered.
+remains the language's only explicit mutation-out channel.
+
+**`.copy.free` is a deprecation candidate.** It is semantically identical to
+ordinary passing: same by-value binding, no write-back, and — now that plain
+passing copies on the JIT too — no distinct meaning in the value model. Nothing
+a program can write distinguishes `f(x.copy.free)` from `f(x)`.
+
+**It is not removed, and nothing here changes its behaviour.** The ruling comes
+when blocker #3 closes — `.copy` / `.copy.free` / `copy_into` do not lower on
+the JIT at all today (exit 127), so the deprecation question cannot be settled
+against a half-implemented feature. Recorded now so the finding is not
+rediscovered, and so the decision is made deliberately rather than by whichever
+implementation lands first.
 
 ### Delta
 
@@ -1958,9 +1966,13 @@ inside `t_bound_method_still_works`, a fixture that already exits 127 and still
 exits 127 — the dump now shows the entry copy.
 
 Clippy is unchanged by this work: 111/111 before and after (`cargo clippy`
-without `--all-targets`; 119/113 with it, also unchanged). Note the 110/110
-figure recorded at the 0.3.3 tag no longer matches this HEAD — that drift
-predates this change and is not from it.
+without `--all-targets`; 119/113 with it, also unchanged).
+
+The 110/110 recorded at the 0.3.3 tag was chased afterwards and there is no
+drift: building the tag in a worktree reports **111**, with a lint multiset
+byte-identical to this HEAD's — same lints, same counts. No code change
+introduced a lint; the recorded number was simply not reproducible under
+clippy 0.1.96. `docment/ROADMAP.md` now records 111/111 for the tag.
 
 Three unit tests asserted instruction shapes over a whole function while meaning
 to assert what a single expression lowers to; the entry copy exposed that. They
