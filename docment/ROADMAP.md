@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-08-23
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -54,14 +54,44 @@ release notes match the approved changelog. Landed:
   rather than by `run_matrix.sh` alone.
 
 Gate state at the tag: `cargo test` 250/0, `--features jit` 426/0, matrix
-414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110 on both
-feature sets.
+414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy **111/111** on
+both feature sets.
+
+*(Clippy corrected 2026-08-23 from the 110/110 originally recorded. Re-measured
+by building the v0.3.3 tag in a worktree: it reports 111, and its lint multiset
+is byte-identical to this HEAD's — same lints, same counts. Clippy counts are
+toolchain-dependent — this figure is clippy 0.1.96.)*
 
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
+## Post-0.3.3 — landed on `submain`, not yet in a tagged release
 
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
+**Array returns via the caller-allocated slot** — `docs/known_issues.md` §26.
+Free functions and impl methods returned a dangling frame pointer and silently
+produced wrong values. The guard that existed covered only phen methods. Fixed
+for all three dispatch paths.
+
+**Expression receivers for operator dispatch** — lifted the named-left-operand
+restriction so `(a + b) + c` works. `receiver_expr` on `SemanticExprKind::MethodCall`
+carries the temporary when the left operand is not a named variable.
+
+**Array and struct assignment copies** — `docs/known_issues.md` §27. Fixed a
+silent backend divergence where `r = a` for arrays/structs aliased on the JIT
+while the interpreter copied. `copy_if_memory_resident` in `src/ir/lower.rs`
+copies through fresh storage at the single choke point every binding form uses.
+
+**Model B — aggregates are values, the receiver is the declared exception** —
+`docs/known_issues.md` §27. All aggregate parameters now copy except declared
+receivers. `SemanticParam.is_receiver` distinguishes receivers from ordinary
+parameters, set at construction. `.copy.free` is now a confirmed no-op spelling
+under Model B and is recorded as a deprecation candidate.
+
+Corpus at submain HEAD: 436/436. Parity: 396 PASS / 40 SKIP / 0 PARITY_FAIL.
+
+---
+
+**Scalar Handle core (D2.5a/b/c)** — shipped in 0.3.1, tagged `3430e4e`; landed
+on `submain` at `3ea986d`. `Handle<T>` for scalar
 `T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
@@ -92,13 +122,12 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — array returns from methods, expression
-  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
-  parameter kinds, nested function definitions, `while-in`, function-body
+  **Remaining lowering blockers** — `.copy` / `.copy.free` / `copy_into`
+  parameter kinds (`.copy.free` is now a deprecation candidate under Model B),
+  nested function definitions, `while-in`, function-body
   `const`, `t128` printing, `char`, and non-identifier string interpolation.
-  Array returns and expression receivers were briefly carried as a prospective
-  0.3.4; they belong here, and inventing a version slot to hold them would
-  recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
+  Array returns and expression receivers, briefly carried as a prospective
+  0.3.4, are now fixed on submain. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
@@ -131,8 +160,12 @@ things:
 - the **type**: `[3: t8]` — size, colon, element type
 - the **index operator**: `a:[2]` — colon *before* the bracket
 
-The colon-before-bracket indexing form was pinned deliberately: bare `a[2]`
-silently mis-parses. That constraint stands, and any multidimensional syntax has
+The colon-before-bracket indexing form was pinned deliberately. The precise
+shape it avoids: an expression followed by `[` on a subsequent line parses as
+two separate statements, because Cx has no statement terminator — `a` is an
+expression statement and `[2]` is an array literal, both discarded, exit 0, no
+error. (`a[2]` on one line is a clean parse error, not a silent mis-parse.)
+That constraint stands, and any multidimensional syntax has
 to live with a `:` that is already carrying two jobs. Nothing downstream can be
 locked until this is settled.
 
