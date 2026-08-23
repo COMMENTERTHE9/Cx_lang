@@ -1,0 +1,16 @@
+// Model B for struct parameters: plain assignment and compound assignment to a
+// parameter's fields are both confined to the callee's copy.
+struct P { x: t64, y: t64, z: t64 }
+fnc: t64 shift(p: P) {
+    p.x = 99
+    p.y += 5
+    return p.x
+}
+let s;
+s = P { x: 11, y: 22, z: 33 }
+let d;
+d = shift(s)
+print(d)
+print(s.x)
+print(s.y)
+print(s.z)

@@ -1,0 +1,18 @@
+// The copy must hold when the mutation is not on the straight-line path: a
+// parameter written inside a taken branch, and one inside an untaken branch.
+fnc: t64 maybe(r: [3: t64], flag: t64) {
+    if (flag > 0) {
+        r:[0] += 100
+    }
+    if (flag < 0) {
+        r:[1] += 900
+    }
+    return r:[0]
+}
+a: [3: t64] = [11, 22, 33]
+let d;
+d = maybe(a, 1)
+print(d)
+print(a:[0])
+print(a:[1])
+print(a:[2])

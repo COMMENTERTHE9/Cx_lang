@@ -1,0 +1,17 @@
+// Element width matters to the copy's stride: a t8 array with four asymmetric
+// values, every element asserted. A stride bug shows up here and not at t64.
+fnc: t8 scramble(r: [4: t8]) {
+    r:[0] += 1
+    r:[1] += 2
+    r:[2] += 3
+    r:[3] += 4
+    return r:[3]
+}
+a: [4: t8] = [10, 20, 30, 40]
+let d;
+d = scramble(a)
+print(d)
+print(a:[0])
+print(a:[1])
+print(a:[2])
+print(a:[3])

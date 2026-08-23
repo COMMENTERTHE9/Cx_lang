@@ -319,6 +319,18 @@ pub struct SemanticParam {
     pub name: String,
     pub kind: SemanticParamKind,
     pub ty: Option<SemanticType>,
+    /// Model B: aggregates are values, and the method receiver is the one
+    /// declared exception. A parameter with this set is passed by reference so
+    /// the callee's writes reach the caller's storage; every other aggregate
+    /// parameter is copied on entry (`lower_semantic_function` in ir/lower.rs).
+    ///
+    /// The flag lives on the parameter, not in the copy loop, and the field has
+    /// no default — so a new receiver-producing path cannot silently inherit
+    /// the wrong answer. It has to say which it is, at the point where it
+    /// builds the parameter, or it does not compile. An impl block may declare
+    /// several aliases (`impl (p: Player, w: World)`), so "the receiver" is not
+    /// a position.
+    pub is_receiver: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

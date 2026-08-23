@@ -1,0 +1,16 @@
+// Model B: an aggregate parameter is a value. The callee sees its own copy;
+// the caller's array is unchanged by anything the callee writes.
+// Before the fix: interp printed 111/11/22/33, cranelift printed 111/111/222/333.
+fnc: t64 bump(r: [3: t64]) {
+    r:[0] += 100
+    r:[1] += 200
+    r:[2] += 300
+    return r:[0]
+}
+a: [3: t64] = [11, 22, 33]
+let d;
+d = bump(a)
+print(d)
+print(a:[0])
+print(a:[1])
+print(a:[2])

@@ -1,0 +1,18 @@
+// Several aggregate parameters at once: mutating one must leave the other
+// parameter, and both callers' arrays, untouched. Guards against a copy that
+// covers only the first aggregate parameter.
+fnc: t64 only_first(a: [3: t64], b: [3: t64]) {
+    a:[0] += 50
+    return a:[0] + b:[0]
+}
+p: [3: t64] = [1, 2, 3]
+q: [3: t64] = [7, 8, 9]
+let d;
+d = only_first(p, q)
+print(d)
+print(p:[0])
+print(p:[1])
+print(p:[2])
+print(q:[0])
+print(q:[1])
+print(q:[2])

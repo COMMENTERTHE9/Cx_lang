@@ -1,0 +1,18 @@
+// A parameter mutated repeatedly inside a loop. The copy is made once on entry,
+// so the caller sees none of the iterations.
+fnc: t64 accumulate(r: [3: t64]) {
+    i: t64 = 0
+    while (i < 4) {
+        r:[0] += 10
+        r:[2] += 1
+        i = i + 1
+    }
+    return r:[0]
+}
+a: [3: t64] = [11, 22, 33]
+let d;
+d = accumulate(a)
+print(d)
+print(a:[0])
+print(a:[1])
+print(a:[2])

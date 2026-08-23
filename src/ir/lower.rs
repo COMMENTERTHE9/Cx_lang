@@ -1023,6 +1023,10 @@ fn lower_semantic_function(
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
     let mut bindings = HashMap::new();
+    // Model B: aggregate parameters that are not receivers are copied on entry.
+    // Collected here because the entry block does not exist until after every
+    // parameter is bound; the copies are emitted into it below.
+    let mut copy_on_entry: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
     let return_ty = match &function.return_ty {
         Some(ty) => lower_return_type(ty)?,
         None => None,
@@ -1044,6 +1048,14 @@ fn lower_semantic_function(
                     read_only: false,
                 });
                 bindings.insert(param.binding, LoweredValue { value, ty });
+                // The exemption is read off the parameter, never off its index.
+                if !param.is_receiver {
+                    if let Some(pty) = &param.ty {
+                        if matches!(pty, SemanticType::Struct(_) | SemanticType::Array(_, _)) {
+                            copy_on_entry.push((param.binding, value, pty.clone()));
+                        }
+                    }
+                }
             }
             (crate::frontend::semantic_types::SemanticParamKind::Typed, None) => {
                 return Err(LoweringError::InternalInvariantViolation {
@@ -1097,7 +1109,31 @@ fn lower_semantic_function(
         allow_return_stmt: true,
         ret_slot,
     };
-    let entry = ctx.start_block(block_params, bindings);
+    let mut entry = ctx.start_block(block_params, bindings);
+    // Model B, the callee half: an aggregate parameter names storage the caller
+    // still owns, so the callee gets its own. `ret_slot_plan` supplies the size,
+    // alignment and parts — the same authority the return slot and the bind copy
+    // read, so the three cannot disagree about a layout.
+    for (binding, src, pty) in copy_on_entry {
+        let Some((size, align, parts)) = ret_slot_plan(&pty, &ctx.struct_table) else {
+            continue;
+        };
+        if size == 0 {
+            continue;
+        }
+        let dst_base = ctx.fresh_value();
+        entry.emit(IrInst::Alloca { dst: dst_base, size, align })?;
+        for (offset, part_ty) in parts {
+            let src_ptr = ctx.fresh_value();
+            entry.emit(IrInst::PtrOffset { dst: src_ptr, base: src, offset })?;
+            let tmp = ctx.fresh_value();
+            entry.emit(IrInst::Load { dst: tmp, ptr: src_ptr, ty: part_ty })?;
+            let dst_ptr = ctx.fresh_value();
+            entry.emit(IrInst::PtrOffset { dst: dst_ptr, base: dst_base, offset })?;
+            entry.emit(IrInst::Store { ptr: dst_ptr, value: tmp })?;
+        }
+        entry.bindings.insert(binding, LoweredValue { value: dst_base, ty: IrType::Ptr });
+    }
     let current = lower_stmt_sequence(
         function.body.iter(),
         &mut ctx,
@@ -6475,6 +6511,40 @@ mod tests {
             name: name.to_string(),
             kind: SemanticParamKind::Typed,
             ty: Some(ty),
+            is_receiver: false,
+        }
+    }
+
+    /// Instructions a function's *body* emitted, with the Model B entry copy
+    /// for aggregate parameters skipped.
+    ///
+    /// Tests that assert "this expression lowers to exactly these instructions"
+    /// read the whole function, so the entry copy — emitted before any body
+    /// instruction — would otherwise count against them. The preamble is
+    /// recognised by its shape rather than by a fixed length: one `Alloca`,
+    /// then whole (PtrOffset, Load, PtrOffset, Store) groups, stopping at the
+    /// first instruction that does not continue the pattern.
+    fn body_insts(func: &IrFunction) -> Vec<&IrInst> {
+        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+        if !matches!(insts.first(), Some(IrInst::Alloca { .. })) {
+            return insts;
+        }
+        let mut cut = 1;
+        while cut + 3 < insts.len()
+            && matches!(insts[cut], IrInst::PtrOffset { .. })
+            && matches!(insts[cut + 1], IrInst::Load { .. })
+            && matches!(insts[cut + 2], IrInst::PtrOffset { .. })
+            && matches!(insts[cut + 3], IrInst::Store { .. })
+        {
+            cut += 4;
+        }
+        insts[cut..].to_vec()
+    }
+
+    fn receiver_param(binding: BindingId, name: &str, ty: SemanticType) -> SemanticParam {
+        SemanticParam {
+            is_receiver: true,
+            ..typed_param(binding, name, ty)
         }
     }
 
@@ -8804,7 +8874,9 @@ mod tests {
 
         let module = lower_and_validate(&program);
         let func = module.functions.iter().find(|f| f.name == "read_x").unwrap();
-        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+        // Model B: the aggregate parameter is copied on entry; this test is about
+        // what the expression itself lowers to, so skip that preamble.
+        let insts = body_insts(func);
 
         // Must have a Load for i64
         let has_load = insts.iter().any(|i| matches!(i, IrInst::Load { ty: IrType::I64, .. }));
@@ -9023,6 +9095,51 @@ mod tests {
         }
     }
 
+    // Model B, pinned at the unit level: whether an aggregate parameter is
+    // copied on entry is read off the parameter's own `is_receiver` flag and
+    // nothing else. Same function, same type, same position — only the flag
+    // differs, and only the flagged one skips the copy. If the exemption ever
+    // regresses to "skip argument 0", the receiver case here still passes but
+    // the ordinary case stops emitting its copy, and this test fails.
+    #[test]
+    fn aggregate_param_copy_is_governed_by_the_receiver_flag() {
+        fn entry_alloca_count(param: SemanticParam) -> usize {
+            let program = SemanticProgram {
+                stmts: vec![semantic_function(
+                    "takes_aggregate",
+                    vec![param],
+                    None,
+                    vec![],
+                    None,
+                )],
+                enums: vec![],
+            };
+            let module = lower_and_validate(&program);
+            let func = module
+                .functions
+                .iter()
+                .find(|f| f.name == "takes_aggregate")
+                .expect("function was lowered");
+            func.blocks
+                .iter()
+                .flat_map(|b| b.insts.iter())
+                .filter(|i| matches!(i, IrInst::Alloca { size: 24, .. }))
+                .count()
+        }
+
+        let arr = SemanticType::Array(3, Box::new(SemanticType::I64));
+        assert_eq!(
+            entry_alloca_count(typed_param(BindingId(0), "r", arr.clone())),
+            1,
+            "an ordinary aggregate parameter must be copied into its own 24-byte slot"
+        );
+        assert_eq!(
+            entry_alloca_count(receiver_param(BindingId(0), "r", arr)),
+            0,
+            "a receiver-flagged parameter must alias the caller's storage, not copy it"
+        );
+    }
+
     // ArrayLit lowering: a three-element i64 array must emit exactly one ArrayAlloca
     // (for the whole array), two PtrOffset instructions (elements 1 and 2 —
     // element 0 is at offset 0 so no PtrOffset), and three Stores.
@@ -9200,7 +9317,9 @@ mod tests {
 
         let module = lower_and_validate(&program);
         let func = module.functions.iter().find(|f| f.name == "read_elem").unwrap();
-        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+        // Model B: the aggregate parameter is copied on entry; this test is about
+        // what the expression itself lowers to, so skip that preamble.
+        let insts = body_insts(func);
 
         // Must have a PtrAdd (runtime pointer arithmetic for the index).
         let has_ptr_add = insts.iter().any(|i| matches!(i, IrInst::PtrAdd { .. }));
@@ -9348,7 +9467,9 @@ mod tests {
 
         let module = lower_and_validate(&program);
         let func = module.functions.iter().find(|f| f.name == "write_elem").unwrap();
-        let insts: Vec<&IrInst> = func.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+        // Model B: the aggregate parameter is copied on entry; this test is about
+        // what the expression itself lowers to, so skip that preamble.
+        let insts = body_insts(func);
 
         // Must have a PtrAdd (runtime pointer arithmetic for the index).
         assert!(

@@ -1,0 +1,22 @@
+// A nested-aggregate parameter. Pins the behaviour that exists: the aggregate
+// copy is shallow over row pointers, and every route to an inner element goes
+// through a bind that copies, so no sharing is observable. If multidimensional
+// arrays later make inner elements directly writable, this fixture is where the
+// shallowness becomes visible — see docs/known_issues.md §27.
+fnc: t64 peek(g: [2: [3: t64]]) {
+    row: [3: t64] = g:[0]
+    row:[0] += 500
+    return row:[0]
+}
+a: [2: [3: t64]] = [[11, 22, 33], [44, 55, 66]]
+let d;
+d = peek(a)
+print(d)
+r0: [3: t64] = a:[0]
+r1: [3: t64] = a:[1]
+print(r0:[0])
+print(r0:[1])
+print(r0:[2])
+print(r1:[0])
+print(r1:[1])
+print(r1:[2])

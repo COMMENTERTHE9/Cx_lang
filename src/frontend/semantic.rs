@@ -521,11 +521,18 @@ impl Analyzer {
                             // receiver resolves. The strip itself is unchanged,
                             // so the interpreter's call_semantic_method arity is
                             // preserved.
+                            // Model B: every alias an impl block declares is a
+                            // receiver, and an impl may declare more than one
+                            // (`impl (p: Player, w: World)`). Flagging them here
+                            // — where they are built — is what keeps the
+                            // exemption a property of the parameter rather than
+                            // of its position in the argument list.
                             let captured: Vec<SemanticParam> = sem_func
                                 .params
                                 .iter()
                                 .take(aliases.len())
                                 .cloned()
+                                .map(|mut p| { p.is_receiver = true; p })
                                 .collect();
                             sem_func.params = sem_func.params.into_iter()
                                 .skip(aliases.len())
@@ -643,7 +650,14 @@ impl Analyzer {
                     let analyzed = self.analyze_function(mname, &[], &full_params, &sub_ret, &sub_body, ret_expr, *pos, false);
                     self.pop_scope();
                     if let SemanticStmt::FuncDef(mut sem_func) = analyzed? {
-                        let captured: Vec<SemanticParam> = sem_func.params.iter().take(1).cloned().collect();
+                        // Model B: the phen receiver, flagged where it is built.
+                        let captured: Vec<SemanticParam> = sem_func
+                            .params
+                            .iter()
+                            .take(1)
+                            .cloned()
+                            .map(|mut p| { p.is_receiver = true; p })
+                            .collect();
                         sem_func.params = sem_func.params.into_iter().skip(1).collect();
                         semantic_methods.push(sem_func);
                         method_receiver_params.push(captured);
@@ -1372,6 +1386,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         name: param_name.clone(),
                         kind: SemanticParamKind::Typed,
                         ty: Some(semantic_type_from_decl(param_ty.clone(), type_params)),
+                        is_receiver: false,
                     });
                 }
                 ParamKind::Copy(param_name) => {
@@ -1381,6 +1396,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         name: param_name.clone(),
                         kind: SemanticParamKind::Copy,
                         ty: None,
+                        is_receiver: false,
                     });
                 }
                 ParamKind::CopyFree(param_name) => {
@@ -1390,6 +1406,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         name: param_name.clone(),
                         kind: SemanticParamKind::CopyFree,
                         ty: None,
+                        is_receiver: false,
                     });
                 }
                 ParamKind::CopyInto(param_name, _) => {
@@ -1399,6 +1416,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         name: param_name.clone(),
                         kind: SemanticParamKind::CopyInto,
                         ty: None,
+                        is_receiver: false,
                     });
                 }
             }
@@ -2991,24 +3009,28 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
             name: name.clone(),
             kind: SemanticParamKind::Typed,
             ty: Some(semantic_type_from_decl(ty.clone(), &[])),
+            is_receiver: false,
         },
         ParamKind::Copy(name) => SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
             kind: SemanticParamKind::Copy,
             ty: None,
+            is_receiver: false,
         },
         ParamKind::CopyFree(name) => SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
             kind: SemanticParamKind::CopyFree,
             ty: None,
+            is_receiver: false,
         },
         ParamKind::CopyInto(name, _) => SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
             kind: SemanticParamKind::CopyInto,
             ty: None,
+            is_receiver: false,
         },
     }
 }
@@ -4113,6 +4135,7 @@ pub fn analyze_resolved_program(
                         name: format!("arg{}", i),
                         kind: SemanticParamKind::Typed,
                         ty: ty.clone(),
+                        is_receiver: false,
                     }).collect(),
                     return_ty: origin.ret.clone(),
                     body: vec![],

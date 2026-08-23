@@ -1749,15 +1749,15 @@ fixture moved.
 
 ---
 
-## 27. Array and struct assignment aliased on the JIT — FIXED
+## 27. Aggregate value semantics — Model B, FIXED on both halves
 
-*(Fixed by the commit that introduces this entry — `copy_if_memory_resident`
-in `src/ir/lower.rs`. Cited by name rather than by hash because the fix and this
-entry are one commit, so no hash exists yet to cite.)*
+*(Two commits. The binding half was fixed by `copy_if_memory_resident` in
+`src/ir/lower.rs`; the parameter half by the `is_receiver` flag on
+`SemanticParam` plus the entry copy in `lower_semantic_function`. Both cited by
+name rather than by hash, because each fix and its write-up are one commit.)*
 
-**Status: FIXED for every BINDING form. Parameter passing still diverges and is
-NOT fixed here — see the end of this entry; it is a language-semantics question,
-not a gap in this fix.**
+**Status: FIXED.** Aggregates are values on both backends — every bind, every
+parameter, every return. The method receiver is the one declared exception.
 
 A live silent divergence on shipped flat-array paths. `r: [3: t64] = a` bound
 `r` to the same storage as `a` on the JIT, while the interpreter copied the
@@ -1813,7 +1813,10 @@ Array literals and struct literals — the common forms — are exempt and emit
 nothing extra, which a unit test asserting exactly three `Store`s for a
 three-element literal caught and pinned.
 
-### Still open: parameter passing diverges, and it collides with method receivers
+### The second half: parameter passing — Model B
+
+The bind fix left parameters divergent, and the divergence was deliberate at the
+time because it collided with method receivers:
 
 ```
 fnc: t64 f(r: [3: t64]) { r:[0] += 88   return r:[0] }
@@ -1821,19 +1824,145 @@ a: [3: t64] = [11, 22, 33]
 print(f(a))  print(a:[0])      interp: 99 11      jit: 99 99
 ```
 
-The callee receives the caller's pointer. This is NOT fixed, deliberately: an
-impl or phen method's receiver is argument 0 of an ordinary call and shares the
-same parameter-binding path. Copying parameters would copy the receiver, and JIT
-method mutation depends on the receiver aliasing the caller's storage —
-`a.take(30)` prints 70 on both backends today only because of it.
+An impl or phen method's receiver is an ordinary parameter, so copying
+parameters copies the receiver, and JIT method mutation worked *only* because
+the receiver aliased the caller's storage. The two backends were reaching the
+same observable result by opposite mechanisms: the interpreter binds every
+parameter by value and then writes receiver mutations back explicitly
+(`call_semantic_method`), while the JIT never writes anything back — the
+receiver simply *is* an argument.
 
-So "are parameters by value or by reference" is an open language question, not a
-missing branch. Note that only compound assignment can mutate an array parameter
-at all: `r:[0] = 99` inside a function body is a parse error, a separate
-pre-existing limitation.
+**The ruling: Model B.** Aggregates are values. Every bind, parameter and return
+copies. **The method receiver is the one declared exception**, passed by
+reference as a stated language rule. The interpreter was already Model B; this
+makes the JIT agree, which is what "the interpreter is the reference" has to
+mean if it means anything.
+
+### The exemption is a property of the parameter, not of its position
+
+`SemanticParam` carries `is_receiver`. It is set in the two places receivers are
+built — the impl-block alias capture and the phen-def receiver capture — and
+lowering copies every aggregate parameter that does not carry it.
+
+**"Skip argument 0" would have been wrong, not merely fragile.** An impl block
+may declare several aliases: `impl (p: Player, w: World)` makes both `p` and `w`
+receivers, and `t177_multi_alias_impl_exit` has shipped depending on it since
+0.2. A positional rule gets that fixture wrong on its second alias.
+
+The field has **no default**, so it is a compile error for any new
+receiver-producing path to stay silent about which it is. That is the same
+discipline as the monomorphize walker's missing catch-all arm, and the direct
+answer to the array-return guard that covered `PhenDef` only and looked handled.
+
+### What proves the flag covers paths nobody wrote a case for
+
+Four parameter-passing forms with no specific handling, each DISAGREE before and
+AGREE after:
+
+| Form | before (interp / jit) | after |
+|---|---|---|
+| phen-dispatched operator, `rhs` param mutated | `10` / `999` | `10` |
+| monomorphized generic fn, struct param | `11` / `777` | `11` |
+| impl method's non-receiver param | `22` / `555` | `22` |
+| aggregate forwarded through two frames | `11 22` / `111 29` | `11 22` |
+
+The impl-method row is the sharpest: in one call the receiver is mutated
+(by reference) and the non-receiver parameter is not (by value). The exemption
+is behaving per-parameter, which is the whole design.
+
+### Cost of the entry copy
+
+Measured on the parameter path specifically, because the bind benchmark's
+"inside the noise band" says nothing about a hot call. Release build, cranelift,
+a function whose entire body is one compound assignment, 256-byte aggregate
+parameter (`[32: t64]`), minimum of seven runs, per-call cost isolated by
+differencing 200k against 2M calls:
+
+```
+base    2 ns/call        model B   7 ns/call
+```
+
+~5 ns per call for 256 bytes — about 36 GB/s, which is what an L1-resident copy
+should cost. Over 1.8M calls that is 9 ms. It is measurable, unlike the bind
+copy, and it scales with aggregate size; it is not material against call
+overhead on any realistic path.
+
+### Fixtures
+
+Seven, written before the change and failing on the JIT when written — six of
+seven, verbatim, `interp` / `jit`:
+
+```
+t_param_array_is_copy       111 11 22 33     / 111 111 222 333
+t_param_struct_is_copy      99 11 22 33      / 99 99 27 33
+t_param_multi_aggregate     58 1 2 3 7 8 9   / 58 51 2 3 7 8 9
+t_param_array_copy_t8       44 10 20 30 40   / 44 11 22 33 44
+t_param_mutate_in_branch    111 11 22 33     / 111 111 22 33
+t_param_mutate_in_loop      51 11 22 33      / 51 51 22 37
+```
+
+The seventh, `t_param_nested_aggregate`, passed on both before and after. It is
+there to pin what exists rather than to fail: the aggregate copy is **shallow**
+over row pointers — `ret_slot_plan` for `[2: [3: t64]]` yields two `Ptr` parts,
+and the IR shows `alloca size 16`, not 48 — so `b = a` shares both rows. No
+program can observe that today, because every route to an inner element goes
+through a bind and every bind copies. **Multidimensional arrays are where this
+stops being true**: making inner elements directly writable makes the sharing
+visible. If nested arrays become contiguous, `ret_slot_plan` yields six `i64`
+parts and the copy becomes deep through the existing authority; if they stay
+independently-owned rows, a deep-copy walker is needed — a second authority for
+aggregate size and stride, which is what the one-plan rule exists to prevent.
+Contiguity and copy depth are one decision. See the 0.5 design gate.
+
+A unit test, `aggregate_param_copy_is_governed_by_the_receiver_flag`, pins the
+mechanism directly: same type, same position, only the flag differs, and only
+the flagged one skips the copy. A positional rule fails it.
+
+### Note: only compound assignment can mutate an array parameter
+
+`r:[0] = 99` inside a function body is a parse error, a separate pre-existing
+limitation. It is why the fixtures below use `+=`.
+
+### `.copy.free` now has no distinct meaning — reported, not acted on
+
+Read off `call.rs` and confirmed by running each form: all four parameter kinds
+bind by value in the interpreter, and the only difference between them is
+whether the value is written back on return.
+
+| form | binding | write-back | probe (callee sets 99, caller had 11) |
+|---|---|---|---|
+| plain `n: t64` | by value | no | `99 11` |
+| `.copy` | by value | **yes** | `99 99` |
+| `.copy.free` | by value | no | `99 11` |
+| `copy_into(x, y)` | bundles named outers into a container | no | — |
+
+`.copy` is copy-in/copy-out — the inverse of what the name suggests — and
+remains the language's only explicit mutation-out channel. `.copy.free` is a
+**confirmed no-op spelling**: same binding, same absence of write-back, and now
+that plain passing also copies on the JIT there is nothing left that
+distinguishes it. Whether to deprecate it is a language decision, not this
+slice's; recorded here so it is not rediscovered.
 
 ### Delta
 
-Corpus 424 → 429, 0 FAIL. `cargo test` 250/0, `--features jit` 426/0, parity
-384/40/0 → **389 PASS / 40 SKIP / 0 PARITY_FAIL across 429**, clippy 110/110.
-SKIP set unchanged.
+**Bind half:** corpus 424 → 429, parity 384/40/0 → 389/40/0.
+
+**Parameter half (Model B):** corpus 429 → 436, 0 FAIL. `cargo test` 250 → 251,
+`--features jit` 426 → 427, parity **389/40/0 → 396 PASS / 40 SKIP / 0
+PARITY_FAIL across 436**, matrix 436/436. SKIP set unchanged — no fixture
+started or stopped skipping.
+
+Every pre-existing fixture is byte-identical on both backends: 857 of 858
+captured outputs match exactly, and the single difference is the IR-dump text
+inside `t_bound_method_still_works`, a fixture that already exits 127 and still
+exits 127 — the dump now shows the entry copy.
+
+Clippy is unchanged by this work: 111/111 before and after (`cargo clippy`
+without `--all-targets`; 119/113 with it, also unchanged). Note the 110/110
+figure recorded at the 0.3.3 tag no longer matches this HEAD — that drift
+predates this change and is not from it.
+
+Three unit tests asserted instruction shapes over a whole function while meaning
+to assert what a single expression lowers to; the entry copy exposed that. They
+now read `body_insts`, which skips the copy preamble by its shape. Their
+positive assertions still hold, so the helper is not swallowing the body.
