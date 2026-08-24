@@ -78,32 +78,36 @@ pub struct StructLayout {
     pub alignment: usize,
 }
 
-pub fn compute_struct_layout(fields: &[IrType]) -> StructLayout {
+/// Lay out fields given each one's (size, alignment) directly.
+///
+/// Model A: an aggregate field is stored INLINE, so its size is its whole
+/// storage — not the 8 bytes a `Ptr` would occupy. `IrType` cannot express that
+/// (an aggregate lowers to `Ptr`, which is the type of a *value*, not of a
+/// slot), so the sizes arrive already resolved by the caller's aggregate plan.
+pub fn compute_struct_layout_from_sizes(fields: &[(usize, usize)]) -> StructLayout {
     let mut offset = 0usize;
     let mut field_offsets = Vec::with_capacity(fields.len());
     let mut max_align = 1usize;
 
-    for field in fields {
-        let align = field.align_bytes();
-        let size = field.size_bytes();
+    for (size, align) in fields {
+        let align = (*align).max(1);
         if align > max_align {
             max_align = align;
         }
         let padding = (align - (offset % align)) % align;
         offset += padding;
         field_offsets.push(offset);
-        offset += size;
+        offset += *size;
     }
 
     let tail_padding = (max_align - (offset % max_align)) % max_align;
-    offset += tail_padding;
-
     StructLayout {
         field_offsets,
-        total_size: offset,
+        total_size: offset + tail_padding,
         alignment: max_align,
     }
 }
+
 
 pub struct ArrayLayout {
     /// Reserved for layout introspection; read by unit tests, not by current lowering (stride is the live field).
@@ -282,7 +286,16 @@ mod tests {
         assert_eq!(IrType::Ptr.align_bytes(), 8);
     }
 
-    use super::compute_struct_layout;
+    use super::compute_struct_layout_from_sizes;
+
+    /// Lay out an all-scalar field list, the shape these tests pin.
+    fn compute_struct_layout(fields: &[IrType]) -> StructLayout {
+        let sizes: Vec<(usize, usize)> = fields
+            .iter()
+            .map(|f| (f.size_bytes(), f.align_bytes()))
+            .collect();
+        compute_struct_layout_from_sizes(&sizes)
+    }
 
     #[test]
     fn struct_layout_single_i64() {

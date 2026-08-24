@@ -1978,3 +1978,120 @@ Three unit tests asserted instruction shapes over a whole function while meaning
 to assert what a single expression lowers to; the entry copy exposed that. They
 now read `body_insts`, which skips the copy preamble by its shape. Their
 positive assertions still hold, so the helper is not swallowing the body.
+
+---
+
+## 28. Multidimensional arrays — Model A, contiguous — LANDED
+
+*(Implemented by the commit that introduces this entry: the recursive
+`ret_slot_plan` and `elem_stride` in `src/ir/lower.rs`, the folded index rules in
+`src/frontend/parser.rs`, and the index path in `src/runtime/scope.rs`. Cited by
+name rather than by hash because the work and this entry are one commit.)*
+
+**Status: LANDED.** A nested array is one owned, contiguous, row-major value.
+`[R: [C: T]]` types, `a:[i]:[j]` indexing and `[[1,2],[3,4]]` literals all work
+on both backends, and the three aggregate-aliasing divergences are closed.
+
+### What changed
+
+`ret_slot_plan` is recursive. `Array(3, Array(4, I32))` is 48 bytes with twelve
+`(offset, I32)` parts rather than three pointers. That one change is what makes a
+nested copy deep, and it is why nothing needed a separate deep-copy walker: the
+bind copy, the parameter entry copy, the return slot and aggregate stores all
+already read that plan.
+
+A slot is storage, not a reference. An aggregate array element, an aggregate
+struct field and an aggregate parameter are laid out inline, so reading one
+yields its ADDRESS and writing one COPIES INTO it.
+
+### The three divergences, closed
+
+Each copied on the interpreter and aliased on the JIT, at v0.3.3 and since:
+
+```
+a:[0] = n   then n:[0] = 5     was interp 77 / jit 5      now 77 both
+h.arr = n   then n:[0] = 5     was interp 77 / jit 5      now 77 both
+arr:[0] = x then x.v = 99      was interp 11 / jit 99     now 11 both
+```
+
+They are closed structurally, not patched: under contiguous storage a slot has
+no pointer to overwrite, so the alias cannot be formed.
+
+### One authority, pinned by a test that fails
+
+`elem_stride` is the stride. `ret_slot_plan` lays parts out with it and
+`resolve_array_element_ptr` does index arithmetic with it.
+`index_stride_and_copy_plan_agree` asserts that element `i`'s parts land inside
+element `i`'s stride window, over scalars, nested arrays and structs.
+
+Deliberately broken — indexing made to derive its own stride, the pre-Model-A
+behaviour where every aggregate is a Ptr at 8 bytes — it fails and says why:
+
+```
+Array(3, Array(4, I32)): part at offset 8 belongs to element 0, whose stride
+window is [0, 8) — indexing and the copy plan disagree about where element 0
+begins
+```
+
+A comment cannot fail. That is the difference between recording the constraint
+and enforcing it.
+
+### Contiguity and non-materialisation, from the IR
+
+`a: [2: [3: t64]] = [[11,22,33],[44,55,66]]` emits **one** allocation and six
+stores — no row allocations:
+
+```
+v0 = alloca size 48 align 8
+store v0 v1              ptr_offset v0 + 8       ptr_offset v0 + 16
+ptr_offset v0 + 24       ptr_offset v0 + 32      ptr_offset v0 + 40
+```
+
+Row-major, last index varying fastest. `a:[1]:[2]` then emits **zero** further
+allocations:
+
+```
+v18 = const i64 24    v20 = ptr_add v12 + v19     <- row address, arithmetic only
+v26 = const i64 8     v28 = ptr_add v20 + v27     <- element address
+v29 = load i64 v28
+```
+
+Both dimensions bounds-checked. The intermediate row never materialises, which
+was the question the storage model turned on: had the first index produced a
+value, binds copy, and contiguous storage would have broken silently.
+
+### What fell out without a case being written
+
+- A 2-D parameter's entry copy is `alloca size 48` plus six scalar stores — deep,
+  through the same recursive plan.
+- `struct Grid { cells: [2: [3: t64]], tag: t64 }` lays out at **56** bytes:
+  48 inline plus 8. The array is in the struct, not pointed to by it.
+- 2-D returns travel the caller-allocated slot unchanged.
+- Arrays of structs holding arrays work.
+
+### Syntax
+
+The index rule went from `.or_not()` to `.repeated()` with a left fold, and
+`index_assign` took the same fold. `a:[i]:[j]` and `(a:[i]):[j]` produce the
+identical tree — the parenthesised form is ordinary grouping, not an alias to
+maintain. Types and literals needed nothing: `[N: T]` was already recursive and
+literal shape validation already recursed.
+
+### Still parse errors — pre-existing, not introduced here
+
+- A chained write inside a function body. Plain `r:[0] = 9` in a body is also a
+  parse error, the limitation already recorded in §27; the body statement
+  grammar is the constraint, not the chain.
+- A write through a field target: `g.cells:[0]:[0] = 9`, like `h.arr:[1] = 9`
+  before it. `index_assign` roots at an identifier.
+- Chained compound assignment, `a:[i]:[j] += 1`. `CompoundAssign` carries
+  `AssignTarget::Index(name, expr)` — a NAME, not an expression — so widening it
+  is an AST change rather than a grammar fold. Deliberately not folded in here.
+
+### Delta
+
+Corpus 436 → 444, matrix 444/444. `cargo test` 251 → 252, `--features jit`
+427 → 428, parity **396/40/0 → 404 PASS / 40 SKIP / 0 PARITY_FAIL across 444**.
+SKIP set unchanged. Clippy 111/111, at the reconciled baseline.
+
+All 436 pre-existing fixtures are byte-identical on both backends.

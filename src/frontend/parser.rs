@@ -471,11 +471,16 @@ where
                     .ignore_then(expr.clone())
                     .then_ignore(just(Token::PunctBracketClose))
                     .map_with(|idx_expr, e: &mut ParseExtra<'a, '_, I>| (idx_expr, e.span().start))
-                    .or_not(),
+                    .repeated()
+                    .collect::<Vec<_>>(),
             )
-            .map(|(base, idx)| match idx {
-                Some((idx_expr, pos)) => Expr::Index(Box::new(base), Box::new(idx_expr), pos),
-                None => base,
+            // Multidimensional indexing is the one-dimensional rule applied more
+            // than once: `a:[i]:[j]` folds left into Index(Index(a, i), j), which
+            // is the same tree `(a:[i]):[j]` already produced through `paren`.
+            .map(|(base, idxs)| {
+                idxs.into_iter().fold(base, |b, (idx_expr, pos)| {
+                    Expr::Index(Box::new(b), Box::new(idx_expr), pos)
+                })
             })
             .then(
                 just(Token::QuestionMark)
@@ -584,27 +589,31 @@ where
             })
             .boxed();
 
+        // `a:[i] = v` and, folding the same suffix, `a:[i]:[j] = v`. The write
+        // side mirrors the read side exactly: one or more index suffixes, left
+        // -folded, so the target tree is the tree the reader would build.
         let index_assign = ident
             .clone()
             .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
-            .then_ignore(just(Token::PunctColon))
-            .then_ignore(just(Token::PunctBracketOpen))
-            .then(expr.clone())
-            .then_ignore(just(Token::PunctBracketClose))
+            .then(
+                just(Token::PunctColon)
+                    .ignore_then(just(Token::PunctBracketOpen))
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctBracketClose))
+                    .repeated()
+                    .at_least(1)
+                    .collect::<Vec<_>>(),
+            )
             .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start))
             .then(expr.clone())
             .then_ignore(semi.clone().or_not())
-            .map(
-                |((((name, name_pos), idx_expr), pos_eq), val_expr)| Stmt::Assign {
-                    target: Expr::Index(
-                        Box::new(Expr::Ident(name, name_pos)),
-                        Box::new(idx_expr),
-                        name_pos,
-                    ),
-                    expr: val_expr,
-                    pos_eq,
-                },
-            )
+            .map(|((((name, name_pos), idxs), pos_eq), val_expr)| {
+                let target = idxs.into_iter().fold(
+                    Expr::Ident(name, name_pos),
+                    |b, idx_expr| Expr::Index(Box::new(b), Box::new(idx_expr), name_pos),
+                );
+                Stmt::Assign { target, expr: val_expr, pos_eq }
+            })
             .boxed();
 
         let assign = ident

@@ -1,0 +1,14 @@
+// Model A divergence #3: a struct stored into an array element must be copied.
+// Same shape as the other two — the element slot held a pointer on the JIT.
+struct S { v: t64, w: t64 }
+let x;
+x = S { v: 11, w: 22 }
+arr: [2: S] = [S { v: 1, w: 2 }, S { v: 3, w: 4 }]
+arr:[0] = x
+x.v = 99
+e: S = arr:[0]
+f: S = arr:[1]
+print(e.v)
+print(e.w)
+print(f.v)
+print(x.v)

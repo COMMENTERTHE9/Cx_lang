@@ -1,0 +1,13 @@
+// Contiguity made observable: under Model A a nested aggregate is one owned
+// value, so `b = a` copies all of it. Before the conversion the copy was
+// shallow over row pointers (alloca size 16 for two rows, not 48) and the two
+// bindings shared every row — unobservable only because no write could reach an
+// inner element. Chained writes make it observable, so this fixture asserts it.
+a: [2: [3: t64]] = [[11, 22, 33], [44, 55, 66]]
+b: [2: [3: t64]] = a
+a:[0]:[0] = 99
+b:[1]:[2] = 77
+print(a:[0]:[0])
+print(a:[1]:[2])
+print(b:[0]:[0])
+print(b:[1]:[2])

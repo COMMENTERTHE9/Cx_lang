@@ -1,0 +1,12 @@
+// Model A divergence #1: storing a row into a nested array must copy it. Before
+// the contiguous conversion the JIT stored the row POINTER, so mutating the
+// source afterwards reached inside the container: interp 77, cranelift 5.
+a: [2: [3: t64]] = [[11, 22, 33], [44, 55, 66]]
+n: [3: t64] = [77, 88, 99]
+a:[0] = n
+n:[0] = 5
+print(a:[0]:[0])
+print(a:[0]:[1])
+print(a:[0]:[2])
+print(a:[1]:[0])
+print(n:[0])

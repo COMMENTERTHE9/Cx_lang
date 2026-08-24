@@ -67,16 +67,38 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         self.set_container_field(container, field, truncated, 0)
                     }
                     SemanticLValue::Index { target, index, elem_ty } => {
-                        let arr_name = match &target.kind {
-                            SemanticExprKind::VarRef { name, .. } => name.clone(),
-                            _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                        // The target may itself be an Index — `a:[i]:[j] = v`
+                        // arrives as Index{ target: Index{ VarRef a, i }, j }.
+                        // Walk down to the root variable collecting index
+                        // expressions, then evaluate them outermost-first so
+                        // side effects happen in source order.
+                        let mut pending = Vec::new();
+                        let mut cursor = target;
+                        let arr_name = loop {
+                            match &cursor.kind {
+                                SemanticExprKind::VarRef { name, .. } => break name.clone(),
+                                SemanticExprKind::Index { target: inner, index, .. } => {
+                                    pending.push(index);
+                                    cursor = inner;
+                                }
+                                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                            }
                         };
+                        pending.reverse();
+                        let mut path = Vec::with_capacity(pending.len() + 1);
+                        for ix in pending {
+                            match self.eval_semantic_expr(ix)? {
+                                Value::Num(n) => path.push(n as usize),
+                                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                            }
+                        }
                         let idx = match self.eval_semantic_expr(index)? {
                             Value::Num(n) => n as usize,
                             _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
                         };
+                        path.push(idx);
                         let truncated = apply_numeric_cast(val, elem_ty);
-                        self.set_array_element(&arr_name, idx, truncated, *pos_eq)
+                        self.set_array_element(&arr_name, &path, truncated, *pos_eq)
                     }
                 }
             }
@@ -128,7 +150,7 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         let rhs = self.eval_semantic_expr(operand)?;
                         let result = self.apply_op(current_val, op.clone(), 0, rhs)?;
                         let truncated = apply_numeric_cast(result, elem_ty);
-                        self.set_array_element(&arr_name, idx, truncated, *pos)
+                        self.set_array_element(&arr_name, &[idx], truncated, *pos)
                     }
                 }
             }
@@ -629,3 +651,4 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
         Ok(Value::Num(0))
     }
 }
+

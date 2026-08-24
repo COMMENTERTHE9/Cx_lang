@@ -13,7 +13,7 @@ use crate::frontend::semantic_types::{
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
 use crate::ir::types::{
-    compute_array_layout, compute_struct_layout, BlockId, BlockParam, IrBlock, IrFunction, IrModule,
+    compute_array_layout, BlockId, BlockParam, IrBlock, IrFunction, IrModule,
     IrParam, IrType, StructLayout, ValueId,
 };
 
@@ -153,6 +153,48 @@ type RetSlotPlan = (usize, usize, Vec<(usize, IrType)>);
 /// parts are its fields at their layout offsets; an array's are its elements at
 /// `i * stride`. `compute_array_layout` already supplied stride and alignment;
 /// nothing about the convention itself needed inventing for arrays.
+/// Byte size and alignment of the storage a slot holding `ty` occupies.
+///
+/// Model A: a slot IS the storage. An aggregate slot holds the aggregate's
+/// bytes, never a pointer to them, so its size is the whole aggregate's.
+fn slot_size_align(
+    ty: &SemanticType,
+    struct_table: &HashMap<String, StructLayoutInfo>,
+) -> Option<(usize, usize)> {
+    if let Some((size, align, _)) = ret_slot_plan(ty, struct_table) {
+        return Some((size, align));
+    }
+    let ir = lower_type(ty).ok()?;
+    Some((ir.size_bytes(), ir.align_bytes()))
+}
+
+/// Distance between consecutive elements of an array of `elem`.
+///
+/// THE stride. `ret_slot_plan` lays out array parts with it and
+/// `resolve_array_element_ptr` does index arithmetic with it, so the copy and
+/// the index cannot disagree about where element `i` begins — which is the one
+/// thing the single-authority rule exists to prevent. Pinned by
+/// `index_stride_and_copy_plan_agree`.
+fn elem_stride(
+    elem: &SemanticType,
+    struct_table: &HashMap<String, StructLayoutInfo>,
+) -> Option<usize> {
+    let (size, align) = slot_size_align(elem, struct_table)?;
+    let align = align.max(1);
+    let rem = size % align;
+    Some(if rem == 0 { size } else { size + (align - rem) })
+}
+
+/// Size, alignment, and the flat list of scalar leaves of an aggregate.
+///
+/// The single authority for aggregate layout. The caller-allocated return slot,
+/// the bind copy, the parameter entry copy, aggregate stores and array element
+/// arithmetic all read this one plan, so none of them can disagree about a size
+/// or a stride.
+///
+/// Recursive under Model A: `Array(3, Array(4, I32))` is 48 bytes with twelve
+/// `(offset, I32)` parts, not three pointers. That single change is what makes
+/// a nested copy deep, and it is why nothing needs a separate deep-copy walker.
 fn ret_slot_plan(
     return_ty: &SemanticType,
     struct_table: &HashMap<String, StructLayoutInfo>,
@@ -160,49 +202,37 @@ fn ret_slot_plan(
     match return_ty {
         SemanticType::Struct(name) => {
             let info = struct_table.get(name)?;
-            let parts = info
-                .fields
-                .iter()
-                .enumerate()
-                .map(|(i, (_fname, ty))| (info.layout.field_offsets[i], ty.clone()))
-                .collect();
+            let mut parts = Vec::new();
+            for (i, (_fname, fsem)) in info.sem_fields.iter().enumerate() {
+                let base = *info.layout.field_offsets.get(i)?;
+                match ret_slot_plan(fsem, struct_table) {
+                    Some((_, _, sub)) => {
+                        parts.extend(sub.into_iter().map(|(o, t)| (base + o, t)));
+                    }
+                    None => parts.push((base, lower_type(fsem).ok()?)),
+                }
+            }
             Some((info.layout.total_size, info.layout.alignment, parts))
         }
         SemanticType::Array(count, elem) => {
-            let elem_ir = lower_type(elem).ok()?;
-            let layout = crate::ir::types::compute_array_layout(&elem_ir, *count);
-            let parts = (0..*count)
-                .map(|i| (i * layout.stride, elem_ir.clone()))
-                .collect();
-            Some((layout.total_size, layout.alignment, parts))
+            let stride = elem_stride(elem, struct_table)?;
+            let (_, align) = slot_size_align(elem, struct_table)?;
+            let mut parts = Vec::new();
+            for i in 0..*count {
+                let base = i * stride;
+                match ret_slot_plan(elem, struct_table) {
+                    Some((_, _, sub)) => {
+                        parts.extend(sub.into_iter().map(|(o, t)| (base + o, t)));
+                    }
+                    None => parts.push((base, lower_type(elem).ok()?)),
+                }
+            }
+            Some((stride * count, align.max(1), parts))
         }
         _ => None,
     }
 }
 
-/// Bind a value to a binding, giving it its own storage when the value lives in
-/// memory rather than a register.
-///
-/// A struct or an array lowers to `IrType::Ptr`, so a bare `SsaBind` copies the
-/// POINTER: `r: [3: t64] = a` made `r` and `a` name the same storage, and
-/// mutating one mutated the other. The interpreter copies the value, so the two
-/// backends silently disagreed — both exiting 0 with different answers.
-///
-/// Copy is the language's semantics. Cx has explicit `.copy` / `.copy.free` /
-/// `copy_into` vocabulary, which presupposes that plain assignment is not
-/// aliasing; silent aliasing in a GC-free language is exactly what that
-/// vocabulary exists to make visible.
-///
-/// This is the single choke point every binding form funnels through, rather
-/// than one arm per form — the same structure the const, loop-counter and
-/// field-access checks use, and for the same reason: a form nobody remembered
-/// to patch is how this class of bug recurs.
-///
-/// The copy plan is `ret_slot_plan`, already used by the caller-allocated
-/// return slot. One plan, several consumers, so the caller's `Alloca`, the
-/// callee's return copy and this bind copy cannot disagree about size or
-/// stride. A value that is not memory-resident returns `None` and binds
-/// unchanged, which is every scalar.
 fn copy_if_memory_resident(
     sem_ty: &SemanticType,
     source: &SemanticExpr,
@@ -289,6 +319,7 @@ fn instantiate_struct_layout(
     declared_fields: &[(String, SemanticType)],
     type_params: &[String],
     type_args: &[SemanticType],
+    struct_table: &HashMap<String, StructLayoutInfo>,
 ) -> Option<StructLayoutInfo> {
     if type_params.len() != type_args.len() {
         return None;
@@ -300,16 +331,21 @@ fn instantiate_struct_layout(
         .collect();
 
     let mut ir_fields = Vec::new();
-    let mut field_types = Vec::new();
+    let mut sem_fields = Vec::new();
+    let mut sizes = Vec::new();
     for (fname, fty) in declared_fields {
         let concrete =
             crate::frontend::semantic::substitute_type_params(fty.clone(), &subst);
         let ir_ty = lower_type(&concrete).ok()?;
-        ir_fields.push((fname.clone(), ir_ty.clone()));
-        field_types.push(ir_ty);
+        // Same rule as the non-generic path: an aggregate field is laid out at
+        // its own size, not at a pointer's.
+        let size_align = slot_size_align(&concrete, struct_table)?;
+        ir_fields.push((fname.clone(), ir_ty));
+        sem_fields.push((fname.clone(), concrete));
+        sizes.push(size_align);
     }
-    let layout = compute_struct_layout(&field_types);
-    Some(StructLayoutInfo { fields: ir_fields, layout })
+    let layout = crate::ir::types::compute_struct_layout_from_sizes(&sizes);
+    Some(StructLayoutInfo { fields: ir_fields, sem_fields, layout })
 }
 
 fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionSignature> {
@@ -514,6 +550,13 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
 #[derive(Clone)]
 struct StructLayoutInfo {
     fields: Vec<(String, IrType)>,
+    /// The same fields with their SEMANTIC types retained.
+    ///
+    /// `IrType` erases an aggregate to `Ptr`, which is enough to describe a
+    /// value but not a slot: under Model A a struct's array field is stored
+    /// inline, so laying the struct out needs the array's real size. The
+    /// semantic type is the only thing that still knows it.
+    sem_fields: Vec<(String, SemanticType)>,
     layout: StructLayout,
 }
 
@@ -539,32 +582,47 @@ fn build_generic_struct_templates(program: &SemanticProgram) -> GenericStructTem
 }
 
 fn build_struct_table(program: &SemanticProgram) -> HashMap<String, StructLayoutInfo> {
-    let mut table = HashMap::new();
-    for stmt in &program.stmts {
-        if let SemanticStmt::StructDef { name, fields, .. } = stmt {
+    let mut table: HashMap<String, StructLayoutInfo> = HashMap::new();
+    // Model A inlines aggregate fields, so a struct holding another struct by
+    // value cannot be laid out until that one is. Rather than order the
+    // declarations, repeat until a pass adds nothing: each pass lays out every
+    // struct whose field sizes are all known by then. A struct whose fields are
+    // never resolvable is simply left out of the table, exactly as before.
+    loop {
+        let mut progress = false;
+        for stmt in &program.stmts {
+            let SemanticStmt::StructDef { name, fields, .. } = stmt else {
+                continue;
+            };
+            if table.contains_key(name) {
+                continue;
+            }
             let mut ir_fields = Vec::new();
-            let mut field_types = Vec::new();
+            let mut sem_fields = Vec::new();
+            let mut sizes = Vec::new();
             let mut all_ok = true;
             for (fname, fty) in fields {
-                match lower_type(fty) {
-                    Ok(ir_ty) => {
-                        ir_fields.push((fname.clone(), ir_ty.clone()));
-                        field_types.push(ir_ty);
-                    }
-                    Err(_) => {
-                        all_ok = false;
-                        break;
-                    }
-                }
+                let Ok(ir_ty) = lower_type(fty) else {
+                    all_ok = false;
+                    break;
+                };
+                let Some(size_align) = slot_size_align(fty, &table) else {
+                    all_ok = false;
+                    break;
+                };
+                ir_fields.push((fname.clone(), ir_ty));
+                sem_fields.push((fname.clone(), fty.clone()));
+                sizes.push(size_align);
             }
             if !all_ok {
                 continue;
             }
-            let layout = compute_struct_layout(&field_types);
-            table.insert(name.clone(), StructLayoutInfo {
-                fields: ir_fields,
-                layout,
-            });
+            let layout = crate::ir::types::compute_struct_layout_from_sizes(&sizes);
+            table.insert(name.clone(), StructLayoutInfo { fields: ir_fields, sem_fields, layout });
+            progress = true;
+        }
+        if !progress {
+            break;
         }
     }
     table
@@ -1263,6 +1321,14 @@ fn lower_stmt(
                     let (field_ptr, field_ir_ty) = resolve_field_ptr(
                         binding, container, field, struct_name, ty, ctx, &mut current,
                     )?;
+                    // Model A: an aggregate field is inline storage, so the value
+                    // is copied INTO it. Storing `lowered.value` would put a
+                    // pointer in the slot and alias the source — which is what
+                    // `h.arr = n` used to do.
+                    if let Some((_, _, parts)) = ret_slot_plan(ty, &ctx.struct_table) {
+                        copy_parts(lowered.value, 0, field_ptr, 0, &parts, ctx, &mut current)?;
+                        return Ok(Some(current));
+                    }
                     ensure_type_match("struct field assign", field_ir_ty, lowered.ty)?;
                     current.emit(IrInst::Store {
                         ptr: field_ptr,
@@ -1270,9 +1336,14 @@ fn lower_stmt(
                     })?;
                     Ok(Some(current))
                 }
-                SemanticLValue::Index { target, index, .. } => {
+                SemanticLValue::Index { target, index, elem_ty } => {
                     let (elem_ptr, elem_ir_ty) =
                         resolve_array_element_ptr(&*target, &*index, ctx, &mut current)?;
+                    // Same rule for an array element slot — `a:[0] = n` copies.
+                    if let Some((_, _, parts)) = ret_slot_plan(elem_ty, &ctx.struct_table) {
+                        copy_parts(lowered.value, 0, elem_ptr, 0, &parts, ctx, &mut current)?;
+                        return Ok(Some(current));
+                    }
                     ensure_type_match("array element assign", elem_ir_ty, lowered.ty)?;
                     current.emit(IrInst::Store {
                         ptr: elem_ptr,
@@ -2769,8 +2840,9 @@ fn lower_expr(
             let layout_key = mangle_struct_instance(type_name, type_args);
             if !ctx.struct_table.contains_key(&layout_key) {
                 if let Some((params, decl_fields)) = ctx.generic_structs.get(type_name).cloned() {
+                    let known = ctx.struct_table.clone();
                     if let Some(info) =
-                        instantiate_struct_layout(&decl_fields, &params, type_args)
+                        instantiate_struct_layout(&decl_fields, &params, type_args, &known)
                     {
                         ctx.struct_table.insert(layout_key.clone(), info);
                     }
@@ -2807,6 +2879,21 @@ fn lower_expr(
                             type_name, canonical_name
                         ),
                     })?;
+
+                // Model A: an aggregate field is inline storage inside this
+                // struct, so its value is copied into the slot rather than
+                // stored as a pointer to storage the struct does not own.
+                let field_sem_ty = layout_info
+                    .sem_fields
+                    .get(field_idx)
+                    .map(|(_, t)| t.clone());
+                if let Some(sem_ty) = field_sem_ty {
+                    if let Some((_, _, parts)) = ret_slot_plan(&sem_ty, &ctx.struct_table) {
+                        let src = lower_expr(&field_expr.1, ctx, active)?;
+                        copy_parts(src.value, 0, ptr, field_offset, &parts, ctx, active)?;
+                        continue;
+                    }
+                }
 
                 let lowered_field = lower_expr(&field_expr.1, ctx, active)?;
 
@@ -4824,7 +4911,15 @@ fn resolve_array_element_ptr(
     };
 
     let elem_ir_ty = lower_type(elem_sem_ty)?;
-    let layout = compute_array_layout(&elem_ir_ty, count);
+    // Read the stride from `elem_stride`, the same function `ret_slot_plan`
+    // lays parts out with. Deriving it independently here is exactly how
+    // indexing and copying come to disagree; `index_stride_and_copy_plan_agree`
+    // fails if they ever do.
+    let layout = crate::ir::types::ArrayLayout {
+        stride: elem_stride(elem_sem_ty, &ctx.struct_table)
+            .unwrap_or_else(|| compute_array_layout(&elem_ir_ty, count).stride),
+        ..compute_array_layout(&elem_ir_ty, count)
+    };
 
     // 2. Lower the array target to a base pointer.
     let base = lower_expr(target, ctx, active)?;
@@ -4895,6 +4990,12 @@ fn lower_dot_access(
     let (field_ptr, field_ir_ty) =
         resolve_field_ptr(binding, container, field, struct_name, field_sem_ty, ctx, active)?;
 
+    // Model A: an aggregate field is storage inside the struct, so reading it
+    // yields its ADDRESS — there is no pointer stored in the slot to load.
+    if ret_slot_plan(field_sem_ty, &ctx.struct_table).is_some() {
+        return Ok(LoweredValue { value: field_ptr, ty: IrType::Ptr });
+    }
+
     let dst = ctx.fresh_value();
     active.emit(IrInst::Load {
         dst,
@@ -4926,6 +5027,113 @@ fn lower_dot_access(
 //
 // All offsets are compile-time constants (element index is literal position),
 // so PtrOffset suffices here — PtrAdd is only needed for runtime index access.
+/// Write an array literal's elements directly into `base + base_offset`.
+///
+/// Recursive so a nested literal fills its own slice of the SAME allocation. An
+/// element that is itself a literal descends; any other aggregate element is
+/// copied in from wherever it lowered to. Offsets come from `elem_stride`, so
+/// what the literal writes and what the copy plan reads are the same layout.
+fn fill_aggregate_slot(
+    elements: &[SemanticExpr],
+    array_ty: &SemanticType,
+    base: ValueId,
+    base_offset: usize,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<(), LoweringError> {
+    let SemanticType::Array(_, elem_sem_ty) = array_ty else {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("fill_aggregate_slot on non-Array type {:?}", array_ty),
+        });
+    };
+    let elem_sem_ty = elem_sem_ty.as_ref();
+    let stride = elem_stride(elem_sem_ty, &ctx.struct_table).ok_or_else(|| {
+        LoweringError::InternalInvariantViolation {
+            detail: format!("no stride for element type {:?}", elem_sem_ty),
+        }
+    })?;
+
+    for (i, elem_expr) in elements.iter().enumerate() {
+        let offset = base_offset + i * stride;
+        match (&elem_expr.kind, ret_slot_plan(elem_sem_ty, &ctx.struct_table)) {
+            // A nested literal writes into this same block.
+            (SemanticExprKind::ArrayLit { elements: inner }, Some(_)) => {
+                fill_aggregate_slot(inner, elem_sem_ty, base, offset, ctx, active)?;
+            }
+            // Any other aggregate element: lower it, then copy its bytes in.
+            (_, Some((_, _, parts))) => {
+                let src = lower_expr(elem_expr, ctx, active)?;
+                copy_parts(src.value, 0, base, offset, &parts, ctx, active)?;
+            }
+            // Scalar element: narrow to the slot's width and store.
+            (_, None) => {
+                let elem_ir_ty = if matches!(
+                    elem_sem_ty,
+                    SemanticType::Numeric | SemanticType::Unknown
+                ) {
+                    ctx.target.numeric_literal_ir_type()
+                } else {
+                    lower_type(elem_sem_ty)?
+                };
+                let lowered = lower_expr(elem_expr, ctx, active)?;
+                let value = if lowered.ty != elem_ir_ty {
+                    let narrowed = ctx.fresh_value();
+                    active.emit(IrInst::Cast {
+                        dst: narrowed,
+                        from: lowered.ty.clone(),
+                        to: elem_ir_ty.clone(),
+                        value: lowered.value,
+                    })?;
+                    narrowed
+                } else {
+                    lowered.value
+                };
+                let slot = offset_ptr(base, offset, ctx, active)?;
+                active.emit(IrInst::Store { ptr: slot, value })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `base + offset`, reusing `base` itself when the offset is zero.
+fn offset_ptr(
+    base: ValueId,
+    offset: usize,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<ValueId, LoweringError> {
+    if offset == 0 {
+        return Ok(base);
+    }
+    let dst = ctx.fresh_value();
+    active.emit(IrInst::PtrOffset { dst, base, offset })?;
+    Ok(dst)
+}
+
+/// Copy an aggregate's scalar leaves from one address to another.
+///
+/// `parts` is always a `ret_slot_plan` part list, so every copy in the compiler
+/// walks the same offsets in the same order.
+fn copy_parts(
+    src_base: ValueId,
+    src_offset: usize,
+    dst_base: ValueId,
+    dst_offset: usize,
+    parts: &[(usize, IrType)],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<(), LoweringError> {
+    for (offset, part_ty) in parts {
+        let src = offset_ptr(src_base, src_offset + offset, ctx, active)?;
+        let tmp = ctx.fresh_value();
+        active.emit(IrInst::Load { dst: tmp, ptr: src, ty: part_ty.clone() })?;
+        let dst = offset_ptr(dst_base, dst_offset + offset, ctx, active)?;
+        active.emit(IrInst::Store { ptr: dst, value: tmp })?;
+    }
+    Ok(())
+}
+
 fn lower_array_lit(
     elements: &[SemanticExpr],
     array_ty: &SemanticType,
@@ -4966,6 +5174,23 @@ fn lower_array_lit(
     } else {
         lower_type(elem_sem_ty)?
     };
+
+    // Model A: a nested array is ONE allocation of the whole aggregate, filled
+    // in place. Sub-literals are written straight into their slice of it rather
+    // than allocated separately and copied in, so `[[1,2,3],[4,5,6]]` emits a
+    // single Alloca of 48 bytes and six Stores — no row allocations, nothing to
+    // free, and the copy plan's offsets are the offsets the literal wrote to.
+    if ret_slot_plan(elem_sem_ty, &ctx.struct_table).is_some() {
+        let (size, align, _) = ret_slot_plan(array_ty, &ctx.struct_table).ok_or_else(|| {
+            LoweringError::InternalInvariantViolation {
+                detail: format!("no aggregate plan for array literal type {:?}", array_ty),
+            }
+        })?;
+        let base = ctx.fresh_value();
+        active.emit(IrInst::Alloca { dst: base, size, align })?;
+        fill_aggregate_slot(elements, array_ty, base, 0, ctx, active)?;
+        return Ok(LoweredValue { value: base, ty: IrType::Ptr });
+    }
 
     // 1. ArrayAlloca: reserve stack space for the entire array.
     let ptr = ctx.fresh_value();
@@ -5075,7 +5300,16 @@ fn lower_index(
     } else {
         lower_type(declared_elem_sem_ty)?
     };
-    let layout = compute_array_layout(&elem_ir_ty, count);
+    // THE stride (see `elem_stride`). For a scalar element this is what
+    // `compute_array_layout` always gave; for an aggregate element it is the
+    // element's whole inline size, because under Model A the slot IS the row.
+    let stride = elem_stride(declared_elem_sem_ty, &ctx.struct_table)
+        .unwrap_or_else(|| compute_array_layout(&elem_ir_ty, count).stride);
+    // An aggregate element is not a value to load — it is storage that lives
+    // inside its container. Indexing one yields its ADDRESS. This is what keeps
+    // `a:[i]:[j]` from materialising a row: the inner index is handed a pointer
+    // into the same allocation, so no Alloca and no copy are emitted.
+    let elem_is_aggregate = ret_slot_plan(declared_elem_sem_ty, &ctx.struct_table).is_some();
 
     // Verify the outer expression type is consistent with the element type.
     // When the outer type is Unknown the semantic layer could not resolve it;
@@ -5124,7 +5358,7 @@ fn lower_index(
     active.emit(IrInst::ConstInt {
         dst: stride_val,
         ty: IrType::I64,
-        value: layout.stride as i128,
+        value: stride as i128,
     })?;
     let byte_offset = ctx.fresh_value();
     active.emit(IrInst::Binary {
@@ -5143,7 +5377,10 @@ fn lower_index(
         offset: byte_offset,
     })?;
 
-    // 5. Load the element value.
+    // 5. A scalar element is loaded; an aggregate element IS its address.
+    if elem_is_aggregate {
+        return Ok(LoweredValue { value: elem_ptr, ty: IrType::Ptr });
+    }
     let dst = ctx.fresh_value();
     active.emit(IrInst::Load {
         dst,
@@ -9092,6 +9329,76 @@ mod tests {
                 index: Box::new(index),
                 pos: 0,
             },
+        }
+    }
+
+    // THE single-authority test. Indexing computes element addresses from
+    // `elem_stride`; the copy plan lays parts out with the same function. If the
+    // two ever come from different sources — the classic regression being
+    // indexing falling back to `compute_array_layout(Ptr, n)`, which is 8 for
+    // every aggregate — then element i's parts stop landing in element i's
+    // stride window and this fails.
+    //
+    // It is deliberately not a comment on `elem_stride`: a comment cannot fail.
+    #[test]
+    fn index_stride_and_copy_plan_agree() {
+        let mut structs: HashMap<String, StructLayoutInfo> = HashMap::new();
+        let pair_fields = vec![
+            ("a".to_string(), SemanticType::I64),
+            ("b".to_string(), SemanticType::I32),
+        ];
+        let sizes: Vec<(usize, usize)> = vec![(8, 8), (4, 4)];
+        structs.insert(
+            "Pair".to_string(),
+            StructLayoutInfo {
+                fields: vec![
+                    ("a".to_string(), IrType::I64),
+                    ("b".to_string(), IrType::I32),
+                ],
+                sem_fields: pair_fields,
+                layout: crate::ir::types::compute_struct_layout_from_sizes(&sizes),
+            },
+        );
+
+        let cases = vec![
+            SemanticType::I8,
+            SemanticType::I32,
+            SemanticType::I64,
+            SemanticType::Array(4, Box::new(SemanticType::I32)),
+            SemanticType::Array(3, Box::new(SemanticType::I64)),
+            SemanticType::Array(2, Box::new(SemanticType::Array(3, Box::new(SemanticType::I8)))),
+            SemanticType::Struct("Pair".to_string()),
+        ];
+
+        for elem in cases {
+            let count = 3usize;
+            let stride = elem_stride(&elem, &structs)
+                .unwrap_or_else(|| panic!("no stride for {elem:?}"));
+            let array_ty = SemanticType::Array(count, Box::new(elem.clone()));
+            let (total, _align, parts) = ret_slot_plan(&array_ty, &structs)
+                .unwrap_or_else(|| panic!("no copy plan for {array_ty:?}"));
+
+            assert_eq!(
+                total,
+                count * stride,
+                "total size of {array_ty:?} must be count * the stride indexing uses"
+            );
+
+            // Every part must fall inside the stride window of exactly the
+            // element it belongs to, in order. This is what fails if the index
+            // stride and the plan's offsets are computed independently.
+            let per_elem = parts.len() / count;
+            assert!(per_elem > 0, "plan for {array_ty:?} has no parts per element");
+            for (i, chunk) in parts.chunks(per_elem).enumerate() {
+                let lo = i * stride;
+                let hi = lo + stride;
+                for (offset, _ty) in chunk {
+                    assert!(
+                        *offset >= lo && *offset < hi,
+                        "{array_ty:?}: part at offset {offset} belongs to element {i},                          whose stride window is [{lo}, {hi}) — indexing and the copy                          plan disagree about where element {i} begins"
+                    );
+                }
+            }
         }
     }
 

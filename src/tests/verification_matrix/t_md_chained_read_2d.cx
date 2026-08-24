@@ -1,0 +1,10 @@
+// Canonical chained indexing, read side: a:[i]:[j]. A parse error before this
+// slice. Non-square 2x3, asymmetric values, every element asserted, so a stride
+// or row-major/column-major error cannot pass.
+a: [2: [3: t64]] = [[11, 22, 33], [44, 55, 66]]
+print(a:[0]:[0])
+print(a:[0]:[1])
+print(a:[0]:[2])
+print(a:[1]:[0])
+print(a:[1]:[1])
+print(a:[1]:[2])

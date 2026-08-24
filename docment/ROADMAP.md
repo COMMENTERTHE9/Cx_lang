@@ -69,6 +69,18 @@ with it, also identical at the tag and at HEAD.)*
 
 ## Post-0.3.3 — landed on `submain`, not yet in a tagged release
 
+**Multidimensional arrays — Model A, contiguous** — `docs/known_issues.md` §28.
+Nested arrays are one owned, contiguous, row-major value. `[R: [C: T]]`,
+`a:[i]:[j]` and `[[1,2],[3,4]]` work on both backends; the three
+aggregate-into-aggregate aliasing divergences are closed structurally. The 0.5
+delivery item below is therefore substantially complete — what remains of the
+design gate is deliverable 6 (whether rank 4 falls out of the general case;
+rank 3 works today) and the writes still blocked by pre-existing grammar limits,
+listed at the end of §28.
+
+**Aggregate value semantics — Model B** — `docs/known_issues.md` §27. Every bind,
+parameter and return copies; the method receiver is the one declared exception.
+
 **Array returns via the caller-allocated slot** — `docs/known_issues.md` §26.
 Not a lowering gap: free functions and impl methods returned a dangling frame
 pointer and silently produced wrong values on both shipped paths. The guard that

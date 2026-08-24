@@ -1,0 +1,12 @@
+// Canonical chained indexing, write side: a:[i]:[j] = x. A parse error before
+// this slice. Writes one element per row and asserts every other element is
+// untouched — a write that hit the wrong offset would show here.
+a: [3: [2: t64]] = [[11, 12], [21, 22], [31, 32]]
+a:[0]:[1] = 99
+a:[2]:[0] = 77
+print(a:[0]:[0])
+print(a:[0]:[1])
+print(a:[1]:[0])
+print(a:[1]:[1])
+print(a:[2]:[0])
+print(a:[2]:[1])

@@ -291,35 +291,48 @@ impl RunTime {
     /// and replaces the element at `index` with `value`.  Returns an error
     /// if the variable is not found, is not an array, or the index is
     /// out of bounds.
+    /// Write an array element, addressed by a path of indices.
+    ///
+    /// `[i]` is the one-dimensional case and `[i, j, ...]` descends a nested
+    /// array. The interpreter reaches an inner element by walking the owned
+    /// value in place through `&mut`, so multidimensional writes need no
+    /// reference or pointer concept — just a longer path. One function rather
+    /// than a single-index one plus a nested one, so there is a single place
+    /// where an out-of-bounds index is detected and reported.
     pub fn set_array_element(
         &mut self,
         arr_name: &str,
-        index: usize,
+        path: &[usize],
         value: Value,
         pos: usize,
     ) -> Result<(), RuntimeError> {
+        if path.is_empty() {
+            return Err(RuntimeError::BadAssignTarget { pos });
+        }
         for frame in self.scopes.iter_mut().rev() {
             if let Some(entry) = frame.get_by_name_mut(arr_name) {
-                match &mut entry.val {
-                    Some(Value::Array(elems)) => {
-                        if index < elems.len() {
-                            elems[index] = value;
-                            return Ok(());
-                        } else {
-                            return Err(RuntimeError::IndexOutOfBounds {
-                                pos,
-                                index: index as i64,
-                                length: elems.len(),
-                            });
-                        }
-                    }
-                    _ => {
-                        return Err(RuntimeError::NotAContainer {
+                let Some(mut cur) = entry.val.as_mut() else {
+                    return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
+                };
+                for (depth, idx) in path.iter().enumerate() {
+                    let Value::Array(elems) = cur else {
+                        return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
+                    };
+                    let length = elems.len();
+                    if *idx >= length {
+                        return Err(RuntimeError::IndexOutOfBounds {
                             pos,
-                            name: arr_name.to_string(),
+                            index: *idx as i64,
+                            length,
                         });
                     }
+                    if depth + 1 == path.len() {
+                        elems[*idx] = value;
+                        return Ok(());
+                    }
+                    cur = &mut elems[*idx];
                 }
+                return Err(RuntimeError::BadAssignTarget { pos });
             }
         }
         Err(RuntimeError::UndefinedVar {

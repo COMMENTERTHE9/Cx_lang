@@ -1,0 +1,17 @@
+// Rank 3, non-square in every dimension (2x3x4). Row-major means the last index
+// varies fastest, so element (i,j,k) sits at ((i*3 + j)*4 + k) * 8 bytes. Values
+// are encoded as i*100 + j*10 + k so a transposed or mis-strided read produces a
+// visibly wrong number rather than a plausible one.
+c: [2: [3: [4: t64]]] = [
+    [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23]],
+    [[100, 101, 102, 103], [110, 111, 112, 113], [120, 121, 122, 123]]
+]
+print(c:[0]:[0]:[0])
+print(c:[0]:[0]:[3])
+print(c:[0]:[2]:[1])
+print(c:[1]:[0]:[0])
+print(c:[1]:[2]:[3])
+c:[1]:[1]:[2] = 999
+print(c:[1]:[1]:[2])
+print(c:[1]:[1]:[1])
+print(c:[1]:[1]:[3])

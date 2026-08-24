@@ -1,0 +1,14 @@
+// Model A divergence #2: an array stored into a struct field must be copied.
+// The JIT stored the pointer, so mutating the source reached into the struct.
+struct H { arr: [3: t64], tag: t64 }
+let h;
+h = H { arr: [11, 22, 33], tag: 7 }
+n: [3: t64] = [77, 88, 99]
+h.arr = n
+n:[0] = 5
+r: [3: t64] = h.arr
+print(r:[0])
+print(r:[1])
+print(r:[2])
+print(h.tag)
+print(n:[0])
