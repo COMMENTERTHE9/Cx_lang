@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-08-24
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -54,14 +54,42 @@ release notes match the approved changelog. Landed:
   rather than by `run_matrix.sh` alone.
 
 Gate state at the tag: `cargo test` 250/0, `--features jit` 426/0, matrix
-414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110 on both
-feature sets.
+414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy **111/111** on
+both feature sets.
+
+*(Clippy corrected 2026-08-23 from the 110/110 originally recorded. Re-measured
+by building the v0.3.3 tag in a worktree: it reports 111, and its lint multiset
+is byte-identical to this HEAD's — same lints, same counts. So no code change
+introduced a lint and there was never a drift to chase; the recorded 110 was
+simply not reproducible. Clippy counts are toolchain-dependent — this figure is
+clippy 0.1.96. `--all-targets` reports 119 without the `jit` feature and 113
+with it, also identical at the tag and at HEAD.)*
 
 ---
 
-## Post-0.3.0 — landed on `submain`, not yet in a tagged release
+## Post-0.3.3 — landed on `submain`, not yet in a tagged release
 
-**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
+**Multidimensional arrays — Model A, contiguous** — `docs/known_issues.md` §28.
+Nested arrays are one owned, contiguous, row-major value. `[R: [C: T]]`,
+`a:[i]:[j]` and `[[1,2],[3,4]]` work on both backends; the three
+aggregate-into-aggregate aliasing divergences are closed structurally. The 0.5
+delivery item below is therefore substantially complete — what remains of the
+design gate is deliverable 6 (whether rank 4 falls out of the general case;
+rank 3 works today) and the writes still blocked by pre-existing grammar limits,
+listed at the end of §28.
+
+**Aggregate value semantics — Model B** — `docs/known_issues.md` §27. Every bind,
+parameter and return copies; the method receiver is the one declared exception.
+
+**Array returns via the caller-allocated slot** — `docs/known_issues.md` §26.
+Not a lowering gap: free functions and impl methods returned a dangling frame
+pointer and silently produced wrong values on both shipped paths. The guard that
+existed covered only phen methods. Fixed for all three.
+
+---
+
+**Scalar Handle core (D2.5a/b/c)** — shipped in 0.3.1, tagged `3430e4e`; landed
+on `submain` at `3ea986d`. `Handle<T>` for scalar
 `T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
@@ -92,12 +120,13 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — array returns from methods, expression
-  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
+  **Remaining lowering blockers** — expression receivers for operator
+  dispatch, `.copy` / `.copy.free` / `copy_into`
   parameter kinds, nested function definitions, `while-in`, function-body
   `const`, `t128` printing, `char`, and non-identifier string interpolation.
-  Array returns and expression receivers were briefly carried as a prospective
-  0.3.4; they belong here, and inventing a version slot to hold them would
+  Expression receivers were briefly carried as a prospective 0.3.4 alongside
+  array returns (since fixed); they belong here, and inventing a version slot
+  to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
@@ -131,8 +160,11 @@ things:
 - the **type**: `[3: t8]` — size, colon, element type
 - the **index operator**: `a:[2]` — colon *before* the bracket
 
-The colon-before-bracket indexing form was pinned deliberately: bare `a[2]`
-silently mis-parses. That constraint stands, and any multidimensional syntax has
+The colon-before-bracket indexing form was pinned deliberately. The precise
+shape it avoids: an expression followed by `[` on a subsequent line parses as
+two separate statements, because Cx has no statement terminator — `a` is an
+expression statement and `[2]` is an array literal, both discarded, exit 0, no
+error. (`a[2]` on ONE line is a clean parse error, not a silent mis-parse.) That constraint stands, and any multidimensional syntax has
 to live with a `:` that is already carrying two jobs. Nothing downstream can be
 locked until this is settled.
 
