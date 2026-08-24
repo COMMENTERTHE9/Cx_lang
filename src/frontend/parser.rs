@@ -589,33 +589,14 @@ where
             })
             .boxed();
 
-        // `a:[i] = v` and, folding the same suffix, `a:[i]:[j] = v`. The write
-        // side mirrors the read side exactly: one or more index suffixes, left
-        // -folded, so the target tree is the tree the reader would build.
-        let index_assign = ident
-            .clone()
-            .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
-            .then(
-                just(Token::PunctColon)
-                    .ignore_then(just(Token::PunctBracketOpen))
-                    .ignore_then(expr.clone())
-                    .then_ignore(just(Token::PunctBracketClose))
-                    .repeated()
-                    .at_least(1)
-                    .collect::<Vec<_>>(),
-            )
-            .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start))
-            .then(expr.clone())
-            .then_ignore(semi.clone().or_not())
-            .map(|((((name, name_pos), idxs), pos_eq), val_expr)| {
-                let target = idxs.into_iter().fold(
-                    Expr::Ident(name, name_pos),
-                    |b, idx_expr| Expr::Index(Box::new(b), Box::new(idx_expr), name_pos),
-                );
-                Stmt::Assign { target, expr: val_expr, pos_eq }
-            })
-            .boxed();
-
+        // ONE assignment-target grammar, used everywhere a statement can appear.
+        //
+        // A target is a root — a name, or a name's field — followed by any number
+        // of index suffixes. `x = v`, `x.f = v`, `x:[i] = v`, `x.f:[i] = v` and
+        // `x:[i]:[j] = v` are all the same production rather than a family of
+        // near-identical ones, so a shape that parses in one statement position
+        // parses in every statement position. The suffix folds left, producing
+        // exactly the tree the READER builds for the same text.
         let assign = ident
             .clone()
             .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
@@ -624,19 +605,26 @@ where
                     .ignore_then(select! { Token::Identifier(s) => s })
                     .or_not(),
             )
+            .then(
+                just(Token::PunctColon)
+                    .ignore_then(just(Token::PunctBracketOpen))
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctBracketClose))
+                    .repeated()
+                    .collect::<Vec<_>>(),
+            )
             .then(just(Token::OpAssign).map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start))
             .then(expr.clone())
             .then_ignore(semi.clone().or_not())
-            .map(|((((name, name_pos), field), pos_eq), expr)| {
-                let target = match field {
+            .map(|(((((name, name_pos), field), idxs), pos_eq), value)| {
+                let root = match field {
                     Some(f) => Expr::DotAccess(name, f),
                     None => Expr::Ident(name, name_pos),
                 };
-                Stmt::Assign {
-                    target,
-                    expr,
-                    pos_eq,
-                }
+                let target = idxs.into_iter().fold(root, |base, idx_expr| {
+                    Expr::Index(Box::new(base), Box::new(idx_expr), name_pos)
+                });
+                Stmt::Assign { target, expr: value, pos_eq }
             })
             .boxed();
 
@@ -1571,7 +1559,6 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             typed_assign,
             compound_assign,
             index_compound_assign,
-            index_assign,
             assign,
             block,
             if_stmt,

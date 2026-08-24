@@ -1,0 +1,15 @@
+// A write rooted at a field rather than a bare name. Reading `g.cells:[0]:[1]`
+// already parsed; only the write side rejected the same shape, because the
+// assignment target was its own narrower grammar instead of the one the reader
+// uses.
+struct G { cells: [2: [3: t64]], tag: t64 }
+let g;
+g = G { cells: [[11, 22, 33], [44, 55, 66]], tag: 7 }
+g.cells:[0]:[1] = 99
+g.cells:[1]:[0] = 88
+print(g.cells:[0]:[0])
+print(g.cells:[0]:[1])
+print(g.cells:[0]:[2])
+print(g.cells:[1]:[0])
+print(g.cells:[1]:[1])
+print(g.tag)

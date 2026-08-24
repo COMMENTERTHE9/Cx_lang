@@ -74,9 +74,12 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         // side effects happen in source order.
                         let mut pending = Vec::new();
                         let mut cursor = target;
-                        let arr_name = loop {
+                        let (arr_name, root_field) = loop {
                             match &cursor.kind {
-                                SemanticExprKind::VarRef { name, .. } => break name.clone(),
+                                SemanticExprKind::VarRef { name, .. } => break (name.clone(), None),
+                                SemanticExprKind::DotAccess { container, field, .. } => {
+                                    break (container.clone(), Some(field.clone()))
+                                }
                                 SemanticExprKind::Index { target: inner, index, .. } => {
                                     pending.push(index);
                                     cursor = inner;
@@ -98,7 +101,7 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         };
                         path.push(idx);
                         let truncated = apply_numeric_cast(val, elem_ty);
-                        self.set_array_element(&arr_name, &path, truncated, *pos_eq)
+                        self.set_array_element(&arr_name, root_field.as_deref(), &path, truncated, *pos_eq)
                     }
                 }
             }
@@ -150,7 +153,7 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         let rhs = self.eval_semantic_expr(operand)?;
                         let result = self.apply_op(current_val, op.clone(), 0, rhs)?;
                         let truncated = apply_numeric_cast(result, elem_ty);
-                        self.set_array_element(&arr_name, &[idx], truncated, *pos)
+                        self.set_array_element(&arr_name, None, &[idx], truncated, *pos)
                     }
                 }
             }

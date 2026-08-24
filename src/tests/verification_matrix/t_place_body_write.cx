@@ -1,0 +1,14 @@
+// One assignment-target grammar: a write that parses at top level must parse in
+// a function body. Both the single-index and the chained form were parse errors
+// inside a body — not because the body needed a different production, but
+// because the body's statement list simply did not include the one that already
+// existed.
+fnc: t64 fill() {
+    r: [3: t64] = [11, 22, 33]
+    r:[0] = 91
+    a: [2: [3: t64]] = [[1, 2, 3], [4, 5, 6]]
+    a:[1]:[2] = 99
+    a:[0]:[0] = 77
+    return r:[0] + a:[1]:[2] + a:[0]:[0]
+}
+print(fill())

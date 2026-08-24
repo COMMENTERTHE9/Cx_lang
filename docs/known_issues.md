@@ -2077,21 +2077,51 @@ identical tree — the parenthesised form is ordinary grouping, not an alias to
 maintain. Types and literals needed nothing: `[N: T]` was already recursive and
 literal shape validation already recursed.
 
-### Still parse errors — pre-existing, not introduced here
+### One assignment-target grammar — the write-position gaps, closed
 
-- A chained write inside a function body. Plain `r:[0] = 9` in a body is also a
-  parse error, the limitation already recorded in §27; the body statement
-  grammar is the constraint, not the chain.
-- A write through a field target: `g.cells:[0]:[0] = 9`, like `h.arr:[1] = 9`
-  before it. `index_assign` roots at an identifier.
-- Chained compound assignment, `a:[i]:[j] += 1`. `CompoundAssign` carries
-  `AssignTarget::Index(name, expr)` — a NAME, not an expression — so widening it
-  is an AST change rather than a grammar fold. Deliberately not folded in here.
+Two of the three gaps recorded here were never separate implementations. There
+was one `index_assign` production, and the function body's statement list simply
+**did not include it** — it listed `index_compound_assign` and `assign` but not
+`index_assign`. That single omission is why `r:[0] = 9` and `a:[i]:[j] = 9` were
+both parse errors inside a body while working at top level. The write-through-a-
+field gap had the same character: `index_assign` rooted at a bare identifier,
+while the READER already accepted `g.cells:[0]:[1]` through the ordinary
+expression grammar.
+
+Both are now one production:
+
+```
+target := ident ( '.' ident )? ( ':' '[' expr ']' )*
+```
+
+`x = v`, `x.f = v`, `x:[i] = v`, `x.f:[i] = v` and `x:[i]:[j] = v` are the same
+rule, folding left into exactly the tree the reader builds for the same text.
+`assign` and `index_assign` collapsed into it, and the function body folds that
+one rule rather than a subset of it. Deleting the duplicate took clippy from 111
+to **110** — one fewer `clone` on a Copy combinator.
+
+Nothing downstream needed widening: the semantic layer's `Expr::Index`
+assignment arm already called `analyze_expr` on the target, and the JIT's
+`resolve_array_element_ptr` already lowered any Ptr-producing expression. Only
+the interpreter needed work, and only because it walks by name rather than by
+address — its root descent now starts at a variable *or* one of its fields,
+sharing the index walk instead of duplicating it.
+
+### Still a parse error — chained compound assignment
+
+`a:[i]:[j] += 1`. `CompoundAssign` carries `AssignTarget::Index(name, expr)` — a
+NAME, not a place — so widening it is an AST change rather than a grammar fold,
+and it raises a single-evaluation question that a fold would not answer. Left
+open deliberately; see the place-representation finding.
 
 ### Delta
 
-Corpus 436 → 444, matrix 444/444. `cargo test` 251 → 252, `--features jit`
-427 → 428, parity **396/40/0 → 404 PASS / 40 SKIP / 0 PARITY_FAIL across 444**.
-SKIP set unchanged. Clippy 111/111, at the reconciled baseline.
+**Model A:** corpus 436 → 444, matrix 444/444, parity 396/40/0 → 404/40/0,
+clippy 111/111.
 
-All 436 pre-existing fixtures are byte-identical on both backends.
+**Assignment-target unification:** corpus 444 → 448, matrix 448/448.
+`cargo test` 252/0, `--features jit` 428/0, parity **404/40/0 → 408 PASS /
+40 SKIP / 0 PARITY_FAIL across 448**. SKIP set unchanged. Clippy 111 → **110**.
+
+Every pre-existing fixture is byte-identical on both backends across both
+changes.

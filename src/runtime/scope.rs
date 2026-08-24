@@ -291,7 +291,7 @@ impl RunTime {
     /// and replaces the element at `index` with `value`.  Returns an error
     /// if the variable is not found, is not an array, or the index is
     /// out of bounds.
-    /// Write an array element, addressed by a path of indices.
+    /// Write an array element, addressed by a root and a path of indices.
     ///
     /// `[i]` is the one-dimensional case and `[i, j, ...]` descends a nested
     /// array. The interpreter reaches an inner element by walking the owned
@@ -302,6 +302,7 @@ impl RunTime {
     pub fn set_array_element(
         &mut self,
         arr_name: &str,
+        root_field: Option<&str>,
         path: &[usize],
         value: Value,
         pos: usize,
@@ -314,6 +315,18 @@ impl RunTime {
                 let Some(mut cur) = entry.val.as_mut() else {
                     return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
                 };
+                // The root may be a variable or one of its fields — `a:[i] = v`
+                // and `g.cells:[i] = v` differ only in where the descent starts,
+                // so the walk below is shared rather than duplicated.
+                if let Some(field) = root_field {
+                    let (Value::Struct(_, map) | Value::Container(map)) = cur else {
+                        return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
+                    };
+                    cur = map.get_mut(field).ok_or_else(|| RuntimeError::UndefinedVar {
+                        pos,
+                        name: format!("{arr_name}.{field}"),
+                    })?;
+                }
                 for (depth, idx) in path.iter().enumerate() {
                     let Value::Array(elems) = cur else {
                         return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
