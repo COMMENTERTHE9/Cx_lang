@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-08-25
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -92,13 +92,13 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — array returns from methods, expression
-  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
+  **Remaining lowering blockers** — `.copy` / `.copy.free` / `copy_into`
   parameter kinds, nested function definitions, `while-in`, function-body
   `const`, `t128` printing, `char`, and non-identifier string interpolation.
-  Array returns and expression receivers were briefly carried as a prospective
-  0.3.4; they belong here, and inventing a version slot to hold them would
-  recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
+  Array returns (fixed on submain Aug 16) and expression receivers (fixed on
+  submain Aug 18) were briefly carried as a prospective 0.3.4; they belong
+  here and are now closed. Inventing a version slot to hold them would have
+  recreated the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
