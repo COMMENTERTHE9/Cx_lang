@@ -134,13 +134,6 @@ pub struct WhenArm {
 }
 
 #[derive(Debug, Clone)]
-pub enum AssignTarget {
-    Var(String),
-    Field(String, String),          // container_name, field_name
-    Index(String, Box<Expr>),       // array_name, index_expr
-}
-
-#[derive(Debug, Clone)]
 pub struct WhileInChain {
     pub arr: String,
     pub start_slot: usize,
@@ -238,7 +231,13 @@ pub enum Stmt {
         pos_type: usize,
     },
     CompoundAssign {
-        target: AssignTarget,
+        /// The place being read-modify-written, in the same representation
+        /// `Assign` uses. It was an `AssignTarget` — a three-variant enum of
+        /// NAMES — which predated first-class arrays and could not describe
+        /// `a:[i]:[j]` or `g.cells:[0]`. Both backends already resolved it to a
+        /// `SemanticLValue`, so the narrow form only ever existed on the hop
+        /// between the parser and semantic analysis.
+        target: Expr,
         op: Op,
         operand: Expr,
         pos: usize,

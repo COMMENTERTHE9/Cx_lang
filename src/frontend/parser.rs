@@ -1153,13 +1153,26 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             .map(|(pos, label)| Stmt::Continue { label, pos })
             .boxed();
 
+        // Compound assignment over the SAME target grammar plain assignment
+        // uses — the two statements differ only in `op=` versus `=`. One
+        // production, so `x += v`, `x.f += v`, `x:[i] += v`, `x.f:[i] += v` and
+        // `x:[i]:[j] += v` all parse wherever a statement can appear, and the
+        // target tree is identical to the one the reader builds.
         let compound_assign = ident
             .clone()
             .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
             .then(
                 just(Token::PunctDot)
                     .ignore_then(ident.clone())
-                    .or_not()
+                    .or_not(),
+            )
+            .then(
+                just(Token::PunctColon)
+                    .ignore_then(just(Token::PunctBracketOpen))
+                    .ignore_then(expr.clone())
+                    .then_ignore(just(Token::PunctBracketClose))
+                    .repeated()
+                    .collect::<Vec<_>>(),
             )
             .then(choice((
                 just(Token::OpAdd).to(Op::Plus),
@@ -1171,40 +1184,15 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             .then_ignore(just(Token::OpAssign))
             .then(expr.clone())
             .then_ignore(semi.clone().or_not())
-            .map(|((((name, pos), field), op), operand)| {
-                let target = match field {
-                    Some(f) => AssignTarget::Field(name, f),
-                    None => AssignTarget::Var(name),
+            .map(|(((((name, pos), field), idxs), op), operand)| {
+                let root = match field {
+                    Some(f) => Expr::DotAccess(name, f),
+                    None => Expr::Ident(name, pos),
                 };
+                let target = idxs.into_iter().fold(root, |base, idx_expr| {
+                    Expr::Index(Box::new(base), Box::new(idx_expr), pos)
+                });
                 Stmt::CompoundAssign { target, op, operand, pos }
-            })
-            .boxed();
-
-        // name:[index_expr] op= operand  — compound assign on an array element
-        let index_compound_assign = ident
-            .clone()
-            .map_with(|name, e: &mut ParseExtra<'a, '_, I>| (name, e.span().start))
-            .then_ignore(just(Token::PunctColon))
-            .then_ignore(just(Token::PunctBracketOpen))
-            .then(expr.clone())
-            .then_ignore(just(Token::PunctBracketClose))
-            .then(choice((
-                just(Token::OpAdd).to(Op::Plus),
-                just(Token::OpSub).to(Op::Minus),
-                just(Token::OpMul).to(Op::Mul),
-                just(Token::OpDiv).to(Op::Div),
-                just(Token::OpMod).to(Op::Mod),
-            )))
-            .then_ignore(just(Token::OpAssign))
-            .then(expr.clone())
-            .then_ignore(semi.clone().or_not())
-            .map(|((((name, pos), idx_expr), op), operand)| {
-                Stmt::CompoundAssign {
-                    target: AssignTarget::Index(name, Box::new(idx_expr)),
-                    op,
-                    operand,
-                    pos,
-                }
             })
             .boxed();
 
@@ -1264,7 +1252,6 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                 ret.clone().map(|s| (s, true)),
                 typed_assign.clone().map(|s| (s, true)),
                 compound_assign.clone().map(|s| (s, true)),
-                index_compound_assign.clone().map(|s| (s, true)),
                 assign.clone().map(|s| (s, true)),
                 if_stmt.clone().map(|s| (s, true)),
                 while_in_stmt.clone().map(|s| (s, true)),
@@ -1558,7 +1545,6 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             ret,
             typed_assign,
             compound_assign,
-            index_compound_assign,
             assign,
             block,
             if_stmt,

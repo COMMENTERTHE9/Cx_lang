@@ -67,41 +67,9 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         self.set_container_field(container, field, truncated, 0)
                     }
                     SemanticLValue::Index { target, index, elem_ty } => {
-                        // The target may itself be an Index — `a:[i]:[j] = v`
-                        // arrives as Index{ target: Index{ VarRef a, i }, j }.
-                        // Walk down to the root variable collecting index
-                        // expressions, then evaluate them outermost-first so
-                        // side effects happen in source order.
-                        let mut pending = Vec::new();
-                        let mut cursor = target;
-                        let (arr_name, root_field) = loop {
-                            match &cursor.kind {
-                                SemanticExprKind::VarRef { name, .. } => break (name.clone(), None),
-                                SemanticExprKind::DotAccess { container, field, .. } => {
-                                    break (container.clone(), Some(field.clone()))
-                                }
-                                SemanticExprKind::Index { target: inner, index, .. } => {
-                                    pending.push(index);
-                                    cursor = inner;
-                                }
-                                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
-                            }
-                        };
-                        pending.reverse();
-                        let mut path = Vec::with_capacity(pending.len() + 1);
-                        for ix in pending {
-                            match self.eval_semantic_expr(ix)? {
-                                Value::Num(n) => path.push(n as usize),
-                                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
-                            }
-                        }
-                        let idx = match self.eval_semantic_expr(index)? {
-                            Value::Num(n) => n as usize,
-                            _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
-                        };
-                        path.push(idx);
+                        let (root, field, path) = self.resolve_index_place(target, index)?;
                         let truncated = apply_numeric_cast(val, elem_ty);
-                        self.set_array_element(&arr_name, root_field.as_deref(), &path, truncated, *pos_eq)
+                        self.set_array_element(&root, field.as_deref(), &path, truncated, *pos_eq)
                     }
                 }
             }
@@ -122,38 +90,36 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                         self.set_container_field(container, field, truncated, 0)
                     }
                     SemanticLValue::Index { target, index, elem_ty } => {
-                        let arr_name = match &target.kind {
-                            SemanticExprKind::VarRef { name, .. } => name.clone(),
-                            _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+                        // Resolve the place ONCE. `path` is the interpreter's
+                        // address: the read below and the write at the end use
+                        // the same value, so every expression inside the target
+                        // and the index is evaluated exactly once even though
+                        // this statement both reads and writes.
+                        let (root, field, path) = self.resolve_index_place(target, index)?;
+                        let mut cur = match &field {
+                            Some(f) => self.get_field(&root, f, *pos)?,
+                            None => self.get_var(&root, *pos)?,
                         };
-                        let idx = match self.eval_semantic_expr(index)? {
-                            Value::Num(n) => n as usize,
-                            _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
-                        };
-                        let current_val = {
-                            let arr = self.get_var(&arr_name, 0)?;
-                            match arr {
-                                Value::Array(elems) => {
-                                    let length = elems.len();
-                                    elems
-                                        .get(idx)
-                                        .cloned()
-                                        .ok_or(RuntimeError::IndexOutOfBounds {
-                                            pos: *pos,
-                                            index: idx as i64,
-                                            length,
-                                        })?
-                                }
-                                _ => return Err(RuntimeError::NotAContainer {
-                                    pos: 0,
-                                    name: arr_name.clone(),
-                                }),
-                            }
-                        };
+                        for idx in &path {
+                            let Value::Array(elems) = cur else {
+                                return Err(RuntimeError::NotAContainer {
+                                    pos: *pos,
+                                    name: root.clone(),
+                                });
+                            };
+                            let length = elems.len();
+                            cur = elems.into_iter().nth(*idx).ok_or(
+                                RuntimeError::IndexOutOfBounds {
+                                    pos: *pos,
+                                    index: *idx as i64,
+                                    length,
+                                },
+                            )?;
+                        }
                         let rhs = self.eval_semantic_expr(operand)?;
-                        let result = self.apply_op(current_val, op.clone(), 0, rhs)?;
+                        let result = self.apply_op(cur, op.clone(), 0, rhs)?;
                         let truncated = apply_numeric_cast(result, elem_ty);
-                        self.set_array_element(&arr_name, None, &[idx], truncated, *pos)
+                        self.set_array_element(&root, field.as_deref(), &path, truncated, *pos)
                     }
                 }
             }
@@ -655,3 +621,48 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
     }
 }
 
+impl RunTime {
+    /// Resolve an index place to a root and a path, evaluating every index
+    /// expression EXACTLY ONCE.
+    ///
+    /// The interpreter has no address to hold, so the resolved
+    /// `(root, field, path)` IS its address. `Assign` and `CompoundAssign` both
+    /// resolve through here, which is what makes `a:[f()]:[g()] += 1` call
+    /// `f()` and `g()` once each: the compound arm reads and writes through the
+    /// same returned path instead of resolving the target a second time for the
+    /// write. Indices evaluate outermost-first, matching source order.
+    pub(crate) fn resolve_index_place(
+        &mut self,
+        target: &SemanticExpr,
+        index: &SemanticExpr,
+    ) -> Result<(String, Option<String>, Vec<usize>), RuntimeError> {
+        let mut pending = Vec::new();
+        let mut cursor = target;
+        let (root, field) = loop {
+            match &cursor.kind {
+                SemanticExprKind::VarRef { name, .. } => break (name.clone(), None),
+                SemanticExprKind::DotAccess { container, field, .. } => {
+                    break (container.clone(), Some(field.clone()))
+                }
+                SemanticExprKind::Index { target: inner, index, .. } => {
+                    pending.push(index);
+                    cursor = inner;
+                }
+                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+            }
+        };
+        pending.reverse();
+        let mut path = Vec::with_capacity(pending.len() + 1);
+        for ix in pending {
+            match self.eval_semantic_expr(ix)? {
+                Value::Num(n) => path.push(n as usize),
+                _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+            }
+        }
+        match self.eval_semantic_expr(index)? {
+            Value::Num(n) => path.push(n as usize),
+            _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
+        }
+        Ok((root, field, path))
+    }
+}

@@ -1,0 +1,12 @@
+// Compound assignment rooted at a field, at rank 1 and rank 2 in one program.
+struct G { cells: [2: [3: t64]], flat: [3: t64], tag: t64 }
+let g;
+g = G { cells: [[11, 22, 33], [44, 55, 66]], flat: [1, 2, 3], tag: 7 }
+g.cells:[0]:[1] += 5
+g.flat:[2] += 40
+print(g.cells:[0]:[0])
+print(g.cells:[0]:[1])
+print(g.cells:[1]:[2])
+print(g.flat:[1])
+print(g.flat:[2])
+print(g.tag)

@@ -2107,12 +2107,48 @@ the interpreter needed work, and only because it walks by name rather than by
 address — its root descent now starts at a variable *or* one of its fields,
 sharing the index walk instead of duplicating it.
 
-### Still a parse error — chained compound assignment
+### Compound assignment — closed
 
-`a:[i]:[j] += 1`. `CompoundAssign` carries `AssignTarget::Index(name, expr)` — a
-NAME, not a place — so widening it is an AST change rather than a grammar fold,
-and it raises a single-evaluation question that a fold would not answer. Left
-open deliberately; see the place-representation finding.
+`AssignTarget` is **deleted**. `Stmt::CompoundAssign` carries `target: Expr`, the
+same place representation `Assign` uses, and both statements parse through the
+same target grammar — they differ only in `op=` versus `=`. `a:[i]:[j] += 1`,
+`g.cells:[0]:[1] += 5` and rank-3 compounds all work on both backends.
+
+`AssignTarget` was a parser-to-semantic hop introduced 2026-03-15 in "Structs
+Phase 1+2", when the writable set was a variable, a named container's field, and
+a named array's element. It never reached either backend: the semantic layer
+already converted it to `SemanticLValue`, which is why the tell was that its
+index arm had to RECONSTRUCT `Expr::Ident(arr_name)` to analyse it — a name was
+all it had kept.
+
+One `Expr` → `SemanticLValue` conversion, `resolve_place`, now serves both
+statements' index targets, so a target shape that resolves for one resolves for
+the other at any depth.
+
+**The JIT needed zero changes** — it already matched `SemanticLValue::Index` with
+a generic target, and all five fixtures passed on Cranelift the moment the parser
+produced the wider tree.
+
+**The interpreter did need a change, and the prior investigation was wrong to say
+it would not.** It does speak `SemanticLValue`, but its compound arm still
+pattern-matched the target for a `VarRef` root and took a single index — the same
+narrowing the `Assign` arm carried before the previous slice widened it. The fix
+is the walk that already existed: `resolve_index_place` now resolves the root and
+index path once, and `Assign` and `CompoundAssign` share it.
+
+### Single evaluation
+
+A compound assignment resolves its place once, so `a:[f()]:[g()] += 1` calls
+`f()` and `g()` exactly once each. `t_place_compound_eval_once` prints a marker
+from each and asserts one of each; the hand-expanded
+`a:[f()]:[g()] = a:[f()]:[g()] + 5` prints two of each, on both backends, which
+is what makes the canary discriminating rather than merely green.
+
+Structural, not conventional: the JIT holds one SSA pointer that both the Load
+and the Store name, and the interpreter holds one `(root, field, path)` that both
+the read and the write use. See `docs/backend/cx_eval_order.md` for the rule,
+including the consequence that a compound assignment does not see writes made by
+its own operand.
 
 ### Delta
 
@@ -2122,6 +2158,12 @@ clippy 111/111.
 **Assignment-target unification:** corpus 444 → 448, matrix 448/448.
 `cargo test` 252/0, `--features jit` 428/0, parity **404/40/0 → 408 PASS /
 40 SKIP / 0 PARITY_FAIL across 448**. SKIP set unchanged. Clippy 111 → **110**.
+
+**CompoundAssign widening:** corpus 448 → 453, matrix 453/453. `cargo test`
+252/0, `--features jit` 428/0, parity **408/40/0 → 413 PASS / 40 SKIP /
+0 PARITY_FAIL across 453**. SKIP set unchanged. Clippy **110/110** — the new
+`resolve_index_place` costs one lint and the deleted duplicate compound
+production returns one.
 
 Every pre-existing fixture is byte-identical on both backends across both
 changes.

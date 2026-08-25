@@ -1,0 +1,14 @@
+// Rank 3 compound. Non-square 2x3x4 so a stride error cannot look plausible;
+// neighbours of every touched element are asserted.
+c: [2: [3: [4: t64]]] = [
+    [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23]],
+    [[100, 101, 102, 103], [110, 111, 112, 113], [120, 121, 122, 123]]
+]
+c:[1]:[2]:[1] += 500
+c:[0]:[0]:[3] -= 3
+print(c:[1]:[2]:[0])
+print(c:[1]:[2]:[1])
+print(c:[1]:[2]:[2])
+print(c:[0]:[0]:[2])
+print(c:[0]:[0]:[3])
+print(c:[1]:[1]:[1])

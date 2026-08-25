@@ -1,0 +1,28 @@
+// THE execute-once canary. A compound assignment reads and writes the same
+// place, so the place must be resolved ONCE — if the target and index
+// expressions were evaluated separately for the read and for the write, every
+// call inside them would run twice.
+//
+// `f()` and `g()` each print a distinct marker before returning an index, so
+// double evaluation is directly visible as a duplicated marker rather than
+// inferred. Expected output starts `7` then `8`, exactly once each.
+//
+// A stronger variant — where the second evaluation returns a DIFFERENT index and
+// so writes a different element — is not expressible today: a function that
+// mutates a top-level variable runs on the interpreter but does not lower on the
+// JIT (exit 127), so a shared counter cannot be asserted across both backends.
+// The duplicated marker is the cross-backend signal.
+fnc: t64 f() {
+    print(7)
+    return 0
+}
+fnc: t64 g() {
+    print(8)
+    return 1
+}
+a: [2: [3: t64]] = [[10, 20, 30], [40, 50, 60]]
+a:[f()]:[g()] += 5
+print(a:[0]:[0])
+print(a:[0]:[1])
+print(a:[0]:[2])
+print(a:[1]:[1])

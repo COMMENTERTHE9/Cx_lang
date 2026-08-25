@@ -1,0 +1,12 @@
+// Chained compound assignment. `CompoundAssign` carried a NAME target, so this
+// was a parse error while `a:[i]:[j] = v` worked — the two statement forms
+// differ only in `op=` versus `=`.
+a: [2: [3: t64]] = [[11, 22, 33], [44, 55, 66]]
+a:[0]:[1] += 100
+a:[1]:[2] *= 2
+print(a:[0]:[0])
+print(a:[0]:[1])
+print(a:[0]:[2])
+print(a:[1]:[0])
+print(a:[1]:[1])
+print(a:[1]:[2])

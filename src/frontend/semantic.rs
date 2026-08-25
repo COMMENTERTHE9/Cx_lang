@@ -793,13 +793,16 @@ impl Analyzer {
                             struct_name,
                         }
                     }
-                    Expr::Index(target_expr, index_expr, _) => {
-                        let sem_target = self.analyze_expr(target_expr)?;
-                        let elem_ty = match &sem_target.ty {
-                            SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
-                            SemanticType::Unknown => SemanticType::Unknown,
-                            _ => return Err(sem_err!(*pos_eq, "index assignment target must be an array")),
+                    Expr::Index(..) => {
+                        // The place itself comes from the shared conversion —
+                        // the same one `CompoundAssign` uses — so both statements
+                        // agree on what an index target means at any depth. Only
+                        // the RHS type-checking below is assignment-specific.
+                        let place = self.resolve_place(target, *pos_eq)?;
+                        let SemanticLValue::Index { elem_ty, .. } = &place else {
+                            return Err(sem_err!(*pos_eq, "bad assignment target"));
                         };
+                        let elem_ty = elem_ty.clone();
                         if elem_ty != SemanticType::Unknown {
                             check_semantic_num_fits(&semantic_expr, &elem_ty, *pos_eq)?;
                             if !types_compatible(&elem_ty, &semantic_expr.ty) {
@@ -807,12 +810,7 @@ impl Analyzer {
                             }
                             semantic_expr = insert_cast_if_needed(semantic_expr, &elem_ty);
                         }
-                        let sem_index = self.analyze_expr(index_expr)?;
-                        SemanticLValue::Index {
-                            target: Box::new(sem_target),
-                            index: Box::new(sem_index),
-                            elem_ty,
-                        }
+                        place
                     }
                     _ => {
                         return Err(sem_err!(*pos_eq, "bad assignment target"));
@@ -1250,60 +1248,16 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             } => {
                 // known-issues #12 — same single choke point as Stmt::Assign,
                 // covering Var / Field / Index compound forms alike.
-                let base = match target {
-                    AssignTarget::Var(n) | AssignTarget::Field(n, _) | AssignTarget::Index(n, _) => n,
+                // known-issues #12 — the same single choke point as Stmt::Assign.
+                // The base name is REQUIRED, not opportunistic: a target with no
+                // simple base would otherwise slip past both guards silently.
+                let Some(base) = assign_target_base_name(target) else {
+                    return Err(sem_err!(*pos, "bad assignment target"));
                 };
-                self.reject_const_assignment(base, *pos)?;
-                self.reject_loop_var_assignment(base, *pos)?;
-                let tp = self.current_type_params.clone();
-                let sem_target = match target {
-                    AssignTarget::Var(name) => {
-                        let info = self.lookup_var(name)
-                            .ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
-                        if !info.initialized {
-                            return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
-                        }
-                        SemanticLValue::Binding {
-                            binding: info.binding,
-                            name: name.clone(),
-                            ty: binding_type(info, &tp),
-                        }
-                    }
-                    AssignTarget::Field(container, field) => {
-                        let binding = self.lookup_var(container).map(|info| info.binding);
-                        let tps = self.current_type_params.clone();
-                        let instance_ty = self.lookup_var(container)
-                            .and_then(|info| info.inferred.clone()
-                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps))))
-                            .unwrap_or(SemanticType::Unknown);
-                        let (struct_name, field_ty) =
-                            self.resolve_field_access(container, &instance_ty, field, *pos)?;
-                        SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty, struct_name }
-                    }
-                    AssignTarget::Index(arr_name, idx_expr) => {
-                        let arr_info = self.lookup_var(arr_name)
-                            .ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", arr_name))?;
-                        let arr_ty = binding_type(arr_info, &tp);
-                        let elem_ty = match &arr_ty {
-                            SemanticType::Array(_, inner) => *inner.clone(),
-                            SemanticType::Unknown => SemanticType::Unknown,
-                            _ => {
-                                return Err(sem_err!(
-                                    *pos,
-                                    "compound assignment index target must be an array"
-                                ))
-                            }
-                        };
-                        let arr_pos = *pos;
-                        let sem_target = self.analyze_expr(&Expr::Ident(arr_name.clone(), arr_pos))?;
-                        let sem_index = self.analyze_expr(idx_expr)?;
-                        SemanticLValue::Index {
-                            target: Box::new(sem_target),
-                            index: Box::new(sem_index),
-                            elem_ty,
-                        }
-                    }
-                };
+                let base = base.to_string();
+                self.reject_const_assignment(&base, *pos)?;
+                self.reject_loop_var_assignment(&base, *pos)?;
+                let sem_target = self.resolve_place(target, *pos)?;
                 // Narrow the operand against the target's type when both are
                 // numeric — mirrors the regular assign-to-field narrowing at
                 // ~semantic.rs:444 (`insert_cast_if_needed(semantic_expr, &field_ty)`)
@@ -3475,6 +3429,73 @@ fn type_is_not_indexable(ty: &SemanticType) -> bool {
 /// The root variable name an assignment target writes through, if it has one:
 /// `x = ..` → `x`, `x.f = ..` → `x`, `x:[i] = ..` → `x`. Used by the const
 /// immutability check (known-issues #12), where writing through a const is
+impl Analyzer {
+    /// Resolve an assignment target expression to a place.
+    ///
+    /// The single `Expr` → `SemanticLValue` conversion. `Assign` and
+    /// `CompoundAssign` both route their index targets through it, so a target
+    /// shape that resolves for one resolves for the other — which is what makes
+    /// `a:[i]:[j] += 1` work without a second implementation of what a place is.
+    ///
+    /// The index arm calls `analyze_expr` on its target, so the base may itself
+    /// be an index or a field access; nesting depth is not a case here.
+    fn resolve_place(&mut self, target: &Expr, pos: usize) -> Result<SemanticLValue, SemanticError> {
+        let tp = self.current_type_params.clone();
+        match target {
+            Expr::Ident(name, _) => {
+                let info = self
+                    .lookup_var(name)
+                    .ok_or_else(|| sem_err!(pos, "use of undeclared variable '{}'", name))?;
+                if !info.initialized {
+                    return Err(sem_err!(pos, "use of uninitialized variable '{}'", name));
+                }
+                Ok(SemanticLValue::Binding {
+                    binding: info.binding,
+                    name: name.clone(),
+                    ty: binding_type(info, &tp),
+                })
+            }
+            Expr::DotAccess(container, field) => {
+                let binding = self.lookup_var(container).map(|info| info.binding);
+                let instance_ty = self
+                    .lookup_var(container)
+                    .and_then(|info| {
+                        info.inferred.clone().or_else(|| {
+                            info.declared
+                                .as_ref()
+                                .map(|t| semantic_type_from_decl(t.clone(), &tp))
+                        })
+                    })
+                    .unwrap_or(SemanticType::Unknown);
+                let (struct_name, field_ty) =
+                    self.resolve_field_access(container, &instance_ty, field, pos)?;
+                Ok(SemanticLValue::DotAccess {
+                    binding,
+                    container: container.clone(),
+                    field: field.clone(),
+                    ty: field_ty,
+                    struct_name,
+                })
+            }
+            Expr::Index(target_expr, index_expr, _) => {
+                let sem_target = self.analyze_expr(target_expr)?;
+                let elem_ty = match &sem_target.ty {
+                    SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
+                    SemanticType::Unknown => SemanticType::Unknown,
+                    _ => return Err(sem_err!(pos, "index assignment target must be an array")),
+                };
+                let sem_index = self.analyze_expr(index_expr)?;
+                Ok(SemanticLValue::Index {
+                    target: Box::new(sem_target),
+                    index: Box::new(sem_index),
+                    elem_ty,
+                })
+            }
+            _ => Err(sem_err!(pos, "bad assignment target")),
+        }
+    }
+}
+
 /// still writing to it. Returns `None` for target shapes with no simple base
 /// (which the assign arm then rejects on its own terms).
 fn assign_target_base_name(target: &Expr) -> Option<&str> {

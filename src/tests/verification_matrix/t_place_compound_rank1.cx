@@ -1,0 +1,22 @@
+// Rank-1 compound regression: the forms that already worked must keep working
+// once the target representation widens. A bare variable, a field, an array
+// element by name, and the same three inside a function body.
+struct P { v: t64, arr: [3: t64] }
+fnc: t64 inside() {
+    n: t64 = 5
+    n += 2
+    r: [3: t64] = [1, 2, 3]
+    r:[1] += 10
+    return n + r:[1]
+}
+x: t64 = 100
+x += 11
+let p;
+p = P { v: 1, arr: [7, 8, 9] }
+p.v += 4
+p.arr:[0] += 3
+print(x)
+print(p.v)
+print(p.arr:[0])
+print(p.arr:[1])
+print(inside())

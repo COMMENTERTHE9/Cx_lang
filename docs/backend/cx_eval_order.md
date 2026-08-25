@@ -1,6 +1,10 @@
 # Cx Expression Evaluation Order — v0.1
 Status: LOCKED for Cx 0.1
 
+*(Extended 2026-08-24 with the compound-assignment section: single resolution of
+the place, and the rule that a compound assignment does not see writes made by
+its own operand.)*
+
 ---
 
 ## Summary
@@ -100,6 +104,62 @@ through observable side effects (a function prints before returning):
 
 Expected output files (`.cx.expected_output`) provide the ground truth for the
 differential harness.
+
+---
+
+## Compound Assignment: the place is resolved once
+
+`target op= operand` resolves its place ONCE, reads through it, applies the
+operator, and writes back through the same place. Every expression inside the
+target and inside the index is therefore evaluated **exactly once**, even though
+the statement both reads and writes.
+
+```
+a:[f()]:[g()] += 1        f() runs once, g() runs once
+a:[f()]:[g()] = a:[f()]:[g()] + 1     f() runs TWICE, g() runs TWICE
+```
+
+The two lines are not equivalent, and the difference is observable: the compound
+form prints each marker once, the expanded form prints each twice. Both backends
+agree, and `t_place_compound_eval_once` asserts it.
+
+This is structural rather than conventional. The JIT resolves one SSA pointer and
+both the Load and the Store name that value; the interpreter resolves one
+`(root, field, path)` and both the read and the write use it. Re-resolving would
+require a second call to the resolver in either backend.
+
+### A compound assignment does not see writes its own operand makes
+
+The read happens **before** the operand is evaluated, and the write-back does not
+re-read. If the operand mutates the place being assigned, that mutation is
+overwritten:
+
+```
+a:[0] += f()      // where f() also writes to a:[0]
+```
+
+`a:[0]`'s old value is read, `f()` runs and its write to `a:[0]` lands, then
+`old + f()` is stored over it. `f()`'s write is lost.
+
+**This is the stated rule, not an accident** — it follows directly from
+read-then-apply-then-write, and both backends emit that order. The JIT's IR for
+`a:[0] += side()` shows it directly:
+
+```
+v14 = ptr_add v6 + v13     <- the place, resolved once
+v15 = load i64 v14         <- read
+v16 = call side() -> i64   <- operand, AFTER the read
+v17 = add i64 v15, v16
+store v14 v17              <- write back, no re-read
+```
+
+**Evidence status, stated precisely.** The behaviour above is *executed and
+confirmed on the interpreter* (`a:[0] += side()` with `side()` writing `a:[0]`
+prints 11, not 999). It is **not** confirmed by execution on the JIT, because
+that program does not lower there at all: a function that writes a top-level
+variable is an unsupported construct on the Cranelift backend today (exit 127).
+So the JIT claim rests on the instruction order above, not on a run. When
+top-level mutation from a function lowers, this deserves a parity fixture.
 
 ---
 
