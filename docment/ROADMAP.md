@@ -32,9 +32,6 @@ release notes match the approved changelog. Landed:
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
-- [x] CR#1 — range-check fields through explicit generic type args (b8e92fb)
-- [x] CR#2 — range-check array elements in struct fields and call args (7337b61)
-- [x] CR#3 — range-check return values at declared width (79a1bbd)
 
 **0.3.3** — tagged `v0.3.3`, 2026-08-16. Detail for each item is in
 `docs/known_issues.md` at the cited section.
@@ -201,8 +198,6 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
-
-**2026-06-06:** v0.2.0 merged to main (PR #295, tagged). Three post-release range-check fixes landed on submain (CR#1 generic fields, CR#2 array elements in struct fields/call args, CR#3 return values) — all found by CodeRabbit, all in `semantic.rs`. Matrix grew from 230 to 252 fixtures on submain, 0 failures. Submain now 3 commits ahead of main. CR#2 surfaced a pre-existing Cranelift segfault with negative struct array elements (marked `.jit_known_unsound`).
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
