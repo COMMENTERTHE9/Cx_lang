@@ -1,0 +1,13 @@
+// 0.3.4 slice 2: a phen must implement every signature in its gene —
+// missing one is a compile error naming the gene and the missing signature.
+struct Player { health: t32 }
+gene Damageable {
+    fnc take_damage(amount: t32)
+    fnc is_alive() -> bool
+}
+phen Damageable (p: Player) {
+    fnc: take_damage(amount: t32) {
+        p.health -= amount
+    }
+}
+print(1)

@@ -1,0 +1,18 @@
+// 0.3.4 slice 3: a phen method is actually callable — construct, call, use
+// the return value. (JIT: clean SKIP until slice 5 — phen methods have no
+// lowering yet.)
+struct Counter { n: t32 }
+
+gene Readable {
+    fnc double() -> t32
+}
+
+phen Readable (c: Counter) {
+    fnc: t32 double() {
+        c.n * 2
+    }
+}
+
+let c;
+c = Counter { n: 21 }
+print(c.double())

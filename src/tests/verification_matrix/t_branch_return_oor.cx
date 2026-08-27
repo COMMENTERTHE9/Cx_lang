@@ -1,0 +1,5 @@
+// CR#4: a branch-tail literal rejects in return position — the CR#3 return
+// chokepoint inherits branch-tail checking for free now that the shared width
+// check descends. Closes the gap CR#3's note had deferred to CR#4.
+fnc: t8 g() { return if true { 300 } else { 5 } }
+print(g())

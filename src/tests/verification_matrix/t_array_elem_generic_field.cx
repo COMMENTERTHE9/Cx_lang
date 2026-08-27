@@ -1,0 +1,6 @@
+// CR#2 + CR#1 composition: `items: [3: T]` instantiated as `Box<t8>` makes the
+// element type t8 (CR#1's substitution) and then range-checks each element (CR#2's
+// hint). This is the original adversarial-probe repro that found CR#2.
+struct Box<T> { items: [3: T] }
+b: Box = Box<t8> { items: [1, 2, 300] }
+print(b.items:[0])

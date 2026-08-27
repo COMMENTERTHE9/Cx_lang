@@ -1,0 +1,34 @@
+// D2.5b canary: Bool payloads round-trip through .val, AND true/false are
+// genuinely DISTINGUISHABLE (not both collapsing to the same wrong value).
+//
+// Why not `assert_eq(h.val, 1)` directly: the interpreter's assert_eq compares
+// runtime values by matched-tag pairs (Bool==Bool, Num==Num) with no coercion
+// between them. A Handle-stored Bool reads back as a genuine Value::Bool on the
+// interpreter (dynamic dispatch bypasses HandleVal's hardcoded I128 semantic
+// claim, the same pattern seen throughout the Handle arc), so comparing it
+// against a bare numeric literal diverges from the JIT (which always produces a
+// numeric I128). Comparing two independently-constructed Handles of the SAME
+// value against each other sidesteps the tag mismatch on both backends.
+//
+// Self-consistency alone isn't enough either -- a bug that collapsed BOTH true
+// and false to the same value would still pass a same-vs-same check. The final
+// `if h1.val == h3.val` comparison is what proves genuine discrimination: it
+// must take the else branch (true's round-trip must differ from false's).
+fnc: Handle<t128> mk(b: bool) {
+    return Handle.new(b);
+}
+let h1;
+h1 = mk(true)
+let h2;
+h2 = mk(true)
+assert_eq(h1.val, h2.val)
+let h3;
+h3 = mk(false)
+let h4;
+h4 = mk(false)
+assert_eq(h3.val, h4.val)
+if h1.val == h3.val {
+    print("bug-not-discriminating")
+} else {
+    print("bool-ok")
+}

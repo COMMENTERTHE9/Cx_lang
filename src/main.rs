@@ -377,6 +377,29 @@ fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
                     }
                 }
             }
+            // 0.3.4 slice 3: pre-register phen methods exactly like impl
+            // methods above (the receiver is the single "alias"), so a call
+            // site textually before the phen declaration dispatches correctly
+            // — same forward-reference behavior functions already get here.
+            SemanticStmt::PhenDef { receiver_type, methods, method_receiver_params, .. } => {
+                for (mi, sem_func) in methods.iter().enumerate() {
+                    let receiver_bindings: Vec<(BindingId, String, SemanticType)> = method_receiver_params
+                        .get(mi)
+                        .map(|params| {
+                            params
+                                .iter()
+                                .map(|p| (p.binding, p.name.clone(), receiver_type.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if let SemanticType::Struct(type_key) = receiver_type {
+                        rt.semantic_impls.insert(
+                            (type_key.clone(), sem_func.name.clone()),
+                            (receiver_bindings, Arc::new(sem_func.clone())),
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }

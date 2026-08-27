@@ -1,0 +1,11 @@
+// perf-rider: if-as-expression (#046) in a hot loop. Two-backend as of D2.1 —
+// the JIT now lowers if-expressions (lower_if_expr), so the runner picks it up
+// on both backends; its first JIT median is recorded in BASELINE.md.
+acc: t64 = 0
+i: t64 = 0
+while (i < 700000) {
+    v: t64 = if i % 2 == 0 { i % 5 } else { i % 3 }
+    acc = acc + v
+    i += 1
+}
+print(acc)

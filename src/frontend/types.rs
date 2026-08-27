@@ -121,8 +121,12 @@ pub enum RuntimeError {
         index: i64,
         length: usize,
     },
-    BreakSignal,
-    ContinueSignal,
+    // labeled-breaks (b): a break/continue carries its optional target label. A
+    // loop catches the signal when the label is None (unlabeled → innermost) or
+    // equals its own label; otherwise it re-raises, walking the signal out to the
+    // enclosing loop that matches.
+    BreakSignal(Option<String>),
+    ContinueSignal(Option<String>),
     #[allow(dead_code)] // frontend-level variant; IR layer currently enforces via IrValidationError::LoopVariableReassignment
     ReadOnlyLoopVar {
         pos: usize,
@@ -139,6 +143,21 @@ pub enum RuntimeError {
     AssertionFailed {
         msg: String,
         pos: usize,
+    },
+    /// Cx call depth exceeded the interpreter's limit (known-issues §20).
+    ///
+    /// A Cx call is a native recursion in the interpreter, so unbounded Cx
+    /// recursion used to take the thread's stack with it — a raw
+    /// `has overflowed its stack` and exit 127, with no diagnostic and no line.
+    /// Exit 127 is also the parity harness's SKIP sentinel, so a crash was
+    /// indistinguishable from an unsupported construct. This turns it into an
+    /// ordinary diagnostic on the ordinary exit-1 path.
+    /// The depth and limit are not carried: the depth is always `limit + 1`
+    /// and the limit is a constant, so the renderer reads both from
+    /// `MAX_CALL_DEPTH` rather than growing every `RuntimeError` by two words.
+    CallDepthExceeded {
+        pos: usize,
+        function: String,
     },
 }
 

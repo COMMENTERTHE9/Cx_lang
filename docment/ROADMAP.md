@@ -1,23 +1,34 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-06-06
+Last updated: 2026-08-16
 
-This file is a concise synthesis of the project's roadmap state. Detailed roadmaps live at:
-- Frontend: `docs/frontend/ROADMAP.md` (v5.0)
-- Backend: `docs/backend/cx_backend_roadmap_v3_1.md` (v4.0 on submain)
+This file is a concise synthesis of the project's roadmap state. Detailed
+0.1-era phase logs live at:
+- Frontend: `docs/frontend/ROADMAP.md` (v5.0, frozen at the 0.1 RC — historical)
+- Backend: `docs/backend/cx_backend_roadmap_v3_1.md` (v4.4, frozen at the 0.1 RC — historical)
 
 ---
 
-## Frontend — v0.2.0 Released
+## Shipped
 
-All 9 hard blockers resolved. 230/230 matrix tests passing on main. 10/10 examples passing.
+**0.1** — tagged `9fc0d24`, 2026-05-22. Language surface frozen: structs,
+generics v1/v2, enums, arrays, control flow, memory boundary model (str/strref/
+Handle<T>), Result<T> + `?`, test runner. Cranelift JIT backend for the
+supported 0.1 construct subset.
 
-**Status:** v0.2.0 released (tagged at 5981121, merged to main via PR #295). No known soundness holes. Syntax frozen. Post-release range-check sweep (CR#1-3) on submain closes all known #028/#037 gaps except branch-nested literals (CR#4).
+**0.2** — tagged `7340116`, 2026-06-06.
 
-**Known limitations (documented, not blocking):**
-- String arena grows monotonically (interpreter-only)
-- No strref constructor syntax
-- Expression statements still require semicolons
+**0.3** — tagged `1654f5b`, shipped as a GitHub Release. Independently verified:
+merge commit has 2 parents, tag points to the merge commit, local == remote,
+release notes match the approved changelog. Landed:
+- D1 core convergence + the JIT memory-safety gate (zero unsound markers)
+- `if` as expression and statement, enums, the unknown/three-state-bool arc
+- Static strings (D2.3: length, repeat, concatenation, content equality,
+  print-time interpolation) — complete
+- Scalar `Result<T>` (D2.4a/b/c): construct/print, the `?` operator, equality
+  — complete for scalar payloads
+- Labeled breaks (`'outer: loop { break 'outer / continue 'outer }`), both
+  parse+reject and execution commits
 
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
@@ -25,72 +36,167 @@ All 9 hard blockers resolved. 230/230 matrix tests passing on main. 10/10 exampl
 - [x] CR#2 — range-check array elements in struct fields and call args (7337b61)
 - [x] CR#3 — range-check return values at declared width (79a1bbd)
 
----
+**0.3.3** — tagged `v0.3.3`, 2026-08-16. Detail for each item is in
+`docs/known_issues.md` at the cited section.
 
-## Backend — Active Development
+- **Generic-struct instantiation lowering** (§18) and **generic-function
+  monomorphization** (§19/§23) — both now lower. Transitive worklist,
+  symbolic-map composition, per-template instantiation cap.
+- **`exit()` and top-level `const`** lower (§11, §12).
+- **Call-depth guards** (§24 interpreter, §25 JIT) — unbounded recursion is a
+  diagnostic on both backends at the same frame, not a crash. The JIT's guard is
+  emitted only for functions that can participate in a call cycle.
+- **Enforcement-layer audit** (§14) — field, enum-variant and receiver-type
+  facts moved from the access path's silence into semantic analysis, plus the
+  locked principle in `docs/frontend/enforcement_layers.md`.
+- **Const immutability** (§12) moved from runtime-only to analysis time,
+  including writes *through* a const that had silently mutated on both backends.
+- **Gene-bound soundness** (§22) — a bound promises methods, not fields.
+- **Rejection-shape harness** (§15) — `.expected_fail` records and asserts how
+  each backend refuses, and `.expected_exit` is honoured by the Rust harness
+  rather than by `run_matrix.sh` alone.
 
-The backend pipeline converts verified SemanticProgram → IR → machine output (Cranelift JIT for 0.1).
-
-### Done
-- [x] Phase 0 — Foundation (semantic boundary)
-- [x] Phase 1 — IR data model
-- [x] Phase 2 — Straight-line lowering
-- [x] Phase 3 — IR validation
-- [x] Phase 4 — Function lowering
-- [x] Phase 5 — if/else lowering
-- [x] Phase 0.5 — Backend trait interface (&IrModule)
-- [x] Phase 7 — IR pretty printer and diagnostics
-- [x] Phase 6 — Function call lowering (direct calls, arity/type validation)
-- [x] Phase 10 — Loop lowering (while, for, break, continue)
-- [x] Phase 8 Round 1 — ABI (scalars, structs, arrays, enums, calling convention)
-
-### Active
-- [ ] Phase 11 — Surface area reduction
-  - [x] Compound assign
-  - [x] Unary expressions
-  - [x] Struct literal lowering (CX-9)
-  - [x] Struct field reads (CX-10)
-  - [x] Struct field writes (CX-14)
-  - [x] Void function calls (CX-13)
-  - [x] Array type and literal lowering (CX-16)
-  - [x] Array element access (CX-17)
-  - [x] Array element writes (CX-20)
-  - [x] Range structured error (CX-19)
-  - [x] MethodCall structured error (CX-21)
-  - [x] Method call actual lowering (0ab7e9b — synthesis-and-recurse via Call arm)
-  - [x] `when` block lowering — Literal/Range/Bool/Catchall + TBool wire-value (bed71c1, landed on main via v0.2.0 merge)
-  - [ ] DotAccess in compound forms
-- [ ] Phase 8 Round 2 — str/strref layout, Handle<T>, TBool calling convention
-
-### Landed (integrated to main via v0.2.0 merge)
-
-- [x] Phase 13 — Cranelift lowering skeleton (CX-22)
-- [x] JIT Host Boundary (CX-24: process ownership, exit codes, output capture)
-- [ ] Phase 12 — Differential harness (parity classification CX-69, loop fixtures CX-68, determinism tests CX-55 merged; CX-228 adds t159–t177 parity fixtures; more in flight)
-- [ ] Phase 9 — Runtime intrinsics boundary (assert/assert_eq lowered natively via CX-48; print/println/printn/read/input still pending)
-- [ ] Phase 14 — First executable Cranelift slice (CX-52 float comparison, CX-53 void return, CX-54 debug-trace gating merged)
-- [ ] Phase 15 — Cranelift JIT 0.1 target (CX-74 exit-code propagation merged; print arg widening 08fa2f9; literal-width narrowing complete across 5 operator sites; CX-57/58/60/63/64/66 instruction coverage in flight; 156 PASS / 96 SKIP / 0 PARITY_FAIL across 252 fixtures on submain)
-
-### Post-0.1
-- [ ] Cranelift AOT (Phase 16)
-- [ ] LLVM AOT (Phase 17)
-- [ ] FFI and C boundary (Phase 18)
+Gate state at the tag: `cargo test` 250/0, `--features jit` 426/0, matrix
+414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110 on both
+feature sets.
 
 ---
 
-## Language Features — Post-0.1
+## Post-0.3.0 — landed on `submain`, not yet in a tagged release
 
-- NullPoint<T>
-- Generics v3 (type bounds)
-- Generic structs
-- Multi-struct impl blocks
-- gene + phen trait system
-- := type inference
-- Stdlib (growable array, hash table, ring buffer)
-- Full memory system (region invalidation, rc<T>, shared<T>)
-- Full string model (strref escape, UTF-8, interop)
-- I/O (read, input, string interpolation)
-- GPU system
+**Scalar Handle core (D2.5a/b/c)** — landed `3ea986d`. `Handle<T>` for scalar
+`T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
+the interpreter. Generational safety and double-drop non-aliasing empirically
+proven on both backends (interpreter and Cranelift JIT).
+
+---
+
+The sequence below reflects the project's current stated direction. It was first
+formally recorded on 2026-07-04 — no prior committed roadmap file contained a
+0.2+ version sequence, so that was a first recording rather than a correction to
+an existing plan — and last amended on 2026-08-16, when 0.3.3 shipped and its
+remaining blockers folded into 0.4.
+
+## Corrected Version Sequence
+
+- **0.3.1** — Scalar Handle core (D2.5) + pattern matching (named binding
+  `as v`, guard clauses). *(Shipped 2026-07-09 at `3430e4e`. Pattern matching
+  landed inside this release rather than 0.3.2 as originally planned.)*
+- **0.3.2** — gene + phen: design, implementation, generic bounds
+  (`T: GeneName`), operator overloading via the embedded prelude. Plus the
+  0.3.1-era audit fixes and the struct-return ABI fix. *(Shipped 2026-07-24.
+  See `docs/post_0_1/gene_phen_design.md` for the full spec.)*
+- **0.3.3** — Generic functions and structs lowered, call-depth guards on both
+  backends, the access-path enforcement audit. *(Shipped 2026-08-16. Full item
+  list under "Shipped" above.)*
+- **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
+  begins/completes, math layer. *(Unchanged from prior sequencing.)* **Plus:**
+  finish the remaining lowering blockers, and open the multidimensional-array
+  **design gate** in parallel — see below. The design gate touches no code, so
+  it runs alongside 0.4's implementation work rather than queuing behind it.
+
+  **Remaining lowering blockers** — array returns from methods, expression
+  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
+  parameter kinds, nested function definitions, `while-in`, function-body
+  `const`, `t128` printing, `char`, and non-identifier string interpolation.
+  Array returns and expression receivers were briefly carried as a prospective
+  0.3.4; they belong here, and inventing a version slot to hold them would
+  recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
+  0.3.4 is ever needed, it gets created when something actually justifies it.
+- **0.5** — **Multidimensional arrays landed, or actively completing.**
+- **1.0** — First stable release.
+- **1.0+** — Graphics begins: Vulkan/DX12 bindings. *(Not before 1.0 — the
+  0.4 math layer is graphics PREP, not graphics itself.)*
+- **1.1+** — Renderer.
+- **1.2+** — Physics.
+- **1.3+** — Audio.
+- **1.4+** — Networking / NOD Protocol.
+- **2029+** — TSG playable.
+
+---
+
+## Multidimensional Arrays — 0.4 design gate, 0.5 delivery
+
+**Scheduled, not aspirational.** 2D and 3D are **first-class**, not a stepping
+stone to something else, and multidimensional support is a **language-level
+goal** — it is not contingent on any particular application's current needs, and
+should not be re-scoped if a consumer of the language happens not to need it
+this quarter.
+
+### 0.4 — the design gate (no code)
+
+The deliverables below are **ordered by dependency, not by preference**.
+Deliverable 1 blocks 2, 3 and 4, because all three of them contain a `:`.
+
+**1. Resolve the `:` collision.** Inside arrays, `:` already means two different
+things:
+
+- the **type**: `[3: t8]` — size, colon, element type
+- the **index operator**: `a:[2]` — colon *before* the bracket
+
+The colon-before-bracket indexing form was pinned deliberately: bare `a[2]`
+silently mis-parses. That constraint stands, and any multidimensional syntax has
+to live with a `:` that is already carrying two jobs. Nothing downstream can be
+locked until this is settled.
+
+**2. Lock type syntax.** *(blocked by 1)*
+
+**3. Lock indexing syntax.** *(blocked by 1)*
+
+**4. Lock literal syntax.** *(blocked by 1)*
+
+**5. Dimension ordering and memory layout.** The recorded decision is
+**row-major, last index varying fastest**, unless the design pass finds a
+concrete reason to overturn it. Recording it now means a later change is a
+deliberate reversal with a stated reason, not a drift.
+
+**6. Whether 4D ships immediately, or falls out of a generalized N-dimensional
+implementation.** The expectation is the latter: if offset computation, bounds
+checking, and literal shape-checking are all written generically over the
+dimension count, then **4D is not a separate feature** — it is the same code with
+a different N. Deliverable 6 is to confirm or refute that expectation, not to
+assume it.
+
+### On the two existing array documents
+
+`cx_arrays.md` and `cx_4d_arrays.md` are **design intent only**. They are also
+**not in this repository** — they live outside it, so a reader looking for them
+here will not find them.
+
+Neither is written in Cx. One uses Rust syntax; the other uses a third invented
+syntax that belongs to no language. **Their syntax must not be retrofitted into
+Cx.** Read them for intent — what the feature is for, what shapes it needs to
+express — and discard the notation entirely. Deliverables 2, 3 and 4 above exist
+precisely because the syntax is genuinely undecided, not because it is written
+down somewhere and merely needs transcribing.
+
+---
+
+## Future Design Work (unscheduled)
+
+Audited during the 0.3 cycle. Both found to have **no interpreter reference**
+(no `Value` variant, no eval site, no fixtures) — not "not yet implemented,"
+genuinely undesigned. Deferred until each gets its own design pass; only then
+can either be scheduled into a version.
+
+- **NullPoint<T>** — a nullable-pointer type. The only existing spec is one
+  line of roadmap intent ("maps into the unknown/known model"); the audit
+  found the intended design ties it to two other JIT-deferred subsystems
+  (the unknown/TBool seam, `Handle<T>`), which needs resolving before any
+  implementation starts.
+- **random stdlib foundation** — audited and found to be intent-only-minus:
+  no interpreter reference, no roadmap line recording it as a decision, no
+  "open-decision #2" tracker entry anywhere in the repo. A future design pass
+  will also need to resolve the RNG-determinism question (JIT parity requires
+  matching the interpreter's algorithm + seed state exactly, not just
+  "produces a random number").
+
+**Also deferred, not yet placed on any version:** non-scalar `Handle<T>`
+(`Handle<str>`, `Handle<struct>`) and `Handle<Handle<T>>` — the D2.5
+investigation found the semantic layer's `Handle<T>` claim is hardcoded
+regardless of the real payload type, which would need real type-flow work
+before a non-scalar payload could lower safely. Untested, no claim either way
+on nested Handles. Needs its own scoping audit before scheduling.
 
 ---
 

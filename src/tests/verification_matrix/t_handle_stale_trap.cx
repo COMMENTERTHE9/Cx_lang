@@ -1,0 +1,18 @@
+// D2.5c: the stale-handle Trap proof deferred by D2.5b. Construct, drop, then
+// read .val on the dropped handle. print(h.val) can't be used to trigger this
+// (bare I128 printing is a separate, pre-existing, unrelated gap -- print's own
+// argument-type gate rejects I128 before h.val is ever evaluated); assert_eq
+// DOES support I128 comparison, so it's what actually forces h.val's real
+// evaluation (and therefore the Trap branch) to run.
+//
+// Both backends must reject cleanly and deterministically (interp: a
+// RuntimeError::StaleHandle; JIT: the Trap -> cx_trap exit path, exit 126) --
+// neither a panic nor a crash. Parity only requires both non-zero, not
+// identical text/exit-code.
+let h;
+h = Handle.new(42)
+h.drop()
+let expected: t128;
+expected = 42
+assert_eq(h.val, expected)
+print("should-not-print")

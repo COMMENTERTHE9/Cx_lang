@@ -1,0 +1,29 @@
+// 0.3.4 slice 4: multi-bound generics — T: GeneA + GeneB requires phens for
+// both genes on the same type; the body may call methods from either gene.
+struct Robot { power: t32 }
+
+gene Attacker {
+    fnc attack() -> t32
+}
+gene Defender {
+    fnc defend() -> t32
+}
+
+phen Attacker (r: Robot) {
+    fnc: t32 attack() {
+        r.power * 2
+    }
+}
+phen Defender (r: Robot) {
+    fnc: t32 defend() {
+        r.power + 1
+    }
+}
+
+fnc: t32 <T: Attacker + Defender> engage(t: T) {
+    t.attack() + t.defend()
+}
+
+let r;
+r = Robot { power: 10 }
+print(engage(r))

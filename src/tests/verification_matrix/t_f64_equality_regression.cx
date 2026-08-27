@@ -1,0 +1,7 @@
+// Regression guard, not part of the fix: EqEq/NotEq already had
+// (Value::Float, Value::Float) arms (ops.rs) before this fix — only the four
+// ordering comparisons (Lt/Gt/LtEq/GtEq) were missing theirs. Pinning
+// existing-correct behavior so a future change to ops.rs can't silently
+// regress float equality while touching the ordering operators.
+print(3.14 == 3.14)
+print(3.14 != 2.0)

@@ -1,0 +1,24 @@
+// 0.3.4 slice 6: single prelude injection under multiple imports — three
+// source files in the graph, prelude registered exactly once (no
+// duplicate-gene collision), operator dispatch works in the entry.
+#![imports]
+la: use "./t_prelude_multi_import_lib_a"
+lb: use "./t_prelude_multi_import_lib_b"
+
+struct Vec2 { x: t32, y: t32 }
+
+phen Add (v: Vec2) {
+    fnc: Self add(rhs: Self) {
+        made: Self = Vec2 { x: v.x + rhs.x, y: v.y + rhs.y }
+        made
+    }
+}
+
+let a;
+let b;
+a = Vec2 { x: la.ten(), y: 2 }
+b = Vec2 { x: lb.twenty(), y: 40 }
+let c;
+c = a + b
+print(c.x)
+print(c.y)

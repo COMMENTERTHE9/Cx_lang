@@ -1,0 +1,14 @@
+// CX-3.3: the ordering-comparison type-allowlist must not overcorrect —
+// numeric (int and float) comparisons still work, on all four operators.
+a: t32 = 3
+b: t32 = 5
+print(a < b)
+print(a > b)
+print(a <= b)
+print(a >= b)
+x: f64 = 1.5
+y: f64 = 2.5
+print(x < y)
+print(x > y)
+print(x <= y)
+print(x >= y)

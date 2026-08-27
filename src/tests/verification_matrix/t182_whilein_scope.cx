@@ -1,0 +1,15 @@
+x: t32 = 100
+a: [3: t64] = [1, 2, 3]
+b: [3: t64] = [4, 5, 6]
+while in a:[0], 0..3 {
+    x: t32 = 1
+    tmp: t32 = 10
+    print(x)
+    print(tmp)
+} then in b:[0], 0..3 {
+    x: t32 = 2
+    tmp: t32 = 20
+    print(x)
+    print(tmp)
+}
+print(x)

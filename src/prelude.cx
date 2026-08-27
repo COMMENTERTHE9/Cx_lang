@@ -1,0 +1,52 @@
+// Cx prelude — canonical source for the built-in operator gene contracts
+// (docs/post_0_1/gene_phen_design.md, decision 6: prelude source is the
+// canonical, permanent architecture — never a hardcoded second system).
+//
+// This file is embedded into cx.exe at build time (include_str!) and
+// injected as the first source unit of every program, through the ordinary
+// lexer → parser → semantic pipeline. Changing it requires rebuilding.
+//
+// Primitive numeric types currently satisfy these contracts through
+// decision-6 bootstrap intrinsics (the built-in numeric operator paths in
+// semantic analysis, marked at their sites), which conform to the exact
+// signatures below and are designed for removal once primitives can carry
+// real phens.
+
+gene Add {
+    fnc add(rhs: Self) -> Self
+}
+
+gene Sub {
+    fnc sub(rhs: Self) -> Self
+}
+
+gene Mul {
+    fnc mul(rhs: Self) -> Self
+}
+
+gene Div {
+    fnc div(rhs: Self) -> Self
+}
+
+gene Mod {
+    fnc mod(rhs: Self) -> Self
+}
+
+gene Neg {
+    fnc neg() -> Self
+}
+
+gene Eq {
+    fnc eq(rhs: Self) -> bool
+}
+
+// Decision 4: four separate methods, 1:1 with the four operators. No
+// cmp/Ordering convenience method in 0.3.4. Implementers must uphold the
+// standard total-order axioms across the four methods (documented
+// requirement — not runtime-enforced in 0.3.4).
+gene Ord {
+    fnc lt(rhs: Self) -> bool
+    fnc gt(rhs: Self) -> bool
+    fnc le(rhs: Self) -> bool
+    fnc ge(rhs: Self) -> bool
+}

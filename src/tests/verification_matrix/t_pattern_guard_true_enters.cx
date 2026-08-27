@@ -1,0 +1,11 @@
+// Pattern matching, guards — a matching variant with a `true` guard enters
+// the arm.
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Green
+
+when c {
+    Color::Green if true => print(1),
+    _ => print(0),
+}

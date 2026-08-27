@@ -1,0 +1,8 @@
+// Gate-2b: a NEGATIVE array index is out of bounds and must trap, not wrap to a
+// huge unsigned offset. The index is signed I64; the bounds guard's `idx < 0`
+// check (signed) catches it. Interpreter raises IndexOutOfBounds (exit 1); the
+// JIT traps via cx_trap (exit 126) — both non-zero → convergent expected-fail.
+// The index is a variable so the negative reaches runtime, not semantic time.
+a: [3: t64] = [10, 20, 30]
+i: t64 = -1
+print(a:[i])

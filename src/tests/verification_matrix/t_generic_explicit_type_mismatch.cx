@@ -1,0 +1,6 @@
+// CR#1: explicit type args constrain field *types*, not just ranges. `Pair<str>`
+// makes `b: T` a str, so the numeric literal 300 is a type mismatch (a behavior
+// change the substitution enables, and the correct meaning of explicit args).
+struct Pair<T> { a: T, b: T }
+p: Pair = Pair<str> { a: "x", b: 300 }
+print(p.b)

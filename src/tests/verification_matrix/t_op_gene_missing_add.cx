@@ -1,0 +1,10 @@
+// 0.3.4 slice 6: `+` on a user struct WITHOUT a phen for Add — clean error
+// naming the type and the gene.
+struct Vec2 { x: t32, y: t32 }
+let a;
+let b;
+a = Vec2 { x: 1, y: 2 }
+b = Vec2 { x: 3, y: 4 }
+let c;
+c = a + b
+print(c.x)

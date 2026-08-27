@@ -1,0 +1,31 @@
+// D2.5c: the double-drop non-aliasing proof. The real risk of a double-drop
+// isn't "does it crash" -- remove()'s generation check already makes a second
+// drop a safe no-op (it finds slot.gen != handle.gen and returns early, before
+// touching the free-list again). The risk is free-list CORRUPTION: if a
+// double-drop pushed the same slot index twice, two SUBSEQUENT Handle.new
+// calls would both pop that slot and silently ALIAS -- the second construct's
+// insert() would overwrite the first's stored value, and reading the first
+// handle back would wrongly return the second's payload.
+//
+// h1 is dropped twice; h2 and h3 are then constructed fresh. If aliasing
+// occurred, h3's insert would overwrite h2's slot and h2.val would read 3
+// (h3's payload) instead of 2. Both assert_eq calls below are the actual
+// proof -- not just that the program runs to completion without crashing.
+fnc: Handle<t128> mk(n: t32) {
+    return Handle.new(n);
+}
+let h1;
+h1 = mk(1)
+h1.drop()
+h1.drop()
+let h2;
+h2 = mk(2)
+let h3;
+h3 = mk(3)
+let expected2: t128;
+expected2 = 2
+let expected3: t128;
+expected3 = 3
+assert_eq(h2.val, expected2)
+assert_eq(h3.val, expected3)
+print("no-alias-ok")

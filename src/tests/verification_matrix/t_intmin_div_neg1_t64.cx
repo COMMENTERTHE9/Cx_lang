@@ -1,0 +1,10 @@
+// Gate-1a width proof: INT_MIN / -1 at t64 wraps to -9223372036854775808.
+// INT_MIN is built by arithmetic (-(2^63-1) then -1) rather than written as a
+// literal, because the t64 INT_MIN literal -9223372036854775808 parses as
+// Unary(Minus, 2^63) and 2^63 does not fit I64 at lowering — a separate
+// pre-existing literal-lowering gap, unrelated to this guard. The guard itself
+// is width-general; both backends agree, no trap.
+a: t64 = -9223372036854775807
+a = a - 1
+b: t64 = -1
+print(a / b)

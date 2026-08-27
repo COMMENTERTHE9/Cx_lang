@@ -1,0 +1,6 @@
+// Pattern matching, first slice — `as v` binding is EnumVariant-only for this
+// slice. On a `_` catch-all pattern it must reject cleanly (parse error).
+x: t32 = 5
+when x {
+    _ as v => print(v),
+}

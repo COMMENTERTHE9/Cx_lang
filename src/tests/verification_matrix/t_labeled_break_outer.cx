@@ -1,0 +1,15 @@
+// labeled-breaks (b): break 'outer from an inner loop exits the OUTER loop.
+// Discriminating: with an unlabeled break the inner would exit, `out + 100` would
+// run, and the outer would re-loop forever. break 'outer exits both, so the outer
+// runs exactly once (out == 1), skipping `out + 100`. Output 1 proves the outer
+// exited, not just the inner.
+let out;
+out = 0
+'outer: loop {
+    out = out + 1
+    loop {
+        break 'outer
+    }
+    out = out + 100
+}
+print(out)

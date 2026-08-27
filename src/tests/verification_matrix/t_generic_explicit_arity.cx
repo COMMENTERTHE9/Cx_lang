@@ -1,0 +1,6 @@
+// CR#1: type-arg arity must match the struct's generic params, both directions.
+// `Pair<T>` has one param; supplying two would silently drop the second under a
+// bare zip, so a mismatch errors first.
+struct Pair<T> { a: T, b: T }
+p: Pair = Pair<t8, t16> { a: 1, b: 2 }
+print(p.a)

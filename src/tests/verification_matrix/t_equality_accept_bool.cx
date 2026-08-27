@@ -1,0 +1,10 @@
+// CX-3.3: regression guard — the equality branch this fix mirrors (but does
+// not modify) must keep accepting bool/enum equality exactly as before.
+// (An enum variant here would additionally exercise a separate, pre-existing,
+// unrelated interpreter runtime gap — Op::EqEq/NotEq in ops.rs has no match
+// arm for enum variant values — so this fixture is scoped to bool, which
+// round-trips end-to-end on both backends.)
+c: bool = true
+d: bool = false
+print(c == d)
+print(c != d)

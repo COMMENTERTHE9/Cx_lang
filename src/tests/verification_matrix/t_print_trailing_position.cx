@@ -1,0 +1,12 @@
+// Regression fixture for the print-in-trailing-position fix: a bare
+// builtin call (print) as a function body's sole/last statement, with no
+// trailing semicolon, must not be promoted to the function's implicit
+// return expression — it stays a normal statement, correctly intercepted
+// by lower_stmt's existing builtin dispatch. Before the fix, this failed
+// on JIT with "unresolved semantic artifact reached lowering: function
+// 'print'" (exit 127); the interpreter was always correct.
+fnc: show(x: t32) {
+    print(x)
+}
+
+show(42)

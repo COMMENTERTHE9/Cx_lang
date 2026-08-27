@@ -1,0 +1,12 @@
+// perf-rider: INTERPRETER-ONLY — string concatenation + len in a hot loop.
+// Str has no IR representation (JIT SKIPs); measured on one backend, still
+// regression-tracked. Fresh concat per iteration; the arena grows
+// monotonically (no dealloc), so the iteration count also bounds memory.
+acc: t64 = 0
+i: t64 = 0
+while (i < 400000) {
+    s: str = "hello" + " " + "world"
+    acc = acc + len(s)
+    i += 1
+}
+print(acc)

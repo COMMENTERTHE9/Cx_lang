@@ -1,0 +1,13 @@
+// Struct-return regression (free function): before the caller-allocated-slot
+// fix, the JIT returned a pointer into the callee's dead frame — this exact
+// program printed 13/32758 on cranelift (13/24 correct), silently, exit 0.
+// Asymmetric fields so a partial-write or field-order bug cannot masquerade.
+struct Vec2 { x: t32, y: t32 }
+fnc: Vec2 make(a: t32, b: t32) {
+    made: Vec2 = Vec2 { x: a, y: b }
+    made
+}
+let c;
+c = make(13, 24)
+print(c.x)
+print(c.y)

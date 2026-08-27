@@ -1,0 +1,15 @@
+// perf-rider: when-matching in a hot loop — literal, range, and catchall
+// arms on t64 (JIT-lowerable surface; enum arms are not, and are avoided).
+acc: t64 = 0
+i: t64 = 0
+while (i < 600000) {
+    k: t64 = i % 10
+    when (k) {
+        0..3  => { acc += 1 }
+        3..=6 => { acc += 2 }
+        7     => { acc += 3 }
+        _     => { acc += 4 }
+    }
+    i += 1
+}
+print(acc)

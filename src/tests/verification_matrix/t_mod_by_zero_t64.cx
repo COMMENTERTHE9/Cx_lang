@@ -1,0 +1,5 @@
+// Gate-1b width proof: modulo-by-zero at t64 traps cleanly. Both backends
+// reject non-zero → convergent expected-fail.
+a: t64 = 5
+b: t64 = 0
+print(a % b)

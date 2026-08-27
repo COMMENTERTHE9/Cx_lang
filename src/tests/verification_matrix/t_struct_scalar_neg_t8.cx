@@ -1,0 +1,7 @@
+// Gate-2a: struct SCALAR sub-64-bit field with a negative value — the second
+// store site (StructInstance field store, the `_field_ty` that was unused).
+// Silently miscompiled before (8-byte store into a 1-byte field slot). Now
+// narrowed; reads back -128.
+struct S { x: t8 }
+s: S = S { x: -128 }
+print(s.x)

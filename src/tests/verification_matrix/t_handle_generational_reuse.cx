@@ -1,0 +1,24 @@
+// D2.5c: the generational-reuse proof, mirroring handle.rs's own unit test
+// (stale_handle_after_slot_reuse). Drop h1, construct h2 -- h2 reuses h1's
+// freed slot (insert() pops from the free-list before growing). h2.val must
+// read its own correct value (proving the reuse works); h1.val, now stale
+// relative to the slot's bumped generation, must reject cleanly on both
+// backends. "reuse-ok" prints before the final stale read, so a human
+// reading stdout can see h2 succeeded even though the harness only checks
+// the exit code for a .expected_fail fixture.
+fnc: Handle<t128> mk(n: t32) {
+    return Handle.new(n);
+}
+let h1;
+h1 = mk(111)
+h1.drop()
+let h2;
+h2 = mk(222)
+let expected2: t128;
+expected2 = 222
+assert_eq(h2.val, expected2)
+print("reuse-ok")
+let expected1: t128;
+expected1 = 111
+assert_eq(h1.val, expected1)
+print("should-not-print")

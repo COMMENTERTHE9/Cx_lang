@@ -1,0 +1,7 @@
+// CR#3 regression guards: if-promotion and when-as-return with IN-RANGE values
+// pass. (Out-of-range literals nested inside if/when branches are a general gap
+// owned by CR#4, not this fixture.)
+fnc: t8 c() { if true { 10 } else { 20 } }
+fnc: t8 d() { when 1 { 1 => 30, _ => 40 } }
+print(c())
+print(d())

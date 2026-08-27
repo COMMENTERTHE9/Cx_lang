@@ -33,6 +33,9 @@ struct FunctionInfo {
     params: Vec<SemanticParam>,
     ret_ty: Option<SemanticType>,
     type_params: Vec<String>,
+    /// 0.3.4 slice 4: gene bounds per type parameter, checked at each
+    /// instantiation site against the phen registry.
+    type_bounds: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,11 +53,45 @@ pub struct Analyzer {
     current_ret_ty: Option<SemanticType>,
     current_type_params: Vec<String>,
     in_function: bool,
+    /// labeled-breaks (a): stack of the labels of currently-enclosing labeled
+    /// loops. Pushed on entering a labeled loop (after a duplicate check), popped
+    /// on exit. `break 'L`/`continue 'L` resolve `'L` against this stack; a label
+    /// not present rejects cleanly ("no enclosing loop labeled 'L"). Unlabeled
+    /// loops push nothing and unlabeled break/continue never consult it.
+    loop_labels: Vec<String>,
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
     structs: HashMap<String, Vec<(String, Type)>>,
     pub method_registry: HashMap<(String, String), SemanticFunction>,
     pub method_alias_counts: HashMap<(String, String), usize>,
+    /// Whole-graph phen-provided method names, injected from Pass 0's
+    /// registry (0.3.4 slice 2). Consulted at impl-block registration to
+    /// enforce the method-ownership locked rule, application 2: an impl
+    /// method and a phen method may not share a name on one type.
+    pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+    /// Whole-graph gene signatures (0.3.4 slice 4), for resolving gene-method
+    /// calls on bounded type parameters inside generic bodies.
+    pub gene_defs: HashMap<String, Vec<GeneSig>>,
+    /// Whole-graph `(gene, receiver type)` phen keys (0.3.4 slice 4), for
+    /// bound-satisfaction checks at generic instantiation sites.
+    pub phen_keys: std::collections::HashSet<(String, SemanticType)>,
+    /// The enclosing function's `<T: Gene>` bounds while its body is being
+    /// analyzed (0.3.4 slice 4) — set/restored by the FuncDef arm.
+    current_type_bounds: Vec<(String, Vec<String>)>,
+    /// Names declared by a `const` (known-issues #12). Assignment to one — in
+    /// any form — is rejected at analysis time, so both backends refuse
+    /// identically before either runs. Keyed by name rather than `BindingId`
+    /// because `const` is top-level-only, so a const name is unambiguous for
+    /// the whole file, and the index/field assignment forms carry only the
+    /// base name of the target.
+    const_names: std::collections::HashSet<String>,
+    /// Bindings introduced as a `for` loop counter (audit C2). Keyed by
+    /// `BindingId`, NOT by name: a loop body may legally shadow the counter's
+    /// name in a nested scope (`for i { if .. { i: t64 = 5; i = 6 } }` is valid
+    /// today), and a name-keyed set would reject the write to the shadow. The
+    /// id is what `lookup_var` resolves to, so shadowing is handled by
+    /// construction.
+    readonly_bindings: std::collections::HashSet<BindingId>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     pub module_aliases: HashMap<String, ExportTable>,
@@ -77,11 +114,18 @@ impl Analyzer {
             current_ret_ty: None,
             current_type_params: vec![],
             in_function: false,
+            loop_labels: vec![],
             funcs: HashMap::new(),
             enums: HashMap::new(),
             structs: HashMap::new(),
             method_registry: HashMap::new(),
             method_alias_counts: HashMap::new(),
+            phen_methods: HashMap::new(),
+            gene_defs: HashMap::new(),
+            phen_keys: std::collections::HashSet::new(),
+            current_type_bounds: vec![],
+            const_names: std::collections::HashSet::new(),
+            readonly_bindings: std::collections::HashSet::new(),
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -255,12 +299,180 @@ impl Analyzer {
         semantic_enum
     }
 
+    /// labeled-breaks (a): enter a possibly-labeled loop. A labeled loop whose
+    /// label is already active in an enclosing loop rejects (duplicate). Returns
+    /// whether a label was pushed, so the caller pops it after the body.
+    fn enter_loop_label(&mut self, label: &Option<String>, pos: usize) -> Result<bool, SemanticError> {
+        if let Some(name) = label {
+            if self.loop_labels.iter().any(|l| l == name) {
+                return Err(sem_err!(pos, "duplicate loop label '{} — already used by an enclosing loop", name));
+            }
+            self.loop_labels.push(name.clone());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// labeled-breaks (a): pop a label pushed by [`Analyzer::enter_loop_label`].
+    fn exit_loop_label(&mut self, pushed: bool) {
+        if pushed {
+            self.loop_labels.pop();
+        }
+    }
+
+    /// labeled-breaks (a): validate a labeled `break`/`continue` target. Unlabeled
+    /// jumps are unchanged (Ok); a labeled jump with no enclosing loop of that
+    /// label rejects cleanly.
+    fn check_jump_label(&self, label: &Option<String>, kw: &str, pos: usize) -> Result<(), SemanticError> {
+        if let Some(name) = label {
+            if !self.loop_labels.iter().any(|l| l == name) {
+                return Err(sem_err!(pos, "{} to label '{} but no enclosing loop has that label", kw, name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject any assignment whose target is rooted at a `const` binding
+    /// (known-issues #12). Applies to plain reassignment, compound assignment,
+    /// array-index assignment, and struct-field assignment alike: writing
+    /// *through* a const is still writing to it.
+    ///
+    /// This is an analysis-time check so both backends refuse identically,
+    /// before either runs — the same reason the width checks and the
+    /// ordering-comparison allowlist live here rather than in a backend.
+    fn reject_const_assignment(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
+        if self.const_names.contains(name) {
+            return Err(sem_err!(
+                pos,
+                "cannot assign to '{}' — it is declared const",
+                name
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject a write to a `for` loop counter (audit C2).
+    ///
+    /// Sits beside [`Analyzer::reject_const_assignment`] at the same two
+    /// assignment choke points, so plain / compound / index / field writes are
+    /// all covered by one call rather than by one match arm each. It replaces a
+    /// flat scan of the loop body's top-level statements, which one level of
+    /// nesting defeated: `for i { if c { i = 99 } }` was accepted by analysis,
+    /// passed IR validation, and then produced DIFFERENT output on the two
+    /// backends (interpreter re-seeded the counter each iteration and ran 3
+    /// times; the JIT let the write stick and exited after 1).
+    fn reject_loop_var_assignment(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
+        if let Some(info) = self.lookup_var(name) {
+            if self.readonly_bindings.contains(&info.binding) {
+                return Err(sem_err!(pos, "loop variable '{}' is read-only", name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve `receiver.field` to `(struct name, field type)`.
+    ///
+    /// The single point where a struct's declared field list and a field
+    /// *access* meet. All three access forms route here — rvalue read,
+    /// `Stmt::Assign` lvalue, `Stmt::CompoundAssign` lvalue — so a form cannot
+    /// be missed by omission; previously each form carried its own copy of the
+    /// lookup, and all three copies ended in `.unwrap_or(Unknown)`. Two audit
+    /// holes close here:
+    ///
+    /// - **C1** — a field absent from the declared list fell through to
+    ///   `Unknown`. On write the interpreter then INVENTED the field at runtime
+    ///   (`a.zzz = 5; print(a.zzz)` printed `5` on a struct declaring only `x`),
+    ///   which contradicts Cx's stable-layout guarantee; on read it surfaced as
+    ///   a nonsense *variable* diagnostic (`variable 'p.zzz' has not been
+    ///   declared — declare it with 'p.zzz: TYPE = value'`).
+    /// - **C4** — a receiver whose type definitively has no fields at all.
+    ///
+    /// A receiver whose type analysis has not resolved (`Unknown`, a type
+    /// parameter, a `copy_into` container, a `Handle`) is deliberately left
+    /// alone: this check only speaks where the fact is actually known, which is
+    /// the whole principle it exists to enforce.
+    fn resolve_field_access(
+        &self,
+        receiver: &str,
+        receiver_ty: &SemanticType,
+        field: &str,
+        pos: usize,
+    ) -> Result<(String, SemanticType), SemanticError> {
+        match receiver_ty {
+            SemanticType::Struct(struct_name) => {
+                let declared = self.structs.get(struct_name);
+                let field_ty = declared
+                    .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
+                    .map(|(_, ftype)| {
+                        semantic_type_from_decl(ftype.clone(), &self.current_type_params)
+                    });
+                match field_ty {
+                    Some(ty) => Ok((struct_name.clone(), ty)),
+                    // Struct is declared and the field is not one of its fields.
+                    None if declared.is_some() => Err(sem_err!(
+                        pos,
+                        "unknown field '{}' on struct '{}'",
+                        field,
+                        struct_name
+                    )),
+                    // Struct type named but never registered — a different
+                    // error the caller's own path already reports. Stay quiet.
+                    None => Ok((struct_name.clone(), SemanticType::Unknown)),
+                }
+            }
+            // A gene declares `fnc` signatures and nothing else (design doc,
+            // Locked Rules), so a bound promises METHODS, not fields. Reaching
+            // through `T` to a field was accepted here and compiled: it happened
+            // to work for whichever concrete type the author had in mind, and
+            // failed at RUNTIME for any other type satisfying the same bound —
+            // with the field-as-variable diagnostic (`variable 't.base' has not
+            // been declared`) that known-issues §17 records. Analysis holds the
+            // bound and the gene's contract, so analysis decides.
+            SemanticType::TypeParam(param) => {
+                let bounds: Vec<String> = self
+                    .current_type_bounds
+                    .iter()
+                    .find(|(n, _)| n == param)
+                    .map(|(_, genes)| genes.clone())
+                    .unwrap_or_default();
+                if bounds.is_empty() {
+                    Err(sem_err!(
+                        pos,
+                        "cannot access field '{}' on '{}' — '{}' is an unbounded type parameter, so nothing is known about its fields",
+                        field,
+                        receiver,
+                        param
+                    ))
+                } else {
+                    Err(sem_err!(
+                        pos,
+                        "cannot access field '{}' on '{}' — '{}' is bound by gene '{}', and a gene declares methods, not fields; call a method from the gene's contract instead",
+                        field,
+                        receiver,
+                        param,
+                        bounds.join(" + ")
+                    ))
+                }
+            }
+            ty if type_has_no_fields(ty) => Err(sem_err!(
+                pos,
+                "cannot access field '{}' on '{}' of type {} — only structs and copy_into containers have fields",
+                field,
+                receiver,
+                type_name(ty)
+            )),
+            _ => Ok((String::new(), SemanticType::Unknown)),
+        }
+    }
+
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
             Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
                 let semantic_value = self.analyze_expr(value)?;
                 let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
                 let binding = self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                self.const_names.insert(name.clone());
                 Ok(SemanticStmt::ConstDecl {
                     binding,
                     name: name.clone(),
@@ -326,6 +538,24 @@ impl Analyzer {
                     }
                 }
 
+                // Method-ownership locked rule, application 2: an impl method
+                // and a phen method may not share a name on one type — neither
+                // side wins, rejected here at analysis time.
+                for sem_func in &semantic_methods {
+                    for (_, alias_type) in &semantic_aliases {
+                        if let Some(origin) = self.phen_methods.get(&(alias_type.clone(), sem_func.name.clone())) {
+                            return Err(sem_err!(
+                                *pos,
+                                "method '{}' on '{}' is already provided by a phen of gene '{}' at {} — impl and phen methods may not share a name",
+                                sem_func.name,
+                                type_name(alias_type),
+                                origin.gene,
+                                origin.location
+                            ));
+                        }
+                    }
+                }
+
                 // Register methods in method_registry for return type resolution
                 for sem_func in &semantic_methods {
                     for (_, alias_type) in &semantic_aliases {
@@ -347,6 +577,84 @@ impl Analyzer {
                     aliases: semantic_aliases,
                     methods: semantic_methods,
                     method_alias_params,
+                    pos: *pos,
+                })
+            }
+            // 0.3.4 slice 1: header-only mirror. Coherence registration
+            // (Pass 0) already ran, over the raw AST, before this per-file
+            // pass ever started — this arm just resolves signature types for
+            // a future conformance-checking slice; it does not analyze,
+            // declare, or execute anything. No body exists for a gene to
+            // analyze in the first place.
+            Stmt::GeneDef { name, methods, pos } => {
+                let semantic_methods = methods
+                    .iter()
+                    .map(|(mname, params, ret_ty)| {
+                        let sem_params = params
+                            .iter()
+                            .map(|p| match p {
+                                ParamKind::Typed(_, ty) => Some(semantic_type_from_decl(ty.clone(), &[])),
+                                _ => None,
+                            })
+                            .collect();
+                        let sem_ret = ret_ty.clone().map(|t| semantic_type_from_decl(t, &[]));
+                        (mname.clone(), sem_params, sem_ret)
+                    })
+                    .collect();
+                Ok(SemanticStmt::GeneDef {
+                    name: name.clone(),
+                    methods: semantic_methods,
+                    pos: *pos,
+                })
+            }
+            // 0.3.4 slice 2: methods are fully analyzed. `Self` is a
+            // compile-time alias for the receiver's concrete type (design
+            // doc, decision 3) — substituted at the AST level across every
+            // type position (signatures, local annotations, nested
+            // Array/Handle/Result) BEFORE analysis, so bodies type-check at
+            // the real concrete type. Substituting to a floating
+            // `TypeParam("Self")` instead would check nothing:
+            // `types_compatible` unifies any TypeParam with anything.
+            // Contract conformance against the gene was already verified in
+            // Pass 0. Each method is analyzed exactly like an impl-block
+            // method (receiver prepended as a typed param, captured, then
+            // stripped) inside a throwaway scope so method names don't
+            // collide across phens — but NOT registered in method_registry:
+            // calling a phen method is slice 3.
+            Stmt::PhenDef { gene_name, receiver, methods, pos } => {
+                let receiver_type = semantic_type_from_decl(receiver.1.clone(), &[]);
+                let recv_ast = &receiver.1;
+                let mut semantic_methods: Vec<SemanticFunction> = Vec::new();
+                let mut method_receiver_params: Vec<Vec<SemanticParam>> = Vec::new();
+                for (mname, params, ret_ty, body, ret_expr) in methods {
+                    let full_params: Vec<ParamKind> =
+                        std::iter::once(ParamKind::Typed(receiver.0.clone(), receiver.1.clone()))
+                            .chain(params.iter().cloned().map(|p| match p {
+                                ParamKind::Typed(n, t) => ParamKind::Typed(n, substitute_self_type(t, recv_ast)),
+                                other => other,
+                            }))
+                            .collect();
+                    let sub_ret = ret_ty.clone().map(|t| substitute_self_type(t, recv_ast));
+                    let sub_body: Vec<Stmt> = body
+                        .iter()
+                        .map(|s| map_stmt_types(s.clone(), &|t| substitute_self_type(t, recv_ast)))
+                        .collect();
+                    self.push_scope();
+                    let analyzed = self.analyze_function(mname, &[], &full_params, &sub_ret, &sub_body, ret_expr, *pos, false);
+                    self.pop_scope();
+                    if let SemanticStmt::FuncDef(mut sem_func) = analyzed? {
+                        let captured: Vec<SemanticParam> = sem_func.params.iter().take(1).cloned().collect();
+                        sem_func.params = sem_func.params.into_iter().skip(1).collect();
+                        semantic_methods.push(sem_func);
+                        method_receiver_params.push(captured);
+                    }
+                }
+                Ok(SemanticStmt::PhenDef {
+                    gene_name: gene_name.clone(),
+                    receiver_name: receiver.0.clone(),
+                    receiver_type,
+                    methods: semantic_methods,
+                    method_receiver_params,
                     pos: *pos,
                 })
             }
@@ -379,6 +687,17 @@ impl Analyzer {
                 expr,
                 pos_eq,
             } => {
+                // known-issues #12: a `const` is immutable. Checked here, at the
+                // single entry point covering all three target forms, so every
+                // form is caught by construction rather than by remembering to
+                // patch each arm — the miss that let index/field assignment
+                // silently mutate a const on BOTH backends.
+                // audit C2 rides the same choke point: one call covers plain /
+                // compound / index / field writes to a loop counter too.
+                if let Some(base) = assign_target_base_name(target) {
+                    self.reject_const_assignment(base, *pos_eq)?;
+                    self.reject_loop_var_assignment(base, *pos_eq)?;
+                }
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a variable — use an owned str instead"));
@@ -390,6 +709,7 @@ impl Analyzer {
 
                         if let Some(declared) = &info.declared {
                             let expected = semantic_type_from_decl(declared.clone(), &tp);
+                            check_semantic_num_fits(&semantic_expr, &expected, *pos_eq)?;
                             if !types_compatible(&expected, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(
                                     &expected,
@@ -427,22 +747,20 @@ impl Analyzer {
                         if !info.initialized {
                             return Err(sem_err!(*pos_eq, "use of uninitialized variable '{}'", container));
                         }
+                        // The receiver's own type must be resolved with the ENCLOSING function's
+                        // type parameters in scope, or a `t: T` param surfaces as an
+                        // unregistered struct named "T" instead of `TypeParam("T")` — and
+                        // the field check below then has nothing to reject. The MethodCall
+                        // path already resolves it this way; these sites did not, so the
+                        // same receiver typed differently depending on which access form
+                        // was used. Outside a generic function the list is empty and this
+                        // is identical to the previous behaviour.
+                        let tps = self.current_type_params.clone();
                         let instance_ty = info.inferred.clone()
-                            .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                            .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps)))
                             .unwrap_or(SemanticType::Unknown);
-                        let struct_name = if let SemanticType::Struct(sn) = &instance_ty {
-                            sn.clone()
-                        } else {
-                            String::new()
-                        };
-                        let field_ty = if !struct_name.is_empty() {
-                            self.structs.get(&struct_name)
-                                .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
-                                .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
-                                .unwrap_or(SemanticType::Unknown)
-                        } else {
-                            SemanticType::Unknown
-                        };
+                        let (struct_name, field_ty) =
+                            self.resolve_field_access(container, &instance_ty, field, *pos_eq)?;
                         if semantic_expr.ty == SemanticType::StrRef {
                             return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a struct field — use an owned str instead"));
                         }
@@ -469,6 +787,7 @@ impl Analyzer {
                             _ => return Err(sem_err!(*pos_eq, "index assignment target must be an array")),
                         };
                         if elem_ty != SemanticType::Unknown {
+                            check_semantic_num_fits(&semantic_expr, &elem_ty, *pos_eq)?;
                             if !types_compatible(&elem_ty, &semantic_expr.ty) {
                                 return Err(type_mismatch_error(&elem_ty, &semantic_expr.ty, *pos_eq));
                             }
@@ -499,22 +818,14 @@ impl Analyzer {
                 pos_type,
             } => {
                 let declared_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
-                // Hint the declared element type to the array-literal analysis so
-                // element-mismatch errors name the declared type, not element[0]'s
-                // inferred type (#031a). Save/restore so it never leaks past this
-                // initializer.
-                let prev_expected_elem = self.expected_array_elem.take();
-                if let SemanticType::Array(_, elem) = &declared_ty {
-                    self.expected_array_elem = Some((**elem).clone());
-                }
-                let analyzed = self.analyze_expr(expr);
-                self.expected_array_elem = prev_expected_elem;
-                let mut semantic_expr = analyzed?;
+                // Analyze with the declared element-type hint (#031a element naming,
+                // #028 element range-check) via the shared helper (CR#2).
+                let mut semantic_expr = self.analyze_expr_with_elem_hint(expr, &declared_ty)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_type, "cannot assign a StrRef to a variable — use an owned str instead"));
                 }
 
-                check_literal_fits(expr, &declared_ty, *pos_type)?;
+                check_semantic_num_fits(&semantic_expr, &declared_ty, *pos_type)?;
 
                 if !types_compatible(&declared_ty, &semantic_expr.ty) {
                     return Err(type_mismatch_error(
@@ -578,7 +889,23 @@ impl Analyzer {
                     }
                 }
                 let is_test = macros.contains(&CxMacro::Test);
-                self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test)
+                // 0.3.4 slice 4: make this function's gene bounds visible to
+                // its own body (gene-method calls on bounded T), and carry
+                // them on the FunctionInfo for instantiation-site checks
+                // (analyze_function's own insert doesn't know about bounds).
+                let bounds = match stmt {
+                    Stmt::FuncDef { type_bounds, .. } => type_bounds.clone(),
+                    _ => vec![],
+                };
+                let prev_bounds = std::mem::replace(&mut self.current_type_bounds, bounds.clone());
+                let result = self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test);
+                self.current_type_bounds = prev_bounds;
+                if result.is_ok() {
+                    if let Some(info) = self.funcs.get_mut(name) {
+                        info.type_bounds = bounds;
+                    }
+                }
+                result
             }
 Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 expr: self.analyze_expr(expr)?,
@@ -626,6 +953,18 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             }
                         }
 
+                        self.push_scope();
+                        let pattern = self.analyze_when_pattern_scoped(&arm.pattern, arm.pos)?;
+                        let guard = arm
+                            .guard
+                            .as_ref()
+                            .map(|g| self.analyze_expr(g))
+                            .transpose()?;
+                        if let Some(g) = &guard {
+                            if matches!(g.ty, SemanticType::Unknown) {
+                                return Err(sem_err!(arm.pos, "Unknown value cannot be used as a when-arm guard — control-critical context"));
+                            }
+                        }
                         let body = match &arm.body {
                             WhenBody::Stmts(stmts) => stmts
                                 .iter()
@@ -677,8 +1016,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                                 semantic_stmts
                             }
                         };
+                        self.pop_scope();
                         Ok(SemanticWhenArm {
-                            pattern: self.analyze_when_pattern(&arm.pattern),
+                            pattern,
+                            guard,
                             body,
                             pos: arm.pos,
                         })
@@ -704,27 +1045,34 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 if matches!(semantic_condition.ty, SemanticType::Unknown) {
                     return Err(sem_err!(*pos, "Unknown value cannot be used as an if condition — control-critical context"));
                 }
+                self.push_scope();
                 let semantic_then = then_body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
                     .collect::<Result<Vec<_>, _>>()?;
+                self.pop_scope();
                 let mut semantic_else_ifs = Vec::new();
                 for (cond, body) in else_ifs {
                     let sem_cond = self.analyze_expr(cond)?;
+                    self.push_scope();
                     let sem_body = body
                         .iter()
                         .map(|s| self.analyze_stmt(s))
                         .collect::<Result<Vec<_>, _>>()?;
+                    self.pop_scope();
                     semantic_else_ifs.push((sem_cond, sem_body));
                 }
-                let semantic_else = else_body
-                    .as_ref()
-                    .map(|body| {
-                        body.iter()
-                            .map(|s| self.analyze_stmt(s))
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .transpose()?;
+                let semantic_else = if let Some(body) = else_body.as_ref() {
+                    self.push_scope();
+                    let result = body
+                        .iter()
+                        .map(|s| self.analyze_stmt(s))
+                        .collect::<Result<Vec<_>, _>>();
+                    self.pop_scope();
+                    Some(result?)
+                } else {
+                    None
+                };
                 Ok(SemanticStmt::IfElse {
                     condition: semantic_condition,
                     then_body: semantic_then,
@@ -734,6 +1082,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 })
             }
             Stmt::WhileIn {
+                label,
                 arr,
                 start_slot,
                 range_start,
@@ -746,20 +1095,26 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             } => {
                 let sem_start = self.analyze_expr(range_start)?;
                 let sem_end = self.analyze_expr(range_end)?;
+                let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let sem_body = body
                     .iter()
                     .map(|s| self.analyze_stmt(s))
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
                 let sem_chains = then_chains
                     .iter()
                     .map(|chain| {
                         let cs = self.analyze_expr(&chain.range_start)?;
                         let ce = self.analyze_expr(&chain.range_end)?;
+                        self.push_scope();
                         let cb = chain
                             .body
                             .iter()
                             .map(|s| self.analyze_stmt(s))
-                            .collect::<Result<Vec<_>, _>>()?;
+                            .collect::<Result<Vec<_>, _>>();
+                        self.pop_scope();
+                        let cb = cb?;
                         Ok(SemanticWhileInChain {
                             arr: chain.arr.clone(),
                             start_slot: chain.start_slot,
@@ -769,12 +1124,16 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             body: cb,
                         })
                     })
-                    .collect::<Result<Vec<_>, SemanticError>>()?;
+                    .collect::<Result<Vec<_>, SemanticError>>();
+                self.exit_loop_label(pushed);
+                let sem_body = sem_body?;
+                let sem_chains = sem_chains?;
                 let sem_result = match result {
                     Some(e) => Some(self.analyze_expr(e)?),
                     None => None,
                 };
                 Ok(SemanticStmt::WhileIn {
+                    label: label.clone(),
                     arr: arr.clone(),
                     start_slot: *start_slot,
                     range_start: sem_start,
@@ -786,36 +1145,61 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     pos: *pos,
                 })
             }
-            Stmt::While { cond, body, pos } => {
+            Stmt::While { label, cond, body, pos } => {
                 let semantic_cond = self.analyze_expr(cond)?;
                 if matches!(semantic_cond.ty, SemanticType::Unknown) {
                     return Err(sem_err!(*pos, "Unknown value cannot be used as a loop condition -- control-critical context"));
                 }
+                let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
                 let semantic_body = body
                     .iter()
                     .map(|stmt| self.analyze_stmt(stmt))
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
+                self.exit_loop_label(pushed);
                 Ok(SemanticStmt::While {
+                    label: label.clone(),
                     cond: semantic_cond,
-                    body: semantic_body,
+                    body: semantic_body?,
                     pos: *pos,
                 })
             }
             Stmt::For {
+                label,
                 var,
                 start,
                 end,
                 inclusive,
                 body,
                 pos,
-            } => self.analyze_for(var, start, end, *inclusive, body, *pos),
-            Stmt::Loop { body, pos } => Ok(SemanticStmt::Loop {
-                body: body
+            } => {
+                let pushed = self.enter_loop_label(label, *pos)?;
+                let result = self.analyze_for(var, start, end, *inclusive, body, *pos);
+                self.exit_loop_label(pushed);
+                // labeled-breaks (b): stamp the loop's label onto the For node.
+                match result? {
+                    SemanticStmt::For { binding, var, start, end, inclusive, body, pos, .. } => {
+                        Ok(SemanticStmt::For { label: label.clone(), binding, var, start, end, inclusive, body, pos })
+                    }
+                    other => Ok(other),
+                }
+            }
+            Stmt::Loop { label, body, pos } => {
+                let pushed = self.enter_loop_label(label, *pos)?;
+                self.push_scope();
+                let semantic_body = body
                     .iter()
                     .map(|stmt| self.analyze_stmt(stmt))
-                    .collect::<Result<Vec<_>, _>>()?,
-                pos: *pos,
-            }),
+                    .collect::<Result<Vec<_>, _>>();
+                self.pop_scope();
+                self.exit_loop_label(pushed);
+                Ok(SemanticStmt::Loop {
+                    label: label.clone(),
+                    body: semantic_body?,
+                    pos: *pos,
+                })
+            }
             Stmt::ImportBlock { imports, pos: _ } => {
                 // Rule 1: position enforced by parser
 
@@ -836,14 +1220,27 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
 
                 Ok(SemanticStmt::Noop)
             }
-            Stmt::Break { pos } => Ok(SemanticStmt::Break { pos: *pos }),
-            Stmt::Continue { pos } => Ok(SemanticStmt::Continue { pos: *pos }),
+            Stmt::Break { label, pos } => {
+                self.check_jump_label(label, "break", *pos)?;
+                Ok(SemanticStmt::Break { label: label.clone(), pos: *pos })
+            }
+            Stmt::Continue { label, pos } => {
+                self.check_jump_label(label, "continue", *pos)?;
+                Ok(SemanticStmt::Continue { label: label.clone(), pos: *pos })
+            }
             Stmt::CompoundAssign {
                 target,
                 op,
                 operand,
                 pos,
             } => {
+                // known-issues #12 — same single choke point as Stmt::Assign,
+                // covering Var / Field / Index compound forms alike.
+                let base = match target {
+                    AssignTarget::Var(n) | AssignTarget::Field(n, _) | AssignTarget::Index(n, _) => n,
+                };
+                self.reject_const_assignment(base, *pos)?;
+                self.reject_loop_var_assignment(base, *pos)?;
                 let tp = self.current_type_params.clone();
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
@@ -860,23 +1257,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     }
                     AssignTarget::Field(container, field) => {
                         let binding = self.lookup_var(container).map(|info| info.binding);
+                        let tps = self.current_type_params.clone();
                         let instance_ty = self.lookup_var(container)
                             .and_then(|info| info.inferred.clone()
-                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))))
+                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps))))
                             .unwrap_or(SemanticType::Unknown);
-                        let struct_name = if let SemanticType::Struct(sn) = &instance_ty {
-                            sn.clone()
-                        } else {
-                            String::new()
-                        };
-                        let field_ty = if !struct_name.is_empty() {
-                            self.structs.get(&struct_name)
-                                .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
-                                .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
-                                .unwrap_or(SemanticType::Unknown)
-                        } else {
-                            SemanticType::Unknown
-                        };
+                        let (struct_name, field_ty) =
+                            self.resolve_field_access(container, &instance_ty, field, *pos)?;
                         SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty, struct_name }
                     }
                     AssignTarget::Index(arr_name, idx_expr) => {
@@ -960,6 +1347,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 params: placeholders.clone(),
                 ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                 type_params: type_params.to_vec(),
+                // Bounds are stamped by the FuncDef arm right after this call
+                // returns (this function doesn't receive them).
+                type_bounds: vec![],
             },
         );
 
@@ -1024,17 +1414,21 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             .collect::<Result<Vec<_>, _>>()?;
 
         let semantic_ret_expr = if let Some(expr) = ret_expr {
-            let mut expr = self.analyze_expr(expr)?;
-            if expr.ty == SemanticType::StrRef {
-                return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
-            }
-            if let Some(expected) = &self.current_ret_ty {
-                if !types_compatible(expected, &expr.ty) {
-                    return Err(sem_err!(pos, "return type mismatch: expected {}, got {}", type_name(expected), type_name(&expr.ty)));
+            match self.current_ret_ty.clone() {
+                // CR#3: the trailing-return chokepoint — same checks as a typed
+                // declaration (incl. the #028 width check the trailing path
+                // previously skipped, silently wrapping `fnc: t8 { 300 }` to 44).
+                Some(expected) => Some(self.analyze_returned_expr(expr, &expected, pos)?),
+                // Void function with a trailing expression: no declared width to
+                // check against, value discarded — analyze for errors only.
+                None => {
+                    let sem = self.analyze_expr(expr)?;
+                    if sem.ty == SemanticType::StrRef {
+                        return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
+                    }
+                    Some(sem)
                 }
-                expr = insert_cast_if_needed(expr, expected);
             }
-            Some(expr)
         } else {
             if ret_ty.is_some() && !contains_return_stmt(body) {
                 return Err(sem_err!(pos, "missing return value, expected {}", type_name(&semantic_type_from_decl(ret_ty.clone().unwrap(), type_params))));
@@ -1070,17 +1464,11 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         }
 
         let expr = match (expr, self.current_ret_ty.clone()) {
-            (Some(expr), Some(expected)) => {
-                check_literal_fits(expr, &expected, pos)?;
-                let expr = self.analyze_expr(expr)?;
-                if expr.ty == SemanticType::StrRef {
-                    return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
-                }
-                if !types_compatible(&expected, &expr.ty) {
-                    return Err(sem_err!(pos, "return type mismatch: expected {}, got {}", type_name(&expected), type_name(&expr.ty)));
-                }
-                Some(insert_cast_if_needed(expr, &expected))
-            }
+            // CR#3: explicit `return expr` routes through the same chokepoint as
+            // the trailing path. (It already range-checked a bare literal via the
+            // shared width check; the helper preserves that and ADDS the
+            // array-element check it lacked — `return [1, 2, 300]` now rejects.)
+            (Some(expr), Some(expected)) => Some(self.analyze_returned_expr(expr, &expected, pos)?),
             (None, None) => None,
             (None, Some(expected)) => {
                 return Err(sem_err!(pos, "missing return value, expected {}", type_name(&expected)));
@@ -1106,26 +1494,38 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         self.push_scope();
         let binding = self.declare(var, Some(Type::T64), Some(SemanticType::I64), true, pos)?;
 
+        // audit C2: mark the counter read-only for the whole body and let the
+        // assignment choke points enforce it, instead of scanning the body's
+        // top-level statements for two specific shapes. The old scan matched
+        // only a bare `i = ..` or `i += ..` sitting directly in the body, so a
+        // single level of nesting slipped past it and the backends then
+        // disagreed on the result. `insert` reports whether this is a fresh
+        // entry, which is what restores the right state for a nested `for i`
+        // reusing an outer counter's name.
+        let newly_readonly = self.readonly_bindings.insert(binding);
+
         let mut semantic_body = Vec::with_capacity(body.len());
         for stmt in body {
-            match stmt {
-                Stmt::Assign {
-                    target: Expr::Ident(name, _),
-                    ..
-                } if name == var => {
+            match self.analyze_stmt(stmt) {
+                Ok(s) => semantic_body.push(s),
+                Err(e) => {
+                    if newly_readonly {
+                        self.readonly_bindings.remove(&binding);
+                    }
                     self.pop_scope();
-                    return Err(sem_err!(pos, "loop variable '{}' is read-only", var));
+                    return Err(e);
                 }
-                Stmt::CompoundAssign { target, .. } if matches!(target, AssignTarget::Var(n) if n == var) => {
-                    self.pop_scope();
-                    return Err(sem_err!(pos, "loop variable '{}' is read-only", var));
-                }
-                _ => semantic_body.push(self.analyze_stmt(stmt)?),
             }
+        }
+        if newly_readonly {
+            self.readonly_bindings.remove(&binding);
         }
         self.pop_scope();
 
         Ok(SemanticStmt::For {
+            // labeled-breaks (b): the For arm injects the real label after this
+            // returns (keeps analyze_for's arg count under the clippy threshold).
+            label: None,
             binding,
             var: var.to_string(),
             start: self.analyze_expr(start)?,
@@ -1136,42 +1536,107 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         })
     }
 
-    fn analyze_when_pattern(&self, pattern: &WhenPattern) -> SemanticWhenPattern {
-        match pattern {
+    fn analyze_when_pattern(
+        &self,
+        pattern: &WhenPattern,
+        pos: usize,
+    ) -> Result<SemanticWhenPattern, SemanticError> {
+        Ok(match pattern {
             WhenPattern::Literal(value) => {
-                SemanticWhenPattern::Literal(semantic_value_from_ast(value, &self.enums))
+                SemanticWhenPattern::Literal(semantic_value_from_ast(value, &self.enums, pos)?)
             }
             WhenPattern::Range(start, end, inclusive) => SemanticWhenPattern::Range(
-                semantic_value_from_ast(start, &self.enums),
-                semantic_value_from_ast(end, &self.enums),
+                semantic_value_from_ast(start, &self.enums, pos)?,
+                semantic_value_from_ast(end, &self.enums, pos)?,
                 *inclusive,
             ),
-            WhenPattern::EnumVariant(enum_name, variant_name) => {
-                let enum_info = self.enums.get(enum_name);
-                let variant_id =
-                    enum_info.and_then(|info| info.variants.get(variant_name).copied());
+            WhenPattern::EnumVariant(enum_name, variant_name, _binding) => {
+                let (enum_id, variant_id) =
+                    resolve_enum_variant(&self.enums, enum_name, variant_name, pos)?;
                 SemanticWhenPattern::EnumVariant {
                     enum_name: enum_name.clone(),
                     variant_name: variant_name.clone(),
-                    enum_id: enum_info.map(|info| info.id),
+                    enum_id,
                     variant_id,
+                    binding: None,
                 }
             }
             WhenPattern::Group(_, _) => SemanticWhenPattern::Catchall,
             WhenPattern::Catchall => SemanticWhenPattern::Catchall,
-}
+        })
+    }
+
+    /// Like `analyze_when_pattern`, but for an `EnumVariant` arm with an `as v`
+    /// binding, also declares `v` in the CURRENT scope (the caller is expected
+    /// to have already pushed an arm-local scope) as the enum's own type —
+    /// enums are tag-only, so binding "the whole value" is the only option;
+    /// there is no field to destructure.
+    fn analyze_when_pattern_scoped(
+        &mut self,
+        pattern: &WhenPattern,
+        pos: usize,
+    ) -> Result<SemanticWhenPattern, SemanticError> {
+        match pattern {
+            WhenPattern::EnumVariant(enum_name, variant_name, Some(binding_name)) => {
+                let (enum_id, variant_id) =
+                    resolve_enum_variant(&self.enums, enum_name, variant_name, pos)?;
+                let binding = self.declare(
+                    binding_name,
+                    Some(Type::Enum(enum_name.clone())),
+                    Some(SemanticType::Enum(enum_name.clone())),
+                    true,
+                    pos,
+                )?;
+                Ok(SemanticWhenPattern::EnumVariant {
+                    enum_name: enum_name.clone(),
+                    variant_name: variant_name.clone(),
+                    enum_id,
+                    variant_id,
+                    binding: Some((binding, binding_name.clone())),
+                })
+            }
+            other => self.analyze_when_pattern(other, pos),
+        }
     }
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
-            Expr::Val(AstValue::StructInstance(type_name, _type_args, field_exprs, pos)) => {
+            Expr::Val(AstValue::StructInstance(type_name, type_args, field_exprs, pos)) => {
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
+                // Concrete types bound to the struct's generic params at this
+                // literal. The explicit path fills it from `instantiation`; the
+                // inferred path accumulates it from the field values below.
+                let mut resolved_args: std::collections::HashMap<String, SemanticType> =
+                    std::collections::HashMap::new();
+                let mut declared_params_out: Vec<String> = Vec::new();
                 if let Some(struct_fields) = self.structs.get(type_name).cloned() {
                     // The struct's own generic parameters must be in scope when
                     // resolving its field types, so e.g. `first: T` resolves to a
                     // type parameter (which unifies with anything) rather than a
                     // concrete struct named "T".
-                    let mut field_type_params = self.struct_type_params.get(type_name).cloned().unwrap_or_default();
+                    let declared_params = self.struct_type_params.get(type_name).cloned().unwrap_or_default();
+                    // CR#1: explicit type args (`Pair<t8> { … }`) instantiate the
+                    // struct's generic params so each field literal range-checks at
+                    // the supplied width (#028/#037) and type-checks against the
+                    // supplied type. Arity must match in BOTH directions — extra
+                    // args would be silently dropped by the zip, too few would leave
+                    // a param unsubstituted — so a mismatch errors before any
+                    // substitution. Empty `type_args` is the inferred path: no
+                    // instantiation, fields stay generic (`T` unconstrained),
+                    // behavior unchanged (a separate generics-inference concern).
+                    let instantiation: std::collections::HashMap<String, SemanticType> = if type_args.is_empty() {
+                        std::collections::HashMap::new()
+                    } else {
+                        if type_args.len() != declared_params.len() {
+                            return Err(sem_err!(*pos, "struct '{}' expects {} type argument(s), got {}", type_name, declared_params.len(), type_args.len()));
+                        }
+                        declared_params.iter().cloned()
+                            .zip(type_args.iter().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params)))
+                            .collect()
+                    };
+                    resolved_args = instantiation.clone();
+                    declared_params_out = declared_params.clone();
+                    let mut field_type_params = declared_params;
                     field_type_params.extend(self.current_type_params.iter().cloned());
                     // strref fields cannot be stored in a struct — reject at instantiation
                     for (fname, ftype) in &struct_fields {
@@ -1183,17 +1648,58 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     // Each provided field must exist on the struct, and its value's
                     // type must unify with the declared field type.
                     for (fname, fexpr) in field_exprs {
-                        let sem_expr = self.analyze_expr(fexpr)?;
-                        match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
+                        // Resolve the declared field type FIRST (before analyzing the
+                        // value) so an array field's element type is known and can be
+                        // hinted to the value analysis (CR#2).
+                        let sem_expr = match struct_fields.iter().find(|(decl_name, _)| decl_name == fname) {
                             None => return Err(sem_err!(*pos, "unknown field '{}' in struct literal of type '{}'", fname, type_name)),
                             Some((_, decl_ty)) => {
-                                let decl_sem = semantic_type_from_decl(decl_ty.clone(), &field_type_params);
-                                check_literal_fits(fexpr, &decl_sem, *pos)?;
+                                // Resolve the field's declared type to its generic
+                                // params, then substitute the explicit instantiation
+                                // (CR#1) so `b: T` becomes `b: t8` before the range
+                                // and type checks. Empty map → unchanged (inferred).
+                                let decl_sem = substitute_type_params(
+                                    semantic_type_from_decl(decl_ty.clone(), &field_type_params),
+                                    &instantiation,
+                                );
+                                // CR#2: an array-typed field (incl. `[N: T]` made
+                                // concrete by CR#1's substitution above) hints its
+                                // element type so the array literal's elements
+                                // range-check at the declared width, mirroring
+                                // `x: [N: t8] = [...]`.
+                                let sem_expr = self.analyze_expr_with_elem_hint(fexpr, &decl_sem)?;
+                                check_semantic_num_fits(&sem_expr, &decl_sem, *pos)?;
                                 if !types_compatible(&decl_sem, &sem_expr.ty) {
                                     return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
                                 }
+                                // Inferred instantiation: when the declared
+                                // field type is still a bare type parameter
+                                // (`instantiation` was empty, so no explicit
+                                // `<T>` pinned it), the value's analysed type
+                                // IS the binding for that parameter. First
+                                // field wins, matching how `analyze_call`
+                                // infers a function's type params from its
+                                // first typed argument.
+                                if let SemanticType::TypeParam(p) = &decl_sem {
+                                    resolved_args.entry(p.clone()).or_insert_with(|| {
+                                        // An unsuffixed literal is still
+                                        // `Numeric` here — nothing narrowed it,
+                                        // because the field's declared type was
+                                        // `T`. Pin it to the default integer so
+                                        // the instantiation is a concrete type;
+                                        // this matches what the interpreter
+                                        // stores (`Pair { a: 1, b: 300 }` reads
+                                        // back 300, so the width must be wide).
+                                        if sem_expr.ty == SemanticType::Numeric {
+                                            SemanticType::I64
+                                        } else {
+                                            sem_expr.ty.clone()
+                                        }
+                                    });
+                                }
+                                sem_expr
                             }
-                        }
+                        };
                         semantic_fields.push((fname.clone(), sem_expr));
                     }
                     // Every declared field must be supplied.
@@ -1209,17 +1715,29 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         semantic_fields.push((fname.clone(), sem_expr));
                     }
                 }
+                // Emit in declared-parameter order so the lowering key is
+                // stable regardless of field order. A parameter no field
+                // mentions stays unresolved: it is left out, which leaves the
+                // arity short and makes lowering skip the instantiation
+                // cleanly rather than guess.
+                let type_args_out: Vec<SemanticType> = declared_params_out
+                    .iter()
+                    .filter_map(|p| resolved_args.get(p).cloned())
+                    .collect();
                 Ok(SemanticExpr {
                     ty: SemanticType::Struct(type_name.clone()),
                     kind: SemanticExprKind::StructInstance {
                         type_name: type_name.clone(),
+                        type_args: type_args_out,
                         fields: semantic_fields,
                     },
                 })
             }
             Expr::Val(value) => Ok(SemanticExpr {
                 ty: semantic_type_from_value(value),
-                kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums)),
+                // pos 0: neither `Expr::Val` nor `AstValue::EnumVariant` carries
+                // a source position (filed with the other pos-0 diagnostics).
+                kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums, 0)?),
             }),
             Expr::Ident(name, pos) => {
                 let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
@@ -1239,26 +1757,17 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 if !info.initialized {
                     return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
+                let tps = self.current_type_params.clone();
                 let instance_ty = info.inferred.clone()
-                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps)))
                     .unwrap_or(SemanticType::Unknown);
-                let resolved_struct_name = if let SemanticType::Struct(sn) = &instance_ty {
-                    sn.clone()
-                } else {
-                    String::new()
-                };
-                let field_ty = if resolved_struct_name.is_empty() {
-                    SemanticType::Unknown
-                } else {
-                    self.structs.get(&resolved_struct_name)
-                        .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
-                        .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
-                        .unwrap_or(SemanticType::Unknown)
-                };
+                let binding = info.binding;
+                let (resolved_struct_name, field_ty) =
+                    self.resolve_field_access(container, &instance_ty, field, 0)?;
                 Ok(SemanticExpr {
                     ty: field_ty,
                     kind: SemanticExprKind::DotAccess {
-                        binding: Some(info.binding),
+                        binding: Some(binding),
                         container: container.clone(),
                         field: field.clone(),
                         struct_name: resolved_struct_name,
@@ -1309,6 +1818,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             Expr::Call(name, args, pos) => self.analyze_call(name, args, *pos),
 Expr::Unary(op, inner, pos) => {
                 let expr = self.analyze_expr(inner)?;
+                // 0.3.4 slice 6: unary `-` on a user struct with a phen for
+                // Neg dispatches to `neg()` (decision 4's 1:1 mapping).
+                if *op == Op::Minus {
+                    if let Some(rewritten) = self.try_operator_gene_dispatch(&expr, None, "Neg", "neg", "-", true, *pos)? {
+                        return Ok(rewritten);
+                    }
+                }
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool
                 } else {
@@ -1363,8 +1879,35 @@ Expr::Unary(op, inner, pos) => {
             Expr::Index(base, idx, pos) => {
                 let sem_base = self.analyze_expr(base)?;
                 let sem_idx = self.analyze_expr(idx)?;
+                // Carry the array's element type so an indexed read behaves like
+                // any other typed expression (tracker D1.1b). Mirrors the store-
+                // lvalue path (the `Array(_, elem_ty)` arm above) and struct
+                // `DotAccess`. Without it the leaked `Unknown` short-circuits
+                // `analyze_binary` past `common_numeric_type`/`insert_cast_if_needed`
+                // and defeats typed-assignment narrowing — so `a:[k] + a:[k]` at t8
+                // failed to wrap and out-of-range values slipped into typed bindings.
+                // A non-array base (genuinely unknown element type) keeps `Unknown`.
+                let elem_ty = match &sem_base.ty {
+                    SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
+                    // audit C4: the rvalue side of "index target must be an
+                    // array". Both assignment lvalue paths already rejected a
+                    // non-array target; only the read form fell through to
+                    // Unknown, so `x: t64 = 5; print(x:[0])` reached the
+                    // interpreter (which reported it as an *assignment* target
+                    // error) and the JIT (which reported it as an internal
+                    // "lowering invariant violation"). Types analysis has not
+                    // resolved still keep Unknown — see `type_is_not_indexable`.
+                    ty if type_is_not_indexable(ty) => {
+                        return Err(sem_err!(
+                            *pos,
+                            "cannot index '{}' — index target must be an array",
+                            type_name(ty)
+                        ))
+                    }
+                    _ => SemanticType::Unknown,
+                };
                 Ok(SemanticExpr {
-                    ty: SemanticType::Unknown,
+                    ty: elem_ty,
                     kind: SemanticExprKind::Index {
                         target: Box::new(sem_base),
                         index: Box::new(sem_idx),
@@ -1377,13 +1920,25 @@ Expr::Unary(op, inner, pos) => {
                 let mut semantic_arms = Vec::new();
                 let mut result_ty = SemanticType::Unknown;
                 for (i, arm) in arms.iter().enumerate() {
-                    let pattern = self.analyze_when_pattern(&arm.pattern);
+                    self.push_scope();
+                    let pattern = self.analyze_when_pattern_scoped(&arm.pattern, arm.pos)?;
+                    let guard = arm
+                        .guard
+                        .as_ref()
+                        .map(|g| self.analyze_expr(g))
+                        .transpose()?;
+                    if let Some(g) = &guard {
+                        if matches!(g.ty, SemanticType::Unknown) {
+                            return Err(sem_err!(arm.pos, "Unknown value cannot be used as a when-arm guard — control-critical context"));
+                        }
+                    }
                     let body: Vec<SemanticStmt> = match &arm.body {
                         WhenBody::Stmts(stmts) => stmts.iter()
                             .map(|s| self.analyze_stmt(s))
                             .collect::<Result<Vec<_>, _>>()?,
                         WhenBody::SuperGroup(_) => Vec::new(),
                     };
+                    self.pop_scope();
                     if i == 0 {
                         if let Some(last) = body.last() {
                             if let SemanticStmt::ExprStmt { expr, .. } = last {
@@ -1391,7 +1946,7 @@ Expr::Unary(op, inner, pos) => {
                             }
                         }
                     }
-                    semantic_arms.push(SemanticWhenArm { pattern, body, pos: arm.pos });
+                    semantic_arms.push(SemanticWhenArm { pattern, guard, body, pos: arm.pos });
                 }
                 if !when_is_exhaustive(&semantic_arms) {
                     return Err(sem_err!(*pos, "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases"));
@@ -1473,6 +2028,7 @@ Expr::Unary(op, inner, pos) => {
                                 callee: mangled,
                                 function: FunctionId(u32::MAX),
                                 args: semantic_args,
+                                type_args: Vec::new(),
                             },
                         });
                     } else {
@@ -1489,9 +2045,115 @@ Expr::Unary(op, inner, pos) => {
                     None => return Err(sem_err!(*pos, "method call receiver '{}' is not in scope", instance)),
                 };
                 let instance_binding = instance_info.binding;
+                // Resolve the declared type against the enclosing function's
+                // type params (0.3.4 slice 4) so a `t: T` receiver surfaces
+                // as TypeParam("T") rather than an unknown struct named "T".
                 let instance_ty = instance_info.inferred.clone()
-                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .or_else(|| instance_info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params.clone())))
                     .unwrap_or(SemanticType::Unknown);
+
+                // 0.3.4 slice 4: gene-method call on a bounded type parameter.
+                // The bound is what grants access — resolution goes through the
+                // bounded genes' contracts; the concrete phen is picked at the
+                // instantiation (runtime dispatch resolves the receiver's
+                // actual value type, so each instantiation runs its own phen).
+                if let SemanticType::TypeParam(tp) = &instance_ty {
+                    let bounds: Vec<String> = self.current_type_bounds.iter()
+                        .find(|(n, _)| n == tp)
+                        .map(|(_, genes)| genes.clone())
+                        .unwrap_or_default();
+                    let mut found: Option<(Vec<Option<SemanticType>>, Option<SemanticType>)> = None;
+                    for gene in &bounds {
+                        if let Some(sigs) = self.gene_defs.get(gene) {
+                            if let Some((_, gparams, gret)) = sigs.iter().find(|(n, _, _)| n == method) {
+                                found = Some((gparams.clone(), gret.clone()));
+                                break;
+                            }
+                        }
+                    }
+                    let (gparams, gret) = match found {
+                        Some(x) => x,
+                        None => return Err(sem_err!(
+                            *pos,
+                            "method '{}.{}': type parameter '{}' has no gene bound providing '{}'",
+                            instance, method, tp, method
+                        )),
+                    };
+                    // Self in the gene's signature means "the bound type" —
+                    // substitute Self → TypeParam(tp) so it stays generic here.
+                    let self_map: HashMap<String, SemanticType> =
+                        std::iter::once(("Self".to_string(), SemanticType::TypeParam(tp.clone()))).collect();
+                    let want_params: Vec<Option<SemanticType>> = gparams.iter()
+                        .map(|p| p.clone().map(|t| substitute_type_params(t, &self_map)))
+                        .collect();
+                    if args.len() != want_params.len() {
+                        return Err(sem_err!(
+                            *pos,
+                            "method '{}.{}' expects {} argument{}, got {}",
+                            instance, method,
+                            want_params.len(), if want_params.len() == 1 { "" } else { "s" },
+                            args.len()
+                        ));
+                    }
+                    let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        match arg {
+                            CallArg::Expr(expr) => {
+                                let sem_expr = self.analyze_expr(expr)?;
+                                if let Some(Some(expected)) = want_params.get(index) {
+                                    check_semantic_num_fits(&sem_expr, expected, *pos)?;
+                                    if !types_compatible(expected, &sem_expr.ty) {
+                                        return Err(sem_err!(
+                                            *pos,
+                                            "argument {} to method '{}.{}': expected {}, got {}",
+                                            index + 1, instance, method,
+                                            type_name(expected), type_name(&sem_expr.ty)
+                                        ));
+                                    }
+                                }
+                                semantic_args.push(SemanticCallArg::Expr(sem_expr));
+                            }
+                            CallArg::Copy(name) => {
+                                let binding = self.lookup_var(name)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(u32::MAX));
+                                semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
+                            }
+                            CallArg::CopyFree(name) => {
+                                let binding = self.lookup_var(name)
+                                    .map(|i| i.binding)
+                                    .unwrap_or(BindingId(u32::MAX));
+                                semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
+                            }
+                            CallArg::CopyInto(names) => {
+                                let resolved = names.iter().map(|n| {
+                                    let binding = self.lookup_var(n)
+                                        .map(|i| i.binding)
+                                        .unwrap_or(BindingId(u32::MAX));
+                                    ResolvedBinding { binding, name: n.clone() }
+                                }).collect();
+                                semantic_args.push(SemanticCallArg::CopyInto(resolved));
+                            }
+                        }
+                    }
+                    let ret_ty = gret
+                        .map(|t| substitute_type_params(t, &self_map))
+                        .unwrap_or(SemanticType::Void);
+                    return Ok(SemanticExpr {
+                        ty: ret_ty,
+                        kind: SemanticExprKind::MethodCall {
+                            instance: instance.clone(),
+                            method: method.clone(),
+                            args: semantic_args,
+                            instance_binding,
+                            // No concrete type at analysis time — the runtime
+                            // resolves the receiver's actual value type; the
+                            // JIT's mangled lookup misses this name and SKIPs.
+                            struct_name: tp.clone(),
+                            pos: *pos,
+                        },
+                    });
+                }
 
                 let struct_name = match &instance_ty {
                     SemanticType::Struct(tn) => tn.clone(),
@@ -1553,6 +2215,7 @@ Expr::Unary(op, inner, pos) => {
                                     .get(user_idx)
                                     .and_then(|p| p.ty.clone());
                                 if let Some(expected) = expected {
+                                    check_semantic_num_fits(&sem_expr, &expected, *pos)?;
                                     if !types_compatible(&expected, &sem_expr.ty) {
                                         return Err(sem_err!(
                                             *pos,
@@ -1688,6 +2351,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: vec![SemanticCallArg::Expr(expr)],
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -1715,6 +2379,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: semantic_args,
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -1796,6 +2461,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: semantic_args,
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -1829,6 +2495,24 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
+        // 0.3.4 slice 4: bound satisfaction at the instantiation site —
+        // `T: GeneName` is satisfied only if a phen exists binding that gene
+        // to the concrete type substituted for T (design doc, Locked Rules);
+        // `T: GeneA + GeneB` requires phens for both.
+        for (tp_name, bound_genes) in &function.type_bounds {
+            if let Some(concrete) = type_param_map.get(tp_name) {
+                for gene in bound_genes {
+                    if !self.phen_keys.contains(&(gene.clone(), concrete.clone())) {
+                        return Err(sem_err!(
+                            pos,
+                            "type '{}' does not satisfy bound '{}: {}' in call to '{}' — no phen of gene '{}' for '{}'",
+                            type_name(concrete), tp_name, gene, name, gene, type_name(concrete)
+                        ));
+                    }
+                }
+            }
+        }
+
         let mut semantic_args = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
             let expected = function
@@ -1843,7 +2527,13 @@ Expr::Unary(op, inner, pos) => {
                 });
             match arg {
                 CallArg::Expr(expr) => {
-                    let expr = self.analyze_expr(expr)?;
+                    // CR#2: if the parameter is an array type, hint its element type
+                    // so an array-literal argument range-checks its elements (#028),
+                    // mirroring the typed-declaration and struct-field paths.
+                    let expr = match &expected {
+                        Some(e) => self.analyze_expr_with_elem_hint(expr, e)?,
+                        None => self.analyze_expr(expr)?,
+                    };
                     let expr = if let Some(expected) = expected {
                         check_semantic_num_fits(&expr, &expected, pos)?;
                         if !types_compatible(&expected, &expr.ty) {
@@ -1897,14 +2587,147 @@ Expr::Unary(op, inner, pos) => {
             &type_param_map,
         );
 
+        // Retain the substitution instead of discarding it. Declared-parameter
+        // order, so the monomorphizer's key and mangled name are stable
+        // regardless of which argument bound which parameter. A parameter no
+        // argument bound is left out, which shortens the vector and makes the
+        // worklist skip the call rather than guess.
+        // An unsuffixed literal argument is still `Numeric` here — nothing
+        // narrowed it, because the parameter's declared type was `T`. Pin it to
+        // the default integer so the recorded instantiation is a CONCRETE type,
+        // which is what a specialization's signature needs. The pin is applied
+        // to this recorded vector ONLY, never to `type_param_map`: the map
+        // drives the return type and the argument checks, so narrowing it there
+        // would change what analysis accepts (`x: t8 = identity(100)` would stop
+        // type-checking). This field exists solely for the monomorphizer.
+        let call_type_args: Vec<SemanticType> = function
+            .type_params
+            .iter()
+            .filter_map(|p| type_param_map.get(p).cloned())
+            .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
+            .collect();
+
         Ok(SemanticExpr {
             ty: ret_ty,
             kind: SemanticExprKind::Call {
                 callee: name.to_string(),
                 function: function.id,
                 args: semantic_args,
+                type_args: call_type_args,
             },
         })
+    }
+
+    // Analyze `expr` while hinting the declared element type of an expected array
+    // type, so an array literal's elements range-check at that width (#028/#037)
+    // and name the declared type on a mismatch (#031a). The `ArrayLit` arm
+    // consumes the hint (`expected_array_elem.take()`); the prev/set/restore here
+    // keeps it from leaking to siblings or surviving when `expr` isn't an array
+    // literal. For a non-array `expected`, this is a plain `analyze_expr`. Tracker
+    // CR#2: the single delivery point for the element hint, shared by the typed-
+    // declaration, struct-field, and call-argument sites.
+    fn analyze_expr_with_elem_hint(&mut self, expr: &Expr, expected: &SemanticType) -> Result<SemanticExpr, SemanticError> {
+        if let SemanticType::Array(_, elem) = expected {
+            let prev = self.expected_array_elem.take();
+            self.expected_array_elem = Some((**elem).clone());
+            let r = self.analyze_expr(expr);
+            self.expected_array_elem = prev;
+            r
+        } else {
+            self.analyze_expr(expr)
+        }
+    }
+
+    // Analyze a returned expression against the declared return type, running the
+    // SAME sequence a typed declaration runs (tracker CR#3): the array-element
+    // hint (CR#2), the bare-literal width check (#028/#037, both signs), the
+    // type-compatibility gate, then the (widening / in-range) cast. This is the
+    // single chokepoint both return forms route through — explicit `return expr`
+    // and the trailing-expression path (bare trailing expr, the #046 if-promotion,
+    // and `when`-as-return) — so a return is no longer a place where an
+    // out-of-range literal dodges the width check and silently wraps.
+    //
+    // CR#4 update: literals nested inside `if`/`when` BRANCHES (e.g. `if c { 300 }`)
+    // ARE now caught — `check_semantic_num_fits` descends into each branch tail, so
+    // the return path inherits branch-tail range-checking through this chokepoint,
+    // the same as a declaration or struct field.
+    fn analyze_returned_expr(&mut self, expr: &Expr, expected: &SemanticType, pos: usize) -> Result<SemanticExpr, SemanticError> {
+        let sem = self.analyze_expr_with_elem_hint(expr, expected)?;
+        if sem.ty == SemanticType::StrRef {
+            return Err(sem_err!(pos, "cannot return a StrRef — it does not outlive its origin scope"));
+        }
+        check_semantic_num_fits(&sem, expected, pos)?;
+        if !types_compatible(expected, &sem.ty) {
+            return Err(sem_err!(pos, "return type mismatch: expected {}, got {}", type_name(expected), type_name(&sem.ty)));
+        }
+        Ok(insert_cast_if_needed(sem, expected))
+    }
+
+    /// 0.3.4 slice 6: operator-gene dispatch. When the left operand is a user
+    /// struct whose type has a phen for the operator's gene, the operator IS
+    /// the gene method (design doc: "no separate operator-overloading syntax
+    /// — it is gene/phen end to end"), rewritten to the same MethodCall node
+    /// a hand-written `a.add(b)` produces — the proven slice 3/5 machinery,
+    /// no new dispatch mechanism.
+    ///
+    /// Returns Ok(None) when this isn't operator-gene territory (no struct
+    /// operand, or no phen) — the caller falls through to the existing
+    /// built-in behavior: the decision-6 bootstrap intrinsics for primitives,
+    /// and every existing rejection for types that don't opt in.
+    ///
+    /// Interim restriction (design doc): the left operand must be a named
+    /// variable — the method machinery is name-based end to end (runtime
+    /// receiver lookup and mutation write-back both key on the variable
+    /// name), so an expression receiver has no representation yet.
+    #[allow(clippy::too_many_arguments)]
+    fn try_operator_gene_dispatch(
+        &mut self,
+        lhs: &SemanticExpr,
+        rhs: Option<&SemanticExpr>,
+        gene: &str,
+        method: &str,
+        op_symbol: &str,
+        ret_is_self: bool,
+        op_pos: usize,
+    ) -> Result<Option<SemanticExpr>, SemanticError> {
+        let SemanticType::Struct(struct_name) = &lhs.ty else {
+            return Ok(None);
+        };
+        if !self.phen_keys.contains(&(gene.to_string(), lhs.ty.clone())) {
+            return Ok(None);
+        }
+        if let Some(r) = rhs {
+            if !types_compatible(&lhs.ty, &r.ty) {
+                return Err(sem_err!(
+                    op_pos,
+                    "operator '{}' on '{}': right operand must be {} per gene '{}', got {}",
+                    op_symbol, struct_name, struct_name, gene, type_name(&r.ty)
+                ));
+            }
+        }
+        let SemanticExprKind::VarRef { binding, name } = &lhs.kind else {
+            return Err(sem_err!(
+                op_pos,
+                "operator '{}' on '{}' dispatches to gene '{}' — this currently requires a named variable as the left operand",
+                op_symbol, struct_name, gene
+            ));
+        };
+        let args = match rhs {
+            Some(r) => vec![SemanticCallArg::Expr(r.clone())],
+            None => vec![],
+        };
+        let ty = if ret_is_self { lhs.ty.clone() } else { SemanticType::Bool };
+        Ok(Some(SemanticExpr {
+            ty,
+            kind: SemanticExprKind::MethodCall {
+                instance: name.clone(),
+                method: method.to_string(),
+                args,
+                instance_binding: *binding,
+                struct_name: struct_name.clone(),
+                pos: op_pos,
+            },
+        }))
     }
 
     fn analyze_binary(
@@ -1936,6 +2759,18 @@ Expr::Unary(op, inner, pos) => {
                 // never an implicit value->string coercion (the silent-coercion
                 // class the soundness arc closed). Only `+` concatenates; the
                 // other arithmetic ops fall through to the numeric requirement.
+                // 0.3.4 slice 6: operator-gene dispatch for user structs —
+                // `v1 + v2` IS `v1.add(v2)` when Vec2 has a phen for Add.
+                let (gene, method, sym) = match op {
+                    Op::Plus => ("Add", "add", "+"),
+                    Op::Minus => ("Sub", "sub", "-"),
+                    Op::Mul => ("Mul", "mul", "*"),
+                    Op::Div => ("Div", "div", "/"),
+                    _ => ("Mod", "mod", "%"),
+                };
+                if let Some(rewritten) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), gene, method, sym, true, op_pos)? {
+                    return Ok(rewritten);
+                }
                 if op == Op::Plus {
                     let lhs_str = matches!(lhs.ty, SemanticType::Str | SemanticType::StrRef);
                     let rhs_str = matches!(rhs.ty, SemanticType::Str | SemanticType::StrRef);
@@ -1955,6 +2790,19 @@ Expr::Unary(op, inner, pos) => {
                         return Err(sem_err!(op_pos, "cannot concatenate `str` and `{}` with `+` — Cx does not implicitly convert values to strings; use string interpolation instead, e.g. \"total {{x}}\"", type_name(other)));
                     }
                 }
+                // Struct operands with NO phen for this operator's gene: name
+                // the type and the gene, not the generic numeric complaint.
+                if matches!((&lhs.ty, &rhs.ty), (SemanticType::Struct(_), SemanticType::Struct(_))) {
+                    return Err(sem_err!(
+                        op_pos,
+                        "no phen of gene '{}' for '{}' — operator '{}' on a struct requires it",
+                        gene, type_name(&lhs.ty), sym
+                    ));
+                }
+                // Decision-6 bootstrap intrinsic (primitives): the built-in
+                // numeric path below conforms to the prelude's Add/Sub/Mul/
+                // Div/Mod contracts (Self op Self -> Self at each width) and
+                // is designed for removal once primitives carry real phens.
                 if !is_numeric(&lhs.ty) || !is_numeric(&rhs.ty) {
                     return Err(sem_err!(op_pos, "arithmetic requires numeric operands, got {} and {}", type_name(&lhs.ty), type_name(&rhs.ty)));
                 }
@@ -1985,6 +2833,29 @@ Expr::Unary(op, inner, pos) => {
                     });
                 }
 
+                // 0.3.4 slice 6: user structs with a phen for Eq. Per the
+                // design doc's Eq contract (single `eq(rhs: Self) -> bool`),
+                // `!=` derives as the logical NOT of `eq` — no separate neq
+                // method. Types without the phen fall through to the existing
+                // allowlist/rejection, byte-identical to before.
+                let eq_sym = if op == Op::EqEq { "==" } else { "!=" };
+                if let Some(call) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), "Eq", "eq", eq_sym, false, op_pos)? {
+                    return Ok(if op == Op::EqEq {
+                        call
+                    } else {
+                        SemanticExpr {
+                            ty: SemanticType::Bool,
+                            kind: SemanticExprKind::Unary {
+                                op: Op::Not,
+                                expr: Box::new(call),
+                                pos: op_pos,
+                            },
+                        }
+                    });
+                }
+
+                // Decision-6 bootstrap intrinsic (primitives): built-in
+                // numeric equality conforms to the prelude Eq contract.
                 if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
                     let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
                     lhs = insert_cast_if_needed(lhs, &compare_ty);
@@ -2024,6 +2895,19 @@ Expr::Unary(op, inner, pos) => {
                 Err(sem_err!(op_pos, "cannot compare {} {:?} {}", type_name(&lhs.ty), op, type_name(&rhs.ty)))
             }
             Op::Lt | Op::Gt | Op::LtEq | Op::GtEq => {
+                // 0.3.4 slice 6: user structs with a phen for Ord — decision
+                // 4's 1:1 mapping (< → lt, > → gt, <= → le, >= → ge). Types
+                // without the phen keep the audit-hardened rejection below,
+                // byte-identical (Bool/Enum/Char ordering still rejects).
+                let (ord_method, ord_sym) = match op {
+                    Op::Lt => ("lt", "<"),
+                    Op::Gt => ("gt", ">"),
+                    Op::LtEq => ("le", "<="),
+                    _ => ("ge", ">="),
+                };
+                if let Some(rewritten) = self.try_operator_gene_dispatch(&lhs, Some(&rhs), "Ord", ord_method, ord_sym, false, op_pos)? {
+                    return Ok(rewritten);
+                }
                 if lhs.ty == SemanticType::Unknown || rhs.ty == SemanticType::Unknown {
                     Ok(SemanticExpr {
                         ty: SemanticType::Unknown,
@@ -2034,12 +2918,12 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
-                } else {
-                    if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
-                        let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
-                        lhs = insert_cast_if_needed(lhs, &compare_ty);
-                        rhs = insert_cast_if_needed(rhs, &compare_ty);
-                    }
+                // Decision-6 bootstrap intrinsic (primitives): built-in
+                // numeric ordering conforms to the prelude Ord contract.
+                } else if is_numeric(&lhs.ty) && is_numeric(&rhs.ty) {
+                    let compare_ty = common_numeric_type(&lhs.ty, &rhs.ty);
+                    lhs = insert_cast_if_needed(lhs, &compare_ty);
+                    rhs = insert_cast_if_needed(rhs, &compare_ty);
                     Ok(SemanticExpr {
                         ty: SemanticType::Bool,
                         kind: SemanticExprKind::Binary {
@@ -2049,6 +2933,8 @@ Expr::Unary(op, inner, pos) => {
                             rhs: Box::new(rhs),
                         },
                     })
+                } else {
+                    Err(sem_err!(op_pos, "cannot compare {} {:?} {}", type_name(&lhs.ty), op, type_name(&rhs.ty)))
                 }
             }
             Op::Not => unreachable!("Op::Not is unary only"),
@@ -2116,63 +3002,73 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
 /// a semantic error in both backends, rather than wrapping in the interpreter and
 /// being rejected at JIT lowering. Non-integer types pass through.
 fn check_num_range(ty: &SemanticType, n: i128, pos: usize) -> Result<(), SemanticError> {
-    let bounds: Option<(i128, i128, &str)> = match ty {
-        SemanticType::I8 => Some((i8::MIN as i128, i8::MAX as i128, "t8")),
-        SemanticType::I16 => Some((i16::MIN as i128, i16::MAX as i128, "t16")),
-        SemanticType::I32 => Some((i32::MIN as i128, i32::MAX as i128, "t32")),
-        SemanticType::I64 => Some((i64::MIN as i128, i64::MAX as i128, "t64")),
-        SemanticType::I128 => Some((i128::MIN, i128::MAX, "t128")),
-        _ => None,
-    };
-
-    if let Some((min, max, name)) = bounds {
-        if n < min || n > max {
+    // Width bounds come from the one facts table (tracker D1.1); non-integer
+    // types have no width and pass through.
+    if let Some(width) = ty.int_width() {
+        let f = width.facts();
+        if n < f.min || n > f.max {
             return Err(sem_err!(
                 pos,
                 "integer literal {} out of range for {} (valid range: {}..{})",
-                n, name, min, max
+                n, f.name, f.min, f.max
             ));
         }
     }
     Ok(())
 }
 
-/// If `expr` is an integer literal — bare `Num(n)` or a negated literal
-/// `Unary(Minus, Num(n))` — range-check its VALUE against the declared type
-/// `expected` (#028 + #037). The sign is folded first and the signed result is
-/// checked, so the check is value-aware: `Num(128)` is out of range for t8 but
-/// `-Num(128)` = -128 is the valid minimum. `n` is a positive `Num` (≤ i128::MAX
-/// — the lexer rejects larger), so `-n` never overflows.
-fn check_literal_fits(expr: &Expr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
-    let value = match expr {
-        Expr::Val(AstValue::Num(n)) => Some(*n),
-        Expr::Unary(Op::Minus, inner, _) => match inner.as_ref() {
-            Expr::Val(AstValue::Num(n)) => Some(-*n),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(n) = value {
-        check_num_range(expected, n, pos)?;
+/// Range-check an already-analyzed expression's integer-literal value against the
+/// declared type `expected` (#028 + #037), descending into branch tails (CR#4).
+/// This is the single width-check entry point for every site that has a
+/// `SemanticExpr` in scope: declaration, struct field, field assignment, array
+/// element, call argument, and return.
+///
+/// Direct forms: a bare integer literal analyzes to `Value(Num(_))`; a negated one
+/// to `Unary { Minus, Value(Num(_)) }` (the analyzer does not constant-fold). The
+/// sign is folded first and the signed result checked, so the check is value-aware:
+/// `Num(128)` is out of range for t8 but `-Num(128)` = -128 is the valid minimum.
+/// `n` is a positive `Num` (≤ i128::MAX — the lexer rejects larger), so `-n` never
+/// overflows.
+///
+/// Branch-producing forms (CR#4): an `if`/`when` used as an expression carries its
+/// value in the TAIL of each branch (its last `ExprStmt`, per the interpreter's
+/// "block value is the trailing expression" rule in `eval.rs`). Every tail is
+/// range-checked through this same function, so `x: t8 = if c { 300 } else { 5 }`
+/// rejects the 300 exactly as a bare `x: t8 = 300` would — uniformly, at all six
+/// sites. Non-literal tails (`a + b`, a call) are not folded and so not checked
+/// here, matching the bare-literal-only policy; non-literal narrowing is tracked
+/// separately in the design queue.
+fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
+    match &sem.kind {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => check_num_range(expected, *n, pos)?,
+        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => {
+            if let SemanticExprKind::Value(SemanticValue::Num(n)) = &expr.kind {
+                check_num_range(expected, -*n, pos)?;
+            }
+        }
+        SemanticExprKind::If { then_body, else_body, .. } => {
+            check_branch_tail_fits(then_body, expected, pos)?;
+            check_branch_tail_fits(else_body, expected, pos)?;
+        }
+        SemanticExprKind::When { arms, .. } => {
+            for arm in arms {
+                check_branch_tail_fits(&arm.body, expected, pos)?;
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
 
-/// Same as [`check_literal_fits`] but for an already-analyzed expression — used
-/// where only the `SemanticExpr` is in scope (field assignment, array elements,
-/// call arguments). A bare integer literal analyzes to `Value(Num(_))`; a negated
-/// one to `Unary { Minus, Value(Num(_)) }` (the analyzer does not constant-fold).
-fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
-    let value = match &sem.kind {
-        SemanticExprKind::Value(SemanticValue::Num(n)) => Some(*n),
-        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => match &expr.kind {
-            SemanticExprKind::Value(SemanticValue::Num(n)) => Some(-*n),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(n) = value {
-        check_num_range(expected, n, pos)?;
+/// Range-check the value a branch body produces: its trailing `ExprStmt` (the
+/// interpreter takes the last statement's expression as the block value — see the
+/// `If`/`when` arms in `eval.rs`). Recurses through [`check_semantic_num_fits`] so a
+/// nested tail — `if c { if d { 300 } else { 5 } } else { 7 }` — is covered too. A
+/// branch whose last statement is not a value-producing expression (or an empty
+/// body) contributes no literal to check.
+fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
+    if let Some(SemanticStmt::ExprStmt { expr, .. }) = body.last() {
+        check_semantic_num_fits(expr, expected, pos)?;
     }
     Ok(())
 }
@@ -2265,6 +3161,7 @@ fn normalize_enum_stmts(stmts: Vec<Stmt>, enums: &std::collections::HashSet<Stri
 fn normalize_enum_when_arm(arm: WhenArm, enums: &std::collections::HashSet<String>) -> WhenArm {
     WhenArm {
         pattern: arm.pattern,
+        guard: arm.guard,
         pos: arm.pos,
         body: match arm.body {
             WhenBody::Stmts(stmts) => WhenBody::Stmts(normalize_enum_stmts(stmts, enums)),
@@ -2301,6 +3198,25 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
                 ret_expr,
             )).collect(),
         },
+        Stmt::GeneDef { name, methods, pos } => Stmt::GeneDef {
+            name, pos,
+            methods: methods.into_iter().map(|(mname, params, ret)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+            )).collect(),
+        },
+        Stmt::PhenDef { gene_name, receiver, methods, pos } => Stmt::PhenDef {
+            gene_name, pos,
+            receiver: (receiver.0, normalize_enum_type(receiver.1, enums)),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret.map(|t| normalize_enum_type(t, enums)),
+                normalize_enum_stmts(body, enums),
+                ret_expr,
+            )).collect(),
+        },
         Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
             name, value, is_pub, pos, ty: normalize_enum_type(ty, enums),
         },
@@ -2310,27 +3226,27 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
             name, expr, pos_type, ty: normalize_enum_type(ty, enums),
         },
-        Stmt::FuncDef { name, type_params, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
-            name, type_params, is_pub, macros, pos,
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, type_bounds, is_pub, macros, pos,
             params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
             ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
             body: normalize_enum_stmts(body, enums),
             ret_expr,
         },
         Stmt::Block { stmts, _pos } => Stmt::Block { stmts: normalize_enum_stmts(stmts, enums), _pos },
-        Stmt::While { cond, body, pos } => Stmt::While { cond, body: normalize_enum_stmts(body, enums), pos },
-        Stmt::For { var, start, end, inclusive, body, pos } => Stmt::For {
-            var, start, end, inclusive, pos, body: normalize_enum_stmts(body, enums),
+        Stmt::While { label, cond, body, pos } => Stmt::While { label, cond, body: normalize_enum_stmts(body, enums), pos },
+        Stmt::For { label, var, start, end, inclusive, body, pos } => Stmt::For {
+            label, var, start, end, inclusive, pos, body: normalize_enum_stmts(body, enums),
         },
-        Stmt::Loop { body, pos } => Stmt::Loop { body: normalize_enum_stmts(body, enums), pos },
+        Stmt::Loop { label, body, pos } => Stmt::Loop { label, body: normalize_enum_stmts(body, enums), pos },
         Stmt::IfElse { condition, then_body, else_ifs, else_body, pos } => Stmt::IfElse {
             condition, pos,
             then_body: normalize_enum_stmts(then_body, enums),
             else_ifs: else_ifs.into_iter().map(|(c, b)| (c, normalize_enum_stmts(b, enums))).collect(),
             else_body: else_body.map(|b| normalize_enum_stmts(b, enums)),
         },
-        Stmt::WhileIn { arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
-            arr, start_slot, range_start, range_end, inclusive, result, pos,
+        Stmt::WhileIn { label, arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
+            label, arr, start_slot, range_start, range_end, inclusive, result, pos,
             body: normalize_enum_stmts(body, enums),
             then_chains: then_chains.into_iter().map(|c| WhileInChain {
                 body: normalize_enum_stmts(c.body, enums),
@@ -2347,7 +3263,243 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
     }
 }
 
-fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
+/// 0.3.4 slice 2: `Self` → the phen's receiver type, at the AST level.
+/// Recurses through the same composite type shapes `semantic_type_from_decl`
+/// handles (Array/Handle/Result), so nested generic type expressions resolve
+/// per decision 3.
+fn substitute_self_type(ty: Type, recv: &Type) -> Type {
+    match ty {
+        Type::Struct(ref n) if n == "Self" => recv.clone(),
+        Type::Array(size, inner) => Type::Array(size, Box::new(substitute_self_type(*inner, recv))),
+        Type::Handle(inner) => Type::Handle(Box::new(substitute_self_type(*inner, recv))),
+        Type::Result(inner) => Type::Result(Box::new(substitute_self_type(*inner, recv))),
+        other => other,
+    }
+}
+
+/// Apply `f` to every type-annotation position in a statement tree — the same
+/// coverage as `normalize_enum_stmt` (struct fields, impl aliases/methods,
+/// const/decl/typed-assign annotations, function params/returns, and every
+/// nested statement body). Used for phen-body `Self` substitution and the
+/// Self-outside-phen scan.
+fn map_stmt_types(stmt: Stmt, f: &dyn Fn(Type) -> Type) -> Stmt {
+    match stmt {
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
+            name, type_params, is_pub, pos,
+            fields: fields.into_iter().map(|(fname, t)| (fname, f(t))).collect(),
+        },
+        Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
+            name, is_pub, pos,
+            aliases: aliases.into_iter().map(|(a, t)| (a, f(t))).collect(),
+            methods: methods.into_iter().map(|(mname, params, ret, body, ret_expr)| (
+                mname,
+                params.into_iter().map(|p| map_param_type(p, f)).collect(),
+                ret.map(f),
+                body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+                ret_expr,
+            )).collect(),
+        },
+        Stmt::ConstDecl { name, ty, value, is_pub, pos } => Stmt::ConstDecl {
+            name, value, is_pub, pos, ty: f(ty),
+        },
+        Stmt::Decl { name, ty, pos } => Stmt::Decl { name, pos, ty: ty.map(f) },
+        Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
+            name, expr, pos_type, ty: f(ty),
+        },
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
+            name, type_params, type_bounds, is_pub, macros, pos,
+            params: params.into_iter().map(|p| map_param_type(p, f)).collect(),
+            ret_ty: ret_ty.map(f),
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            ret_expr,
+        },
+        Stmt::Block { stmts, _pos } => Stmt::Block {
+            stmts: stmts.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            _pos,
+        },
+        Stmt::While { label, cond, body, pos } => Stmt::While {
+            label, cond, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::For { label, var, start, end, inclusive, body, pos } => Stmt::For {
+            label, var, start, end, inclusive, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::Loop { label, body, pos } => Stmt::Loop {
+            label, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+        },
+        Stmt::IfElse { condition, then_body, else_ifs, else_body, pos } => Stmt::IfElse {
+            condition, pos,
+            then_body: then_body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            else_ifs: else_ifs.into_iter().map(|(c, b)| (c, b.into_iter().map(|s| map_stmt_types(s, f)).collect())).collect(),
+            else_body: else_body.map(|b| b.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+        },
+        Stmt::WhileIn { label, arr, start_slot, range_start, range_end, inclusive, body, then_chains, result, pos } => Stmt::WhileIn {
+            label, arr, start_slot, range_start, range_end, inclusive, result, pos,
+            body: body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+            then_chains: then_chains.into_iter().map(|c| WhileInChain {
+                body: c.body.into_iter().map(|s| map_stmt_types(s, f)).collect(),
+                ..c
+            }).collect(),
+        },
+        Stmt::When { expr, arms, pos } => Stmt::When {
+            expr, pos,
+            arms: arms.into_iter().map(|arm| WhenArm {
+                pattern: arm.pattern,
+                guard: arm.guard,
+                pos: arm.pos,
+                body: match arm.body {
+                    WhenBody::Stmts(stmts) => WhenBody::Stmts(stmts.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+                    WhenBody::SuperGroup(handlers) => WhenBody::SuperGroup(
+                        handlers.into_iter().map(|h| match h {
+                            SuperGroupHandler::Stmts(stmts) => SuperGroupHandler::Stmts(stmts.into_iter().map(|s| map_stmt_types(s, f)).collect()),
+                            SuperGroupHandler::Placeholder => SuperGroupHandler::Placeholder,
+                        }).collect(),
+                    ),
+                },
+            }).collect(),
+        },
+        other => other,
+    }
+}
+
+fn map_param_type(p: ParamKind, f: &dyn Fn(Type) -> Type) -> ParamKind {
+    match p {
+        ParamKind::Typed(n, t) => ParamKind::Typed(n, f(t)),
+        other => other,
+    }
+}
+
+/// Whether a receiver of this type definitively has no fields, so `.field` on
+/// it is an error rather than a not-yet-known access (audit C4). The list is
+/// deliberately an ALLOW-list inverted: only types analysis has fully resolved
+/// to something field-less answer `true`. `Unknown`, `TypeParam`, `Container`
+/// (a `copy_into` container, whose fields are dynamic), `Handle`, `Result` and
+/// `Struct` all answer `false` — either they do have fields or analysis does
+/// not yet know, and a check that only speaks where the fact is known must stay
+/// silent there.
+fn type_has_no_fields(ty: &SemanticType) -> bool {
+    matches!(
+        ty,
+        SemanticType::I8
+            | SemanticType::I16
+            | SemanticType::I32
+            | SemanticType::I64
+            | SemanticType::I128
+            | SemanticType::F64
+            | SemanticType::Bool
+            | SemanticType::Str
+            | SemanticType::StrRef
+            | SemanticType::Char
+            | SemanticType::Enum(_)
+            | SemanticType::Numeric
+            | SemanticType::Array(_, _)
+            | SemanticType::Void
+    )
+}
+
+/// Whether a base of this type is definitively not indexable, so `base:[i]` in
+/// expression position is an error (audit C4). Same conservative shape as
+/// [`type_has_no_fields`] — see its note on why the unresolved types are absent.
+/// The two assignment lvalue paths already reject a non-array target
+/// ("index assignment target must be an array"); this is the rvalue side of the
+/// same rule, which was the missing form.
+fn type_is_not_indexable(ty: &SemanticType) -> bool {
+    matches!(
+        ty,
+        SemanticType::I8
+            | SemanticType::I16
+            | SemanticType::I32
+            | SemanticType::I64
+            | SemanticType::I128
+            | SemanticType::F64
+            | SemanticType::Bool
+            | SemanticType::Str
+            | SemanticType::StrRef
+            | SemanticType::Char
+            | SemanticType::Enum(_)
+            | SemanticType::Numeric
+            | SemanticType::Struct(_)
+            // A bare type parameter is not indexable for the same reason it has
+            // no fields: a gene's contract is `fnc` signatures only, so nothing
+            // promises indexable storage. `t:[0]` used to reach the interpreter
+            // and fail there with the assignment-target diagnostic (audit C4's
+            // wrong-message family). Note this is the BARE parameter — an
+            // `Array(_, TypeParam)` parameter (`a: [3: T]`) is still an array
+            // and stays indexable.
+            | SemanticType::TypeParam(_)
+            | SemanticType::Void
+    )
+}
+
+/// The root variable name an assignment target writes through, if it has one:
+/// `x = ..` → `x`, `x.f = ..` → `x`, `x:[i] = ..` → `x`. Used by the const
+/// immutability check (known-issues #12), where writing through a const is
+/// still writing to it. Returns `None` for target shapes with no simple base
+/// (which the assign arm then rejects on its own terms).
+fn assign_target_base_name(target: &Expr) -> Option<&str> {
+    match target {
+        Expr::Ident(name, _) => Some(name),
+        Expr::DotAccess(container, _) => Some(container),
+        Expr::Index(inner, _, _) => assign_target_base_name(inner),
+        _ => None,
+    }
+}
+
+fn type_uses_self(ty: &Type) -> bool {
+    match ty {
+        Type::Struct(n) => n == "Self",
+        Type::Array(_, inner) | Type::Handle(inner) | Type::Result(inner) => type_uses_self(inner),
+        _ => false,
+    }
+}
+
+/// Does any type-annotation position in this statement tree mention `Self`?
+/// Reuses `map_stmt_types`'s coverage via a side-channel flag so the scan and
+/// the substituter can never drift apart.
+fn stmt_uses_self_type(stmt: &Stmt) -> bool {
+    let found = std::cell::Cell::new(false);
+    let _ = map_stmt_types(stmt.clone(), &|t| {
+        if type_uses_self(&t) {
+            found.set(true);
+        }
+        t
+    });
+    found.get()
+}
+
+/// Best-effort source anchor for a top-level statement, for diagnostics that
+/// reject the statement as a whole (e.g. `Self` outside a gene/phen).
+fn stmt_anchor_pos(stmt: &Stmt) -> usize {
+    match stmt {
+        Stmt::StructDef { pos, .. }
+        | Stmt::ImplBlock { pos, .. }
+        | Stmt::GeneDef { pos, .. }
+        | Stmt::PhenDef { pos, .. }
+        | Stmt::ConstDecl { pos, .. }
+        | Stmt::EnumDef { pos, .. }
+        | Stmt::Decl { pos, .. }
+        | Stmt::Return { pos, .. }
+        | Stmt::FuncDef { pos, .. }
+        | Stmt::While { pos, .. }
+        | Stmt::For { pos, .. }
+        | Stmt::Loop { pos, .. }
+        | Stmt::IfElse { pos, .. }
+        | Stmt::WhileIn { pos, .. }
+        | Stmt::When { pos, .. }
+        | Stmt::CompoundAssign { pos, .. }
+        | Stmt::Break { pos, .. }
+        | Stmt::Continue { pos, .. } => *pos,
+        Stmt::TypedAssign { pos_type, .. } => *pos_type,
+        Stmt::Assign { pos_eq, .. } => *pos_eq,
+        Stmt::Block { _pos, .. } => *_pos,
+        Stmt::ExprStmt { _pos, .. } => *_pos,
+        Stmt::ImportBlock { pos, .. } => *pos,
+    }
+}
+
+pub(crate) fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
     match ty {
         SemanticType::TypeParam(name) => {
             map.get(&name).cloned().unwrap_or(SemanticType::TypeParam(name))
@@ -2378,26 +3530,67 @@ fn semantic_type_from_value(value: &AstValue) -> SemanticType {
     }
 }
 
-fn semantic_value_from_ast(value: &AstValue, enums: &HashMap<String, EnumInfo>) -> SemanticValue {
-    match value {
+/// Resolve `Enum::Variant` to its ids, rejecting a variant the declared enum
+/// does not have (audit C3).
+///
+/// The single point where an enum's declared variant list and a variant
+/// *reference* meet. Every way a program can name a variant routes here — value
+/// position, `when` literal and range patterns, `when` enum-variant arms, and
+/// enum-variant arms with an `as v` binding — so a reference form cannot be
+/// missed by omission; each of those previously carried its own copy of the
+/// lookup and each copy discarded the miss as `variant_id: None`.
+///
+/// The consequence was a phantom variant: `enum L { Red, Green }` followed by
+/// `c: L = L::Blue` ran to completion on the interpreter, matched no real arm,
+/// and compared equal to itself — while the JIT refused to lower it
+/// ("enum variant 'L::Blue' has no resolved tag") and was counted a clean SKIP.
+///
+/// An enum name that is not declared at all is left alone: the caller's own
+/// type check reports that, and this check only speaks where the fact is known.
+fn resolve_enum_variant(
+    enums: &HashMap<String, EnumInfo>,
+    enum_name: &str,
+    variant_name: &str,
+    pos: usize,
+) -> Result<(Option<EnumId>, Option<EnumVariantId>), SemanticError> {
+    let Some(info) = enums.get(enum_name) else {
+        return Ok((None, None));
+    };
+    match info.variants.get(variant_name).copied() {
+        Some(variant_id) => Ok((Some(info.id), Some(variant_id))),
+        None => Err(sem_err!(
+            pos,
+            "enum '{}' has no variant '{}'",
+            enum_name,
+            variant_name
+        )),
+    }
+}
+
+fn semantic_value_from_ast(
+    value: &AstValue,
+    enums: &HashMap<String, EnumInfo>,
+    pos: usize,
+) -> Result<SemanticValue, SemanticError> {
+    Ok(match value {
         AstValue::Num(n) => SemanticValue::Num(*n),
         AstValue::Float(f) => SemanticValue::Float(*f),
         AstValue::Str(s) => SemanticValue::Str(s.clone()),
         AstValue::Bool(b) => SemanticValue::Bool(*b),
         AstValue::Char(c) => SemanticValue::Char(*c),
         AstValue::EnumVariant(enum_name, variant_name) => {
-            let enum_info = enums.get(enum_name);
-            let variant_id = enum_info.and_then(|info| info.variants.get(variant_name).copied());
+            let (enum_id, variant_id) =
+                resolve_enum_variant(enums, enum_name, variant_name, pos)?;
             SemanticValue::EnumVariant {
                 enum_name: enum_name.clone(),
                 variant_name: variant_name.clone(),
-                enum_id: enum_info.map(|info| info.id),
+                enum_id,
                 variant_id,
             }
         }
         AstValue::StructInstance(_, _, _, _) => SemanticValue::Unknown,
         AstValue::Unknown => SemanticValue::Unknown,
-    }
+    })
 }
 
 pub(crate) fn type_name(ty: &SemanticType) -> String {
@@ -2544,9 +3737,277 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
     }
 }
 
+/// Pass 0 (0.3.4 slice 1, `docs/post_0_1/gene_phen_design.md` — "Semantic-Pass
+/// Ordering"): a whole-graph gene/phen collection pass that runs once, before
+/// any per-file processing, over every file the resolver already assembled
+/// (`resolved.files`/`resolved.topo_order` — no new graph-traversal machinery
+/// needed). This is deliberately NOT a field on `Analyzer`: each file gets its
+/// own fresh `Analyzer::new()` in the loop below, so a table that must stay
+/// visible across the whole compilation cannot live there (design doc,
+/// coherence decision, item 5).
+///
+/// Registers every gene's name (so a phen naming an undeclared gene can be
+/// rejected) and every phen's canonical `(gene_name, receiver_type)` key,
+/// first-wins with collision-at-insert. A second registration of the same key
+/// is rejected with the design doc's exact two-location diagnostic — order-
+/// independent, since this is a single flat scan over the whole reachable
+/// file set, not an incremental per-file walk.
+fn collect_gene_phen_registry(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<GenePhenRegistry, Vec<SemanticError>> {
+    // 0a: every gene's name + full signature list. `Self` in a signature
+    // resolves to `TypeParam("Self")` (the generic-struct machinery's shape),
+    // substituted per-phen below via `substitute_type_params` — the exact
+    // reuse the design doc's Self-resolution decision specifies.
+    let self_param = ["Self".to_string()];
+    let resolve_sig_params = |params: &[ParamKind]| -> Vec<Option<SemanticType>> {
+        params.iter().map(|p| match p {
+            ParamKind::Typed(_, ty) => Some(semantic_type_from_decl(ty.clone(), &self_param)),
+            _ => None,
+        }).collect()
+    };
+
+    // "path:line" for a Pass-0 declaration. The prelude is a real source unit
+    // with real line spans — its text just lives in the binary, not on disk.
+    let source_location = |module_id: crate::frontend::resolver::ModuleId, pos: usize| -> String {
+        let (path, line) = resolved.files.get(&module_id)
+            .map(|f| {
+                let src = if f.path.as_os_str() == crate::frontend::resolver::PRELUDE_PATH {
+                    Some(crate::frontend::resolver::prelude_source().to_string())
+                } else {
+                    std::fs::read_to_string(&f.path).ok()
+                };
+                let line = src
+                    .map(|src| src[..pos.min(src.len())].bytes().filter(|&b| b == b'\n').count() + 1)
+                    .unwrap_or(0);
+                (f.path.display().to_string(), line)
+            })
+            .unwrap_or_default();
+        format!("{}:{}", path, line)
+    };
+    let mut errors: Vec<SemanticError> = Vec::new();
+
+    // 0a — gene collection, with duplicate-name rejection through the same
+    // deterministic collision machinery every other declaration kind uses:
+    // second declaration anywhere in the graph errors, naming the first's
+    // location. Because the prelude is injected as the FIRST source unit, a
+    // user redeclaring a prelude gene gets a diagnostic naming the prelude
+    // and its real line — no prelude-specific collision path.
+    type GeneEntry = (Vec<GeneSig>, crate::frontend::resolver::ModuleId, usize);
+    let mut gene_table: HashMap<String, GeneEntry> = HashMap::new();
+    for &module_id in &resolved.topo_order {
+        if let Some(file) = resolved.files.get(&module_id) {
+            for stmt in &file.program.stmts {
+                if let Stmt::GeneDef { name, methods, pos } = stmt {
+                    if let Some((_, prev_mid, prev_pos)) = gene_table.get(name) {
+                        errors.push(sem_err!(
+                            *pos,
+                            "gene '{}' is already declared at {}",
+                            name,
+                            source_location(*prev_mid, *prev_pos)
+                        ));
+                        continue;
+                    }
+                    let sigs = methods.iter().map(|(mname, params, ret)| (
+                        mname.clone(),
+                        resolve_sig_params(params),
+                        ret.clone().map(|t| semantic_type_from_decl(t, &self_param)),
+                    )).collect();
+                    gene_table.insert(name.clone(), (sigs, module_id, *pos));
+                }
+            }
+        }
+    }
+    let genes: HashMap<String, Vec<GeneSig>> = gene_table
+        .into_iter()
+        .map(|(name, (sigs, _, _))| (name, sigs))
+        .collect();
+
+    struct PhenRegistration {
+        module_id: crate::frontend::resolver::ModuleId,
+        pos: usize,
+    }
+    let mut phen_registry: HashMap<(String, SemanticType), PhenRegistration> = HashMap::new();
+    let mut phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin> = HashMap::new();
+
+    for &module_id in &resolved.topo_order {
+        let file = match resolved.files.get(&module_id) {
+            Some(f) => f,
+            None => continue,
+        };
+        for stmt in &file.program.stmts {
+            let (gene_name, receiver_ty, methods, pos) = match stmt {
+                Stmt::PhenDef { gene_name, receiver, methods, pos } => (gene_name, &receiver.1, methods, *pos),
+                _ => continue,
+            };
+            let gene_sigs = match genes.get(gene_name) {
+                Some(sigs) => sigs,
+                None => {
+                    errors.push(sem_err!(pos, "phen implements undeclared gene '{}'", gene_name));
+                    continue;
+                }
+            };
+            let receiver_type = semantic_type_from_decl(receiver_ty.clone(), &[]);
+            let key = (gene_name.clone(), receiver_type.clone());
+            if let Some(existing) = phen_registry.get(&key) {
+                errors.push(sem_err!(
+                    pos,
+                    "gene '{}' already implemented for '{}' — conflicting phen at {}",
+                    gene_name,
+                    type_name(&receiver_type),
+                    source_location(existing.module_id, existing.pos)
+                ));
+                continue;
+            }
+            phen_registry.insert(key, PhenRegistration { module_id, pos });
+
+            // Contract completeness (locked rule: a phen must implement every
+            // signature in the gene, exactly) — compared after substituting
+            // Self → the receiver type on BOTH sides, so a phen may spell a
+            // contract type either as `Self` or as its own concrete name.
+            let self_map: HashMap<String, SemanticType> =
+                std::iter::once(("Self".to_string(), receiver_type.clone())).collect();
+            let subst_ty = |t: &Option<SemanticType>| -> Option<SemanticType> {
+                t.clone().map(|t| substitute_type_params(t, &self_map))
+            };
+            let subst_params = |ps: &[Option<SemanticType>]| -> Vec<Option<SemanticType>> {
+                ps.iter().map(|p| p.clone().map(|t| substitute_type_params(t, &self_map))).collect()
+            };
+            type PhenSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+            let phen_sigs: Vec<PhenSig> = methods.iter().map(|(mname, params, ret, _, _)| (
+                mname.clone(),
+                subst_params(&resolve_sig_params(params)),
+                subst_ty(&ret.clone().map(|t| semantic_type_from_decl(t, &self_param))),
+            )).collect();
+
+            for (g_method, g_params, g_ret) in gene_sigs {
+                let want_params = subst_params(g_params);
+                let want_ret = subst_ty(g_ret);
+                match phen_sigs.iter().find(|(n, _, _)| n == g_method) {
+                    None => errors.push(sem_err!(
+                        pos,
+                        "phen for '{}' does not implement '{}' declared by gene '{}'",
+                        type_name(&receiver_type),
+                        render_method_sig(g_method, &want_params, &want_ret),
+                        gene_name
+                    )),
+                    Some((_, got_params, got_ret)) => {
+                        if got_params.len() != want_params.len() {
+                            errors.push(sem_err!(
+                                pos,
+                                "method '{}' in phen for '{}': gene '{}' declares {} parameter(s), this phen implements {}",
+                                g_method, type_name(&receiver_type), gene_name,
+                                want_params.len(), got_params.len()
+                            ));
+                        } else {
+                            for (i, (want, got)) in want_params.iter().zip(got_params.iter()).enumerate() {
+                                if want != got {
+                                    errors.push(sem_err!(
+                                        pos,
+                                        "method '{}' in phen for '{}': parameter {} must be {} per gene '{}', got {}",
+                                        g_method, type_name(&receiver_type), i + 1,
+                                        opt_type_name(want), gene_name, opt_type_name(got)
+                                    ));
+                                }
+                            }
+                        }
+                        if *got_ret != want_ret {
+                            errors.push(sem_err!(
+                                pos,
+                                "method '{}' in phen for '{}': gene '{}' declares return type {}, this phen returns {}",
+                                g_method, type_name(&receiver_type), gene_name,
+                                opt_type_name(&want_ret), opt_type_name(got_ret)
+                            ));
+                        }
+                    }
+                }
+            }
+            // Method-ownership locked rule, application 1: no extras.
+            for (p_method, _, _) in &phen_sigs {
+                if !gene_sigs.iter().any(|(g, _, _)| g == p_method) {
+                    errors.push(sem_err!(
+                        pos,
+                        "method '{}' is not declared by gene '{}' — extra methods belong in impl blocks",
+                        p_method, gene_name
+                    ));
+                }
+            }
+            // Method-ownership locked rule, application 3: one implementation
+            // per method name per concrete type, across all genes.
+            for (p_method, p_params, p_ret) in &phen_sigs {
+                let mkey = (receiver_type.clone(), p_method.clone());
+                if let Some(prev) = phen_methods.get(&mkey) {
+                    errors.push(sem_err!(
+                        pos,
+                        "method '{}' on '{}' is already provided by a phen of gene '{}' at {} — conflicting phen of gene '{}'",
+                        p_method, type_name(&receiver_type), prev.gene, prev.location, gene_name
+                    ));
+                } else {
+                    phen_methods.insert(mkey, PhenMethodOrigin {
+                        gene: gene_name.clone(),
+                        location: source_location(module_id, pos),
+                        params: p_params.clone(),
+                        ret: p_ret.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        let phen_keys = phen_registry.keys().cloned().collect();
+        Ok(GenePhenRegistry { phen_methods, genes, phen_keys })
+    } else {
+        Err(errors)
+    }
+}
+
+/// A phen-provided method's origin — gene name + "path:line" for the
+/// method-ownership collision diagnostics (locked rule, applications 2 & 3),
+/// plus its Self-substituted signature (0.3.4 slice 3) so per-file analysis
+/// can inject a signature-only stub into `method_registry` and call sites
+/// resolve order-independently across the whole graph (decision 2).
+#[derive(Debug, Clone)]
+pub(crate) struct PhenMethodOrigin {
+    pub gene: String,
+    pub location: String,
+    pub params: Vec<Option<SemanticType>>,
+    pub ret: Option<SemanticType>,
+}
+
+/// A gene method's declared signature: name, param types (None for untyped
+/// param kinds), return type — `Self` carried as `TypeParam("Self")`.
+pub(crate) type GeneSig = (String, Vec<Option<SemanticType>>, Option<SemanticType>);
+
+/// Whole-graph output of Pass 0: every phen-provided method keyed
+/// `(receiver type, method name)` (slice 2, impl/phen collision checks),
+/// every gene's signature list, and every `(gene, receiver type)` phen key
+/// (slice 4, bounded-generic resolution + instantiation-site bound checks).
+pub(crate) struct GenePhenRegistry {
+    pub phen_methods: HashMap<(SemanticType, String), PhenMethodOrigin>,
+    pub genes: HashMap<String, Vec<GeneSig>>,
+    pub phen_keys: std::collections::HashSet<(String, SemanticType)>,
+}
+
+fn opt_type_name(t: &Option<SemanticType>) -> String {
+    t.as_ref().map(type_name).unwrap_or_else(|| "void".to_string())
+}
+
+fn render_method_sig(name: &str, params: &[Option<SemanticType>], ret: &Option<SemanticType>) -> String {
+    let ps: Vec<String> = params.iter()
+        .map(|p| p.as_ref().map(type_name).unwrap_or_else(|| "_".to_string()))
+        .collect();
+    match ret {
+        Some(r) => format!("{}({}) -> {}", name, ps.join(", "), type_name(r)),
+        None => format!("{}({})", name, ps.join(", ")),
+    }
+}
+
 pub fn analyze_resolved_program(
     resolved: &crate::frontend::resolver::ResolvedProgram,
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
+    let gene_phen_registry = collect_gene_phen_registry(resolved)?;
+
     let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
@@ -2567,6 +4028,9 @@ pub fn analyze_resolved_program(
         // Build analyzer with module aliases from already-processed dependencies
         let mut analyzer = Analyzer::new();
         analyzer.module_aliases = alias_exports.clone();
+        analyzer.phen_methods = gene_phen_registry.phen_methods.clone();
+        analyzer.gene_defs = gene_phen_registry.genes.clone();
+        analyzer.phen_keys = gene_phen_registry.phen_keys.clone();
 
         // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
         // every `Type::Struct(name)` annotation that names an enum to
@@ -2595,7 +4059,7 @@ pub fn analyze_resolved_program(
 
         // Function pre-pass
         for stmt in &normalized_stmts {
-            if let Stmt::FuncDef { name, params, ret_ty, type_params, .. } = stmt {
+            if let Stmt::FuncDef { name, params, ret_ty, type_params, type_bounds, .. } = stmt {
                 let placeholders = params.iter()
                     .map(semantic_param_placeholder)
                     .collect::<Vec<_>>();
@@ -2605,13 +4069,62 @@ pub fn analyze_resolved_program(
                     params: placeholders,
                     ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
                     type_params: type_params.clone(),
+                    type_bounds: type_bounds.clone(),
                 });
+            }
+        }
+
+        // Phen-method pre-pass (0.3.4 slice 3): inject signature-only stubs
+        // into method_registry so `value.method(args)` resolves to a phen
+        // method order-independently, across the whole reachable graph
+        // (decision 2 — forward-reference capable, unlike impl methods'
+        // declaration-order registration). Only the signature matters at a
+        // call site (arity, param types, return type); the analyzed bodies
+        // reach the runtime through SemanticStmt::PhenDef, not these stubs.
+        // The ownership rule (slice 2) guarantees no name can be claimed by
+        // both an impl and a phen, so this is a straight lookup extension,
+        // not a precedence scheme.
+        for ((recv_ty, mname), origin) in &gene_phen_registry.phen_methods {
+            if let SemanticType::Struct(sname) = recv_ty {
+                let func_id = analyzer.fresh_function();
+                let stub = SemanticFunction {
+                    id: func_id,
+                    name: mname.clone(),
+                    type_params: vec![],
+                    params: origin.params.iter().enumerate().map(|(i, ty)| SemanticParam {
+                        binding: BindingId(u32::MAX),
+                        name: format!("arg{}", i),
+                        kind: SemanticParamKind::Typed,
+                        ty: ty.clone(),
+                    }).collect(),
+                    return_ty: origin.ret.clone(),
+                    body: vec![],
+                    ret_expr: None,
+                    is_test: false,
+                    pos: 0,
+                };
+                analyzer.method_registry.insert((sname.clone(), mname.clone()), stub);
+                analyzer.method_alias_counts.insert((sname.clone(), mname.clone()), 1);
             }
         }
 
         // Main analysis pass — skip ImportBlock statements
         let mut file_stmts = Vec::new();
         let mut errors = Vec::new();
+        // 'Self' is only meaningful inside a gene or phen (decision 3) —
+        // anywhere else it would silently analyze as an ordinary unknown
+        // struct named "Self". Reject before analysis.
+        for stmt in &normalized_stmts {
+            if matches!(stmt, Stmt::GeneDef { .. } | Stmt::PhenDef { .. }) {
+                continue;
+            }
+            if stmt_uses_self_type(stmt) {
+                errors.push(sem_err!(
+                    stmt_anchor_pos(stmt),
+                    "'Self' is only meaningful inside a gene or phen — name the concrete type here"
+                ));
+            }
+        }
         for stmt in &normalized_stmts {
             if matches!(stmt, Stmt::ImportBlock { .. }) { continue; }
             match analyzer.analyze_stmt(stmt) {
@@ -2722,6 +4235,51 @@ mod tests {
         analyze_resolved_program(&resolved)
     }
 
+    /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must
+    /// parse and semantically validate — a malformed prelude fails CI here
+    /// rather than silently shipping inside the binary.
+    #[test]
+    fn prelude_parses_and_analyzes_clean() {
+        let prelude = crate::frontend::resolver::prelude_program()
+            .expect("embedded prelude must parse");
+        let result = analyze_program(&prelude);
+        assert!(result.is_ok(), "embedded prelude must analyze clean: {:?}", result.err());
+    }
+
+    /// Decision-6 constraint 2: the bootstrap intrinsics (the built-in
+    /// numeric operator paths) must conform to the prelude-declared
+    /// contracts — public contracts and method names come FROM the prelude,
+    /// never compiler-invented. This pins the operator→gene→method mapping
+    /// (decision 4, 1:1) against the shipped prelude source.
+    #[test]
+    fn prelude_operator_contracts_match_intrinsic_mapping() {
+        let prelude = crate::frontend::resolver::prelude_program()
+            .expect("embedded prelude must parse");
+        // (gene, method, user-arity) — binary ops take one rhs, neg takes none.
+        let expected: &[(&str, &str, usize)] = &[
+            ("Add", "add", 1),
+            ("Sub", "sub", 1),
+            ("Mul", "mul", 1),
+            ("Div", "div", 1),
+            ("Mod", "mod", 1),
+            ("Neg", "neg", 0),
+            ("Eq", "eq", 1),
+            ("Ord", "lt", 1),
+            ("Ord", "gt", 1),
+            ("Ord", "le", 1),
+            ("Ord", "ge", 1),
+        ];
+        for (gene, method, arity) in expected {
+            let found = prelude.stmts.iter().any(|s| matches!(
+                s,
+                Stmt::GeneDef { name, methods, .. }
+                    if name == gene
+                        && methods.iter().any(|(m, params, _)| m == method && params.len() == *arity)
+            ));
+            assert!(found, "prelude must declare gene '{}' with method '{}({} param)'", gene, method, arity);
+        }
+    }
+
     fn ident(name: &str) -> Expr {
         Expr::Ident(name.to_string(), 0)
     }
@@ -2801,6 +4359,7 @@ mod tests {
                 Stmt::FuncDef {
                     name: "foo".to_string(),
                     type_params: vec![],
+                    type_bounds: vec![],
                     params: vec![ParamKind::Typed("a".to_string(), Type::T64)],
                     ret_ty: Some(Type::T64),
                     body: vec![],
@@ -2925,6 +4484,7 @@ mod tests {
             stmts: vec![Stmt::FuncDef {
                 name: "main".to_string(),
                 type_params: vec![],
+                type_bounds: vec![],
                 params: vec![],
                 ret_ty: Some(Type::Void),
                 body: vec![],

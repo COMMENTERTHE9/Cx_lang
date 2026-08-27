@@ -1,0 +1,19 @@
+// D2.5a acceptance (PROVISIONAL — superseded once t16 itself passes after
+// D2.5b lands): proves Handle.new construct + cross-function-return survives
+// the JIT, without reading .val (which doesn't exist until D2.5b).
+//
+// Uses an EXPLICIT `Handle<t128>` return type, unlike t16's make_handle() (no
+// declared return type). That's deliberate, not cosmetic: a function with an
+// inferred/undeclared return type and a value-producing trailing expression
+// currently rejects at lowering (LoweringError::InternalInvariantViolation,
+// lower.rs) independent of Handle rep -- t16 trips this UNRELATED, pre-existing
+// gap now that Handle.new's construct itself no longer blocks it, which is why
+// t16 still SKIPs after D2.5a for a different reason than ".val doesn't exist
+// yet". This fixture sidesteps that gap to isolate what D2.5a actually proves:
+// the packed-i64 Handle rep survives a real function-return boundary.
+fnc: Handle<t128> make_handle() {
+    return Handle.new(42);
+}
+let h;
+h = make_handle()
+print("construct-ok")

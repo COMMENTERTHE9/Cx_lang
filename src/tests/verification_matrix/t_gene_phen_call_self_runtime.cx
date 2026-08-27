@@ -1,0 +1,24 @@
+// 0.3.4 slice 3: Self-typed values at runtime — a gene method taking and
+// returning Self, called for real; the substituted concrete type flows
+// through execution (argument passing, construction, field reads).
+struct Vec2 { x: t32, y: t32 }
+
+gene Merge {
+    fnc merge(other: Self) -> Self
+}
+
+phen Merge (v: Vec2) {
+    fnc: Self merge(other: Self) {
+        made: Self = Vec2 { x: v.x + other.x, y: v.y + other.y }
+        made
+    }
+}
+
+let a;
+let b;
+a = Vec2 { x: 3, y: 4 }
+b = Vec2 { x: 10, y: 20 }
+let c;
+c = a.merge(b)
+print(c.x)
+print(c.y)

@@ -1,0 +1,13 @@
+// Pattern matching, guards — binding scope correctness: a SIBLING arm's
+// guard must not see another arm's `as v` binding (each arm's binding is
+// scoped to that arm's own pattern-match/guard/body, not the whole `when`).
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+when c {
+    Color::Red as v => print(1),
+    Color::Green if v => print(2),
+    _ => print(0),
+}

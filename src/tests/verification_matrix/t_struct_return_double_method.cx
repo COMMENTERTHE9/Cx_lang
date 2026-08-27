@@ -1,0 +1,21 @@
+// Double-call contamination canary (method): same proof through the
+// impl-method path.
+struct Vec2 { x: t32, y: t32 }
+vm: impl (v: Vec2) {
+    fnc: Vec2 plus(other: Vec2) {
+        made: Vec2 = Vec2 { x: v.x + other.x, y: v.y + other.y }
+        made
+    }
+}
+let a;
+let b;
+a = Vec2 { x: 1, y: 2 }
+b = Vec2 { x: 30, y: 40 }
+let c;
+let d;
+c = a.plus(b)
+d = b.plus(b)
+print(c.x)
+print(c.y)
+print(d.x)
+print(d.y)
