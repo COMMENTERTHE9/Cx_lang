@@ -1,0 +1,11 @@
+// 0.3.4 slice 2: wrong parameter type vs. the gene's declared signature.
+struct Player { health: t32 }
+gene Damageable {
+    fnc take_damage(amount: t32)
+}
+phen Damageable (p: Player) {
+    fnc: take_damage(amount: f64) {
+        print(amount)
+    }
+}
+print(1)

@@ -1,0 +1,17 @@
+// Pins Handle+array composition as correct (post-0.3 audit Finding 2, retracted:
+// the original audit's "spurious stale handle" repro used invalid `arr[i]`
+// syntax -- Cx's real array-index syntax is `arr:[i]`. With correct syntax,
+// a Handle placed in an array literal and read back via indexing, with no
+// `.drop()` in between, reads its correct value -- no interpreter defect.
+//
+// baseline: a bare (non-array) Handle.new(...) read via .val.
+let base;
+base = Handle.new(42)
+print(base.val)
+
+// same payload, via an array literal + indexed read -- must match the baseline.
+let arr: [1: Handle<t128>];
+arr = [Handle.new(42)]
+let x;
+x = arr:[0]
+print(x.val)

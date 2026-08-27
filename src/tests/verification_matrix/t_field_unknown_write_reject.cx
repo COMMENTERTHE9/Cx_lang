@@ -1,0 +1,9 @@
+// Audit C1: writing a field the struct does not declare. The interpreter used
+// to INVENT the field at runtime — this program printed 5 — which contradicts
+// Cx's stable-layout guarantee; the JIT refused to lower it and was counted a
+// clean SKIP. Analysis knows P's field list and now rejects both backends.
+struct P { x: t32 }
+let a;
+a = P { x: 1 }
+a.zzz = 5
+print(a.zzz)

@@ -1,0 +1,11 @@
+// D2.4a canary: a NEGATIVE Ok payload must not corrupt the Result tag.
+// The packed-i128 rep stores payload and tag in separate 8-byte halves via a
+// memory round-trip, so -5's sign bits stay in the payload word. Arithmetic
+// packing (Cast i64->i128 = sextend) would smear them into the tag's high bits
+// and misread Ok(-5) as Err. If this prints "Ok(-5)", the round-trip holds.
+fnc: Result<t32> mk(x: t32) {
+    return Ok(0 - x);
+}
+let r;
+r = mk(5);
+print(r)

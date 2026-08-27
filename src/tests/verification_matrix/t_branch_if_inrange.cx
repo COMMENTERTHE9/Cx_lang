@@ -1,0 +1,5 @@
+// CR#4 regression guard: an IN-RANGE branch tail must still PASS — the descent
+// range-checks tails but must not over-reject valid values. Both 100 and -128 fit
+// t8 (-128..127); the chosen branch yields 100.
+x: t8 = if true { 100 } else { -128 }
+print(x)

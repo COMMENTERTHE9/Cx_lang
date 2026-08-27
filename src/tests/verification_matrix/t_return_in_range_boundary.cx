@@ -1,0 +1,6 @@
+// CR#3: in-range and boundary returns pass on BOTH return paths — the fix must
+// not over-reject valid values (-128 and 127 are the t8 limits).
+fnc: t8 a() { -128 }
+fnc: t8 b() { return 127 }
+print(a())
+print(b())

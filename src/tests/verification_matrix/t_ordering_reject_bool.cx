@@ -1,0 +1,5 @@
+// CX-3.3: ordering comparisons on bool operands must be rejected at semantic
+// time on both backends, mirroring the equality branch's type-allowlist.
+a: bool = false
+b: bool = true
+print(a < b)

@@ -1,0 +1,15 @@
+// Pattern matching, guards — the seam, direction 1: a statically-`Unknown`-
+// typed guard (an untyped `?`) is rejected at semantic-analysis time, not a
+// panic and not silently coerced to false.
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+let u;
+u = ?
+
+when c {
+    Color::Red if u => print(1),
+    _ => print(0),
+}

@@ -97,6 +97,50 @@ fn ifelse_to_if_expr(
     Expr::If(Box::new(condition), then_body, acc_else, pos)
 }
 
+/// Is `expr` a call to one of the statement-level builtins
+/// (print/println/printn/assert/assert_eq)? Used to keep a bare trailing
+/// call to one of these out of implicit-return position — see the
+/// `func_body` combinator's doc comment.
+/// Should a trailing bare call to this builtin be left as a body statement
+/// rather than promoted into the function's `ret_expr`?
+///
+/// **Membership rule: a builtin belongs here if and only if its registry
+/// `BuiltinRet` is `Void`.** Nothing else qualifies, and every `Void` builtin
+/// qualifies — the list below is exactly the `Void` set
+/// (`print`, `println`, `printn`, `assert`, `assert_eq`, `exit`).
+///
+/// Why the rule is what it is: `ret_expr` is lowered through `lower_expr`,
+/// which has no builtin interception; only `lower_stmt` dispatches builtins to
+/// their dedicated lowering functions. A void builtin promoted into `ret_expr`
+/// therefore reaches the JIT as an ordinary unresolved call and fails with
+/// `unresolved semantic artifact reached lowering: function '<name>'`, while
+/// the interpreter handles it fine — a silent backend divergence. A non-void
+/// builtin genuinely *is* the function's value in that position, so promoting
+/// it is correct; if it does not lower, that is a lowering gap
+/// (`JitStatus::GatedUnsupported` / `Unhandled`), not a promotion bug, and it
+/// surfaces identically whether the call is trailing or not.
+///
+/// **If you add a builtin with `BuiltinRet::Void`, add its `BuiltinKind`
+/// here.** This list has been enumerated incompletely twice: `exit` was
+/// missing when the guard was first written for known-issues #2, and carried
+/// the identical latent bug until the exit-lowering work reproduced it.
+fn is_statement_level_builtin_call(expr: &Expr) -> bool {
+    let Expr::Call(name, _, _) = expr else {
+        return false;
+    };
+    matches!(
+        crate::frontend::builtins::lookup(name).map(|b| b.kind),
+        Some(
+            crate::frontend::builtins::BuiltinKind::Print
+                | crate::frontend::builtins::BuiltinKind::Println
+                | crate::frontend::builtins::BuiltinKind::Printn
+                | crate::frontend::builtins::BuiltinKind::Assert
+                | crate::frontend::builtins::BuiltinKind::AssertEq
+                | crate::frontend::builtins::BuiltinKind::Exit
+        )
+    )
+}
+
 fn expr_parser<'a, I>() -> impl Parser<'a, I, Expr, ParserError<'a>> + Clone
 where
     I: ValueInput<'a, Token = Token, Span = Span>,
@@ -294,7 +338,10 @@ where
                     .clone()
                     .then_ignore(just(Token::PunctDoubleColon))
                     .then(ident.clone())
-                    .map(|(enum_name, variant)| WhenPattern::EnumVariant(enum_name, variant)),
+                    .then(just(Token::KeywordAs).ignore_then(ident).or_not())
+                    .map(|((enum_name, variant), binding)| {
+                        WhenPattern::EnumVariant(enum_name, variant, binding)
+                    }),
                 expr.clone().map(|e| match e {
                     Expr::Val(v) => WhenPattern::Literal(v),
                     _ => WhenPattern::Catchall,
@@ -304,11 +351,13 @@ where
 
             pattern
                 .map_with(|pattern, e: &mut ParseExtra<'a, '_, I>| (pattern, e.span().start))
+                .then(just(Token::KeywordIf).ignore_then(expr.clone()).or_not())
                 .then_ignore(just(Token::PunctFatArrow))
                 .then(expr.clone())
                 .then_ignore(just(Token::PunctComma).or_not())
-                .map(|((pattern, pos), value_expr)| WhenArm {
+                .map(|(((pattern, pos), guard), value_expr)| WhenArm {
                     pattern,
+                    guard,
                     body: WhenBody::Stmts(vec![Stmt::ExprStmt { expr: value_expr, _pos: pos }]),
                     pos,
                 })
@@ -659,6 +708,39 @@ where
                 }))
             .boxed();
 
+        // gene Name { fnc sig(params) -> RetTy? ... } — signatures only, no
+        // colon-prefix return type (unlike ordinary fnc definitions) and no
+        // body: a `{` here has nothing to match against and falls through to
+        // a parse error, which is exactly "reject a body with a clean parse
+        // error" without any special-cased detection logic. Defined here,
+        // before func_def's recursive block moves `param` by value.
+        let gene_method_sig = just(Token::KeywordFnc)
+            .ignore_then(ident)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(
+                param
+                    .clone()
+                    .separated_by(just(Token::PunctComma))
+                    .allow_trailing()
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::PunctParenClose))
+            .then(
+                just(Token::PunctArrow)
+                    .ignore_then(ty.clone())
+                    .or_not(),
+            )
+            .map(|((name, params), ret_ty)| (name, params, ret_ty));
+
+        let gene_def = just(Token::KeywordGene)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident)
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(gene_method_sig.repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|((pos, name), methods)| Stmt::GeneDef { name, methods, pos })
+            .boxed();
+
         let group = just(Token::KeywordGroup)
             .ignore_then(just(Token::PunctDoubleColon))
             .ignore_then(ident.clone())
@@ -788,7 +870,10 @@ where
                     .clone()
                     .then_ignore(just(Token::PunctDoubleColon))
                     .then(ident.clone())
-                    .map(|(enum_name, variant)| WhenPattern::EnumVariant(enum_name, variant)),
+                    .then(just(Token::KeywordAs).ignore_then(ident).or_not())
+                    .map(|((enum_name, variant), binding)| {
+                        WhenPattern::EnumVariant(enum_name, variant, binding)
+                    }),
                 ident
                     .clone()
                     .map(|name| WhenPattern::Group(String::new(), name)),
@@ -864,10 +949,11 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             pattern
                 .map_with(|pattern, e: &mut ParseExtra<'a, '_, I>| (pattern, e.span().start))
+                .then(just(Token::KeywordIf).ignore_then(expr.clone()).or_not())
                 .then_ignore(just(Token::PunctFatArrow))
                 .then(when_body)
                 .then_ignore(just(Token::PunctComma).or_not())
-                .map(|((pattern, pos), body)| WhenArm { pattern, body, pos })
+                .map(|(((pattern, pos), guard), body)| WhenArm { pattern, guard, body, pos })
         };
 
         let when_stmt = just(Token::KeywordWhen)
@@ -884,19 +970,33 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             .map(|((pos, expr), arms)| Stmt::When { expr, arms, pos })
             .boxed();
 
-        let while_stmt = just(Token::KeywordWhile)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+        // labeled-breaks (a): an optional `'name:` prefix on any loop. Absent → None.
+        let loop_label = select! { Token::Label(name) => name }
+            .then_ignore(just(Token::PunctColon))
+            .or_not()
+            .boxed();
+
+        let while_stmt = loop_label
+            .clone()
+            .then(
+                just(Token::KeywordWhile)
+                    .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start),
+            )
             .then_ignore(just(Token::PunctParenOpen))
             .then(expr.clone())
             .then_ignore(just(Token::PunctParenClose))
             .then_ignore(just(Token::PunctBraceOpen))
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|((pos, cond), body)| Stmt::While { cond, body, pos })
+            .map(|(((label, pos), cond), body)| Stmt::While { label, cond, body, pos })
             .boxed();
 
-        let while_in_stmt = just(Token::KeywordWhile)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+        let while_in_stmt = loop_label
+            .clone()
+            .then(
+                just(Token::KeywordWhile)
+                    .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start),
+            )
             .then_ignore(just(Token::KeywordIn))
             .then(select! { Token::Identifier(name) => name })
             .then_ignore(just(Token::PunctColon))
@@ -946,8 +1046,9 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                     .repeated()
                     .collect::<Vec<_>>()
             )
-            .map(|(((((((pos, arr), start_slot), range_start), inclusive), range_end), body), then_chains)| {
+            .map(|((((((((label, pos), arr), start_slot), range_start), inclusive), range_end), body), then_chains)| {
                 Stmt::WhileIn {
+                    label,
                     arr,
                     start_slot,
                     range_start,
@@ -961,8 +1062,12 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             })
             .boxed();
 
-        let for_stmt = just(Token::KeywordFor)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+        let for_stmt = loop_label
+            .clone()
+            .then(
+                just(Token::KeywordFor)
+                    .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start),
+            )
             .then(ident.clone())
             .then_ignore(just(Token::KeywordIn))
             .then(expr.clone())
@@ -975,7 +1080,8 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
             .map(
-                |(((((pos, var), start), inclusive), end), body)| Stmt::For {
+                |((((((label, pos), var), start), inclusive), end), body)| Stmt::For {
+                    label,
                     var,
                     start,
                     end,
@@ -1024,24 +1130,30 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             })
             .boxed();
 
-        let loop_stmt = just(Token::KeywordLoop)
-            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+        let loop_stmt = loop_label
+            .clone()
+            .then(
+                just(Token::KeywordLoop)
+                    .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start),
+            )
             .then_ignore(just(Token::PunctBraceOpen))
             .then(stmt.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::PunctBraceClose))
-            .map(|(pos, body)| Stmt::Loop { body, pos })
+            .map(|((label, pos), body)| Stmt::Loop { label, body, pos })
             .boxed();
 
         let break_stmt = just(Token::KeywordBreak)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(select! { Token::Label(name) => name }.or_not())
             .then_ignore(semi.clone().or_not())
-            .map(|pos| Stmt::Break { pos })
+            .map(|(pos, label)| Stmt::Break { label, pos })
             .boxed();
 
         let continue_stmt = just(Token::KeywordContinue)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(select! { Token::Label(name) => name }.or_not())
             .then_ignore(semi.clone().or_not())
-            .map(|pos| Stmt::Continue { pos })
+            .map(|(pos, label)| Stmt::Continue { label, pos })
             .boxed();
 
         let compound_assign = ident
@@ -1171,6 +1283,15 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             // Implicit return: trailing expression WITHOUT semicolon becomes ret_expr.
             // Trailing expression WITH semicolon is a statement — result discarded.
+            //
+            // A bare call to a statement-level builtin (print/println/printn/
+            // assert/assert_eq) is never promoted, even with no trailing
+            // semicolon: every one of these is void, and promoting it to
+            // ret_expr routes it through lower_expr's generic Call handling
+            // instead of lower_stmt's dedicated builtin interception, which
+            // has no case for it (tracker: print-in-trailing-position). Left
+            // as a normal body statement, it's already lowered correctly by
+            // the existing statement-level dispatch.
             let func_body = just(Token::PunctBraceOpen)
                 .ignore_then(body_stmt_tagged.repeated().collect::<Vec<(Stmt, bool)>>())
                 .then_ignore(just(Token::PunctBraceClose))
@@ -1179,10 +1300,12 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                     let mut stmts: Vec<Stmt> = Vec::with_capacity(len);
                     let mut ret_expr: Option<Expr> = None;
 
-                    let last_is_implicit_return = matches!(
-                        tagged.last(),
-                        Some((Stmt::ExprStmt { .. }, false))
-                    );
+                    let last_is_implicit_return = match tagged.last() {
+                        Some((Stmt::ExprStmt { expr, .. }, false)) => {
+                            !is_statement_level_builtin_call(expr)
+                        }
+                        _ => false,
+                    };
                     // #046: a trailing `if`/`else` is an implicit-return value
                     // ONLY when it is fully value-producing — every branch (then,
                     // each `else if`, and the final else) ends in a trailing
@@ -1225,12 +1348,24 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
 
             // Syntax: fnc: RetType? <T>? name(params) { body }
             // Generics parser reused in both branches
+            // 0.3.4 slice 4: each generic param may carry gene bounds —
+            // `<T>`, `<T: GeneName>`, `<T: GeneA + GeneB>`, comma-separated.
             let generic_params = just(Token::OpLessThan)
                 .ignore_then(
                     select! { Token::Identifier(s) => s }
+                        .then(
+                            just(Token::PunctColon)
+                                .ignore_then(
+                                    select! { Token::Identifier(s) => s }
+                                        .separated_by(just(Token::OpAdd))
+                                        .at_least(1)
+                                        .collect::<Vec<_>>(),
+                                )
+                                .or_not(),
+                        )
                         .separated_by(just(Token::PunctComma))
                         .at_least(1)
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<(String, Option<Vec<String>>)>>(),
                 )
                 .then_ignore(just(Token::OpGreaterThan))
                 .or_not()
@@ -1265,16 +1400,24 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
                         .then(func_body)
                 )
                 .map(
-                    |((pub_tok, macros), (((pos, (ret_ty, type_params, name)), params), (body, ret_expr)))| Stmt::FuncDef {
-                        name,
-                        type_params,
-                        params,
-                        ret_ty,
-                        body,
-                        ret_expr,
-                        is_pub: pub_tok.is_some(),
-                        macros,
-                        pos,
+                    |((pub_tok, macros), (((pos, (ret_ty, generic_pairs, name)), params), (body, ret_expr)))| {
+                        let type_params: Vec<String> = generic_pairs.iter().map(|(n, _)| n.clone()).collect();
+                        let type_bounds: Vec<(String, Vec<String>)> = generic_pairs
+                            .into_iter()
+                            .filter_map(|(n, b)| b.map(|genes| (n, genes)))
+                            .collect();
+                        Stmt::FuncDef {
+                            name,
+                            type_params,
+                            type_bounds,
+                            params,
+                            ret_ty,
+                            body,
+                            ret_expr,
+                            is_pub: pub_tok.is_some(),
+                            macros,
+                            pos,
+                        }
                     },
                 )
         })
@@ -1327,6 +1470,53 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             })
             .boxed();
 
+        // phen GeneName (recv: Type) { fnc: RetTy? full_impl(params) { body } ... }
+        // — the receiver-binding grammar mirrors impl_block's `(name: Type, ...)`
+        // exactly, restricted to exactly one receiver (a phen binds one gene to
+        // one concrete type); methods reuse func_def as-is (the same "full
+        // implementation" fnc syntax impl blocks already use), not gene's
+        // bare-signature grammar.
+        let phen_def = just(Token::KeywordPhen)
+            .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
+            .then(ident)
+            .then_ignore(just(Token::PunctParenOpen))
+            .then(
+                ident
+                    .then_ignore(just(Token::PunctColon))
+                    .then(ty.clone()),
+            )
+            .then_ignore(just(Token::PunctParenClose))
+            .then_ignore(just(Token::PunctBraceOpen))
+            .then(func_def.clone().repeated().collect::<Vec<_>>())
+            .then_ignore(just(Token::PunctBraceClose))
+            .map(|(((pos, gene_name), receiver), methods)| {
+                let method_data = methods
+                    .into_iter()
+                    .filter_map(|s| {
+                        if let Stmt::FuncDef {
+                            name,
+                            params,
+                            ret_ty,
+                            body,
+                            ret_expr,
+                            ..
+                        } = s
+                        {
+                            Some((name, params, ret_ty, body, ret_expr))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                Stmt::PhenDef {
+                    gene_name,
+                    receiver,
+                    methods: method_data,
+                    pos,
+                }
+            })
+            .boxed();
+
         let const_decl = just(Token::KeywordConst)
             .map_with(|_, e: &mut ParseExtra<'a, '_, I>| e.span().start)
             .then(ident.clone())
@@ -1363,6 +1553,8 @@ Stmt::Break { .. } | Stmt::Continue { .. } => {
             const_decl,
             struct_def,
             impl_block,
+            gene_def,
+            phen_def,
             enum_def,
             decl,
             func_def,
@@ -1396,4 +1588,37 @@ where
         .collect::<Vec<_>>()
         .map(|stmts| Program { stmts })
         .then_ignore(end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::builtins::{BuiltinRet, BUILTINS};
+
+    /// Enforces `is_statement_level_builtin_call`'s membership rule against the
+    /// registry: the guard must contain exactly the `BuiltinRet::Void`
+    /// builtins, no more and no fewer.
+    ///
+    /// This exists because the list has been enumerated incompletely twice —
+    /// `exit` was omitted when the guard was written for known-issues #2 and
+    /// carried the same latent JIT divergence until it was reproduced. A test
+    /// catches the third occurrence at `cargo test` time instead of leaving it
+    /// for whoever next writes a function body ending in a bare builtin call.
+    #[test]
+    fn statement_level_guard_covers_exactly_the_void_builtins() {
+        for def in BUILTINS {
+            let call = Expr::Call(def.name.to_string(), vec![], 0);
+            let guarded = is_statement_level_builtin_call(&call);
+            let is_void = def.ret == BuiltinRet::Void;
+            assert_eq!(
+                guarded, is_void,
+                "builtin '{}' has ret {:?} but is {} the statement-level guard — \
+                 a Void builtin promoted into ret_expr routes through lower_expr \
+                 and fails on the JIT with 'unresolved semantic artifact'",
+                def.name,
+                def.ret,
+                if guarded { "in" } else { "missing from" }
+            );
+        }
+    }
 }

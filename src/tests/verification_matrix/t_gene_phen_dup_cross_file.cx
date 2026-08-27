@@ -1,0 +1,15 @@
+// 0.3.4 slice 1: conflicting overlap — two phens binding the same gene to the
+// same concrete type, split across two imported files with no import
+// relationship to each other, and with genuinely different (contradictory)
+// bodies. Proves the flattened-program registration works cross-file, and
+// that the check is on the (gene, type) key, not the body content — a
+// differing body is exactly as invalid as an identical one.
+#![imports]
+a: use "./t_gene_phen_dup_cross_file_a"
+b: use "./t_gene_phen_dup_cross_file_b"
+
+gene Merge2 {
+    fnc add(rhs: Self) -> Self
+}
+
+print(1)

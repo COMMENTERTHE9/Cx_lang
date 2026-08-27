@@ -1,0 +1,15 @@
+// Pattern matching, guards — a matching variant whose guard is `false` falls
+// through to a second, later arm. Proves fallthrough lands somewhere real,
+// not just "didn't crash": the second arm matches the same variant with no
+// guard, so if fallthrough didn't work this would trap on non-exhaustion
+// instead of printing 2.
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Green
+
+when c {
+    Color::Green if false => print(1),
+    Color::Green => print(2),
+    _ => print(0),
+}

@@ -1,0 +1,6 @@
+// CR#4: a branch-tail literal rejects when assigned to a typed struct field
+// (field-assignment site).
+struct S { a: t8 }
+s: S = S { a: 1 }
+s.a = if true { 300 } else { 5 }
+print(s.a)

@@ -103,7 +103,8 @@ Unary(Op, Box<Expr>, usize),
 pub enum WhenPattern {
     Literal(AstValue),
     Range(AstValue, AstValue, bool),
-    EnumVariant(String, String),
+    /// (enum_name, variant, optional `as <ident>` binding — whole-scrutinee only)
+    EnumVariant(String, String, Option<String>),
     Group(String, String),
     Catchall,
 }
@@ -123,6 +124,11 @@ pub enum WhenBody {
 #[derive(Debug, Clone)]
 pub struct WhenArm {
     pub pattern: WhenPattern,
+    /// Optional `if <expr>` guard, evaluated only after the pattern already
+    /// matched. Applies uniformly across every pattern kind (not pattern-
+    /// specific like the `as v` binding), so it lives on the arm, not on
+    /// `WhenPattern`.
+    pub guard: Option<Expr>,
     pub body: WhenBody,
     pub pos: usize,
 }
@@ -161,6 +167,12 @@ pub struct ImportDecl {
     pub pos: usize,
 }
 
+/// (name, params, return type, body, trailing implicit-return expr) — the
+/// same shape `ImplBlock::methods` already uses; `PhenDef` reuses it verbatim
+/// since a phen's methods are "full implementations" exactly like an impl
+/// block's.
+pub type PhenMethod = (String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>);
+
 // AST statements produced by the parser
 #[derive(Debug, Clone)]
 pub enum Stmt {
@@ -182,6 +194,17 @@ pub enum Stmt {
         methods: Vec<(String, Vec<ParamKind>, Option<Type>, Vec<Stmt>, Option<Expr>)>,
         #[allow(dead_code)] // visibility tag preserved for future module-scope work
         is_pub: bool,
+        pos: usize,
+    },
+    GeneDef {
+        name: String,
+        methods: Vec<(String, Vec<ParamKind>, Option<Type>)>,
+        pos: usize,
+    },
+    PhenDef {
+        gene_name: String,
+        receiver: (String, Type),
+        methods: Vec<PhenMethod>,
         pos: usize,
     },
     ConstDecl {
@@ -231,6 +254,9 @@ ExprStmt {
     FuncDef {
         name: String,
         type_params: Vec<String>,
+        /// 0.3.4 slice 4: gene bounds per type parameter — `(param, genes)`
+        /// from `<T: GeneA + GeneB>`. Unbounded params carry no entry.
+        type_bounds: Vec<(String, Vec<String>)>,
         params: Vec<ParamKind>,
         ret_ty: Option<Type>,
         body: Vec<Stmt>,
@@ -244,11 +270,13 @@ ExprStmt {
         _pos: usize,
     },
     While {
+        label: Option<String>,
         cond: Expr,
         body: Vec<Stmt>,
         pos: usize,
     },
     For {
+        label: Option<String>,
         var: String,
         start: Expr,
         end: Expr,
@@ -257,13 +285,16 @@ ExprStmt {
         pos: usize,
     },
     Loop {
+        label: Option<String>,
         body: Vec<Stmt>,
         pos: usize,
     },
     Break {
+        label: Option<String>,
         pos: usize,
     },
     Continue {
+        label: Option<String>,
         pos: usize,
     },
     IfElse {
@@ -274,6 +305,7 @@ ExprStmt {
         pos: usize,
     },
     WhileIn {
+        label: Option<String>,
         arr: String,
         start_slot: usize,
         range_start: Expr,

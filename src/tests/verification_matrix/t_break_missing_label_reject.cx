@@ -1,0 +1,4 @@
+// labeled-breaks (a): break to a label no enclosing loop carries → semantic reject.
+loop {
+    break 'nope
+}

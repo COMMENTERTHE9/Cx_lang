@@ -1,0 +1,5 @@
+// CR#3 headline: a trailing-expression return must range-check at the declared
+// width. `fnc: t8 { 300 }` silently returned 44 (wrapped) before CR#3; now it
+// rejects, like a `t8` declaration would.
+fnc: t8 f() { 300 }
+print(f())

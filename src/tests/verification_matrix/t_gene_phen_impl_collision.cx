@@ -1,0 +1,17 @@
+// 0.3.4 slice 2 (method-ownership rule, application 2): an impl method and a
+// phen method may not share a name on one type — neither side wins.
+struct Player { health: t32 }
+gene Damageable {
+    fnc harm(amount: t32)
+}
+phen Damageable (p: Player) {
+    fnc: harm(amount: t32) {
+        p.health -= amount
+    }
+}
+pm: impl (p: Player) {
+    fnc: harm(amount: t32) {
+        p.health -= amount
+    }
+}
+print(1)

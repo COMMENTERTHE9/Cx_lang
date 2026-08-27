@@ -1,0 +1,18 @@
+// 0.3.4 slice 3: forward reference at execution time — the call site is
+// textually BEFORE the struct, gene, and phen declarations, and still
+// resolves and runs (decision 2 carried through to execution).
+let p;
+p = Player { health: 42 }
+print(p.get_health())
+
+struct Player { health: t32 }
+
+gene Readable {
+    fnc get_health() -> t32
+}
+
+phen Readable (p: Player) {
+    fnc: t32 get_health() {
+        p.health
+    }
+}

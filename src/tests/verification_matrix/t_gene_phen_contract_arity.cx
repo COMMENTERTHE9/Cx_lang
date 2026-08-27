@@ -1,0 +1,11 @@
+// 0.3.4 slice 2: wrong arity vs. the gene's declared signature.
+struct Player { health: t32 }
+gene Damageable {
+    fnc take_damage(amount: t32)
+}
+phen Damageable (p: Player) {
+    fnc: take_damage(amount: t32, extra: t32) {
+        p.health -= amount
+    }
+}
+print(1)

@@ -1,0 +1,4 @@
+// Interpreter fix: same gap as t_f64_comparison_gt.cx, Lt operator.
+// Reference-side (interpreter) bug only — the JIT was already correct before
+// this fix and should show no behavior difference here.
+print(2.0 < 3.14)

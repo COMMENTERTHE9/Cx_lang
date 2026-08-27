@@ -1,0 +1,11 @@
+// 0.3.4 slice 2: wrong return type vs. the gene's declared signature.
+struct Player { health: t32 }
+gene Damageable {
+    fnc is_alive() -> bool
+}
+phen Damageable (p: Player) {
+    fnc: t32 is_alive() {
+        p.health
+    }
+}
+print(1)

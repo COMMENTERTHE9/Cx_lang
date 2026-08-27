@@ -1,0 +1,5 @@
+// D1.1b: array-element arithmetic wraps at t16 width (20000+20000 -> -25536),
+// matching plain t16 vars. Wider-than-t8 guard on the element-type recovery.
+a: [2: t16] = [20000, 20000]
+k: t64 = 0
+print(a:[k] + a:[k])

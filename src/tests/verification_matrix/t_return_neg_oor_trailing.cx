@@ -1,0 +1,3 @@
+// CR#3 (#037 parity): negative out-of-range trailing return rejects.
+fnc: t8 f() { -200 }
+print(f())

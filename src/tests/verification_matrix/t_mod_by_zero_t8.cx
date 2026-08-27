@@ -1,0 +1,5 @@
+// Gate-1b width proof: modulo-by-zero at t8 traps cleanly. Both backends
+// reject non-zero → convergent expected-fail.
+a: t8 = 5
+b: t8 = 0
+print(a % b)

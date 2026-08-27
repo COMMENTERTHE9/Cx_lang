@@ -1,0 +1,12 @@
+// perf-rider: struct field read/write in a hot loop (JIT-lowerable surface).
+// Values are kept bounded by a constant modulus — all positive, no overflow,
+// well clear of the marked negative-struct-array crash trigger.
+struct P { x: t64, y: t64 }
+p: P = P { x: 1, y: 2 }
+i: t64 = 0
+while (i < 800000) {
+    p.x = (p.x + p.y) % 1000003
+    p.y = (p.y + 7) % 1000003
+    i += 1
+}
+print(p.x)

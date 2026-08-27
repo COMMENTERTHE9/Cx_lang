@@ -1,0 +1,9 @@
+// Gate-1b: integer divide-by-zero. The interpreter raises a clean DivByZero
+// error (exit 1); the JIT now emits a divisor==0 guard branching to the cx_trap
+// clean exit (Gate-1b0, exit 126) instead of the raw sdiv that trapped in
+// hardware (STATUS_ILLEGAL_INSTRUCTION 0xC000001D). Both backends reject
+// non-zero → convergent expected-fail PASS. The divisor is a variable so the
+// zero reaches runtime. Width-general — see _t8/_t64 siblings.
+a: t32 = 5
+b: t32 = 0
+print(a / b)

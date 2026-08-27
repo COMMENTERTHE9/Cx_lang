@@ -1,0 +1,30 @@
+// 0.3.4 slice 3: the wrong-phen execution canary. Two phens of one gene for
+// two different types, bodies distinguishable from identical inputs (one
+// adds, one multiplies). Each value must run ITS OWN phen's body — a
+// dispatch leak (first-registered, shared, or crossed) would print 15/15 or
+// 50/50 instead of 15/50.
+struct Adder { base: t32 }
+struct Muler { base: t32 }
+
+gene Compute {
+    fnc apply(v: t32) -> t32
+}
+
+phen Compute (a: Adder) {
+    fnc: t32 apply(v: t32) {
+        a.base + v
+    }
+}
+
+phen Compute (m: Muler) {
+    fnc: t32 apply(v: t32) {
+        m.base * v
+    }
+}
+
+let x;
+let y;
+x = Adder { base: 10 }
+y = Muler { base: 10 }
+print(x.apply(5))
+print(y.apply(5))

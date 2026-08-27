@@ -142,6 +142,9 @@ impl RunTime {
                 (Value::TBool(a), Value::TBool(b)) => Ok(Value::Bool(a == b)),
                 (Value::TBool(a), Value::Bool(b)) => Ok(Value::Bool((*a == 1) == *b)),
                 (Value::Bool(a), Value::TBool(b)) => Ok(Value::Bool(*a == (*b == 1))),
+                (Value::EnumVariant(e1, v1), Value::EnumVariant(e2, v2)) => {
+                    Ok(Value::Bool(e1 == e2 && v1 == v2))
+                }
                 (l, r) => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -163,6 +166,9 @@ impl RunTime {
                 (Value::TBool(a), Value::TBool(b)) => Ok(Value::Bool(a != b)),
                 (Value::TBool(a), Value::Bool(b)) => Ok(Value::Bool((*a == 1) != *b)),
                 (Value::Bool(a), Value::TBool(b)) => Ok(Value::Bool(*a != (*b == 1))),
+                (Value::EnumVariant(e1, v1), Value::EnumVariant(e2, v2)) => {
+                    Ok(Value::Bool(e1 != e2 || v1 != v2))
+                }
                 (l, r) => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -172,6 +178,7 @@ impl RunTime {
             },
             Op::Lt => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a < b)),
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
                 _ => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -181,6 +188,7 @@ impl RunTime {
             },
             Op::Gt => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a > b)),
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
                 _ => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -190,6 +198,7 @@ impl RunTime {
             },
             Op::LtEq => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a <= b)),
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
                 _ => Err(RuntimeError::BadOperands {
                     pos,
                     op,
@@ -199,6 +208,7 @@ impl RunTime {
             },
             Op::GtEq => match (&left, &right) {
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Bool(a >= b)),
+                (Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
                 _ => Err(RuntimeError::BadOperands {
                     pos,
                     op,

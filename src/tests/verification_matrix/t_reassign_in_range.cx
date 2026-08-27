@@ -1,0 +1,5 @@
+// CX-3.2: an in-range reassignment must still be accepted — the width-range
+// check must not overcorrect into rejecting legitimate values.
+x: t8 = 5
+x = 100
+print(x)

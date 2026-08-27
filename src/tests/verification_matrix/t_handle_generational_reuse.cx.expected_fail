@@ -1,0 +1,6 @@
+#! interp=diagnostic jit=trap
+# The interpreter raises a RUNTIME error (exit 1, rendered diagnostic);
+# the JIT routes every runtime error through the single cx_trap channel
+# (exit 126). Both reject; the shapes differ by design, so the pair is
+# recorded and asserted rather than accepted as merely "non-zero".
+D2.5c: h2 (reusing h1's freed slot) must read correctly; h1's now-stale read must reject cleanly on both backends after h2's check succeeds.

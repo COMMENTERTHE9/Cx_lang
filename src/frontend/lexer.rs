@@ -106,6 +106,9 @@ pub enum Token {
     #[token("group")]
     KeywordGroup,
 
+    #[token("as")]
+    KeywordAs,
+
     #[token("Handle")]
     KeywordHandle,
 
@@ -114,6 +117,12 @@ pub enum Token {
 
     #[token("impl")]
     KeywordImpl,
+
+    #[token("gene")]
+    KeywordGene,
+
+    #[token("phen")]
+    KeywordPhen,
 
     #[token("Result")]
     KeywordResult,
@@ -190,6 +199,14 @@ pub enum Token {
         ch
     })]
     LiteralChar(char),
+
+    // ── Loop label (labeled-breaks a) ─────────────
+    // Apostrophe + identifier, NO closing quote. Ordered after LiteralChar so
+    // logos longest-match keeps `'x'` a char literal (3 chars) over the 2-char
+    // label prefix `'x`; `'outer` (no closing quote) can't match the char regex
+    // and lexes here. The slice keeps the leading `'`, stripped in the callback.
+    #[regex(r"'[_\p{L}][_\p{L}\p{N}]*", |lex| lex.slice()[1..].to_string())]
+    Label(String),
 
     // ── Identifiers ───────────────────────────────
     #[regex(r"[_\p{L}][_\p{L}\p{N}]*", |lex| lex.slice().to_string())]
@@ -328,9 +345,12 @@ impl std::fmt::Display for Token {
             Token::KeywordThen => "then",
             Token::KeywordEnum => "enum",
             Token::KeywordGroup => "group",
+            Token::KeywordAs => "as",
             Token::KeywordHandle => "Handle",
             Token::KeywordStruct => "struct",
             Token::KeywordImpl => "impl",
+            Token::KeywordGene => "gene",
+            Token::KeywordPhen => "phen",
             Token::KeywordResult => "Result",
             Token::KeywordOk => "Ok",
             Token::KeywordErr => "Err",
@@ -352,6 +372,7 @@ impl std::fmt::Display for Token {
             Token::LiteralInt(_) => "integer literal",
             Token::LiteralChar(_) => "char literal",
             Token::Identifier(_) => "identifier",
+            Token::Label(_) => "label",
             // Operators
             Token::OpAdd => "+",
             Token::OpSub => "-",

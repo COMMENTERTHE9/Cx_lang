@@ -1,0 +1,5 @@
+// Gate-2a: struct scalar t16 negative field (width-general, second store site).
+// Reads back -1.
+struct S { x: t16 }
+s: S = S { x: -1 }
+print(s.x)

@@ -7,6 +7,15 @@ Target: x86-64 (Windows, Linux)
 
 This document tracks layout decisions for backend 0.1. Decisions marked **LOCKED** are frozen and have layout tests. Decisions marked **OPEN** need design work before implementation.
 
+**Platform coverage note.** The target above names both Windows and Linux, but
+the two are not equally exercised. CI runs on **Linux x86-64**
+(`ubuntu-latest`, every job in `.github/workflows/ci.yml`), while primary
+development runs on **Windows x86-64 (MSVC)**. Both platforms therefore see
+real use, but no single run covers both: a Windows-only regression passes CI,
+and a Linux-only regression passes local gates. Cross-platform conformance of
+the LOCKED decisions below is inferred from that split, not from a matrix
+build.
+
 ---
 
 ## Scalar Layout — LOCKED

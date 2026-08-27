@@ -1,0 +1,4 @@
+// Gate-2a: standalone t16 array with a negative element (width-general — the
+// overrun and the fix both scale with the element width). Reads back -1.
+a: [3: t16] = [-1, 0, 100]
+print(a:[0])

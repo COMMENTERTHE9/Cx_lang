@@ -1,0 +1,6 @@
+// labeled-breaks (a): the same label on two overlapping (nested) loops → reject.
+'outer: loop {
+    'outer: loop {
+        break
+    }
+}

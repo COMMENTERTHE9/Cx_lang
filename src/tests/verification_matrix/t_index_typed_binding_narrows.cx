@@ -1,0 +1,8 @@
+// D1.1b: the silent-out-of-range-binding case. Pre-fix `x: t8 = a:[k] + a:[k]`
+// let x hold 200 (out of t8 range, no wrap, no error) because the Unknown
+// defeated typed-assignment narrowing. Now the t8-typed Binary wraps to -56
+// before the assignment, and x holds a valid t8 value.
+a: [2: t8] = [100, 100]
+k: t64 = 0
+x: t8 = a:[k] + a:[k]
+print(x)

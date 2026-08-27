@@ -104,7 +104,29 @@ pub struct RunTime {
     pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
     pub consts: HashMap<String, Value>,
+    /// Cx-level call depth (known-issues §20).
+    ///
+    /// The interpreter executes a Cx call by recursing through
+    /// `run_semantic_stmt` → `eval_semantic_expr` → `call_semantic_*`, so an
+    /// unbounded Cx recursion is an unbounded NATIVE recursion and the thread's
+    /// stack goes. Measured on a debug build with the 64 MB stack `main` asks
+    /// for: depth 490 survives, 495 does not — roughly 130 KB of native frame
+    /// per Cx frame. Past that the process died with a raw
+    /// `has overflowed its stack` and exit 127, which is also the parity
+    /// harness's SKIP sentinel, so an interpreter death was shaped exactly like
+    /// an unsupported construct.
+    pub(crate) call_depth: usize,
 }
+
+/// Maximum Cx call depth before the interpreter refuses rather than crashing.
+///
+/// Bounded by evidence on both sides: the deepest legitimate recursion in the
+/// fixture corpus is `fib(15)` at depth 15, and the measured crash point is
+/// ~492. 256 is ~17x above real code and ~2x below the crash, so a heavier
+/// frame in some other build cannot overshoot the guard into a real overflow.
+/// Same shape as the monomorphizer's 64-instantiation cap against a corpus
+/// maximum of 2.
+pub(crate) const MAX_CALL_DEPTH: usize = 256;
 
 impl RunTime {
     pub fn register_semantic_func(&mut self, func: SemanticFunction) {
@@ -132,6 +154,7 @@ impl RunTime {
             semantic_funcs: HashMap::new(),
             debug_scope: false,
             consts: HashMap::new(),
+            call_depth: 0,
         }
     }
 }
@@ -172,14 +195,15 @@ pub(crate) fn value_to_string(rt: &RunTime, v: Value) -> String {
 pub(crate) fn apply_numeric_cast(val: Value, to: &SemanticType) -> Value {
     match val {
         Value::Num(n) => {
-            let truncated = match to {
-                SemanticType::I8   => (n as i8) as i128,
-                SemanticType::I16  => (n as i16) as i128,
-                SemanticType::I32  => (n as i32) as i128,
-                SemanticType::I64  => (n as i64) as i128,
-                SemanticType::I128 => n,
-                SemanticType::F64  => return Value::Float(n as f64),
-                _ => n,
+            // Integer narrowing comes from the one facts table (tracker D1.1):
+            // `width.truncate(n)` is the same `n as iN as i128` this match wrote
+            // inline. F64 and non-numeric targets keep their existing behavior.
+            let truncated = match to.int_width() {
+                Some(width) => width.truncate(n),
+                None => match to {
+                    SemanticType::F64 => return Value::Float(n as f64),
+                    _ => n,
+                },
             };
             Value::Num(truncated)
         }

@@ -54,6 +54,21 @@ impl IrType {
             IrType::Void => 1,
         }
     }
+
+    /// Map a signed-integer IR type to its [`IntWidth`] facts key (tracker D1.1),
+    /// or `None` for any non-integer type (including `Bool`, whose `(0, 1)` IR
+    /// range is handled locally in `ir_int_range` — see the int_facts scope note).
+    pub fn int_width(&self) -> Option<crate::frontend::int_facts::IntWidth> {
+        use crate::frontend::int_facts::IntWidth;
+        match self {
+            IrType::I8 => Some(IntWidth::W8),
+            IrType::I16 => Some(IntWidth::W16),
+            IrType::I32 => Some(IntWidth::W32),
+            IrType::I64 => Some(IntWidth::W64),
+            IrType::I128 => Some(IntWidth::W128),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone)]

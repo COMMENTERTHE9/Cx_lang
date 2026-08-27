@@ -1,0 +1,21 @@
+// labeled-breaks (b): continue 'outer from an inner loop re-iterates the OUTER
+// loop. Discriminating: with an unlabeled continue the inner would re-iterate
+// forever. continue 'outer skips the rest of the outer body (`hits` never
+// increments) and advances the outer (i climbs 1..4 until break 'outer). Output
+// 4 then 0 proves the OUTER iteration advanced, not the inner's.
+let i;
+i = 0
+let hits;
+hits = 0
+'outer: loop {
+    i = i + 1
+    if i > 3 {
+        break 'outer
+    }
+    loop {
+        continue 'outer
+    }
+    hits = hits + 1
+}
+print(i)
+print(hits)

@@ -1,0 +1,7 @@
+// CR#3 regression: legitimate widening (t8 -> t64) keeps working on both return
+// paths — the new compatibility/check gates must not block it.
+x: t8 = 5
+fnc: t64 a() { x }
+fnc: t64 b() { return x }
+print(a())
+print(b())

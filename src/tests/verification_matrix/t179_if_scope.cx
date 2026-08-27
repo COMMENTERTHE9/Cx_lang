@@ -1,0 +1,19 @@
+flag: t32 = 2
+x: t32 = 100
+if flag == 1 {
+    x: t32 = 1
+    tmp: t32 = 10
+    print(x)
+    print(tmp)
+} else if flag == 2 {
+    x: t32 = 2
+    tmp: t32 = 20
+    print(x)
+    print(tmp)
+} else {
+    x: t32 = 3
+    tmp: t32 = 30
+    print(x)
+    print(tmp)
+}
+print(x)

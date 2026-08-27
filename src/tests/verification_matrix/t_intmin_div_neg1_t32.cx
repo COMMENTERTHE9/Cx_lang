@@ -1,0 +1,5 @@
+// Gate-1a width proof: INT_MIN / -1 at t32 wraps to -2147483648. Guarded
+// value-select; both backends agree, no trap.
+a: t32 = -2147483648
+b: t32 = -1
+print(a / b)

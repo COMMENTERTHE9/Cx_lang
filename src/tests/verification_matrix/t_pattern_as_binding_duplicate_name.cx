@@ -1,0 +1,16 @@
+// Pattern matching, first slice — a duplicate binding name in the same scope
+// is rejected by the existing `declare()` duplicate-in-scope rule (the same
+// rule `let` and `for` already enforce), not a newly invented one: the arm's
+// `as v` binding and a `let v` inside the same arm body collide.
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+when c {
+    Color::Red as v => {
+        let v;
+        print(v)
+    },
+    _ => print(0),
+}

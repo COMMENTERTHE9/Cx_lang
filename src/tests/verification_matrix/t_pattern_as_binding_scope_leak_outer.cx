@@ -1,0 +1,13 @@
+// Pattern matching, first slice — an `as v` binding is scoped to its own
+// arm's body only. Referencing `v` after the `when` block must be a genuine
+// scope error, not a silently-visible or stale value.
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+when c {
+    Color::Red as v => print(1),
+    _ => print(0),
+}
+print(v)

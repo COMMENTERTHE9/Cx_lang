@@ -1,0 +1,11 @@
+// Writing through a bound is the same rule as reading through one — the check
+// sits at the shared field-resolution choke point, so read, write and compound
+// write are covered by construction rather than one arm each.
+struct A { base: t32 }
+gene G { fnc go() -> t32 }
+phen G (a: A) { fnc: t32 go() { a.base } }
+fnc: t32 <T: G> f(t: T) { t.base = 9
+    0 }
+let x
+x = A { base: 5 }
+print(f(x))

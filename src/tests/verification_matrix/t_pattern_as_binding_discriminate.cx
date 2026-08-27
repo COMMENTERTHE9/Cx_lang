@@ -1,0 +1,38 @@
+// Pattern matching, first slice: `as v` whole-scrutinee binding on `when`
+// EnumVariant arms. Discriminating canary — three arms each bind `v` under
+// the SAME name; a nested `when` on `v` (not a print-format comparison, which
+// is a pre-existing, unrelated interp/JIT divergence for bare enum values)
+// proves the matched arm's binding carries THAT arm's value, not a leftover
+// from an earlier arm's pattern check or the wrong arm's value.
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Green
+
+when c {
+    Color::Red as v => {
+        when v {
+            Color::Red   => print(100),
+            Color::Green => print(101),
+            Color::Blue  => print(102),
+            _            => print(109),
+        }
+    },
+    Color::Green as v => {
+        when v {
+            Color::Red   => print(200),
+            Color::Green => print(201),
+            Color::Blue  => print(202),
+            _            => print(209),
+        }
+    },
+    Color::Blue as v => {
+        when v {
+            Color::Red   => print(300),
+            Color::Green => print(301),
+            Color::Blue  => print(302),
+            _            => print(309),
+        }
+    },
+    _ => print(999),
+}

@@ -1,0 +1,9 @@
+// Gate-1b: integer modulo-by-zero. srem shares sdiv's zero-divisor trap
+// (STATUS_INTEGER_DIVIDE_BY_ZERO 0xC0000094) — the interpreter raises a clean
+// DivByZero error (exit 1). The JIT now emits the same divisor==0 guard as Div
+// (Mod needs only this — srem already handles INT_MIN%-1), branching to the
+// cx_trap clean exit (126). Both backends reject non-zero → convergent
+// expected-fail PASS. Width-general — see _t8/_t64 siblings.
+a: t32 = 5
+b: t32 = 0
+print(a % b)

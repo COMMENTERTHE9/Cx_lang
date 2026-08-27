@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+# Both backends emit a rendered call-depth message at exit 1.

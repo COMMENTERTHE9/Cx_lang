@@ -1,0 +1,31 @@
+// 0.3.4 slice 6: unary Neg on a user type, and Eq with != derived as the
+// logical NOT of eq (the doc's single-method Eq contract).
+struct Vec2 { x: t32, y: t32 }
+
+phen Neg (v: Vec2) {
+    fnc: Self neg() {
+        made: Self = Vec2 { x: 0 - v.x, y: 0 - v.y }
+        made
+    }
+}
+
+phen Eq (v: Vec2) {
+    fnc: bool eq(rhs: Self) {
+        v.x == rhs.x && v.y == rhs.y
+    }
+}
+
+let a;
+a = Vec2 { x: 3, y: 4 }
+let n;
+n = -a
+print(n.x)
+print(n.y)
+let b;
+b = Vec2 { x: 3, y: 4 }
+let c;
+c = Vec2 { x: 9, y: 4 }
+print(a == b)
+print(a != b)
+print(a == c)
+print(a != c)
