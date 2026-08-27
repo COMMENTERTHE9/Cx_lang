@@ -199,16 +199,6 @@ on nested Handles. Needs its own scoping audit before scheduling.
 
 ## Working Notes
 
-**2026-07-26:** JIT gap-closing session on `submain`: `exit()` builtin lowered
-(known-issues #11, 7 fixtures converted), top-level `const` declarations
-lowered (known-issues #12, 2 fixtures converted), parser guard fix for the
-statement-level builtin membership rule. JIT parity moved 319/61/0 → 328/52/0
-across 380 fixtures. README accuracy pass corrected stale lowering claims and
-added first-ever documentation of gene/phen, Handle<T>, and pattern matching.
-Const-immutability finding filed: assignment to a const is only rejected at
-interpreter runtime, not at analysis time — proper fix deferred to a separate
-dispatch. Submain 8 commits ahead of main.
-
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
