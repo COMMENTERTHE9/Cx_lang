@@ -232,6 +232,18 @@ impl RunTime {
             }
         }
 
+        // known-issues §20: a Cx call is a native recursion here, so unbounded
+        // Cx recursion took the thread's stack with it. One increment and one
+        // compare on the call path — nothing on the statement or expression
+        // path, which is where the interpreter actually spends its time.
+        self.call_depth += 1;
+        if self.call_depth > MAX_CALL_DEPTH {
+            self.call_depth -= 1;
+            return Err(RuntimeError::CallDepthExceeded {
+                pos,
+                function: callee.to_string(),
+            });
+        }
         self.push_function_scope();
 
         let result = (|| -> Result<Value, RuntimeError> {
@@ -259,6 +271,7 @@ impl RunTime {
         })();
 
         self.pop_scope();
+        self.call_depth -= 1;
         result
     }
 
@@ -319,6 +332,17 @@ impl RunTime {
         }
 
         // Push scope
+        // known-issues §20: the method path recurses natively just as the free
+        // function path does, so it carries the same guard, in the same place —
+        // around the scope push, after the early rejections above it.
+        self.call_depth += 1;
+        if self.call_depth > MAX_CALL_DEPTH {
+            self.call_depth -= 1;
+            return Err(RuntimeError::CallDepthExceeded {
+                pos,
+                function: format!("{}.{}", instance, method),
+            });
+        }
         self.push_function_scope();
 
         let result = (|| -> Result<Value, RuntimeError> {
@@ -361,6 +385,7 @@ impl RunTime {
         }
 
         self.pop_scope();
+        self.call_depth -= 1;
 
         // Write all alias mutations back to caller scope
         // First alias writes back to instance

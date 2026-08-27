@@ -144,6 +144,21 @@ pub enum RuntimeError {
         msg: String,
         pos: usize,
     },
+    /// Cx call depth exceeded the interpreter's limit (known-issues §20).
+    ///
+    /// A Cx call is a native recursion in the interpreter, so unbounded Cx
+    /// recursion used to take the thread's stack with it — a raw
+    /// `has overflowed its stack` and exit 127, with no diagnostic and no line.
+    /// Exit 127 is also the parity harness's SKIP sentinel, so a crash was
+    /// indistinguishable from an unsupported construct. This turns it into an
+    /// ordinary diagnostic on the ordinary exit-1 path.
+    /// The depth and limit are not carried: the depth is always `limit + 1`
+    /// and the limit is a constant, so the renderer reads both from
+    /// `MAX_CALL_DEPTH` rather than growing every `RuntimeError` by two words.
+    CallDepthExceeded {
+        pos: usize,
+        function: String,
+    },
 }
 
 #[derive(Debug, Clone)]

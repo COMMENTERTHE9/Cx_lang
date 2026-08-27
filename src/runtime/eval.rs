@@ -49,7 +49,9 @@ impl RunTime {
             SemanticExprKind::DotAccess { container, field, .. } => {
                 self.get_field(container, field, 0)
             }
-            SemanticExprKind::StructInstance { type_name, fields } => {
+            // `type_args` is a lowering concern: the interpreter stores field
+            // values dynamically and never needs a per-instantiation layout.
+            SemanticExprKind::StructInstance { type_name, fields, .. } => {
                 let mut map = HashMap::new();
                 for (fname, fexpr) in fields {
                     let val = self.eval_semantic_expr(fexpr)?;

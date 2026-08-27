@@ -1,0 +1,5 @@
+// Audit C3, pattern position: an undeclared variant as a `when` arm. Same
+// resolver as value position, so this form is covered by construction.
+enum L { Red, Green }
+c: L = L::Red
+when c { L::Red => print(1), L::Mauve => print(2), _ => print(0) }

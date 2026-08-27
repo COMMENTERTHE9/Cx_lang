@@ -1,0 +1,20 @@
+// Anti-overcorrection, the one that matters: method dispatch through a bound is
+// the feature slice 4 built and this rule must not touch it. Two types with the
+// same bound produce distinguishable results from identical input, so a
+// monomorphization or dispatch leak would print 15/15 rather than 15/50.
+// An indexable ARRAY of T also stays indexable — only the BARE parameter is not.
+struct Adder { base: t32 }
+struct Muler { base: t32 }
+gene Compute { fnc apply(v: t32) -> t32 }
+phen Compute (a: Adder) { fnc: t32 apply(v: t32) { a.base + v } }
+phen Compute (m: Muler) { fnc: t32 apply(v: t32) { m.base * v } }
+fnc: t32 <T: Compute> run_it(t: T, v: t32) { t.apply(v) }
+fnc: t64 <T> head(a: [3: T]) { a:[0] }
+let x
+x = Adder { base: 10 }
+let y
+y = Muler { base: 10 }
+print(run_it(x, 5))
+print(run_it(y, 5))
+arr: [3: t64] = [7, 8, 9]
+print(head(arr))

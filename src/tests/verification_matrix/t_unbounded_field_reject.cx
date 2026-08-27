@@ -1,0 +1,8 @@
+// The unbounded case: with no gene bound at all, nothing whatever is known
+// about T's fields. Same rejection, different message — it names the absence of
+// a bound rather than a contract that does not cover fields.
+struct A { base: t32 }
+fnc: t32 <T> f(t: T) { t.base }
+let x
+x = A { base: 5 }
+print(f(x))

@@ -1,0 +1,8 @@
+// Audit C3: a variant the enum does not declare. The interpreter accepted it
+// as a PHANTOM variant — exit 0, matched no real arm, and compared equal to
+// itself (this printed 0 then 100) — while the JIT refused to lower it for
+// want of a resolved tag. Analysis holds the variant list; it now decides.
+enum L { Red, Green }
+c: L = L::Blue
+when c { L::Red => print(1), L::Green => print(2), _ => print(0) }
+if c == L::Blue { print(100) } else { print(200) }
