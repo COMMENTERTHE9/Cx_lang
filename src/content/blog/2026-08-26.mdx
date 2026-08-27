@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-08-26"
+date: 2026-08-26
+description: "CI stale-base check fixed to measure actual PR staleness, plus a daily log reconciliation correcting roadmap claims."
+---
+
+The CI pipeline had a silent bug in the stale-base check, and it got fixed and merged today. No language or compiler work landed, but the fix is worth understanding because it was broken in a way that looked correct.
+
+## Stale-base check was measuring the wrong thing
+
+The `stale-base` job in `ci.yml` was supposed to flag PRs whose branch had drifted too far behind their target. Instead, it was measuring how far `submain` led `main` on every single PR, regardless of which branch the PR actually targeted. That meant it silently passed on all 93 open PRs targeting main, reporting a repo-level property rather than anything about the PR itself.
+
+The root cause was two-fold. First, the job always fetched `origin/submain` and computed `HEAD..origin/submain`, ignoring `github.base_ref` entirely. Second, `actions/checkout` on a `pull_request` trigger checks out the merge commit, which already contains the base, so the count would read zero for every mergeable PR and pass vacuously.
+
+The fix reads the actual base branch from `github.base_ref` and checks out the PR head commit directly (`github.event.pull_request.head.sha`) so the base's commits are genuinely absent from HEAD. Without both changes together the count stays meaningless. The threshold stays at 20 commits. Merged via PR #388 as commit `f691ef0`, touching `.github/workflows/ci.yml` (+13/-7).
+
+## Daily log reconciliation
+
+Two automated generators had produced separate logs for 2026-08-22 about 26 minutes apart, landing on different branches. This commit reconciled them into one version, keeping the more accurate claim on each point:
+
+- The branch's own commit (`db0c143`) was added to "Landed today," which only the later run had seen.
+- Array returns and expression receivers were corrected from 0.3.3 scope items to 0.4 lowering blockers.
+- The daily-log branch span was corrected from "Aug 8 through Aug 21" to "May 28 through Aug 22."
+
+Small corrections, but they matter for keeping the record accurate when future logs reference the roadmap state.
+
+## Submain divergence is getting long
+
+The submain branch holds 9 commits ahead of main, unchanged for two days now. The oldest commits (array returns, expression receivers) are 10 days old, dating back to the 0.3.3 tag on Aug 16. This is the longest the gap has been since that tag landed.
+
+Those 9 commits cover substantial ground: array returns, expression receivers, value semantics (Model B for aggregates-as-values), contiguous multidimensional arrays (Model A), clippy reconciliation, and assignment-target unification. All tested and clean on submain. Merging them would bring main from 414 to 453 tests and close several 0.4 lowering blockers.
+
+## What's next
+
+The submain-to-main merge is overdue and is the most likely next move. Once that lands, the remaining 0.4 blockers include `.copy`/`.copy.free`/`copy_into` parameter kinds, nested function definitions, `while-in`, function-body `const`, `t128` printing, `char`, and non-identifier string interpolation.
+
+The daily-log PR backlog also continues to grow. Branches from May 28 through Aug 25 remain as remote branches, most with unmerged PRs. The 2026-08-25 log is branch-local and not yet merged.
+
+Main test matrix holds steady at 414 pass, 0 fail.
