@@ -1,0 +1,6 @@
+// known-issues #12: writing through a const array's index is still writing to
+// the const. This previously SILENTLY MUTATED the const on both backends —
+// the interpreter's runtime guard only covered name-based writes.
+const A: [3: t32] = [1, 2, 3]
+A:[0] = 9
+print(A:[0])

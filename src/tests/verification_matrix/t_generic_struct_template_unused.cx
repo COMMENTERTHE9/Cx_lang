@@ -1,0 +1,5 @@
+// A generic struct declared but never instantiated contributes no layout and
+// must not error — a template has no layout, which is correct, not a gap.
+struct Pair<T> { a: T, b: T }
+x: t64 = 5
+print(x)

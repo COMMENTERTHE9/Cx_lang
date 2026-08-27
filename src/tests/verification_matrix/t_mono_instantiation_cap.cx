@@ -1,0 +1,9 @@
+// The monomorphizer's instantiation cap (known-issues §23). Each recursive call
+// instantiates `g` at a strictly larger array type — t64, [1: t64],
+// [1: [1: t64]], … — genuinely distinct SemanticTypes, so the worklist would not
+// terminate. This fixture could not be written until §20 landed: the
+// interpreter used to die here with a raw stack overflow at exit 127, and the
+// rejection-shape harness correctly refused to accept a crash as a diagnosis.
+// Now the interpreter diagnoses (call-depth guard) and the JIT SKIPs at the cap.
+fnc: T <T> g(x: T) { g([x]) }
+print(g(1))

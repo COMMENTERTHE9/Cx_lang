@@ -1,0 +1,6 @@
+// Audit C2, compound form: same nesting, `+=` instead of `=`. Interpreter
+// printed 10/11/12, JIT printed 10. Both must now reject.
+for i in 0..3 {
+    if i >= 0 { i += 10 }
+    print(i)
+}

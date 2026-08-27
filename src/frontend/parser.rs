@@ -101,6 +101,29 @@ fn ifelse_to_if_expr(
 /// (print/println/printn/assert/assert_eq)? Used to keep a bare trailing
 /// call to one of these out of implicit-return position — see the
 /// `func_body` combinator's doc comment.
+/// Should a trailing bare call to this builtin be left as a body statement
+/// rather than promoted into the function's `ret_expr`?
+///
+/// **Membership rule: a builtin belongs here if and only if its registry
+/// `BuiltinRet` is `Void`.** Nothing else qualifies, and every `Void` builtin
+/// qualifies — the list below is exactly the `Void` set
+/// (`print`, `println`, `printn`, `assert`, `assert_eq`, `exit`).
+///
+/// Why the rule is what it is: `ret_expr` is lowered through `lower_expr`,
+/// which has no builtin interception; only `lower_stmt` dispatches builtins to
+/// their dedicated lowering functions. A void builtin promoted into `ret_expr`
+/// therefore reaches the JIT as an ordinary unresolved call and fails with
+/// `unresolved semantic artifact reached lowering: function '<name>'`, while
+/// the interpreter handles it fine — a silent backend divergence. A non-void
+/// builtin genuinely *is* the function's value in that position, so promoting
+/// it is correct; if it does not lower, that is a lowering gap
+/// (`JitStatus::GatedUnsupported` / `Unhandled`), not a promotion bug, and it
+/// surfaces identically whether the call is trailing or not.
+///
+/// **If you add a builtin with `BuiltinRet::Void`, add its `BuiltinKind`
+/// here.** This list has been enumerated incompletely twice: `exit` was
+/// missing when the guard was first written for known-issues #2, and carried
+/// the identical latent bug until the exit-lowering work reproduced it.
 fn is_statement_level_builtin_call(expr: &Expr) -> bool {
     let Expr::Call(name, _, _) = expr else {
         return false;
@@ -113,6 +136,7 @@ fn is_statement_level_builtin_call(expr: &Expr) -> bool {
                 | crate::frontend::builtins::BuiltinKind::Printn
                 | crate::frontend::builtins::BuiltinKind::Assert
                 | crate::frontend::builtins::BuiltinKind::AssertEq
+                | crate::frontend::builtins::BuiltinKind::Exit
         )
     )
 }
@@ -1564,4 +1588,37 @@ where
         .collect::<Vec<_>>()
         .map(|stmts| Program { stmts })
         .then_ignore(end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::builtins::{BuiltinRet, BUILTINS};
+
+    /// Enforces `is_statement_level_builtin_call`'s membership rule against the
+    /// registry: the guard must contain exactly the `BuiltinRet::Void`
+    /// builtins, no more and no fewer.
+    ///
+    /// This exists because the list has been enumerated incompletely twice —
+    /// `exit` was omitted when the guard was written for known-issues #2 and
+    /// carried the same latent JIT divergence until it was reproduced. A test
+    /// catches the third occurrence at `cargo test` time instead of leaving it
+    /// for whoever next writes a function body ending in a bare builtin call.
+    #[test]
+    fn statement_level_guard_covers_exactly_the_void_builtins() {
+        for def in BUILTINS {
+            let call = Expr::Call(def.name.to_string(), vec![], 0);
+            let guarded = is_statement_level_builtin_call(&call);
+            let is_void = def.ret == BuiltinRet::Void;
+            assert_eq!(
+                guarded, is_void,
+                "builtin '{}' has ret {:?} but is {} the statement-level guard — \
+                 a Void builtin promoted into ret_expr routes through lower_expr \
+                 and fails on the JIT with 'unresolved semantic artifact'",
+                def.name,
+                def.ret,
+                if guarded { "in" } else { "missing from" }
+            );
+        }
+    }
 }

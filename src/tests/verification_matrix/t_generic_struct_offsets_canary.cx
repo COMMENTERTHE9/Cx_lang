@@ -1,0 +1,10 @@
+// Layout canary at the OFFSET level: two fields, so the instantiations differ
+// in field offsets (t8: 0,1 — t64: 0,8) and not only in element width. A shared
+// offset table reads the second field from the wrong address.
+struct Rec<T> { a: T, b: T }
+p: Rec = Rec<t8> { a: 1, b: 2 }
+q: Rec = Rec<t64> { a: 111111, b: 222222 }
+print(p.a)
+print(p.b)
+print(q.a)
+print(q.b)

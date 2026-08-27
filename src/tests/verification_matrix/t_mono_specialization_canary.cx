@@ -1,0 +1,9 @@
+// Specialization canary: two instantiations of one template must not share a
+// body or a signature. Widths and results are deliberately asymmetric — a
+// shared t8 specialization truncates 1000000, a shared t64 one misreads the t8
+// call. Symmetric values would mask exactly this.
+fnc: T <T> pick(a: T, b: T) { b }
+s: t8 = pick(1, 100)
+w: t64 = pick(2, 1000000)
+print(s)
+print(w)

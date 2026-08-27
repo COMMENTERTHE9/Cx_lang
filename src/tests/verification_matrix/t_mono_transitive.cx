@@ -1,0 +1,8 @@
+// Transitive composition: specializing wrap@T demands id@T. The inner call
+// recorded its argument SYMBOLICALLY ([TypeParam("T")]); composing that with
+// the enclosing substitution is what makes it concrete, with no re-derivation
+// of inference outside the analyser. Two instantiations, distinguishable types.
+fnc: T <T> id(x: T) { x }
+fnc: T <T> wrap(x: T) { id(x) }
+print(wrap(5))
+print(wrap(true))

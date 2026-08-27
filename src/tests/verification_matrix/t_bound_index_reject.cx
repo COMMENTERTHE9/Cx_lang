@@ -1,0 +1,10 @@
+// A bare type parameter is not indexable for the same reason it has no fields.
+// This previously reached the interpreter and failed there with the C4-family
+// wrong message ("invalid assignment target" — for a read).
+struct A { base: t32 }
+gene G { fnc go() -> t32 }
+phen G (a: A) { fnc: t32 go() { a.base } }
+fnc: t32 <T: G> f(t: T) { t:[0] }
+let x
+x = A { base: 5 }
+print(f(x))

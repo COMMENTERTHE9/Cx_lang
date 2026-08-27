@@ -1,0 +1,18 @@
+// A gene declares `fnc` signatures only, so a bound promises METHODS, not
+// fields. This program used to be accepted: it printed 5 for the Adder call and
+// then died at runtime on the Muler call — which satisfies the same bound but
+// has no `base` field — with the field-as-variable diagnostic known-issues §17
+// records ("variable 't.base' has not been declared"). Analysis holds both the
+// bound and the gene's contract, so analysis rejects it.
+struct Adder { base: t32 }
+struct Muler { other: t32 }
+gene Compute { fnc apply(v: t32) -> t32 }
+phen Compute (a: Adder) { fnc: t32 apply(v: t32) { a.base + v } }
+phen Compute (m: Muler) { fnc: t32 apply(v: t32) { m.other * v } }
+fnc: t32 <T: Compute> reach(t: T) { t.base }
+let x
+x = Adder { base: 5 }
+let y
+y = Muler { other: 9 }
+print(reach(x))
+print(reach(y))

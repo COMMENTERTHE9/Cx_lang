@@ -1,0 +1,9 @@
+// Layout canary: two instantiations of ONE generic struct in one program must
+// NOT share a layout. Values are deliberately asymmetric — 1000000 does not fit
+// t8, so a shared or last-wins t8 layout truncates it, and a shared t64 layout
+// misreads the t8 one. Symmetric values would mask exactly this.
+struct Box<T> { v: T }
+s: Box = Box<t8> { v: 7 }
+w: Box = Box<t64> { v: 1000000 }
+print(s.v)
+print(w.v)

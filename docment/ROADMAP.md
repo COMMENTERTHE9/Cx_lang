@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-07-26
+Last updated: 2026-08-16
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -33,6 +33,30 @@ release notes match the approved changelog. Landed:
 **Post-release hardening (on submain):**
 - [x] Composite literal type-checking — struct field presence/type/unknown-field validation, array element type checking (8169d33)
 
+**0.3.3** — tagged `v0.3.3`, 2026-08-16. Detail for each item is in
+`docs/known_issues.md` at the cited section.
+
+- **Generic-struct instantiation lowering** (§18) and **generic-function
+  monomorphization** (§19/§23) — both now lower. Transitive worklist,
+  symbolic-map composition, per-template instantiation cap.
+- **`exit()` and top-level `const`** lower (§11, §12).
+- **Call-depth guards** (§24 interpreter, §25 JIT) — unbounded recursion is a
+  diagnostic on both backends at the same frame, not a crash. The JIT's guard is
+  emitted only for functions that can participate in a call cycle.
+- **Enforcement-layer audit** (§14) — field, enum-variant and receiver-type
+  facts moved from the access path's silence into semantic analysis, plus the
+  locked principle in `docs/frontend/enforcement_layers.md`.
+- **Const immutability** (§12) moved from runtime-only to analysis time,
+  including writes *through* a const that had silently mutated on both backends.
+- **Gene-bound soundness** (§22) — a bound promises methods, not fields.
+- **Rejection-shape harness** (§15) — `.expected_fail` records and asserts how
+  each backend refuses, and `.expected_exit` is honoured by the Rust harness
+  rather than by `run_matrix.sh` alone.
+
+Gate state at the tag: `cargo test` 250/0, `--features jit` 426/0, matrix
+414/414, parity **374 PASS / 40 SKIP / 0 PARITY_FAIL**, clippy 110/110 on both
+feature sets.
+
 ---
 
 ## Post-0.3.0 — landed on `submain`, not yet in a tagged release
@@ -44,10 +68,11 @@ proven on both backends (interpreter and Cranelift JIT).
 
 ---
 
-The sequence below reflects the project's current stated direction as of
-2026-07-04. No prior committed roadmap file contained a 0.2+ version
-sequence — this is the first time it's being formally recorded, not a
-correction to an existing plan.
+The sequence below reflects the project's current stated direction. It was first
+formally recorded on 2026-07-04 — no prior committed roadmap file contained a
+0.2+ version sequence, so that was a first recording rather than a correction to
+an existing plan — and last amended on 2026-08-16, when 0.3.3 shipped and its
+remaining blockers folded into 0.4.
 
 ## Corrected Version Sequence
 
@@ -58,10 +83,24 @@ correction to an existing plan.
   (`T: GeneName`), operator overloading via the embedded prelude. Plus the
   0.3.1-era audit fixes and the struct-return ABI fix. *(Shipped 2026-07-24.
   See `docs/post_0_1/gene_phen_design.md` for the full spec.)*
-- **0.3.3** — Next: array-return lowering, generic-function lowering,
-  expression receivers. *(Scope not yet fixed.)*
+- **0.3.3** — Generic functions and structs lowered, call-depth guards on both
+  backends, the access-path enforcement audit. *(Shipped 2026-08-16. Full item
+  list under "Shipped" above.)*
 - **0.4** — Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping
-  begins/completes, math layer. *(Unchanged from prior sequencing.)*
+  begins/completes, math layer. *(Unchanged from prior sequencing.)* **Plus:**
+  finish the remaining lowering blockers, and open the multidimensional-array
+  **design gate** in parallel — see below. The design gate touches no code, so
+  it runs alongside 0.4's implementation work rather than queuing behind it.
+
+  **Remaining lowering blockers** — array returns from methods, expression
+  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
+  parameter kinds, nested function definitions, `while-in`, function-body
+  `const`, `t128` printing, `char`, and non-identifier string interpolation.
+  Array returns and expression receivers were briefly carried as a prospective
+  0.3.4; they belong here, and inventing a version slot to hold them would
+  recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
+  0.3.4 is ever needed, it gets created when something actually justifies it.
+- **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
 - **1.0+** — Graphics begins: Vulkan/DX12 bindings. *(Not before 1.0 — the
   0.4 math layer is graphics PREP, not graphics itself.)*
@@ -70,6 +109,63 @@ correction to an existing plan.
 - **1.3+** — Audio.
 - **1.4+** — Networking / NOD Protocol.
 - **2029+** — TSG playable.
+
+---
+
+## Multidimensional Arrays — 0.4 design gate, 0.5 delivery
+
+**Scheduled, not aspirational.** 2D and 3D are **first-class**, not a stepping
+stone to something else, and multidimensional support is a **language-level
+goal** — it is not contingent on any particular application's current needs, and
+should not be re-scoped if a consumer of the language happens not to need it
+this quarter.
+
+### 0.4 — the design gate (no code)
+
+The deliverables below are **ordered by dependency, not by preference**.
+Deliverable 1 blocks 2, 3 and 4, because all three of them contain a `:`.
+
+**1. Resolve the `:` collision.** Inside arrays, `:` already means two different
+things:
+
+- the **type**: `[3: t8]` — size, colon, element type
+- the **index operator**: `a:[2]` — colon *before* the bracket
+
+The colon-before-bracket indexing form was pinned deliberately: bare `a[2]`
+silently mis-parses. That constraint stands, and any multidimensional syntax has
+to live with a `:` that is already carrying two jobs. Nothing downstream can be
+locked until this is settled.
+
+**2. Lock type syntax.** *(blocked by 1)*
+
+**3. Lock indexing syntax.** *(blocked by 1)*
+
+**4. Lock literal syntax.** *(blocked by 1)*
+
+**5. Dimension ordering and memory layout.** The recorded decision is
+**row-major, last index varying fastest**, unless the design pass finds a
+concrete reason to overturn it. Recording it now means a later change is a
+deliberate reversal with a stated reason, not a drift.
+
+**6. Whether 4D ships immediately, or falls out of a generalized N-dimensional
+implementation.** The expectation is the latter: if offset computation, bounds
+checking, and literal shape-checking are all written generically over the
+dimension count, then **4D is not a separate feature** — it is the same code with
+a different N. Deliverable 6 is to confirm or refute that expectation, not to
+assume it.
+
+### On the two existing array documents
+
+`cx_arrays.md` and `cx_4d_arrays.md` are **design intent only**. They are also
+**not in this repository** — they live outside it, so a reader looking for them
+here will not find them.
+
+Neither is written in Cx. One uses Rust syntax; the other uses a third invented
+syntax that belongs to no language. **Their syntax must not be retrofitted into
+Cx.** Read them for intent — what the feature is for, what shapes it needs to
+express — and discard the notation entirely. Deliverables 2, 3 and 4 above exist
+precisely because the syntax is genuinely undecided, not because it is written
+down somewhere and merely needs transcribing.
 
 ---
 
