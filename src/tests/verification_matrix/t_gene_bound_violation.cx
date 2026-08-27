@@ -1,0 +1,23 @@
+// 0.3.4 slice 4: calling a bounded generic with a type that has no phen for
+// the bound's gene — rejected at the instantiation site, naming the type,
+// the bound, and the callee.
+struct Adder { base: t32 }
+struct Plain { n: t32 }
+
+gene Compute {
+    fnc apply(v: t32) -> t32
+}
+
+phen Compute (a: Adder) {
+    fnc: t32 apply(v: t32) {
+        a.base + v
+    }
+}
+
+fnc: t32 <T: Compute> run_it(t: T, v: t32) {
+    t.apply(v)
+}
+
+let p;
+p = Plain { n: 1 }
+print(run_it(p, 5))

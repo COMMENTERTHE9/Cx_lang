@@ -1,0 +1,12 @@
+// known-issues §20/§24/§25: unbounded recursion is a diagnostic on BOTH
+// backends, not a crash. A Cx call is a native recursion in the interpreter and
+// a native recursion in compiled code alike, so this used to take the process's
+// stack either way — the interpreter at exit 127 (the parity harness's SKIP
+// sentinel, so a death looked like an unsupported construct) and the JIT at
+// 0xC00000FD (not even 127, so it parity-failed outright).
+//
+// This fixture could not exist until both guards landed: whichever backend
+// still crashed, the rejection-shape harness correctly refused to call a crash
+// a rejection. That it lands now is the proof the pattern is closed.
+fnc: t64 boom(n: t64) { boom(n + 1) }
+print(boom(0))

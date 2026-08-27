@@ -1,0 +1,10 @@
+// D1.1b: return position (CR#3 site). The trailing `a:[k] + a:[k]` is a direct
+// arithmetic on indexed reads — not laundered through a typed binding — so the
+// Index leak manifested here (returned 200). Now wraps to -56 at the declared
+// t8 return width.
+fnc: t8 g() {
+    a: [2: t8] = [100, 100]
+    k: t64 = 0
+    a:[k] + a:[k]
+}
+print(g())

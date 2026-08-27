@@ -121,7 +121,7 @@ pub const BUILTINS: &[BuiltinDef] = &[
     BuiltinDef { name: "assert",    kind: BuiltinKind::Assert,   arity: Arity::Exact(1),    ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Lowered },
     BuiltinDef { name: "assert_eq", kind: BuiltinKind::AssertEq, arity: Arity::Exact(2),    ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Lowered },
     BuiltinDef { name: "is_known",  kind: BuiltinKind::IsKnown,  arity: Arity::Exact(1),    ret: BuiltinRet::Bool, validator_reserved: true,  jit: JitStatus::Unhandled },
-    BuiltinDef { name: "exit",      kind: BuiltinKind::Exit,     arity: Arity::Range(0, 1), ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Unhandled },
+    BuiltinDef { name: "exit",      kind: BuiltinKind::Exit,     arity: Arity::Range(0, 1), ret: BuiltinRet::Void, validator_reserved: true,  jit: JitStatus::Lowered },
     BuiltinDef { name: "len",       kind: BuiltinKind::Len,      arity: Arity::Exact(1),    ret: BuiltinRet::Int,  validator_reserved: true,  jit: JitStatus::GatedUnsupported },
 ];
 

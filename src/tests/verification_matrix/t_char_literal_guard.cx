@@ -1,0 +1,14 @@
+// labeled-breaks (a) seam guard: the new 'label lexer token must not perturb
+// char-literal lexing. `'a'` stays a char (logos longest-match: 3 chars beat the
+// 2-char label prefix `'a`); the escapes below have `\` after `'`, so the label
+// regex (apostrophe + letter) can't match them — they stay chars.
+let a;
+a = 'a'
+let nl;
+nl = '\n'
+let bs;
+bs = '\\'
+let q;
+q = '\''
+print(a)
+print("chars-ok")

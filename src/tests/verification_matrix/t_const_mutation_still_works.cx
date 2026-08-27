@@ -1,0 +1,19 @@
+// known-issues #12 anti-overcorrection guard: the const check must reject only
+// consts. Ordinary bindings of every affected form still mutate normally.
+x: t32 = 1
+x = 2
+x += 3
+print(x)
+
+a: [3: t32] = [1, 2, 3]
+a:[0] = 9
+a:[1] += 10
+print(a:[0])
+print(a:[1])
+
+struct P { y: t32 }
+let s;
+s = P { y: 1 }
+s.y = 5
+s.y += 2
+print(s.y)

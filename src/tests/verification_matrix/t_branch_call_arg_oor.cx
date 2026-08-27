@@ -1,0 +1,4 @@
+// CR#4: a branch-tail literal rejects when passed as a call argument of declared
+// parameter width (call-argument site).
+fnc: f(p: t8) { print(p) }
+f(if true { 300 } else { 5 })

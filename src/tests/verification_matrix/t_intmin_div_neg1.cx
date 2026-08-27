@@ -1,0 +1,8 @@
+// Gate-1a: INT_MIN / -1 wraps to INT_MIN (R4 ruling — it's overflow). t8 case.
+// The JIT now guards this with a value-select branch around the faulting sdiv
+// (lower.rs emit_guarded_idiv); both backends print -128. Pre-Gate-1a the JIT
+// trapped (STATUS_INTEGER_OVERFLOW 0xC0000095) and this carried a
+// .jit_known_unsound marker. Width-general — see _t16/_t32/_t64 siblings.
+a: t8 = -128
+b: t8 = -1
+print(a / b)

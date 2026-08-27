@@ -1,0 +1,5 @@
+// CR#4: the branch-tail check recurses — a literal in a nested `if` tail is
+// reached — and folds the sign, so a negated out-of-range literal (-300, below
+// t8's -128 minimum) rejects just like the positive case.
+x: t8 = if true { if false { 1 } else { -300 } } else { 7 }
+print(x)

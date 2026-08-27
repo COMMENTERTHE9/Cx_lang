@@ -1,0 +1,13 @@
+// Pattern matching, first slice — an `as v` binding must not be visible in a
+// SIBLING arm's body (each arm gets its own scope), only in the arm that
+// declared it.
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+when c {
+    Color::Red as v => print(1),
+    Color::Green => print(v),
+    _ => print(0),
+}

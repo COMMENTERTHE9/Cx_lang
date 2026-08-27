@@ -1,0 +1,16 @@
+// Pattern matching, guards — the seam, direction 2: a guard that is
+// statically typed `bool` but evaluates to the wire-unknown value
+// (`TBool(2)`, via a typed `b: bool = ?`) is a hard error at runtime
+// (interpreter: RuntimeError::UnknownCondition; JIT: Trap), never silently
+// coerced to false-and-fallthrough.
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+b: bool = ?
+
+when c {
+    Color::Red if b => print(1),
+    _ => print(0),
+}

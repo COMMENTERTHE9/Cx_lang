@@ -1,0 +1,21 @@
+// perf-rider: call-heavy workload — iterative fibonacci function invoked
+// repeatedly from a hot loop (JIT-lowerable surface).
+fnc: t64 fib(n: t64) {
+    a: t64 = 0
+    b: t64 = 1
+    i: t64 = 0
+    while (i < n) {
+        t: t64 = a + b
+        a = b
+        b = t
+        i += 1
+    }
+    a
+}
+acc: t64 = 0
+j: t64 = 0
+while (j < 20000) {
+    acc = acc + fib(40)
+    j += 1
+}
+print(acc)

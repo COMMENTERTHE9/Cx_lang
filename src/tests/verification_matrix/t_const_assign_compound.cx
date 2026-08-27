@@ -1,0 +1,6 @@
+// known-issues #12: compound assignment to a const is rejected at analysis
+// time, like plain reassignment. Enumerated explicitly because the width-check
+// bug was three missed sites in exactly this class.
+const K: t32 = 1
+K += 2
+print(K)

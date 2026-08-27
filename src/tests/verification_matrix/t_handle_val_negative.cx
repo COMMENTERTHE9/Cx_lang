@@ -1,0 +1,18 @@
+// D2.5b canary: a NEGATIVE payload must round-trip correctly through .val.
+// `n: t32` is an explicit parameter (NOT a bare literal, which would default to
+// I64 and never touch the sextend-sensitive I8/I16/I32 widen path) holding -5.
+// Handle.new(n) widens I32->I64 via sextend (D2.5a); .val widens that I64->I128
+// via sextend again (D2.5b). Sign-extension composes correctly across both
+// stages -- this is the exact case that would expose a sign bit dropped or
+// smeared at either widening step.
+fnc: Handle<t128> mk(n: t32) {
+    return Handle.new(n);
+}
+let neg: t32;
+neg = 0 - 5
+let h;
+h = mk(neg)
+let expected: t128;
+expected = 0 - 5
+assert_eq(h.val, expected)
+print("neg-ok")

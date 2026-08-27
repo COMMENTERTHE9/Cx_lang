@@ -1,0 +1,10 @@
+// perf-rider: tight integer arithmetic loop (JIT-lowerable surface).
+// Mixed add/mul/mod/div on t64 with constant non-zero divisors — stays clear
+// of the marked div-edge crash triggers (zero divisor, INT_MIN/-1).
+acc: t64 = 0
+i: t64 = 0
+while (i < 1000000) {
+    acc = acc + i * 3 - (i % 7) + (i / 3)
+    i += 1
+}
+print(acc)

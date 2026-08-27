@@ -1,0 +1,5 @@
+// CR#4: an out-of-range literal in an `if`-expression branch tail rejects at the
+// declaration site, exactly as a bare `x: t8 = 300` would. The value flows from
+// the trailing expression of the chosen branch; both tails are range-checked.
+x: t8 = if true { 300 } else { 5 }
+print(x)

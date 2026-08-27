@@ -1,0 +1,6 @@
+// Interpreter fix: ops.rs's Gt dispatch had no (Value::Float, Value::Float)
+// arm — only (Value::Num, Value::Num) — so any f64 comparison fell through to
+// BadOperands ("operator 'Gt' cannot be applied to float and float"). This is
+// a reference-side (interpreter) bug only: the JIT was already correct before
+// this fix and should show no behavior difference here.
+print(3.14 > 2.0)

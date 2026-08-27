@@ -1,0 +1,5 @@
+// Gate-1a width proof: INT_MIN / -1 at t16 wraps to -32768 (per-width MIN from
+// the int-facts leaf). Guarded value-select; both backends agree, no trap.
+a: t16 = -32768
+b: t16 = -1
+print(a / b)

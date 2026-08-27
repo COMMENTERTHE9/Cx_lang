@@ -1,0 +1,13 @@
+// Cycle-only depth guarding (known-issues §25): the guard is emitted only for
+// functions that can participate in a call CYCLE, so a non-recursive function
+// pays nothing. Mutual recursion is the case a naive self-loop-only
+// implementation misses entirely — neither `a` nor `b` calls itself, but
+// together they form a strongly-connected component of size 2 — and a missed
+// cycle is an unguarded stack overflow, strictly worse than the uniform tax the
+// optimization replaced.
+//
+// Both backends refuse at the same frame; the interpreter's guard is per-call
+// and so sees this shape without any graph analysis at all.
+fnc: t64 a(n: t64) { b(n + 1) }
+fnc: t64 b(n: t64) { a(n + 1) }
+print(a(0))

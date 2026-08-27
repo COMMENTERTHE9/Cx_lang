@@ -1,0 +1,4 @@
+// CR#4: an out-of-range literal in a `when`-expression arm tail rejects. Each
+// arm body's trailing expression is range-checked against the declared width.
+x: t8 = when 1 { 1 => 300, _ => 5 }
+print(x)

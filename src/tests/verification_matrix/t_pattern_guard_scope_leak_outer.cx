@@ -1,0 +1,14 @@
+// Pattern matching, guards — binding scope correctness: referencing an arm's
+// `as v` binding after the `when` block (in a `when` that also uses a guard
+// elsewhere) is a clean semantic scope error, same mechanism the `as v`
+// slice already proved, now confirmed to compose with guards present.
+enum Color { Red, Green }
+
+let c;
+c = Color::Red
+
+when c {
+    Color::Red as v if true => print(1),
+    _ => print(0),
+}
+print(v)

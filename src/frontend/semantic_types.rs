@@ -13,7 +13,7 @@ pub struct EnumId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumVariantId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SemanticType {
     I8,
     I16,
@@ -35,6 +35,23 @@ pub enum SemanticType {
     Array(usize, Box<SemanticType>),
     Result(Box<SemanticType>),
     Void,
+}
+
+impl SemanticType {
+    /// Map a signed-integer type to its [`IntWidth`] facts key (tracker D1.1),
+    /// or `None` for any non-integer type. The single mapping the frontend
+    /// range-check and the runtime cast both consult.
+    pub fn int_width(&self) -> Option<crate::frontend::int_facts::IntWidth> {
+        use crate::frontend::int_facts::IntWidth;
+        match self {
+            SemanticType::I8 => Some(IntWidth::W8),
+            SemanticType::I16 => Some(IntWidth::W16),
+            SemanticType::I32 => Some(IntWidth::W32),
+            SemanticType::I64 => Some(IntWidth::W64),
+            SemanticType::I128 => Some(IntWidth::W128),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +110,21 @@ pub enum SemanticExprKind {
         callee: String,
         function: FunctionId,
         args: Vec<SemanticCallArg>,
+        /// Types bound to the callee's generic parameters at THIS call, in the
+        /// callee's declared-parameter order. Empty for a non-generic callee.
+        ///
+        /// Analysis already derives this — `analyze_call` builds a local
+        /// `type_param_map` to check bounds, substitute argument types, and
+        /// compute the return type — and used to discard it when constructing
+        /// this node. Retaining it is what lets the monomorphizer specialize
+        /// without re-implementing inference outside the analyser.
+        ///
+        /// It is NOT always concrete. A call inside a generic body records the
+        /// ENCLOSING function's parameters symbolically — `id(x)` inside
+        /// `wrap<T>` records `[TypeParam("T")]` — which is exactly what the
+        /// worklist composes with the current substitution to get the concrete
+        /// instantiation.
+        type_args: Vec<SemanticType>,
     },
     #[allow(dead_code)] // rejected at lowering (CX-19); kept for analyzer completeness
     Range {
@@ -134,6 +166,23 @@ pub enum SemanticExprKind {
     },
     StructInstance {
         type_name: String,
+        /// Concrete types substituted for the struct's generic parameters at
+        /// THIS literal, in declared-parameter order. Empty for a non-generic
+        /// struct.
+        ///
+        /// Both instantiation forms populate it: the explicit
+        /// `Pair<t32> { .. }` reads them off the literal, and the inferred
+        /// `Pair { a: 1, b: 2.5 }` derives them from the field values' analysed
+        /// types. Analysis already computed this substitution to type- and
+        /// range-check the fields (semantic.rs, the `instantiation` map) and
+        /// then discarded it; retaining it is what lets lowering build a
+        /// distinct layout per instantiation instead of dropping the struct.
+        ///
+        /// Kept as structured `SemanticType`s, NOT a pre-mangled name: the
+        /// mangling is a lowering-table-key concern and is applied at that
+        /// boundary, the same way `PhenDef` keeps a real `receiver_type` and
+        /// `mangle_method` builds the key.
+        type_args: Vec<SemanticType>,
         fields: Vec<(String, SemanticExpr)>,
     },
     When {
@@ -216,6 +265,10 @@ pub enum SemanticWhenPattern {
         variant_name: String,
         enum_id: Option<EnumId>,
         variant_id: Option<EnumVariantId>,
+        /// Whole-scrutinee `as v` binding, scoped to this arm's body only —
+        /// the BindingId and the source name (needed by the interpreter's
+        /// by-name index / diagnostics).
+        binding: Option<(BindingId, String)>,
     },
     Catchall,
 }
@@ -223,6 +276,11 @@ pub enum SemanticWhenPattern {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticWhenArm {
     pub pattern: SemanticWhenPattern,
+    /// Optional `if <expr>` guard, evaluated (with the arm's `as v` binding,
+    /// if any, in scope) only after the pattern already matched. A `false`
+    /// result falls through to later arms; an `unknown` result is a hard
+    /// error, never coerced to false.
+    pub guard: Option<SemanticExpr>,
     pub body: Vec<SemanticStmt>,
     pub pos: usize,
 }
@@ -298,6 +356,29 @@ pub enum SemanticStmt {
         variants: Vec<String>,
         pos: usize,
     },
+    /// 0.3.4 slice 1: header-only mirror. Signatures carry resolved types for
+    /// future conformance-checking; no bodies exist for a gene (contracts have
+    /// none). Nothing consumes this yet — genuinely inert (see runtime/exec.rs,
+    /// ir/lower.rs).
+    GeneDef {
+        name: String,
+        methods: Vec<(String, Vec<Option<SemanticType>>, Option<SemanticType>)>,
+        pos: usize,
+    },
+    /// 0.3.4 slice 2: methods are now fully analyzed (receiver bound as a
+    /// typed param then stripped, exactly the ImplBlock shape — see
+    /// `method_receiver_params`), with `Self` already substituted to the
+    /// concrete receiver type before analysis. Contract conformance against
+    /// the gene was verified in Pass 0. Still NOT callable — nothing
+    /// registers these in `method_registry`; dispatch is slice 3.
+    PhenDef {
+        gene_name: String,
+        receiver_name: String,
+        receiver_type: SemanticType,
+        methods: Vec<SemanticFunction>,
+        method_receiver_params: Vec<Vec<SemanticParam>>,
+        pos: usize,
+    },
     Decl {
         binding: BindingId,
         name: String,
@@ -336,11 +417,15 @@ ExprStmt {
         pos: usize,
     },
     While {
+        // labeled-breaks (b): this loop's own label, or None. Read by both backends
+        // to match a labeled break/continue against the loop it targets.
+        label: Option<String>,
         cond: SemanticExpr,
         body: Vec<SemanticStmt>,
         pos: usize,
     },
     For {
+        label: Option<String>,
         binding: BindingId,
         var: String,
         start: SemanticExpr,
@@ -350,13 +435,18 @@ ExprStmt {
         pos: usize,
     },
     Loop {
+        label: Option<String>,
         body: Vec<SemanticStmt>,
         pos: usize,
     },
     Break {
+        // labeled-breaks (a): the target loop label, or None for an unlabeled
+        // break. Validated semantically here; execution is wired in commit (b).
+        label: Option<String>,
         pos: usize,
     },
     Continue {
+        label: Option<String>,
         pos: usize,
     },
     IfElse {
@@ -367,6 +457,7 @@ ExprStmt {
         pos: usize,
     },
     WhileIn {
+        label: Option<String>,
         arr: String,
         start_slot: usize,
         range_start: SemanticExpr,

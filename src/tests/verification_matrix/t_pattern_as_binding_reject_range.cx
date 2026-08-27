@@ -1,0 +1,7 @@
+// Pattern matching, first slice — `as v` binding is EnumVariant-only for this
+// slice. On a Range pattern it must reject cleanly (parse error).
+x: t32 = 5
+when x {
+    1..10 as v => print(v),
+    _ => print(0),
+}

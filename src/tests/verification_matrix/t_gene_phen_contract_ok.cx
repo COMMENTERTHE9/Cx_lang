@@ -1,0 +1,35 @@
+// 0.3.4 slice 2: valid phen implementing exactly its gene's contract, with
+// Self in param position, return position, and body annotations — AND the
+// Self-leak canary: two phens of one gene for two different types, each using
+// Self throughout. If Self leaked across phens (global/shared substitution),
+// `made: Self = <own struct literal>` in one of them would be a visible type
+// mismatch and this fixture would fail.
+struct Player { health: t32 }
+struct Enemy { shield: t32 }
+
+gene Spawner {
+    fnc spawn(v: t32) -> Self
+    fnc merge(other: Self) -> Self
+}
+
+phen Spawner (p: Player) {
+    fnc: Self spawn(v: t32) {
+        made: Self = Player { health: v }
+        made
+    }
+    fnc: Self merge(other: Self) {
+        other
+    }
+}
+
+phen Spawner (e: Enemy) {
+    fnc: Self spawn(v: t32) {
+        made: Self = Enemy { shield: v }
+        made
+    }
+    fnc: Self merge(other: Self) {
+        other
+    }
+}
+
+print(7)

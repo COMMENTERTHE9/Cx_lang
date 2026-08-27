@@ -1,0 +1,10 @@
+// Gate-1b0: the first-ever test of the failing-assert path. The interpreter
+// errors cleanly (exit 1, "assert_eq failed: 1 != 2"); the JIT now routes
+// IrTerminator::Trap through the cx_trap host callback and exits cleanly
+// (code 126) too. Before Gate-1b0 the JIT stack-overflowed here (0xC00000FD) —
+// the bug hid because every other assert fixture passes, so the trap path was
+// never exercised. Both backends reject with a non-zero exit → convergent PASS.
+// Operands are variables so the inequality reaches runtime, not semantic time.
+a: t64 = 1
+b: t64 = 2
+assert_eq(a, b)

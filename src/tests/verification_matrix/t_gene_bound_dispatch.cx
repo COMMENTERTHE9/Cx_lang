@@ -1,0 +1,35 @@
+// 0.3.4 slice 4: T: GeneName as a generic bound, and the instantiation
+// canary — one bounded generic function, two concrete types whose phens
+// produce distinguishable results from identical inputs (add vs multiply).
+// Each instantiation must dispatch to its own type's phen: a
+// monomorphization leak would print 15/15 or 50/50 instead of 15/50.
+// (JIT: clean SKIP — generic functions are not lowered yet.)
+struct Adder { base: t32 }
+struct Muler { base: t32 }
+
+gene Compute {
+    fnc apply(v: t32) -> t32
+}
+
+phen Compute (a: Adder) {
+    fnc: t32 apply(v: t32) {
+        a.base + v
+    }
+}
+
+phen Compute (m: Muler) {
+    fnc: t32 apply(v: t32) {
+        m.base * v
+    }
+}
+
+fnc: t32 <T: Compute> run_it(t: T, v: t32) {
+    t.apply(v)
+}
+
+let x;
+let y;
+x = Adder { base: 10 }
+y = Muler { base: 10 }
+print(run_it(x, 5))
+print(run_it(y, 5))

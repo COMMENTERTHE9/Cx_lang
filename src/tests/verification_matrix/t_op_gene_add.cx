@@ -1,0 +1,23 @@
+// 0.3.4 slice 6: THE payoff — operator overloading via prelude genes.
+// `a + b` on a user struct with a phen for Add dispatches to add(), through
+// the same machinery as a hand-written a.add(b), on both backends.
+// Asymmetric components so an operand swap can't masquerade as correct.
+// Also the no-import availability proof: zero imports, prelude gene 'Add'
+// is simply present.
+struct Vec2 { x: t32, y: t32 }
+
+phen Add (v: Vec2) {
+    fnc: Self add(rhs: Self) {
+        made: Self = Vec2 { x: v.x + rhs.x, y: v.y + rhs.y }
+        made
+    }
+}
+
+let a;
+let b;
+a = Vec2 { x: 1, y: 2 }
+b = Vec2 { x: 10, y: 20 }
+let c;
+c = a + b
+print(c.x)
+print(c.y)

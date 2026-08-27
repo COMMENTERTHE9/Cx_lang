@@ -1,0 +1,7 @@
+// Template suppression: a generic function declared and never called has no
+// specializations, contributes no code, and must not break lowering. Before
+// suppression the emission site pushed every FuncDef unconditionally and tried
+// to lower the template's own TypeParam parameter.
+fnc: T <T> unused(x: T) { x }
+y: t64 = 3
+print(y)

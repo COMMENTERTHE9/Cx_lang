@@ -1,0 +1,12 @@
+// D2.5b canary: the ordinary case -- a ordinary positive scalar round-trips
+// through Handle.new -> .val unchanged. The straightforward baseline the
+// negative-value and Bool canaries are measured against.
+fnc: Handle<t128> mk() {
+    return Handle.new(42);
+}
+let h;
+h = mk()
+let expected: t128;
+expected = 42
+assert_eq(h.val, expected)
+print("pos-ok")

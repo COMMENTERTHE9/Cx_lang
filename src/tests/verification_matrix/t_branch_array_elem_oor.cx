@@ -1,0 +1,4 @@
+// CR#4: a branch-tail literal rejects when it is an array element of declared
+// width (array-element site; the element type hints through to the branch tail).
+x: [2: t8] = [if true { 300 } else { 5 }, 7]
+print(x:[0])

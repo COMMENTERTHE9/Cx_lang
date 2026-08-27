@@ -1,0 +1,10 @@
+// Interpreter fix regression guard: a mixed int-literal/float-literal
+// comparison (`5 > 3.14`). Semantic analysis's common_numeric_type already
+// promotes the bare int literal to F64 via an inserted Cast before this
+// reaches the runtime — confirmed empirically before this fix (the runtime
+// error reported "float and float", not "number and float") — so this
+// exercises the same (Value::Float, Value::Float) arm the same-type
+// comparisons do; no separate mixed-type arm was needed or added.
+// Reference-side (interpreter) bug only — the JIT was already correct before
+// this fix and should show no behavior difference here.
+print(5 > 3.14)

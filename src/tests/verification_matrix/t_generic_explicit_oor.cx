@@ -1,0 +1,6 @@
+// CR#1: explicit generic type args must range-check fields. `Pair<t8>` makes the
+// `b: T` field a t8, so 300 (out of -128..127) is rejected — the CodeRabbit repro
+// from the release PR. Before CR#1 the `<t8>` was discarded and 300 was accepted.
+struct Pair<T> { a: T, b: T }
+p: Pair = Pair<t8> { a: 1, b: 300 }
+print(p.b)

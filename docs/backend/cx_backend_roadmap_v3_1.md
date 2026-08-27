@@ -1,6 +1,8 @@
 # Cx Compiler Backend Roadmap
 v4.4 — 2026-05-12
 
+This document is a historical snapshot from the 0.1 release-candidate era (dated 2026-05-12). For current project status, see `docment/ROADMAP.md`.
+
 ---
 
 ## What This Roadmap Covers

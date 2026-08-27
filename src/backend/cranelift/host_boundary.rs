@@ -288,6 +288,192 @@ extern "C" fn cx_print_bool(b: i8) {
     let _ = writeln!(stdout, "{}", if b != 0 { "true" } else { "false" });
 }
 
+/// Runtime intrinsic: print a string to stdout followed by a newline (D2.3b).
+///
+/// Exported as `cx_print_str`. JIT code calls it via
+/// `Call { callee: "cx_print_str", args: [descriptor_ptr] }` for a `str` argument
+/// to print/println. The argument is the address of a static
+/// `{byte_ptr: i64, byte_len: i64}` descriptor (string rep (a), storage (ii));
+/// this reads both fields and writes the raw bytes followed by a newline,
+/// matching the interpreter's `print_value` for a string byte-for-byte (no
+/// quotes, no escaping). The descriptor and its bytes are leaked `&'static` at
+/// lowering, so the address is valid for the process lifetime (JIT-only).
+extern "C" fn cx_print_str(descriptor: *const i64) {
+    use std::io::{self, Write};
+    // SAFETY: `descriptor` points at a leaked `&'static [i64; 2]` whose first
+    // slot is the (also leaked) byte pointer and second is the byte length.
+    let (ptr, len) = unsafe { (*descriptor as *const u8, *descriptor.add(1) as usize) };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut stdout = io::stdout().lock();
+    let _ = stdout.write_all(bytes);
+    let _ = stdout.write_all(b"\n");
+}
+
+/// Runtime intrinsic: content equality of two strings (D2.3c).
+///
+/// Exported as `cx_str_eq`. JIT code calls it via
+/// `Call { callee: "cx_str_eq", args: [a_descriptor, b_descriptor], return_ty: Bool }`
+/// for `str == str` / `str != str` / `assert_eq` on strings. Each argument is the
+/// address of a static `{byte_ptr: i64, byte_len: i64}` descriptor; this returns
+/// 1 iff the lengths match and the bytes are equal (length-check then memcmp),
+/// matching the interpreter's content equality. Returns an i8 Bool (0/1).
+extern "C" fn cx_str_eq(a: *const i64, b: *const i64) -> i8 {
+    // SAFETY: both args are leaked `&'static` descriptors (see cx_print_str).
+    let (pa, la) = unsafe { (*a as *const u8, *a.add(1) as usize) };
+    let (pb, lb) = unsafe { (*b as *const u8, *b.add(1) as usize) };
+    if la != lb {
+        return 0;
+    }
+    let sa = unsafe { std::slice::from_raw_parts(pa, la) };
+    let sb = unsafe { std::slice::from_raw_parts(pb, lb) };
+    i8::from(sa == sb)
+}
+
+// D2.3d inline (no-newline) print intrinsics for print-time string interpolation.
+// The interpolation lowering emits a sequence of these (literal chunks + resolved
+// values) followed by ONE `cx_print_newline`, matching the interpreter's
+// single-newline `print`. The existing newline-adding intrinsics are unchanged —
+// normal (non-interpolated) print keeps using them.
+
+extern "C" fn cx_print_str_inline(descriptor: *const i64) {
+    use std::io::{self, Write};
+    // SAFETY: leaked `&'static` descriptor (see cx_print_str).
+    let (ptr, len) = unsafe { (*descriptor as *const u8, *descriptor.add(1) as usize) };
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let _ = io::stdout().lock().write_all(bytes);
+}
+
+extern "C" fn cx_printn_inline(n: i64) {
+    use std::io::{self, Write};
+    let _ = write!(io::stdout().lock(), "{n}");
+}
+
+extern "C" fn cx_print_bool_inline(b: i8) {
+    use std::io::{self, Write};
+    let _ = write!(io::stdout().lock(), "{}", if b != 0 { "true" } else { "false" });
+}
+
+/// f64 rendered via Rust's `Display` (`x.to_string()`), matching the
+/// interpreter's `value_to_string(Float)` byte-for-byte (3.14 -> "3.14",
+/// 2.0 -> "2").
+extern "C" fn cx_print_f64_inline(x: f64) {
+    use std::io::{self, Write};
+    let _ = write!(io::stdout().lock(), "{x}");
+}
+
+extern "C" fn cx_print_newline() {
+    use std::io::{self, Write};
+    let _ = io::stdout().lock().write_all(b"\n");
+}
+
+/// D2.5a: the Handle registry, reachable from JIT-compiled code via the
+/// `cx_handle_new` host callback below. Unlike every prior host callback
+/// (`cx_print_str`, `cx_str_eq`, ...), this one needs MUTABLE state that
+/// persists across multiple calls within one execution — the JIT investigation
+/// found `jit_builder.symbol()` registers by raw function pointer, so a closure
+/// capturing state is not an option; a process-lifetime `static` is the only
+/// mechanism available.
+///
+/// Payload type is `i64`: the packed word for a scalar Handle payload (D2.5a
+/// scope is `{I8, I16, I32, I64, Bool}` only — see `HandleNew` lowering).
+///
+/// SAFETY OF THE SHARED-PROCESS ASSUMPTION: this assumes exactly one
+/// `execute()` call per process. Verified true today — `run_jit_subprocess`
+/// (diff_harness.rs) spawns a fresh OS process per fixture, so a plain static
+/// never leaks state between programs. If the execution model ever changes
+/// (e.g. multiple programs run in one long-lived process), this registry MUST
+/// be reset at the start of `execute()` — it is not reset today because it
+/// does not need to be.
+static HANDLES: std::sync::OnceLock<std::sync::Mutex<crate::runtime::handle::HandleRegistry<i64>>> =
+    std::sync::OnceLock::new();
+
+/// Runtime intrinsic: construct a Handle (D2.5a).
+///
+/// Exported as `cx_handle_new`. JIT code calls it via
+/// `Call { callee: "cx_handle_new", args: [payload_i64], return_ty: Some(I64) }`
+/// for `Handle.new(v)` where `v`'s real lowered type is scalar/word-sized (the
+/// `HandleNew` lowering guard enforces this — Ptr and F64 never reach here).
+/// Inserts `payload` into the shared registry and packs the resulting
+/// `Handle{slot,gen}` (two u32s, both unsigned — no sign-extension risk, unlike
+/// Result's i128 pack) into a single i64: `slot | (gen << 32)`.
+extern "C" fn cx_handle_new(payload: i64) -> i64 {
+    let registry = HANDLES.get_or_init(|| std::sync::Mutex::new(crate::runtime::handle::HandleRegistry::new()));
+    let handle = registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(payload);
+    (handle.slot as i64) | ((handle.gen as i64) << 32)
+}
+
+/// Runtime intrinsic: read a Handle (D2.5b).
+///
+/// Exported as `cx_handle_val`. JIT code calls it via
+/// `Call { callee: "cx_handle_val", args: [handle_i64, out_valid_ptr], return_ty: Some(I64) }`.
+/// Unpacks `handle` back into `{slot, gen}` (the exact reverse of `cx_handle_new`'s
+/// pack — low 32 bits are the slot, high 32 the generation; the shift-out is done
+/// on the `u64` reinterpretation, NOT the signed `i64`, so a `gen` value with its
+/// top bit set doesn't corrupt via arithmetic right-shift).
+///
+/// The registry's `get()` returns `Option<&i64>` — a real failure mode (stale or
+/// out-of-range handle) with no safe sentinel value (the packed bit-space is fully
+/// dense, so no reserved "invalid" pattern could avoid colliding with a legitimate
+/// handle). Communicated via the `out_valid` OUT-PARAMETER instead: writes 1/0:
+/// the JIT-side caller loads it back and branches to a clean `Trap` on invalid
+/// (mirroring the interpreter's `RuntimeError::StaleHandle` — a deterministic,
+/// non-panicking failure, not byte-identical text). The i64 return value is
+/// garbage (0) when invalid and MUST NOT be consulted in that case.
+extern "C" fn cx_handle_val(handle: i64, out_valid: *mut i8) -> i64 {
+    let bits = handle as u64;
+    let slot = bits as u32;
+    let gen = (bits >> 32) as u32;
+    let h = crate::runtime::handle::Handle { slot, gen };
+    let registry = HANDLES.get_or_init(|| std::sync::Mutex::new(crate::runtime::handle::HandleRegistry::new()));
+    let value = registry
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(h)
+        .copied();
+    match value {
+        Some(payload) => {
+            // SAFETY: `out_valid` is the address of a caller-allocated i8 stack
+            // slot (an Alloca(1,1)), passed for the duration of this call only.
+            unsafe { *out_valid = 1 };
+            payload
+        }
+        None => {
+            unsafe { *out_valid = 0 };
+            0
+        }
+    }
+}
+
+/// Runtime intrinsic: drop a Handle (D2.5c).
+///
+/// Exported as `cx_handle_drop`. JIT code calls it via
+/// `Call { callee: "cx_handle_drop", args: [handle_i64], return_ty: None }` — a
+/// pure side effect, no return value. Unpacks `handle` the same way
+/// `cx_handle_val` does and calls the shared registry's `remove()` (the SAME
+/// generic `HandleRegistry<i64>` code, inherited unchanged — no new registry
+/// logic here), discarding the `Option<i64>` result exactly as the interpreter's
+/// `HandleDrop` discards `remove()`'s result (always yielding `Value::Num(0)`
+/// regardless of success).
+///
+/// Double-drop safety is a FREE consequence of `remove()`'s own generation
+/// check (handle.rs) — a second `remove()` on an already-dropped handle finds
+/// `slot.gen != handle.gen` and returns early, before touching the free-list
+/// again, so the free-list can never be double-pushed with the same slot (the
+/// actual risk a double-drop could otherwise cause: slot aliasing between two
+/// unrelated later `Handle.new` calls). Nothing new is implemented for this —
+/// it is the same check `cx_handle_val`'s `get()` already relies on.
+extern "C" fn cx_handle_drop(handle: i64) {
+    let bits = handle as u64;
+    let slot = bits as u32;
+    let gen = (bits >> 32) as u32;
+    let h = crate::runtime::handle::Handle { slot, gen };
+    let registry = HANDLES.get_or_init(|| std::sync::Mutex::new(crate::runtime::handle::HandleRegistry::new()));
+    let _ = registry.lock().unwrap_or_else(|e| e.into_inner()).remove(h);
+}
+
 /// Backend-private symbol name for the F64 remainder host helper.
 ///
 /// Using a mangled name (double-underscore prefix) keeps it out of the user-visible namespace.
@@ -305,6 +491,240 @@ const JIT_F64_REM_SYMBOL: &str = "__cx_fmod";
 #[cfg(feature = "jit")]
 extern "C" fn host_fmod(a: f64, b: f64) -> f64 {
     a % b
+}
+
+/// Backend-private symbol name for the clean-exit trap host helper (Gate-1b0).
+const JIT_TRAP_SYMBOL: &str = "cx_trap";
+
+/// Process exit code for a JIT runtime trap. Reuses the documented
+/// [`JitExitCode::JIT_RUNTIME_FAILURE`] convention (126). Deliberately NOT 127
+/// ([`JitExitCode::UNSUPPORTED_CONSTRUCT`] / `JIT_SKIP_EXIT_CODE`), so the parity
+/// harness can never misclassify a runtime trap as a codegen SKIP, and NOT 0, so
+/// expected-fail fixtures see a clean rejection.
+#[cfg(feature = "jit")]
+const JIT_TRAP_EXIT_CODE: i32 = 126;
+
+/// Runtime intrinsic: the clean-exit path for `IrTerminator::Trap` (Gate-1b0).
+///
+/// Before this, `Trap` lowered to a bare Cranelift `trap` (`ud2`). Because
+/// `main` is invoked by a raw transmute+call with no host exception handler
+/// (see `execute`), that hardware trap was unhandled and the process died with
+/// STATUS_STACK_OVERFLOW (0xC00000FD) instead of the documented clean exit — so
+/// every failing `assert`/`assert_eq` and unmatched `when` crashed the JIT.
+///
+/// Routing `Trap` through this host call (the `cx_printn` import mechanism, not
+/// platform exception handling) gives a clean, deterministic process exit. The
+/// message goes to stderr (never stdout) so output-verified fixtures are
+/// unaffected; exact-message parity with the interpreter is not required (the
+/// parity harness only checks for a non-zero exit on expected-fail fixtures).
+#[cfg(feature = "jit")]
+extern "C" fn cx_trap() -> ! {
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr(),
+        "cx: runtime trap (assertion failed or non-exhaustive `when`)"
+    );
+    std::process::exit(JIT_TRAP_EXIT_CODE);
+}
+
+// ── Call-depth guard (known-issues §20/§24, JIT side) ───────────────────────
+//
+// Compiled code recurses natively, so unbounded Cx recursion took the process's
+// stack: exit 0xC00000FD on Windows, with no diagnostic. Unlike the
+// interpreter's old crash that at least collided with 127, this code is not the
+// SKIP sentinel — the parity harness sees a crash and fails outright.
+//
+// The counter is a FRAME count, not a stack-byte probe. A stack probe is
+// cheaper (compare SP against a limit, no call) but it terminates on bytes
+// consumed, which varies per function — so it could never agree with the
+// interpreter's 256-frame limit, and approximate agreement between backends is
+// a divergence. Matching semantics costs a counter.
+//
+// `Relaxed` ordering is correct because execution is single-threaded: `execute`
+// transmutes and calls `main` on the calling thread. The same one-program-per-
+// process assumption the HANDLES registry documents applies here.
+static JIT_CALL_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Backend-private symbol names for the depth guard.
+#[cfg(feature = "jit")]
+const JIT_DEPTH_ENTER_SYMBOL: &str = "cx_depth_enter";
+#[cfg(feature = "jit")]
+const JIT_DEPTH_EXIT_SYMBOL: &str = "cx_depth_exit";
+
+/// Runtime intrinsic: entering a Cx call frame.
+///
+/// Diagnoses and exits 1 past the limit — deliberately NOT the 126 trap path,
+/// so both backends reject in the same SHAPE (a diagnostic) and the fixture can
+/// be annotated `interp=diagnostic jit=diagnostic` rather than papering over a
+/// difference with `jit=trap`.
+#[cfg(feature = "jit")]
+extern "C" fn cx_depth_enter() {
+    use std::sync::atomic::Ordering;
+    let depth = JIT_CALL_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+    if depth > crate::runtime::runtime::MAX_CALL_DEPTH {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "RUNTIME ERROR: call depth limit reached — {} nested calls, limit is {}. This is almost always unbounded recursion: check that the recursive call has a base case it can actually reach",
+            crate::runtime::runtime::MAX_CALL_DEPTH + 1,
+            crate::runtime::runtime::MAX_CALL_DEPTH
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Runtime intrinsic: leaving a Cx call frame.
+#[cfg(feature = "jit")]
+extern "C" fn cx_depth_exit() {
+    JIT_CALL_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Functions that can participate in a call cycle, and therefore recurse.
+///
+/// A function that cannot reach itself cannot recurse, so it cannot overflow the
+/// stack and needs no counter — and since the depth guard costs two host calls
+/// per invocation, skipping it is the difference between every compiled call
+/// paying and only the ones that can actually recurse paying.
+///
+/// **Soundness rests on the call graph being complete**, which holds because Cx
+/// has no indirect call of any kind: `IrInst::Call.callee` is a `String` and
+/// never a `ValueId`, this backend emits no `call_indirect`, and neither `Type`
+/// nor `SemanticType` has a function or callable variant — so a function cannot
+/// be stored in a variable, a struct field, an array element, or a `Handle`
+/// payload. Every edge is a compile-time-known name: direct calls, methods and
+/// operator genes (desugared to `mangle_method`), phens (monomorphized at their
+/// declaration), and generic functions (monomorphized to `name$type`).
+///
+/// The graph is read off the IR *after* lowering rather than off the semantic
+/// tree, so it sees the calls that are actually emitted — no re-deriving the
+/// mangling that `lower.rs` performs, which is the shape that produced the
+/// C1-C4 family of bugs.
+///
+/// Tarjan's SCC, iterative rather than recursive: this compiler must not
+/// overflow its own stack while adding a guard against stack overflow.
+#[cfg(feature = "jit")]
+fn functions_that_can_recurse(
+    ir: &crate::ir::types::IrModule,
+) -> std::collections::HashSet<String> {
+    use crate::ir::instr::IrInst;
+    use std::collections::{HashMap, HashSet};
+
+    // Adjacency, restricted to edges whose target is a function in this module.
+    // A `cx_*` host intrinsic is a leaf — it never calls back into Cx — so an
+    // edge to one cannot close a cycle and is dropped.
+    let index_of: HashMap<&str, usize> = ir
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), i))
+        .collect();
+    let n = ir.functions.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut self_loop = vec![false; n];
+    for (i, f) in ir.functions.iter().enumerate() {
+        for block in &f.blocks {
+            for inst in &block.insts {
+                if let IrInst::Call { callee, .. } = inst {
+                    if let Some(&j) = index_of.get(callee.as_str()) {
+                        if i == j {
+                            self_loop[i] = true;
+                        }
+                        adj[i].push(j);
+                    }
+                }
+            }
+        }
+    }
+
+    // Tarjan, with the recursion made explicit as a work stack.
+    const UNVISITED: usize = usize::MAX;
+    let mut index = vec![UNVISITED; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next_index = 0usize;
+    let mut recursive: HashSet<String> = HashSet::new();
+
+    for root in 0..n {
+        if index[root] != UNVISITED {
+            continue;
+        }
+        // (node, next adjacency position to visit)
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root] = true;
+
+        while let Some((v, edge_i)) = work.pop() {
+            if edge_i < adj[v].len() {
+                work.push((v, edge_i + 1));
+                let w = adj[v][edge_i];
+                if index[w] == UNVISITED {
+                    index[w] = next_index;
+                    low[w] = next_index;
+                    next_index += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            // v is finished: fold its low-link into its parent, then close the
+            // SCC if v is a root.
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] == index[v] {
+                let mut component: Vec<usize> = Vec::new();
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    component.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                // A component of one recurses only via a self-loop; any larger
+                // component is mutual recursion of some length.
+                if component.len() > 1 {
+                    for &m in &component {
+                        recursive.insert(ir.functions[m].name.clone());
+                    }
+                } else if self_loop[v] {
+                    recursive.insert(ir.functions[v].name.clone());
+                }
+            }
+        }
+    }
+
+    recursive
+}
+
+/// Backend-private symbol name for the `exit(code)` builtin host helper.
+const JIT_EXIT_SYMBOL: &str = "cx_exit";
+
+/// Runtime intrinsic: the `exit(code)` builtin (known-issues #11).
+///
+/// Mirrors `cx_trap`'s shape — an `extern "C"` host callback that never
+/// returns — with the exit code as an `i32` parameter instead of a constant.
+/// The interpreter carries the code as `i32` too (`RuntimeError::Exit(i32)`,
+/// runtime/call.rs), so nothing wider than a machine word crosses this
+/// boundary and the `i128`-class ABI hazard does not apply here.
+///
+/// **stdout is flushed before exiting.** `process::exit` skips `Drop` and does
+/// not flush, so `print(...); exit(N)` would lose piped output without this —
+/// exactly what the interpreter's own exit path does (main.rs, the
+/// `RuntimeError::Exit` arm). Without the flush the two backends would agree
+/// on the exit code and disagree on the output, which is the failure mode a
+/// code-only fixture would never catch.
+#[cfg(feature = "jit")]
+extern "C" fn cx_exit(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
 }
 
 pub struct HostBoundary;
@@ -339,6 +759,14 @@ impl HostBoundary {
             .map_err(|e| JitExecutionError::CodegenFailure {
                 detail: e.to_string(),
             })?;
+        // D2.4a: the packed-i128 Result rep is returned by value from functions.
+        // Cranelift's x64 ABI rejects i128 args/returns unless this extension is
+        // enabled (cranelift-codegen x64/abi.rs).
+        flag_builder
+            .set("enable_llvm_abi_extensions", "true")
+            .map_err(|e| JitExecutionError::CodegenFailure {
+                detail: e.to_string(),
+            })?;
         let flags = settings::Flags::new(flag_builder);
         let isa = cranelift_native::builder()
             .map_err(|s| JitExecutionError::CodegenFailure {
@@ -354,7 +782,21 @@ impl HostBoundary {
             JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         jit_builder.symbol("cx_printn", cx_printn as *const u8);
         jit_builder.symbol("cx_print_bool", cx_print_bool as *const u8);
+        jit_builder.symbol("cx_print_str", cx_print_str as *const u8);
+        jit_builder.symbol("cx_str_eq", cx_str_eq as *const u8);
+        jit_builder.symbol("cx_print_str_inline", cx_print_str_inline as *const u8);
+        jit_builder.symbol("cx_printn_inline", cx_printn_inline as *const u8);
+        jit_builder.symbol("cx_print_bool_inline", cx_print_bool_inline as *const u8);
+        jit_builder.symbol("cx_print_f64_inline", cx_print_f64_inline as *const u8);
+        jit_builder.symbol("cx_print_newline", cx_print_newline as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
+        jit_builder.symbol(JIT_TRAP_SYMBOL, cx_trap as *const u8);
+        jit_builder.symbol(JIT_EXIT_SYMBOL, cx_exit as *const u8);
+        jit_builder.symbol(JIT_DEPTH_ENTER_SYMBOL, cx_depth_enter as *const u8);
+        jit_builder.symbol(JIT_DEPTH_EXIT_SYMBOL, cx_depth_exit as *const u8);
+        jit_builder.symbol("cx_handle_new", cx_handle_new as *const u8);
+        jit_builder.symbol("cx_handle_val", cx_handle_val as *const u8);
+        jit_builder.symbol("cx_handle_drop", cx_handle_drop as *const u8);
         let mut module = JITModule::new(jit_builder);
 
         // Pass 1: declare every user-defined function AND runtime intrinsics into
@@ -392,6 +834,80 @@ impl HostBoundary {
             func_id_map.insert("cx_print_bool".to_string(), id);
         }
 
+        // cx_print_str(ptr) — Str routes here; the single argument is the address
+        // of the static {byte_ptr, byte_len} descriptor (D2.3b). Ptr lowers to
+        // cranelift types::I64.
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("cx_print_str", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_print_str".to_string(), id);
+        }
+
+        // cx_str_eq(a_descriptor, b_descriptor) -> Bool(I8) — string content
+        // equality (D2.3c): two descriptor-address params, an i8 (0/1) result.
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I8));
+            let id = module
+                .declare_function("cx_str_eq", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_str_eq".to_string(), id);
+        }
+
+        // D2.3d no-newline inline print intrinsics for string interpolation.
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            // single-I64-param, void: descriptor-ptr (str) and integer prints.
+            for name in ["cx_print_str_inline", "cx_printn_inline"] {
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::I64));
+                let id = module
+                    .declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+                func_id_map.insert(name.to_string(), id);
+            }
+            // cx_print_bool_inline(i8)
+            {
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::I8));
+                let id = module
+                    .declare_function("cx_print_bool_inline", Linkage::Import, &sig)
+                    .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+                func_id_map.insert("cx_print_bool_inline".to_string(), id);
+            }
+            // cx_print_f64_inline(f64)
+            {
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                sig.params.push(AbiParam::new(types::F64));
+                let id = module
+                    .declare_function("cx_print_f64_inline", Linkage::Import, &sig)
+                    .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+                func_id_map.insert("cx_print_f64_inline".to_string(), id);
+            }
+            // cx_print_newline() — no params, void.
+            {
+                let sig = cranelift_codegen::ir::Signature::new(call_conv);
+                let id = module
+                    .declare_function("cx_print_newline", Linkage::Import, &sig)
+                    .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+                func_id_map.insert("cx_print_newline".to_string(), id);
+            }
+        }
+
         // Pre-declare __cx_fmod(f64, f64) -> f64 for F64 Rem lowering.
         // Uses JIT_F64_REM_SYMBOL ("__cx_fmod") to avoid colliding with any user-defined
         // function named "fmod" in the Cx program.
@@ -410,6 +926,92 @@ impl HostBoundary {
             func_id_map.insert(JIT_F64_REM_SYMBOL.to_string(), id);
         }
 
+        // Pre-declare cx_trap() -> ! (Gate-1b0): the clean-exit path for Trap.
+        // No params, no returns — it never returns (process::exit).
+        {
+            let call_conv = module.target_config().default_call_conv;
+            let sig = cranelift_codegen::ir::Signature::new(call_conv);
+            let id = module
+                .declare_function(JIT_TRAP_SYMBOL, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert(JIT_TRAP_SYMBOL.to_string(), id);
+        }
+        // Depth-guard intrinsics: both take no arguments and return nothing.
+        for name in [JIT_DEPTH_ENTER_SYMBOL, JIT_DEPTH_EXIT_SYMBOL] {
+            let call_conv = module.target_config().default_call_conv;
+            let sig = cranelift_codegen::ir::Signature::new(call_conv);
+            let id = module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+            func_id_map.insert(name.to_string(), id);
+        }
+
+        // Pre-declare cx_exit(i32) -> ! : the `exit(code)` builtin. One i32
+        // param (the code), no returns — it never returns (process::exit).
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I32));
+            let id = module
+                .declare_function(JIT_EXIT_SYMBOL, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert(JIT_EXIT_SYMBOL.to_string(), id);
+        }
+
+        // cx_handle_new(i64) -> i64 (D2.5a): one scalar payload word in, one
+        // packed Handle{slot,gen} word out.
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("cx_handle_new", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_handle_new".to_string(), id);
+        }
+
+        // cx_handle_val(i64, i64) -> i64 (D2.5b): the handle word + the address
+        // of a scratch i8 out-parameter (Ptr always lowers to I64) in, the
+        // payload word out (garbage/0 when the out-parameter reads back 0).
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("cx_handle_val", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_handle_val".to_string(), id);
+        }
+
+        // cx_handle_drop(i64) -> void (D2.5c): the handle word in, no return —
+        // a pure side effect on the shared registry.
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            let id = module
+                .declare_function("cx_handle_drop", Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert("cx_handle_drop".to_string(), id);
+        }
+
         for ir_func in &ir.functions {
             let sig = build_cl_signature(&module, ir_func)?;
             let func_id = module
@@ -422,6 +1024,10 @@ impl HostBoundary {
 
         // Pass 2: compile each function body with the complete func_id_map.
         let mut main_id = None;
+        // Computed once over the whole module, before any function is
+        // compiled — the graph needs every function present to be complete.
+        let can_recurse = functions_that_can_recurse(ir);
+
         for (func_idx, ir_func) in ir.functions.iter().enumerate() {
             let func_id = func_id_map[&ir_func.name];
             let sig = build_cl_signature(&module, ir_func)?;
@@ -435,7 +1041,7 @@ impl HostBoundary {
                 let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
                 let mut builder =
                     cranelift_frontend::FunctionBuilder::new(&mut cl_func, &mut fbc);
-                compile_ir_function(&mut builder, ir_func, &func_id_map, &mut module)?;
+                compile_ir_function(&mut builder, ir_func, &func_id_map, &mut module, &can_recurse)?;
                 builder.finalize();
             }
 
@@ -613,6 +1219,7 @@ fn compile_ir_function(
     ir_func: &crate::ir::types::IrFunction,
     func_id_map: &std::collections::HashMap<String, cranelift_module::FuncId>,
     module: &mut cranelift_jit::JITModule,
+    can_recurse: &std::collections::HashSet<String>,
 ) -> Result<(), JitExecutionError> {
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::InstBuilder;
@@ -644,9 +1251,42 @@ fn compile_ir_function(
     }
 
     // Phase 2: emit each block's body.
+    //
+    // known-issues §24 (JIT side): the depth guard brackets every Cx function —
+    // increment in the entry block, decrement immediately before each return.
+    // Per FUNCTION rather than per call site: one prologue against many callers,
+    // and it cannot miss a call the emitter does not know about.
+    //
+    // `main` is deliberately EXCLUDED. The interpreter's guard sits in
+    // `call_semantic_func`/`call_semantic_method`, so it counts nested USER
+    // calls — top-level code is not inside one. Counting main here would make
+    // the JIT refuse at 255 where the interpreter refuses at 256, and a
+    // one-frame disagreement between backends is a divergence, not a rounding
+    // difference. Verified at the boundary rather than reasoned about.
+    // Only a function that can reach itself needs the counter. `main` is
+    // excluded regardless: the interpreter's guard lives in
+    // `call_semantic_func`/`call_semantic_method` and so counts nested USER
+    // calls, and counting main here would make the JIT refuse one frame
+    // earlier — a one-frame disagreement between backends is a divergence.
+    let guard_this_function = ir_func.name != "main" && can_recurse.contains(&ir_func.name);
+    let depth_enter_ref = func_id_map
+        .get(JIT_DEPTH_ENTER_SYMBOL)
+        .filter(|_| guard_this_function)
+        .map(|id| module.declare_func_in_func(*id, builder.func));
+    let depth_exit_ref = func_id_map
+        .get(JIT_DEPTH_EXIT_SYMBOL)
+        .filter(|_| guard_this_function)
+        .map(|id| module.declare_func_in_func(*id, builder.func));
+    let entry_block_id = ir_func.blocks.first().map(|b| b.id);
+
     for ir_block in &ir_func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
+        if Some(ir_block.id) == entry_block_id {
+            if let Some(fref) = depth_enter_ref {
+                builder.ins().call(fref, &[]);
+            }
+        }
         // Sealing is deferred to after all blocks are emitted (see seal_all_blocks below).
         // Eager sealing would panic for back-edge CFGs: when block N jumps back to block M
         // (M < N), block M has already been switched to and would have been sealed, but
@@ -938,6 +1578,12 @@ fn compile_ir_function(
                 IrInst::Cast { dst, from, to, value } => {
                     // Reject Ptr and Void — neither has a meaningful scalar cast path.
                     match (from, to) {
+                        // D2.3b: I64 ↔ Ptr is a no-op reinterpret — both map to
+                        // cranelift `types::I64`, so this materializes a baked
+                        // string-descriptor address as a Ptr (string rep (a)). It
+                        // falls through to the `from_cl == to_cl` alias path below.
+                        // All other Ptr casts stay unsupported (no scalar equivalent).
+                        (IrType::I64, IrType::Ptr) | (IrType::Ptr, IrType::I64) => {}
                         (IrType::Ptr, _) | (_, IrType::Ptr) => {
                             return Err(JitExecutionError::UnsupportedConstruct {
                                 construct: format!(
@@ -1012,6 +1658,9 @@ fn compile_ir_function(
 
         match &ir_block.term {
             IrTerminator::Return { value: Some(vid) } => {
+                if let Some(fref) = depth_exit_ref {
+                    builder.ins().call(fref, &[]);
+                }
                 let ret_val = *val_map.get(vid).ok_or_else(|| {
                     JitExecutionError::CodegenFailure {
                         detail: format!("undefined return value {:?}", vid),
@@ -1020,6 +1669,9 @@ fn compile_ir_function(
                 builder.ins().return_(&[ret_val]);
             }
             IrTerminator::Return { value: None } => {
+                if let Some(fref) = depth_exit_ref {
+                    builder.ins().call(fref, &[]);
+                }
                 builder.ins().return_(&[]);
             }
             IrTerminator::Jump { target, args } => {
@@ -1086,9 +1738,21 @@ fn compile_ir_function(
             }
             IrTerminator::Trap => {
                 use cranelift_codegen::ir::TrapCode;
-                // User trap code 1 = assertion failure.
-                // TrapCode::unwrap_user panics at compile time if the code is 0 or reserved;
-                // code 1 is always valid (reserved range starts at 251).
+                // Gate-1b0: route every Trap (assert/assert_eq failure,
+                // non-exhaustive `when`) through the cx_trap host callback so it
+                // exits cleanly (code 126) instead of a bare Cranelift `trap`,
+                // which stack-overflowed because no host exception handler wraps
+                // `main_fn()`. cx_trap is `-> !` (process::exit), so it never
+                // returns; the trailing `trap` below is an unreachable terminator
+                // that satisfies Cranelift's block-termination rule and can never
+                // fire (the process has already exited).
+                let cx_trap_id = *func_id_map.get(JIT_TRAP_SYMBOL).ok_or_else(|| {
+                    JitExecutionError::CodegenFailure {
+                        detail: "cx_trap intrinsic not declared in func_id_map".to_string(),
+                    }
+                })?;
+                let func_ref = module.declare_func_in_func(cx_trap_id, builder.func);
+                builder.ins().call(func_ref, &[]);
                 builder.ins().trap(TrapCode::unwrap_user(1));
             }
         }
@@ -1107,6 +1771,81 @@ fn compile_ir_function(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a throwaway `IrModule` whose only content is the call edges: each
+    /// entry is `(function name, callees)`. Blocks and instructions beyond the
+    /// calls are irrelevant to the graph.
+    #[cfg(feature = "jit")]
+    fn call_graph_module(edges: &[(&str, &[&str])]) -> crate::ir::types::IrModule {
+        use crate::ir::instr::{IrInst, IrTerminator};
+        use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule};
+        IrModule {
+            debug_name: "test".into(),
+            functions: edges
+                .iter()
+                .map(|(name, callees)| IrFunction {
+                    name: (*name).to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: callees
+                            .iter()
+                            .map(|c| IrInst::Call {
+                                dst: None,
+                                callee: (*c).to_string(),
+                                args: vec![],
+                                return_ty: None,
+                            })
+                            .collect(),
+                        term: IrTerminator::Return { value: None },
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    /// The cycle-only guard is only sound if the SCC pass finds every cycle.
+    /// Self-loops are the easy case; MUTUAL recursion is the one a naive
+    /// self-loop-only implementation misses entirely, and a missed cycle is an
+    /// unguarded stack overflow — strictly worse than the uniform tax it
+    /// replaced.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn recursion_detection_finds_every_cycle_shape() {
+        // Straight line: nothing recurses.
+        let m = call_graph_module(&[("main", &["a"]), ("a", &["b"]), ("b", &[])]);
+        assert!(functions_that_can_recurse(&m).is_empty());
+
+        // Self-loop.
+        let m = call_graph_module(&[("main", &["r"]), ("r", &["r"])]);
+        let got = functions_that_can_recurse(&m);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains("r"));
+
+        // Mutual recursion of length 2.
+        let m = call_graph_module(&[("main", &["a"]), ("a", &["b"]), ("b", &["a"])]);
+        let got = functions_that_can_recurse(&m);
+        assert!(got.contains("a") && got.contains("b") && !got.contains("main"));
+
+        // Mutual recursion of length 3 — length is not special-cased.
+        let m = call_graph_module(&[("a", &["b"]), ("b", &["c"]), ("c", &["a"])]);
+        assert_eq!(functions_that_can_recurse(&m).len(), 3);
+
+        // A non-recursive function that CALLS a recursive one is not itself in
+        // the cycle and must stay unguarded — this is where the saving comes
+        // from, and getting it wrong would silently restore the uniform tax.
+        let m = call_graph_module(&[("main", &["caller"]), ("caller", &["r"]), ("r", &["r"])]);
+        let got = functions_that_can_recurse(&m);
+        assert!(got.contains("r"));
+        assert!(!got.contains("caller") && !got.contains("main"));
+
+        // An edge to a host intrinsic is not an edge in the graph: `cx_*` never
+        // calls back into Cx, so it cannot close a cycle.
+        let m = call_graph_module(&[("main", &["cx_printn"]), ("a", &["cx_trap"])]);
+        assert!(functions_that_can_recurse(&m).is_empty());
+    }
 
     #[test]
     fn jit_exit_code_success_is_zero() {
@@ -1496,8 +2235,9 @@ mod jit_tests {
 
     #[test]
     fn jit_unsupported_inst_returns_error() {
-        // Cast from Ptr is explicitly unsupported and must return UnsupportedConstruct.
-        // Ptr casts have no scalar equivalent in Cx and are rejected at the JIT boundary.
+        // Cast from Ptr to a non-I64 type is unsupported and must return
+        // UnsupportedConstruct. (I64 ↔ Ptr is a no-op reinterpret allowed since
+        // D2.3b; Ptr ↔ narrower/other types have no scalar equivalent.)
         let module = IrModule {
             debug_name: "test_unsupported".to_string(),
             functions: vec![IrFunction {
@@ -1512,7 +2252,7 @@ mod jit_tests {
                         IrInst::Cast {
                             dst: ValueId(1),
                             from: IrType::Ptr,
-                            to: IrType::I64,
+                            to: IrType::I32,
                             value: ValueId(0),
                         },
                     ],

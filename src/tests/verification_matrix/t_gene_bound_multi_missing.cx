@@ -1,0 +1,24 @@
+// 0.3.4 slice 4: multi-bound with one gene unimplemented — rejected, naming
+// the specific missing gene (Defender), not just "a bound failed".
+struct Robot { power: t32 }
+
+gene Attacker {
+    fnc attack() -> t32
+}
+gene Defender {
+    fnc defend() -> t32
+}
+
+phen Attacker (r: Robot) {
+    fnc: t32 attack() {
+        r.power * 2
+    }
+}
+
+fnc: t32 <T: Attacker + Defender> engage(t: T) {
+    t.attack()
+}
+
+let r;
+r = Robot { power: 10 }
+print(engage(r))

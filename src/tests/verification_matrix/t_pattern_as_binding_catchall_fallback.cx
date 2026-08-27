@@ -1,0 +1,13 @@
+// Pattern matching, first slice — regression guard: a `when` mixing bound
+// EnumVariant arms with a plain `_` catch-all still falls through to `_`
+// correctly when the scrutinee matches none of the bound arms.
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Blue
+
+when c {
+    Color::Red as v => print(1),
+    Color::Green as v => print(2),
+    _ => print(999),
+}

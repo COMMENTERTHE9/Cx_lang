@@ -1,6 +1,8 @@
 # Cx Language Roadmap
 v5.0 — 2026-04-25
 
+This document is a historical snapshot from the 0.1 release-candidate era (dated 2026-04-25). For current project status, see `docment/ROADMAP.md`.
+
 ---
 
 ## 0.1 Release Candidate Status
@@ -176,7 +178,7 @@ These are not features. These are conditions. A long gate list that never closes
 - [ ] `:=` type inference for literals and simple expressions
 - [x] `when` as value-producing expression — landed 2026-03-22
 - [ ] Pattern matching — named binding `as v` and guard clauses `if n > 5`
-- [ ] `NullPoint<T>` — nullable pointer mapping into unknown/known model
+- [ ] `NullPoint<T>` — DEFERRED, no interpreter reference as of the 0.3 audit; see docment/ROADMAP.md "Future Design Work"
 - [ ] Generics v3 — type bounds `T: Numeric`, `T: Known`
 - [ ] Minimal stdlib — dynamic array, hashmap, basic string utilities
 - [ ] Diagnostic improvements — better span reporting, actionable help text
@@ -348,8 +350,8 @@ Decided 2026-03-29: UTF-8 strict everywhere. Source files are UTF-8. `str` value
 **Generic Structs — Phase 1+2 landed**
 Struct<T> definition and instantiation with explicit type args work. Remaining: type args in variable declarations, generic field type enforcement.
 
-**NullPoint<T>**
-Nullable pointer mapping into the unknown/known model. Game engines need nullable handles constantly.
+**NullPoint<T>** — DEFERRED
+Audited during 0.3: no interpreter reference exists (no Value variant, no eval site, no fixtures). Moved to Future Design Work in docment/ROADMAP.md; not scheduled to any version yet.
 
 **Generics v3 — Type Bounds**
 T: Numeric, T: Known — aliases into the existing type hierarchy, not a new constraint system.

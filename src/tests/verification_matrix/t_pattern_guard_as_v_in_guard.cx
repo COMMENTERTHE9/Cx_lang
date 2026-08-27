@@ -1,0 +1,14 @@
+// Pattern matching, guards — `as v` is usable inside the guard expression
+// itself. Uses the `as v` slice's own nested-`when` trick (translate the
+// bound enum value back to a bool via `when`) rather than `==` on enums or
+// `print(enum)`, to avoid the known, unrelated interp/JIT print(enum)
+// divergence.
+enum Color { Red, Green, Blue }
+
+let c;
+c = Color::Green
+
+when c {
+    Color::Green as v if when v { Color::Green => true, _ => false } => print(1),
+    _ => print(0),
+}

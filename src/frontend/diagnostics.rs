@@ -228,8 +228,8 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             },
             *pos,
         ),
-        RuntimeError::BreakSignal =>("unhandled 'break' outside of a loop -- this may be a compiler bug".to_string(), 0),
-        RuntimeError::ContinueSignal => ("unhandled 'continue' outside of a loop -- this may be a compiler bug".to_string(), 0),
+        RuntimeError::BreakSignal(_) =>("unhandled 'break' outside of a loop -- this may be a compiler bug".to_string(), 0),
+        RuntimeError::ContinueSignal(_) => ("unhandled 'continue' outside of a loop -- this may be a compiler bug".to_string(), 0),
         RuntimeError::ReadOnlyLoopVar { pos, name } => (
             format!("loop variable '{}' is read-only", name),
             *pos,
@@ -247,6 +247,17 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
         ),
         RuntimeError::AssertionFailed { pos, msg } => (
             format!("{}", msg),
+            *pos,
+        ),
+        RuntimeError::CallDepthExceeded { pos, function } => (
+            format!(
+                "call depth limit reached in '{}' — {} nested calls, limit is {}. \
+                 This is almost always unbounded recursion: check that the recursive \
+                 call has a base case it can actually reach",
+                function,
+                crate::runtime::runtime::MAX_CALL_DEPTH + 1,
+                crate::runtime::runtime::MAX_CALL_DEPTH
+            ),
             *pos,
         ),
     }
@@ -339,6 +350,14 @@ fn print_stmt(stmt: &Stmt, depth: usize) {
         Stmt::EnumDef { name, variants, .. } => {
             eprintln!("{}EnumDef({}: {})", pad, name, variants.join(", "));
         }
+        Stmt::GeneDef { name, methods, .. } => {
+            let mnames: Vec<&str> = methods.iter().map(|(n, _, _)| n.as_str()).collect();
+            eprintln!("{}GeneDef({} [{}])", pad, name, mnames.join(", "));
+        }
+        Stmt::PhenDef { gene_name, receiver, methods, .. } => {
+            let mnames: Vec<&str> = methods.iter().map(|(n, _, _, _, _)| n.as_str()).collect();
+            eprintln!("{}PhenDef({} for {}: {:?} [{}])", pad, gene_name, receiver.0, receiver.1, mnames.join(", "));
+        }
         Stmt::Decl { name, ty, .. } => {
             eprintln!("{}Decl({}: {:?})", pad, name, ty);
         }
@@ -408,7 +427,10 @@ Stmt::Return { expr, .. } => {
             for arm in arms {
                 match &arm.pattern {
                     WhenPattern::Literal(v) => eprintln!("{}  Arm({:?})", pad, v),
-                    WhenPattern::EnumVariant(e, v) => eprintln!("{}  Arm({}::{})", pad, e, v),
+                    WhenPattern::EnumVariant(e, v, binding) => match binding {
+                        Some(b) => eprintln!("{}  Arm({}::{} as {})", pad, e, v, b),
+                        None => eprintln!("{}  Arm({}::{})", pad, e, v),
+                    },
                     WhenPattern::Group(e, g) => eprintln!("{}  Arm(Group {}::{})", pad, e, g),
                     WhenPattern::Range(_, _, inclusive) => {
                         eprintln!("{}  Arm(Range, inclusive={})", pad, inclusive)
