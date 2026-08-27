@@ -527,6 +527,206 @@ extern "C" fn cx_trap() -> ! {
     std::process::exit(JIT_TRAP_EXIT_CODE);
 }
 
+// ── Call-depth guard (known-issues §20/§24, JIT side) ───────────────────────
+//
+// Compiled code recurses natively, so unbounded Cx recursion took the process's
+// stack: exit 0xC00000FD on Windows, with no diagnostic. Unlike the
+// interpreter's old crash that at least collided with 127, this code is not the
+// SKIP sentinel — the parity harness sees a crash and fails outright.
+//
+// The counter is a FRAME count, not a stack-byte probe. A stack probe is
+// cheaper (compare SP against a limit, no call) but it terminates on bytes
+// consumed, which varies per function — so it could never agree with the
+// interpreter's 256-frame limit, and approximate agreement between backends is
+// a divergence. Matching semantics costs a counter.
+//
+// `Relaxed` ordering is correct because execution is single-threaded: `execute`
+// transmutes and calls `main` on the calling thread. The same one-program-per-
+// process assumption the HANDLES registry documents applies here.
+static JIT_CALL_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Backend-private symbol names for the depth guard.
+#[cfg(feature = "jit")]
+const JIT_DEPTH_ENTER_SYMBOL: &str = "cx_depth_enter";
+#[cfg(feature = "jit")]
+const JIT_DEPTH_EXIT_SYMBOL: &str = "cx_depth_exit";
+
+/// Runtime intrinsic: entering a Cx call frame.
+///
+/// Diagnoses and exits 1 past the limit — deliberately NOT the 126 trap path,
+/// so both backends reject in the same SHAPE (a diagnostic) and the fixture can
+/// be annotated `interp=diagnostic jit=diagnostic` rather than papering over a
+/// difference with `jit=trap`.
+#[cfg(feature = "jit")]
+extern "C" fn cx_depth_enter() {
+    use std::sync::atomic::Ordering;
+    let depth = JIT_CALL_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+    if depth > crate::runtime::runtime::MAX_CALL_DEPTH {
+        use std::io::Write;
+        let _ = writeln!(
+            std::io::stderr(),
+            "RUNTIME ERROR: call depth limit reached — {} nested calls, limit is {}. This is almost always unbounded recursion: check that the recursive call has a base case it can actually reach",
+            crate::runtime::runtime::MAX_CALL_DEPTH + 1,
+            crate::runtime::runtime::MAX_CALL_DEPTH
+        );
+        std::process::exit(1);
+    }
+}
+
+/// Runtime intrinsic: leaving a Cx call frame.
+#[cfg(feature = "jit")]
+extern "C" fn cx_depth_exit() {
+    JIT_CALL_DEPTH.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Functions that can participate in a call cycle, and therefore recurse.
+///
+/// A function that cannot reach itself cannot recurse, so it cannot overflow the
+/// stack and needs no counter — and since the depth guard costs two host calls
+/// per invocation, skipping it is the difference between every compiled call
+/// paying and only the ones that can actually recurse paying.
+///
+/// **Soundness rests on the call graph being complete**, which holds because Cx
+/// has no indirect call of any kind: `IrInst::Call.callee` is a `String` and
+/// never a `ValueId`, this backend emits no `call_indirect`, and neither `Type`
+/// nor `SemanticType` has a function or callable variant — so a function cannot
+/// be stored in a variable, a struct field, an array element, or a `Handle`
+/// payload. Every edge is a compile-time-known name: direct calls, methods and
+/// operator genes (desugared to `mangle_method`), phens (monomorphized at their
+/// declaration), and generic functions (monomorphized to `name$type`).
+///
+/// The graph is read off the IR *after* lowering rather than off the semantic
+/// tree, so it sees the calls that are actually emitted — no re-deriving the
+/// mangling that `lower.rs` performs, which is the shape that produced the
+/// C1-C4 family of bugs.
+///
+/// Tarjan's SCC, iterative rather than recursive: this compiler must not
+/// overflow its own stack while adding a guard against stack overflow.
+#[cfg(feature = "jit")]
+fn functions_that_can_recurse(
+    ir: &crate::ir::types::IrModule,
+) -> std::collections::HashSet<String> {
+    use crate::ir::instr::IrInst;
+    use std::collections::{HashMap, HashSet};
+
+    // Adjacency, restricted to edges whose target is a function in this module.
+    // A `cx_*` host intrinsic is a leaf — it never calls back into Cx — so an
+    // edge to one cannot close a cycle and is dropped.
+    let index_of: HashMap<&str, usize> = ir
+        .functions
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.name.as_str(), i))
+        .collect();
+    let n = ir.functions.len();
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut self_loop = vec![false; n];
+    for (i, f) in ir.functions.iter().enumerate() {
+        for block in &f.blocks {
+            for inst in &block.insts {
+                if let IrInst::Call { callee, .. } = inst {
+                    if let Some(&j) = index_of.get(callee.as_str()) {
+                        if i == j {
+                            self_loop[i] = true;
+                        }
+                        adj[i].push(j);
+                    }
+                }
+            }
+        }
+    }
+
+    // Tarjan, with the recursion made explicit as a work stack.
+    const UNVISITED: usize = usize::MAX;
+    let mut index = vec![UNVISITED; n];
+    let mut low = vec![0usize; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut next_index = 0usize;
+    let mut recursive: HashSet<String> = HashSet::new();
+
+    for root in 0..n {
+        if index[root] != UNVISITED {
+            continue;
+        }
+        // (node, next adjacency position to visit)
+        let mut work: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root] = true;
+
+        while let Some((v, edge_i)) = work.pop() {
+            if edge_i < adj[v].len() {
+                work.push((v, edge_i + 1));
+                let w = adj[v][edge_i];
+                if index[w] == UNVISITED {
+                    index[w] = next_index;
+                    low[w] = next_index;
+                    next_index += 1;
+                    stack.push(w);
+                    on_stack[w] = true;
+                    work.push((w, 0));
+                } else if on_stack[w] {
+                    low[v] = low[v].min(index[w]);
+                }
+                continue;
+            }
+            // v is finished: fold its low-link into its parent, then close the
+            // SCC if v is a root.
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[v]);
+            }
+            if low[v] == index[v] {
+                let mut component: Vec<usize> = Vec::new();
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    component.push(w);
+                    if w == v {
+                        break;
+                    }
+                }
+                // A component of one recurses only via a self-loop; any larger
+                // component is mutual recursion of some length.
+                if component.len() > 1 {
+                    for &m in &component {
+                        recursive.insert(ir.functions[m].name.clone());
+                    }
+                } else if self_loop[v] {
+                    recursive.insert(ir.functions[v].name.clone());
+                }
+            }
+        }
+    }
+
+    recursive
+}
+
+/// Backend-private symbol name for the `exit(code)` builtin host helper.
+const JIT_EXIT_SYMBOL: &str = "cx_exit";
+
+/// Runtime intrinsic: the `exit(code)` builtin (known-issues #11).
+///
+/// Mirrors `cx_trap`'s shape — an `extern "C"` host callback that never
+/// returns — with the exit code as an `i32` parameter instead of a constant.
+/// The interpreter carries the code as `i32` too (`RuntimeError::Exit(i32)`,
+/// runtime/call.rs), so nothing wider than a machine word crosses this
+/// boundary and the `i128`-class ABI hazard does not apply here.
+///
+/// **stdout is flushed before exiting.** `process::exit` skips `Drop` and does
+/// not flush, so `print(...); exit(N)` would lose piped output without this —
+/// exactly what the interpreter's own exit path does (main.rs, the
+/// `RuntimeError::Exit` arm). Without the flush the two backends would agree
+/// on the exit code and disagree on the output, which is the failure mode a
+/// code-only fixture would never catch.
+#[cfg(feature = "jit")]
+extern "C" fn cx_exit(code: i32) -> ! {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    std::process::exit(code);
+}
+
 pub struct HostBoundary;
 
 impl HostBoundary {
@@ -591,6 +791,9 @@ impl HostBoundary {
         jit_builder.symbol("cx_print_newline", cx_print_newline as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         jit_builder.symbol(JIT_TRAP_SYMBOL, cx_trap as *const u8);
+        jit_builder.symbol(JIT_EXIT_SYMBOL, cx_exit as *const u8);
+        jit_builder.symbol(JIT_DEPTH_ENTER_SYMBOL, cx_depth_enter as *const u8);
+        jit_builder.symbol(JIT_DEPTH_EXIT_SYMBOL, cx_depth_exit as *const u8);
         jit_builder.symbol("cx_handle_new", cx_handle_new as *const u8);
         jit_builder.symbol("cx_handle_val", cx_handle_val as *const u8);
         jit_builder.symbol("cx_handle_drop", cx_handle_drop as *const u8);
@@ -735,6 +938,30 @@ impl HostBoundary {
                 })?;
             func_id_map.insert(JIT_TRAP_SYMBOL.to_string(), id);
         }
+        // Depth-guard intrinsics: both take no arguments and return nothing.
+        for name in [JIT_DEPTH_ENTER_SYMBOL, JIT_DEPTH_EXIT_SYMBOL] {
+            let call_conv = module.target_config().default_call_conv;
+            let sig = cranelift_codegen::ir::Signature::new(call_conv);
+            let id = module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+            func_id_map.insert(name.to_string(), id);
+        }
+
+        // Pre-declare cx_exit(i32) -> ! : the `exit(code)` builtin. One i32
+        // param (the code), no returns — it never returns (process::exit).
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I32));
+            let id = module
+                .declare_function(JIT_EXIT_SYMBOL, Linkage::Import, &sig)
+                .map_err(|e| JitExecutionError::CodegenFailure {
+                    detail: e.to_string(),
+                })?;
+            func_id_map.insert(JIT_EXIT_SYMBOL.to_string(), id);
+        }
 
         // cx_handle_new(i64) -> i64 (D2.5a): one scalar payload word in, one
         // packed Handle{slot,gen} word out.
@@ -797,6 +1024,10 @@ impl HostBoundary {
 
         // Pass 2: compile each function body with the complete func_id_map.
         let mut main_id = None;
+        // Computed once over the whole module, before any function is
+        // compiled — the graph needs every function present to be complete.
+        let can_recurse = functions_that_can_recurse(ir);
+
         for (func_idx, ir_func) in ir.functions.iter().enumerate() {
             let func_id = func_id_map[&ir_func.name];
             let sig = build_cl_signature(&module, ir_func)?;
@@ -810,7 +1041,7 @@ impl HostBoundary {
                 let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
                 let mut builder =
                     cranelift_frontend::FunctionBuilder::new(&mut cl_func, &mut fbc);
-                compile_ir_function(&mut builder, ir_func, &func_id_map, &mut module)?;
+                compile_ir_function(&mut builder, ir_func, &func_id_map, &mut module, &can_recurse)?;
                 builder.finalize();
             }
 
@@ -988,6 +1219,7 @@ fn compile_ir_function(
     ir_func: &crate::ir::types::IrFunction,
     func_id_map: &std::collections::HashMap<String, cranelift_module::FuncId>,
     module: &mut cranelift_jit::JITModule,
+    can_recurse: &std::collections::HashSet<String>,
 ) -> Result<(), JitExecutionError> {
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::InstBuilder;
@@ -1019,9 +1251,42 @@ fn compile_ir_function(
     }
 
     // Phase 2: emit each block's body.
+    //
+    // known-issues §24 (JIT side): the depth guard brackets every Cx function —
+    // increment in the entry block, decrement immediately before each return.
+    // Per FUNCTION rather than per call site: one prologue against many callers,
+    // and it cannot miss a call the emitter does not know about.
+    //
+    // `main` is deliberately EXCLUDED. The interpreter's guard sits in
+    // `call_semantic_func`/`call_semantic_method`, so it counts nested USER
+    // calls — top-level code is not inside one. Counting main here would make
+    // the JIT refuse at 255 where the interpreter refuses at 256, and a
+    // one-frame disagreement between backends is a divergence, not a rounding
+    // difference. Verified at the boundary rather than reasoned about.
+    // Only a function that can reach itself needs the counter. `main` is
+    // excluded regardless: the interpreter's guard lives in
+    // `call_semantic_func`/`call_semantic_method` and so counts nested USER
+    // calls, and counting main here would make the JIT refuse one frame
+    // earlier — a one-frame disagreement between backends is a divergence.
+    let guard_this_function = ir_func.name != "main" && can_recurse.contains(&ir_func.name);
+    let depth_enter_ref = func_id_map
+        .get(JIT_DEPTH_ENTER_SYMBOL)
+        .filter(|_| guard_this_function)
+        .map(|id| module.declare_func_in_func(*id, builder.func));
+    let depth_exit_ref = func_id_map
+        .get(JIT_DEPTH_EXIT_SYMBOL)
+        .filter(|_| guard_this_function)
+        .map(|id| module.declare_func_in_func(*id, builder.func));
+    let entry_block_id = ir_func.blocks.first().map(|b| b.id);
+
     for ir_block in &ir_func.blocks {
         let cl_block = block_map[&ir_block.id];
         builder.switch_to_block(cl_block);
+        if Some(ir_block.id) == entry_block_id {
+            if let Some(fref) = depth_enter_ref {
+                builder.ins().call(fref, &[]);
+            }
+        }
         // Sealing is deferred to after all blocks are emitted (see seal_all_blocks below).
         // Eager sealing would panic for back-edge CFGs: when block N jumps back to block M
         // (M < N), block M has already been switched to and would have been sealed, but
@@ -1393,6 +1658,9 @@ fn compile_ir_function(
 
         match &ir_block.term {
             IrTerminator::Return { value: Some(vid) } => {
+                if let Some(fref) = depth_exit_ref {
+                    builder.ins().call(fref, &[]);
+                }
                 let ret_val = *val_map.get(vid).ok_or_else(|| {
                     JitExecutionError::CodegenFailure {
                         detail: format!("undefined return value {:?}", vid),
@@ -1401,6 +1669,9 @@ fn compile_ir_function(
                 builder.ins().return_(&[ret_val]);
             }
             IrTerminator::Return { value: None } => {
+                if let Some(fref) = depth_exit_ref {
+                    builder.ins().call(fref, &[]);
+                }
                 builder.ins().return_(&[]);
             }
             IrTerminator::Jump { target, args } => {
@@ -1500,6 +1771,81 @@ fn compile_ir_function(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a throwaway `IrModule` whose only content is the call edges: each
+    /// entry is `(function name, callees)`. Blocks and instructions beyond the
+    /// calls are irrelevant to the graph.
+    #[cfg(feature = "jit")]
+    fn call_graph_module(edges: &[(&str, &[&str])]) -> crate::ir::types::IrModule {
+        use crate::ir::instr::{IrInst, IrTerminator};
+        use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule};
+        IrModule {
+            debug_name: "test".into(),
+            functions: edges
+                .iter()
+                .map(|(name, callees)| IrFunction {
+                    name: (*name).to_string(),
+                    params: vec![],
+                    return_ty: None,
+                    blocks: vec![IrBlock {
+                        id: BlockId(0),
+                        params: vec![],
+                        insts: callees
+                            .iter()
+                            .map(|c| IrInst::Call {
+                                dst: None,
+                                callee: (*c).to_string(),
+                                args: vec![],
+                                return_ty: None,
+                            })
+                            .collect(),
+                        term: IrTerminator::Return { value: None },
+                    }],
+                })
+                .collect(),
+        }
+    }
+
+    /// The cycle-only guard is only sound if the SCC pass finds every cycle.
+    /// Self-loops are the easy case; MUTUAL recursion is the one a naive
+    /// self-loop-only implementation misses entirely, and a missed cycle is an
+    /// unguarded stack overflow — strictly worse than the uniform tax it
+    /// replaced.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn recursion_detection_finds_every_cycle_shape() {
+        // Straight line: nothing recurses.
+        let m = call_graph_module(&[("main", &["a"]), ("a", &["b"]), ("b", &[])]);
+        assert!(functions_that_can_recurse(&m).is_empty());
+
+        // Self-loop.
+        let m = call_graph_module(&[("main", &["r"]), ("r", &["r"])]);
+        let got = functions_that_can_recurse(&m);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains("r"));
+
+        // Mutual recursion of length 2.
+        let m = call_graph_module(&[("main", &["a"]), ("a", &["b"]), ("b", &["a"])]);
+        let got = functions_that_can_recurse(&m);
+        assert!(got.contains("a") && got.contains("b") && !got.contains("main"));
+
+        // Mutual recursion of length 3 — length is not special-cased.
+        let m = call_graph_module(&[("a", &["b"]), ("b", &["c"]), ("c", &["a"])]);
+        assert_eq!(functions_that_can_recurse(&m).len(), 3);
+
+        // A non-recursive function that CALLS a recursive one is not itself in
+        // the cycle and must stay unguarded — this is where the saving comes
+        // from, and getting it wrong would silently restore the uniform tax.
+        let m = call_graph_module(&[("main", &["caller"]), ("caller", &["r"]), ("r", &["r"])]);
+        let got = functions_that_can_recurse(&m);
+        assert!(got.contains("r"));
+        assert!(!got.contains("caller") && !got.contains("main"));
+
+        // An edge to a host intrinsic is not an edge in the graph: `cx_*` never
+        // calls back into Cx, so it cannot close a cycle.
+        let m = call_graph_module(&[("main", &["cx_printn"]), ("a", &["cx_trap"])]);
+        assert!(functions_that_can_recurse(&m).is_empty());
+    }
 
     #[test]
     fn jit_exit_code_success_is_zero() {

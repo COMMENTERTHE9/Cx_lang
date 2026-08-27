@@ -1,0 +1,4 @@
+#! interp=diagnostic jit=diagnostic
+# Both backends refuse with a rendered message at exit 1. The JIT's guard
+# deliberately does NOT use the 126 trap path, so the shapes match and this
+# annotation states agreement rather than papering over a difference.

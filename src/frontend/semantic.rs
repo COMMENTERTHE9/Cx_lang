@@ -78,6 +78,20 @@ pub struct Analyzer {
     /// The enclosing function's `<T: Gene>` bounds while its body is being
     /// analyzed (0.3.4 slice 4) — set/restored by the FuncDef arm.
     current_type_bounds: Vec<(String, Vec<String>)>,
+    /// Names declared by a `const` (known-issues #12). Assignment to one — in
+    /// any form — is rejected at analysis time, so both backends refuse
+    /// identically before either runs. Keyed by name rather than `BindingId`
+    /// because `const` is top-level-only, so a const name is unambiguous for
+    /// the whole file, and the index/field assignment forms carry only the
+    /// base name of the target.
+    const_names: std::collections::HashSet<String>,
+    /// Bindings introduced as a `for` loop counter (audit C2). Keyed by
+    /// `BindingId`, NOT by name: a loop body may legally shadow the counter's
+    /// name in a nested scope (`for i { if .. { i: t64 = 5; i = 6 } }` is valid
+    /// today), and a name-keyed set would reject the write to the shadow. The
+    /// id is what `lookup_var` resolves to, so shadowing is handled by
+    /// construction.
+    readonly_bindings: std::collections::HashSet<BindingId>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     pub module_aliases: HashMap<String, ExportTable>,
@@ -110,6 +124,8 @@ impl Analyzer {
             gene_defs: HashMap::new(),
             phen_keys: std::collections::HashSet::new(),
             current_type_bounds: vec![],
+            const_names: std::collections::HashSet::new(),
+            readonly_bindings: std::collections::HashSet::new(),
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -317,12 +333,146 @@ impl Analyzer {
         Ok(())
     }
 
+    /// Reject any assignment whose target is rooted at a `const` binding
+    /// (known-issues #12). Applies to plain reassignment, compound assignment,
+    /// array-index assignment, and struct-field assignment alike: writing
+    /// *through* a const is still writing to it.
+    ///
+    /// This is an analysis-time check so both backends refuse identically,
+    /// before either runs — the same reason the width checks and the
+    /// ordering-comparison allowlist live here rather than in a backend.
+    fn reject_const_assignment(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
+        if self.const_names.contains(name) {
+            return Err(sem_err!(
+                pos,
+                "cannot assign to '{}' — it is declared const",
+                name
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reject a write to a `for` loop counter (audit C2).
+    ///
+    /// Sits beside [`Analyzer::reject_const_assignment`] at the same two
+    /// assignment choke points, so plain / compound / index / field writes are
+    /// all covered by one call rather than by one match arm each. It replaces a
+    /// flat scan of the loop body's top-level statements, which one level of
+    /// nesting defeated: `for i { if c { i = 99 } }` was accepted by analysis,
+    /// passed IR validation, and then produced DIFFERENT output on the two
+    /// backends (interpreter re-seeded the counter each iteration and ran 3
+    /// times; the JIT let the write stick and exited after 1).
+    fn reject_loop_var_assignment(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
+        if let Some(info) = self.lookup_var(name) {
+            if self.readonly_bindings.contains(&info.binding) {
+                return Err(sem_err!(pos, "loop variable '{}' is read-only", name));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve `receiver.field` to `(struct name, field type)`.
+    ///
+    /// The single point where a struct's declared field list and a field
+    /// *access* meet. All three access forms route here — rvalue read,
+    /// `Stmt::Assign` lvalue, `Stmt::CompoundAssign` lvalue — so a form cannot
+    /// be missed by omission; previously each form carried its own copy of the
+    /// lookup, and all three copies ended in `.unwrap_or(Unknown)`. Two audit
+    /// holes close here:
+    ///
+    /// - **C1** — a field absent from the declared list fell through to
+    ///   `Unknown`. On write the interpreter then INVENTED the field at runtime
+    ///   (`a.zzz = 5; print(a.zzz)` printed `5` on a struct declaring only `x`),
+    ///   which contradicts Cx's stable-layout guarantee; on read it surfaced as
+    ///   a nonsense *variable* diagnostic (`variable 'p.zzz' has not been
+    ///   declared — declare it with 'p.zzz: TYPE = value'`).
+    /// - **C4** — a receiver whose type definitively has no fields at all.
+    ///
+    /// A receiver whose type analysis has not resolved (`Unknown`, a type
+    /// parameter, a `copy_into` container, a `Handle`) is deliberately left
+    /// alone: this check only speaks where the fact is actually known, which is
+    /// the whole principle it exists to enforce.
+    fn resolve_field_access(
+        &self,
+        receiver: &str,
+        receiver_ty: &SemanticType,
+        field: &str,
+        pos: usize,
+    ) -> Result<(String, SemanticType), SemanticError> {
+        match receiver_ty {
+            SemanticType::Struct(struct_name) => {
+                let declared = self.structs.get(struct_name);
+                let field_ty = declared
+                    .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
+                    .map(|(_, ftype)| {
+                        semantic_type_from_decl(ftype.clone(), &self.current_type_params)
+                    });
+                match field_ty {
+                    Some(ty) => Ok((struct_name.clone(), ty)),
+                    // Struct is declared and the field is not one of its fields.
+                    None if declared.is_some() => Err(sem_err!(
+                        pos,
+                        "unknown field '{}' on struct '{}'",
+                        field,
+                        struct_name
+                    )),
+                    // Struct type named but never registered — a different
+                    // error the caller's own path already reports. Stay quiet.
+                    None => Ok((struct_name.clone(), SemanticType::Unknown)),
+                }
+            }
+            // A gene declares `fnc` signatures and nothing else (design doc,
+            // Locked Rules), so a bound promises METHODS, not fields. Reaching
+            // through `T` to a field was accepted here and compiled: it happened
+            // to work for whichever concrete type the author had in mind, and
+            // failed at RUNTIME for any other type satisfying the same bound —
+            // with the field-as-variable diagnostic (`variable 't.base' has not
+            // been declared`) that known-issues §17 records. Analysis holds the
+            // bound and the gene's contract, so analysis decides.
+            SemanticType::TypeParam(param) => {
+                let bounds: Vec<String> = self
+                    .current_type_bounds
+                    .iter()
+                    .find(|(n, _)| n == param)
+                    .map(|(_, genes)| genes.clone())
+                    .unwrap_or_default();
+                if bounds.is_empty() {
+                    Err(sem_err!(
+                        pos,
+                        "cannot access field '{}' on '{}' — '{}' is an unbounded type parameter, so nothing is known about its fields",
+                        field,
+                        receiver,
+                        param
+                    ))
+                } else {
+                    Err(sem_err!(
+                        pos,
+                        "cannot access field '{}' on '{}' — '{}' is bound by gene '{}', and a gene declares methods, not fields; call a method from the gene's contract instead",
+                        field,
+                        receiver,
+                        param,
+                        bounds.join(" + ")
+                    ))
+                }
+            }
+            ty if type_has_no_fields(ty) => Err(sem_err!(
+                pos,
+                "cannot access field '{}' on '{}' of type {} — only structs and copy_into containers have fields",
+                field,
+                receiver,
+                type_name(ty)
+            )),
+            _ => Ok((String::new(), SemanticType::Unknown)),
+        }
+    }
+
     fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<SemanticStmt, SemanticError> {
         match stmt {
             Stmt::ConstDecl { name, ty, value, is_pub, pos } => {
                 let semantic_value = self.analyze_expr(value)?;
                 let sem_ty = semantic_type_from_decl(ty.clone(), &self.current_type_params);
                 let binding = self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
+                self.const_names.insert(name.clone());
                 Ok(SemanticStmt::ConstDecl {
                     binding,
                     name: name.clone(),
@@ -537,6 +687,17 @@ impl Analyzer {
                 expr,
                 pos_eq,
             } => {
+                // known-issues #12: a `const` is immutable. Checked here, at the
+                // single entry point covering all three target forms, so every
+                // form is caught by construction rather than by remembering to
+                // patch each arm — the miss that let index/field assignment
+                // silently mutate a const on BOTH backends.
+                // audit C2 rides the same choke point: one call covers plain /
+                // compound / index / field writes to a loop counter too.
+                if let Some(base) = assign_target_base_name(target) {
+                    self.reject_const_assignment(base, *pos_eq)?;
+                    self.reject_loop_var_assignment(base, *pos_eq)?;
+                }
                 let mut semantic_expr = self.analyze_expr(expr)?;
                 if semantic_expr.ty == SemanticType::StrRef {
                     return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a variable — use an owned str instead"));
@@ -586,22 +747,20 @@ impl Analyzer {
                         if !info.initialized {
                             return Err(sem_err!(*pos_eq, "use of uninitialized variable '{}'", container));
                         }
+                        // The receiver's own type must be resolved with the ENCLOSING function's
+                        // type parameters in scope, or a `t: T` param surfaces as an
+                        // unregistered struct named "T" instead of `TypeParam("T")` — and
+                        // the field check below then has nothing to reject. The MethodCall
+                        // path already resolves it this way; these sites did not, so the
+                        // same receiver typed differently depending on which access form
+                        // was used. Outside a generic function the list is empty and this
+                        // is identical to the previous behaviour.
+                        let tps = self.current_type_params.clone();
                         let instance_ty = info.inferred.clone()
-                            .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                            .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps)))
                             .unwrap_or(SemanticType::Unknown);
-                        let struct_name = if let SemanticType::Struct(sn) = &instance_ty {
-                            sn.clone()
-                        } else {
-                            String::new()
-                        };
-                        let field_ty = if !struct_name.is_empty() {
-                            self.structs.get(&struct_name)
-                                .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
-                                .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
-                                .unwrap_or(SemanticType::Unknown)
-                        } else {
-                            SemanticType::Unknown
-                        };
+                        let (struct_name, field_ty) =
+                            self.resolve_field_access(container, &instance_ty, field, *pos_eq)?;
                         if semantic_expr.ty == SemanticType::StrRef {
                             return Err(sem_err!(*pos_eq, "cannot assign a StrRef to a struct field — use an owned str instead"));
                         }
@@ -1075,6 +1234,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 operand,
                 pos,
             } => {
+                // known-issues #12 — same single choke point as Stmt::Assign,
+                // covering Var / Field / Index compound forms alike.
+                let base = match target {
+                    AssignTarget::Var(n) | AssignTarget::Field(n, _) | AssignTarget::Index(n, _) => n,
+                };
+                self.reject_const_assignment(base, *pos)?;
+                self.reject_loop_var_assignment(base, *pos)?;
                 let tp = self.current_type_params.clone();
                 let sem_target = match target {
                     AssignTarget::Var(name) => {
@@ -1091,23 +1257,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     }
                     AssignTarget::Field(container, field) => {
                         let binding = self.lookup_var(container).map(|info| info.binding);
+                        let tps = self.current_type_params.clone();
                         let instance_ty = self.lookup_var(container)
                             .and_then(|info| info.inferred.clone()
-                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[]))))
+                                .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps))))
                             .unwrap_or(SemanticType::Unknown);
-                        let struct_name = if let SemanticType::Struct(sn) = &instance_ty {
-                            sn.clone()
-                        } else {
-                            String::new()
-                        };
-                        let field_ty = if !struct_name.is_empty() {
-                            self.structs.get(&struct_name)
-                                .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
-                                .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
-                                .unwrap_or(SemanticType::Unknown)
-                        } else {
-                            SemanticType::Unknown
-                        };
+                        let (struct_name, field_ty) =
+                            self.resolve_field_access(container, &instance_ty, field, *pos)?;
                         SemanticLValue::DotAccess { binding, container: container.clone(), field: field.clone(), ty: field_ty, struct_name }
                     }
                     AssignTarget::Index(arr_name, idx_expr) => {
@@ -1338,22 +1494,31 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         self.push_scope();
         let binding = self.declare(var, Some(Type::T64), Some(SemanticType::I64), true, pos)?;
 
+        // audit C2: mark the counter read-only for the whole body and let the
+        // assignment choke points enforce it, instead of scanning the body's
+        // top-level statements for two specific shapes. The old scan matched
+        // only a bare `i = ..` or `i += ..` sitting directly in the body, so a
+        // single level of nesting slipped past it and the backends then
+        // disagreed on the result. `insert` reports whether this is a fresh
+        // entry, which is what restores the right state for a nested `for i`
+        // reusing an outer counter's name.
+        let newly_readonly = self.readonly_bindings.insert(binding);
+
         let mut semantic_body = Vec::with_capacity(body.len());
         for stmt in body {
-            match stmt {
-                Stmt::Assign {
-                    target: Expr::Ident(name, _),
-                    ..
-                } if name == var => {
+            match self.analyze_stmt(stmt) {
+                Ok(s) => semantic_body.push(s),
+                Err(e) => {
+                    if newly_readonly {
+                        self.readonly_bindings.remove(&binding);
+                    }
                     self.pop_scope();
-                    return Err(sem_err!(pos, "loop variable '{}' is read-only", var));
+                    return Err(e);
                 }
-                Stmt::CompoundAssign { target, .. } if matches!(target, AssignTarget::Var(n) if n == var) => {
-                    self.pop_scope();
-                    return Err(sem_err!(pos, "loop variable '{}' is read-only", var));
-                }
-                _ => semantic_body.push(self.analyze_stmt(stmt)?),
             }
+        }
+        if newly_readonly {
+            self.readonly_bindings.remove(&binding);
         }
         self.pop_scope();
 
@@ -1371,31 +1536,34 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         })
     }
 
-    fn analyze_when_pattern(&self, pattern: &WhenPattern) -> SemanticWhenPattern {
-        match pattern {
+    fn analyze_when_pattern(
+        &self,
+        pattern: &WhenPattern,
+        pos: usize,
+    ) -> Result<SemanticWhenPattern, SemanticError> {
+        Ok(match pattern {
             WhenPattern::Literal(value) => {
-                SemanticWhenPattern::Literal(semantic_value_from_ast(value, &self.enums))
+                SemanticWhenPattern::Literal(semantic_value_from_ast(value, &self.enums, pos)?)
             }
             WhenPattern::Range(start, end, inclusive) => SemanticWhenPattern::Range(
-                semantic_value_from_ast(start, &self.enums),
-                semantic_value_from_ast(end, &self.enums),
+                semantic_value_from_ast(start, &self.enums, pos)?,
+                semantic_value_from_ast(end, &self.enums, pos)?,
                 *inclusive,
             ),
             WhenPattern::EnumVariant(enum_name, variant_name, _binding) => {
-                let enum_info = self.enums.get(enum_name);
-                let variant_id =
-                    enum_info.and_then(|info| info.variants.get(variant_name).copied());
+                let (enum_id, variant_id) =
+                    resolve_enum_variant(&self.enums, enum_name, variant_name, pos)?;
                 SemanticWhenPattern::EnumVariant {
                     enum_name: enum_name.clone(),
                     variant_name: variant_name.clone(),
-                    enum_id: enum_info.map(|info| info.id),
+                    enum_id,
                     variant_id,
                     binding: None,
                 }
             }
             WhenPattern::Group(_, _) => SemanticWhenPattern::Catchall,
             WhenPattern::Catchall => SemanticWhenPattern::Catchall,
-}
+        })
     }
 
     /// Like `analyze_when_pattern`, but for an `EnumVariant` arm with an `as v`
@@ -1410,10 +1578,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
     ) -> Result<SemanticWhenPattern, SemanticError> {
         match pattern {
             WhenPattern::EnumVariant(enum_name, variant_name, Some(binding_name)) => {
-                let enum_info = self.enums.get(enum_name);
-                let variant_id =
-                    enum_info.and_then(|info| info.variants.get(variant_name).copied());
-                let enum_id = enum_info.map(|info| info.id);
+                let (enum_id, variant_id) =
+                    resolve_enum_variant(&self.enums, enum_name, variant_name, pos)?;
                 let binding = self.declare(
                     binding_name,
                     Some(Type::Enum(enum_name.clone())),
@@ -1429,7 +1595,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     binding: Some((binding, binding_name.clone())),
                 })
             }
-            other => Ok(self.analyze_when_pattern(other)),
+            other => self.analyze_when_pattern(other, pos),
         }
     }
 
@@ -1437,6 +1603,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         match expr {
             Expr::Val(AstValue::StructInstance(type_name, type_args, field_exprs, pos)) => {
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
+                // Concrete types bound to the struct's generic params at this
+                // literal. The explicit path fills it from `instantiation`; the
+                // inferred path accumulates it from the field values below.
+                let mut resolved_args: std::collections::HashMap<String, SemanticType> =
+                    std::collections::HashMap::new();
+                let mut declared_params_out: Vec<String> = Vec::new();
                 if let Some(struct_fields) = self.structs.get(type_name).cloned() {
                     // The struct's own generic parameters must be in scope when
                     // resolving its field types, so e.g. `first: T` resolves to a
@@ -1462,6 +1634,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                             .zip(type_args.iter().map(|t| semantic_type_from_decl(t.clone(), &self.current_type_params)))
                             .collect()
                     };
+                    resolved_args = instantiation.clone();
+                    declared_params_out = declared_params.clone();
                     let mut field_type_params = declared_params;
                     field_type_params.extend(self.current_type_params.iter().cloned());
                     // strref fields cannot be stored in a struct — reject at instantiation
@@ -1498,6 +1672,31 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                                 if !types_compatible(&decl_sem, &sem_expr.ty) {
                                     return Err(sem_err!(*pos, "field '{}' expects type '{}' but got '{}'", fname, self::type_name(&decl_sem), self::type_name(&sem_expr.ty)));
                                 }
+                                // Inferred instantiation: when the declared
+                                // field type is still a bare type parameter
+                                // (`instantiation` was empty, so no explicit
+                                // `<T>` pinned it), the value's analysed type
+                                // IS the binding for that parameter. First
+                                // field wins, matching how `analyze_call`
+                                // infers a function's type params from its
+                                // first typed argument.
+                                if let SemanticType::TypeParam(p) = &decl_sem {
+                                    resolved_args.entry(p.clone()).or_insert_with(|| {
+                                        // An unsuffixed literal is still
+                                        // `Numeric` here — nothing narrowed it,
+                                        // because the field's declared type was
+                                        // `T`. Pin it to the default integer so
+                                        // the instantiation is a concrete type;
+                                        // this matches what the interpreter
+                                        // stores (`Pair { a: 1, b: 300 }` reads
+                                        // back 300, so the width must be wide).
+                                        if sem_expr.ty == SemanticType::Numeric {
+                                            SemanticType::I64
+                                        } else {
+                                            sem_expr.ty.clone()
+                                        }
+                                    });
+                                }
                                 sem_expr
                             }
                         };
@@ -1516,17 +1715,29 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         semantic_fields.push((fname.clone(), sem_expr));
                     }
                 }
+                // Emit in declared-parameter order so the lowering key is
+                // stable regardless of field order. A parameter no field
+                // mentions stays unresolved: it is left out, which leaves the
+                // arity short and makes lowering skip the instantiation
+                // cleanly rather than guess.
+                let type_args_out: Vec<SemanticType> = declared_params_out
+                    .iter()
+                    .filter_map(|p| resolved_args.get(p).cloned())
+                    .collect();
                 Ok(SemanticExpr {
                     ty: SemanticType::Struct(type_name.clone()),
                     kind: SemanticExprKind::StructInstance {
                         type_name: type_name.clone(),
+                        type_args: type_args_out,
                         fields: semantic_fields,
                     },
                 })
             }
             Expr::Val(value) => Ok(SemanticExpr {
                 ty: semantic_type_from_value(value),
-                kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums)),
+                // pos 0: neither `Expr::Val` nor `AstValue::EnumVariant` carries
+                // a source position (filed with the other pos-0 diagnostics).
+                kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums, 0)?),
             }),
             Expr::Ident(name, pos) => {
                 let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
@@ -1546,26 +1757,17 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 if !info.initialized {
                     return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
+                let tps = self.current_type_params.clone();
                 let instance_ty = info.inferred.clone()
-                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &[])))
+                    .or_else(|| info.declared.as_ref().map(|t| semantic_type_from_decl(t.clone(), &tps)))
                     .unwrap_or(SemanticType::Unknown);
-                let resolved_struct_name = if let SemanticType::Struct(sn) = &instance_ty {
-                    sn.clone()
-                } else {
-                    String::new()
-                };
-                let field_ty = if resolved_struct_name.is_empty() {
-                    SemanticType::Unknown
-                } else {
-                    self.structs.get(&resolved_struct_name)
-                        .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
-                        .map(|(_, ftype)| semantic_type_from_decl(ftype.clone(), &self.current_type_params))
-                        .unwrap_or(SemanticType::Unknown)
-                };
+                let binding = info.binding;
+                let (resolved_struct_name, field_ty) =
+                    self.resolve_field_access(container, &instance_ty, field, 0)?;
                 Ok(SemanticExpr {
                     ty: field_ty,
                     kind: SemanticExprKind::DotAccess {
-                        binding: Some(info.binding),
+                        binding: Some(binding),
                         container: container.clone(),
                         field: field.clone(),
                         struct_name: resolved_struct_name,
@@ -1687,6 +1889,21 @@ Expr::Unary(op, inner, pos) => {
                 // A non-array base (genuinely unknown element type) keeps `Unknown`.
                 let elem_ty = match &sem_base.ty {
                     SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
+                    // audit C4: the rvalue side of "index target must be an
+                    // array". Both assignment lvalue paths already rejected a
+                    // non-array target; only the read form fell through to
+                    // Unknown, so `x: t64 = 5; print(x:[0])` reached the
+                    // interpreter (which reported it as an *assignment* target
+                    // error) and the JIT (which reported it as an internal
+                    // "lowering invariant violation"). Types analysis has not
+                    // resolved still keep Unknown — see `type_is_not_indexable`.
+                    ty if type_is_not_indexable(ty) => {
+                        return Err(sem_err!(
+                            *pos,
+                            "cannot index '{}' — index target must be an array",
+                            type_name(ty)
+                        ))
+                    }
                     _ => SemanticType::Unknown,
                 };
                 Ok(SemanticExpr {
@@ -1811,6 +2028,7 @@ Expr::Unary(op, inner, pos) => {
                                 callee: mangled,
                                 function: FunctionId(u32::MAX),
                                 args: semantic_args,
+                                type_args: Vec::new(),
                             },
                         });
                     } else {
@@ -2133,6 +2351,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: vec![SemanticCallArg::Expr(expr)],
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -2160,6 +2379,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: semantic_args,
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -2241,6 +2461,7 @@ Expr::Unary(op, inner, pos) => {
                             callee: name.to_string(),
                             function: FunctionId(u32::MAX),
                             args: semantic_args,
+                            type_args: Vec::new(),
                         },
                     });
                 }
@@ -2366,12 +2587,33 @@ Expr::Unary(op, inner, pos) => {
             &type_param_map,
         );
 
+        // Retain the substitution instead of discarding it. Declared-parameter
+        // order, so the monomorphizer's key and mangled name are stable
+        // regardless of which argument bound which parameter. A parameter no
+        // argument bound is left out, which shortens the vector and makes the
+        // worklist skip the call rather than guess.
+        // An unsuffixed literal argument is still `Numeric` here — nothing
+        // narrowed it, because the parameter's declared type was `T`. Pin it to
+        // the default integer so the recorded instantiation is a CONCRETE type,
+        // which is what a specialization's signature needs. The pin is applied
+        // to this recorded vector ONLY, never to `type_param_map`: the map
+        // drives the return type and the argument checks, so narrowing it there
+        // would change what analysis accepts (`x: t8 = identity(100)` would stop
+        // type-checking). This field exists solely for the monomorphizer.
+        let call_type_args: Vec<SemanticType> = function
+            .type_params
+            .iter()
+            .filter_map(|p| type_param_map.get(p).cloned())
+            .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
+            .collect();
+
         Ok(SemanticExpr {
             ty: ret_ty,
             kind: SemanticExprKind::Call {
                 callee: name.to_string(),
                 function: function.id,
                 args: semantic_args,
+                type_args: call_type_args,
             },
         })
     }
@@ -3129,6 +3371,82 @@ fn map_param_type(p: ParamKind, f: &dyn Fn(Type) -> Type) -> ParamKind {
     }
 }
 
+/// Whether a receiver of this type definitively has no fields, so `.field` on
+/// it is an error rather than a not-yet-known access (audit C4). The list is
+/// deliberately an ALLOW-list inverted: only types analysis has fully resolved
+/// to something field-less answer `true`. `Unknown`, `TypeParam`, `Container`
+/// (a `copy_into` container, whose fields are dynamic), `Handle`, `Result` and
+/// `Struct` all answer `false` — either they do have fields or analysis does
+/// not yet know, and a check that only speaks where the fact is known must stay
+/// silent there.
+fn type_has_no_fields(ty: &SemanticType) -> bool {
+    matches!(
+        ty,
+        SemanticType::I8
+            | SemanticType::I16
+            | SemanticType::I32
+            | SemanticType::I64
+            | SemanticType::I128
+            | SemanticType::F64
+            | SemanticType::Bool
+            | SemanticType::Str
+            | SemanticType::StrRef
+            | SemanticType::Char
+            | SemanticType::Enum(_)
+            | SemanticType::Numeric
+            | SemanticType::Array(_, _)
+            | SemanticType::Void
+    )
+}
+
+/// Whether a base of this type is definitively not indexable, so `base:[i]` in
+/// expression position is an error (audit C4). Same conservative shape as
+/// [`type_has_no_fields`] — see its note on why the unresolved types are absent.
+/// The two assignment lvalue paths already reject a non-array target
+/// ("index assignment target must be an array"); this is the rvalue side of the
+/// same rule, which was the missing form.
+fn type_is_not_indexable(ty: &SemanticType) -> bool {
+    matches!(
+        ty,
+        SemanticType::I8
+            | SemanticType::I16
+            | SemanticType::I32
+            | SemanticType::I64
+            | SemanticType::I128
+            | SemanticType::F64
+            | SemanticType::Bool
+            | SemanticType::Str
+            | SemanticType::StrRef
+            | SemanticType::Char
+            | SemanticType::Enum(_)
+            | SemanticType::Numeric
+            | SemanticType::Struct(_)
+            // A bare type parameter is not indexable for the same reason it has
+            // no fields: a gene's contract is `fnc` signatures only, so nothing
+            // promises indexable storage. `t:[0]` used to reach the interpreter
+            // and fail there with the assignment-target diagnostic (audit C4's
+            // wrong-message family). Note this is the BARE parameter — an
+            // `Array(_, TypeParam)` parameter (`a: [3: T]`) is still an array
+            // and stays indexable.
+            | SemanticType::TypeParam(_)
+            | SemanticType::Void
+    )
+}
+
+/// The root variable name an assignment target writes through, if it has one:
+/// `x = ..` → `x`, `x.f = ..` → `x`, `x:[i] = ..` → `x`. Used by the const
+/// immutability check (known-issues #12), where writing through a const is
+/// still writing to it. Returns `None` for target shapes with no simple base
+/// (which the assign arm then rejects on its own terms).
+fn assign_target_base_name(target: &Expr) -> Option<&str> {
+    match target {
+        Expr::Ident(name, _) => Some(name),
+        Expr::DotAccess(container, _) => Some(container),
+        Expr::Index(inner, _, _) => assign_target_base_name(inner),
+        _ => None,
+    }
+}
+
 fn type_uses_self(ty: &Type) -> bool {
     match ty {
         Type::Struct(n) => n == "Self",
@@ -3181,7 +3499,7 @@ fn stmt_anchor_pos(stmt: &Stmt) -> usize {
     }
 }
 
-fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
+pub(crate) fn substitute_type_params(ty: SemanticType, map: &std::collections::HashMap<String, SemanticType>) -> SemanticType {
     match ty {
         SemanticType::TypeParam(name) => {
             map.get(&name).cloned().unwrap_or(SemanticType::TypeParam(name))
@@ -3212,26 +3530,67 @@ fn semantic_type_from_value(value: &AstValue) -> SemanticType {
     }
 }
 
-fn semantic_value_from_ast(value: &AstValue, enums: &HashMap<String, EnumInfo>) -> SemanticValue {
-    match value {
+/// Resolve `Enum::Variant` to its ids, rejecting a variant the declared enum
+/// does not have (audit C3).
+///
+/// The single point where an enum's declared variant list and a variant
+/// *reference* meet. Every way a program can name a variant routes here — value
+/// position, `when` literal and range patterns, `when` enum-variant arms, and
+/// enum-variant arms with an `as v` binding — so a reference form cannot be
+/// missed by omission; each of those previously carried its own copy of the
+/// lookup and each copy discarded the miss as `variant_id: None`.
+///
+/// The consequence was a phantom variant: `enum L { Red, Green }` followed by
+/// `c: L = L::Blue` ran to completion on the interpreter, matched no real arm,
+/// and compared equal to itself — while the JIT refused to lower it
+/// ("enum variant 'L::Blue' has no resolved tag") and was counted a clean SKIP.
+///
+/// An enum name that is not declared at all is left alone: the caller's own
+/// type check reports that, and this check only speaks where the fact is known.
+fn resolve_enum_variant(
+    enums: &HashMap<String, EnumInfo>,
+    enum_name: &str,
+    variant_name: &str,
+    pos: usize,
+) -> Result<(Option<EnumId>, Option<EnumVariantId>), SemanticError> {
+    let Some(info) = enums.get(enum_name) else {
+        return Ok((None, None));
+    };
+    match info.variants.get(variant_name).copied() {
+        Some(variant_id) => Ok((Some(info.id), Some(variant_id))),
+        None => Err(sem_err!(
+            pos,
+            "enum '{}' has no variant '{}'",
+            enum_name,
+            variant_name
+        )),
+    }
+}
+
+fn semantic_value_from_ast(
+    value: &AstValue,
+    enums: &HashMap<String, EnumInfo>,
+    pos: usize,
+) -> Result<SemanticValue, SemanticError> {
+    Ok(match value {
         AstValue::Num(n) => SemanticValue::Num(*n),
         AstValue::Float(f) => SemanticValue::Float(*f),
         AstValue::Str(s) => SemanticValue::Str(s.clone()),
         AstValue::Bool(b) => SemanticValue::Bool(*b),
         AstValue::Char(c) => SemanticValue::Char(*c),
         AstValue::EnumVariant(enum_name, variant_name) => {
-            let enum_info = enums.get(enum_name);
-            let variant_id = enum_info.and_then(|info| info.variants.get(variant_name).copied());
+            let (enum_id, variant_id) =
+                resolve_enum_variant(enums, enum_name, variant_name, pos)?;
             SemanticValue::EnumVariant {
                 enum_name: enum_name.clone(),
                 variant_name: variant_name.clone(),
-                enum_id: enum_info.map(|info| info.id),
+                enum_id,
                 variant_id,
             }
         }
         AstValue::StructInstance(_, _, _, _) => SemanticValue::Unknown,
         AstValue::Unknown => SemanticValue::Unknown,
-    }
+    })
 }
 
 pub(crate) fn type_name(ty: &SemanticType) -> String {

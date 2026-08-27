@@ -1,0 +1,9 @@
+// Anti-overcorrection for the call-depth guard: 200 nested calls is well under
+// the 256 limit and must still run. The corpus's own deepest recursion is
+// fib(15) at depth 15, so this is an order of magnitude past anything real
+// while staying inside the limit.
+fnc: t64 down(n: t64) {
+    if n <= 0 { return 0 }
+    return down(n - 1) + 1
+}
+print(down(200))

@@ -1,0 +1,10 @@
+// Audit C2 anti-overcorrection: the read-only set is keyed by BindingId, not
+// by name, so a nested scope may legally shadow the counter's name and the
+// SHADOW stays writable. A name-keyed check would reject this.
+for i in 0..2 {
+    if i >= 0 {
+        i: t64 = 5
+        i = 6
+        print(i)
+    }
+}

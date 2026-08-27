@@ -1,3 +1,7 @@
+// Assignment to a const is rejected at ANALYSIS time (known-issues #12), so
+// both backends refuse identically before either runs. Previously this was an
+// interpreter-runtime-only check, which made the JIT accept it once ConstDecl
+// lowered. Expect: SEMANTIC ERROR, non-zero exit, no output.
 const MAX_HP: t32 = 100
 MAX_HP = 200
 print(MAX_HP)

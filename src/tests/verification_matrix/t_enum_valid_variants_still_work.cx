@@ -1,0 +1,10 @@
+// Audit C3 anti-overcorrection: declared variants still resolve in value
+// position, in function returns, in `when` arms, in an `as v` binding arm,
+// and under `==`.
+enum L { Red, Green, Yellow }
+fnc: L next(cur: L) {
+    when cur { L::Red => L::Green, L::Green => L::Yellow, L::Yellow => L::Red, _ => L::Red }
+}
+c: L = next(L::Red)
+when c { L::Green as v => print(1), _ => print(0) }
+if c == L::Green { print(10) } else { print(20) }

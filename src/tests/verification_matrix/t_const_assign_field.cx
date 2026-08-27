@@ -1,0 +1,6 @@
+// known-issues #12: writing through a const struct's field is still writing to
+// the const. Also previously a silent mutation on both backends.
+struct P { x: t32 }
+const S: P = P { x: 1 }
+S.x = 9
+print(S.x)
