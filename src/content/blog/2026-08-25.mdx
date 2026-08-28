@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-08-25"
+date: 2026-08-25
+description: "Unified the assignment-target grammar and deleted AssignTarget, closing the last known parse gap for write-side expressions."
+---
+
+The "still a parse error" list in known-issues section 28 is empty for the first time. Two commits on submain collapsed the parser's assignment grammar into a single production and removed a representation layer that had been accumulating workarounds since March.
+
+## One grammar path for all writes
+
+The parser used to carry two near-identical productions: `assign` for plain and field writes, and `index_assign` for indexed writes. The function body's statement list included `assign` and `index_compound_assign` but not `index_assign`, which meant `r:[0] = 9` inside a function body was a parse error while it worked at the top level. Field-rooted writes like `g.cells:[0] = 9` failed for the same reason: `index_assign` only rooted at a bare identifier.
+
+Both productions collapsed into one rule: `target := ident ('.' ident)? (':' '[' expr ']')*`. Now `x = v`, `x.f = v`, `x:[i] = v`, `x.f:[i] = v`, and `x:[i]:[j] = v` all share a single grammar path. The duplicate `index_assign` production is gone, the function body folds the unified rule, and clippy dropped from 111 to 110 (one fewer clone on a Copy combinator).
+
+The downstream impact was minimal. The semantic layer's `Expr::Index` assignment arm already called `analyze_expr` on its target. The JIT's `resolve_array_element_ptr` already lowered any Ptr-producing expression. Only the interpreter's `exec.rs` and `scope.rs` needed updates: root descent now starts at a variable or one of its fields and shares the existing index walk.
+
+Four new test fixtures cover the gap: `t_place_body_write`, `t_place_field_rooted_write`, `t_place_field_rooted_single`, `t_place_three_deep_write`. Corpus moved from 444 to 448, parity from 404 to 408.
+
+## Removing AssignTarget
+
+`AssignTarget` was a three-variant enum (`Var`, `Field`, `Index`) introduced in March when the writable set was narrow. It could not describe `a:[i]:[j]` or `g.cells:[0]` and never reached either backend. The semantic layer already converted it to `SemanticLValue`, so the index arm had to reconstruct `Expr::Ident(arr_name)` just to analyze it. That reconstruction was the kind of code that signals a representation has outlived its purpose.
+
+`CompoundAssign` now carries `target: Expr`, and both statement kinds parse through the same target grammar. A new `resolve_place` method in `semantic.rs` is the single `Expr`-to-`SemanticLValue` conversion, shared by `Assign` and `CompoundAssign`. The const and loop-variable guards fire through `assign_target_base_name`, which is now required rather than opportunistic.
+
+The JIT needed zero changes. All five new fixtures passed on Cranelift the moment the parser produced the wider tree. The interpreter did need a small update: its compound arm still matched for a VarRef root with a single index. `resolve_index_place` in `exec.rs` now resolves root and index path once, with both statements sharing it.
+
+## Single-evaluation semantics
+
+The compound-assignment single-evaluation rule is now documented and structurally enforced. In `a:[f()]:[g()] += 1`, each index evaluates exactly once. In the JIT this is structural: one SSA pointer names both Load and Store. In the interpreter it is also structural: one `(root, field, path)` tuple serves both read and write. The rule that a compound assignment does not see writes made by its own operand is stated explicitly in `docs/backend/cx_eval_order.md`, with `t_place_compound_eval_once` testing against the expanded form by counting side-effect markers.
+
+Five new test fixtures landed alongside: `t_place_compound_chained`, `t_place_compound_eval_once`, `t_place_compound_field_rooted`, `t_place_compound_rank1`, `t_place_compound_three_deep`. Corpus reached 453, parity 413.
+
+## Where things stand
+
+With the assignment grammar unified, there are now two representations of "the thing being written to" instead of three: the parser produces an `Expr` tree (the same tree the reader builds for the same text), and `resolve_place` converts it to `SemanticLValue` once. The intermediate `AssignTarget` layer is gone.
+
+Submain is 9 commits ahead of main, carrying five substantial milestones: array returns via caller-allocated slot, expression receivers for operator dispatch, Model B (aggregates are values), Model A (contiguous multidimensional arrays), and the assignment-target unification from today. Main holds at 414 passing tests. Submain reports 453.
+
+The merge to main is the most likely next move, followed by the `.copy` / `.copy.free` / `copy_into` parameter kinds, which are the next lowering blocker on the 0.4 list now that value semantics, contiguous arrays, and the assignment grammar are all in place.
