@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-08-24"
+date: 2026-08-24
+description: "Model A landed on submain, making multidimensional arrays contiguous, row-major, single-allocation values."
+---
+
+Multidimensional arrays in Cx are now flat. A `[2: [3: t64]]` is 48 bytes of contiguous, row-major storage, not three pointers to three independent heap allocations. This landed on submain as Model A, in a single 764-insertion commit that touches 23 files across the parser, IR lowering, and runtime.
+
+## What contiguous storage actually means
+
+Under the old model, a nested array like `[3: [4: t64]]` would allocate one outer container with three pointer-sized entries, each pointing to a separately allocated 4-element row. Under Model A, the same type produces one 96-byte allocation with twelve 8-byte elements laid out at row-major strides. No interior pointers at all.
+
+The mechanism centers on `ret_slot_plan` in `src/ir/lower.rs`, which is now recursive. When it encounters `Array(3, Array(4, I32))`, it produces 48 bytes with twelve `(offset, I32)` parts instead of three pointers. A new `elem_stride` function serves as the single authority on stride computation. Both `ret_slot_plan` (for laying out parts) and `resolve_array_element_ptr` (for index arithmetic) go through it, and an assertion (`index_stride_and_copy_plan_agree`) enforces they cannot diverge.
+
+This means every consumer that already reads the slot plan (bind copy, parameter entry copy, return slot, aggregate stores) gets deep copy for free. There is no deep-copy walker anywhere in the codebase, and there does not need to be one.
+
+## Three aliasing bugs closed structurally
+
+Cx has had three aggregate-aliasing divergences open since v0.3.3. These were cases where mutating through one name could visibly affect another:
+
+- `a:[0] = n` then `n:[0] = 5` produced 77 on one backend, 5 on the other
+- `h.arr = n` then `n:[0] = 5` had the same split
+- `arr:[0] = x` then `x.v = 99` showed 11 vs 99
+
+All three close as a structural consequence of contiguous storage. The alias cannot form because there is no pointer to share. A bind copies the flat storage, and the two copies are independent from that point forward. This is Model B (value semantics for aggregates, which landed the day before) composing cleanly with Model A.
+
+## Parser changes
+
+The syntax side was minimal. The index rule in `src/frontend/parser.rs` changed from `.or_not()` to `.repeated()` with a left fold, so `a:[i]:[j]` folds into `Index(Index(a, i), j)`. The write side mirrors this. Types and literals were already recursive, so no syntax changes were needed there.
+
+There are known remaining parse limitations for chained writes: chained writes inside a function body, writes rooted at a field target, and chained compound assignment. The compound-assignment case is the trickiest because its AST target uses a `NAME` node, so fixing it requires an AST change rather than just a grammar fold. These are pre-existing gaps, not regressions from Model A. They are documented in `docs/known_issues.md` section 28.
+
+## Test corpus and parity
+
+Eight new test fixtures landed with the commit, including a rank-3 test (`t_md_3d_t64`) using `[2: [3: [4: t64]]]` that proves the recursive plan works beyond 2D. The submain corpus went from 436 to 444, parity moved from 396/40/0 to 404/40/0, and all 436 pre-existing fixtures remain byte-identical across both backends. Clippy holds at 111/111.
+
+Main is unchanged at 414/0. The submain-to-main merge has not happened yet. Submain is now 7 commits ahead, carrying array returns (Aug 16), expression receivers (Aug 18), assignment copies, Model B, clippy reconciliation, and now Model A.
+
+## Impact on the roadmap
+
+The 0.5 roadmap delivery item was "Multidimensional arrays landed, or actively completing," structured as six ordered deliverables meant to be resolved before writing code. Model A took a different approach: build the contiguous model, prove it works up to rank 3, and let the implementation settle the design questions.
+
+The result is that deliverables 2 through 5 (type syntax, indexing syntax, literal syntax, memory layout) are all settled by the implementation. The `:` collision question (deliverable 1) is moot for reads. The remaining open question is deliverable 6: whether rank 4 and general N-dimensional arrays fall out of the current recursive approach without further changes. Rank 3 works, so the answer is likely yes, but it has not been tested yet.
+
+## What is next
+
+The submain merge to main is overdue. Seven commits spanning array returns, value semantics, and contiguous multidimensional arrays are all tested and passing. That merge would bring main from 414 to 444 tests and close several 0.4 lowering blockers on main.
+
+After that, the write-side parse limitations for multidimensional arrays need attention, and the `.copy` / `.copy.free` / `copy_into` parameter kinds remain as a lowering blocker now that Model A and Model B have settled the value-semantics story.
