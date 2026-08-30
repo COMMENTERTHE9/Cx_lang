@@ -1,0 +1,14 @@
+// The write-back fires at scope EXIT, not at a return site — so it happens on an
+// early return too, carrying whatever the parameter held when the function left.
+// The interpreter is the reference here; this pins the JIT to it.
+x: t64 = 10
+fnc: t64 bail(n.copy: t64) {
+    n = n + 5
+    if (n > 0) {
+        return 99
+    }
+    n = n + 1000
+    n
+}
+print(bail(x.copy))
+print(x)

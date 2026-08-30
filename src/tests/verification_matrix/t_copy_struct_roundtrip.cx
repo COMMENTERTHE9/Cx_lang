@@ -1,0 +1,14 @@
+// The one aggregate `.copy` that worked before this slice. It must keep working:
+// every field asserted, including one the callee never touches.
+struct S { v: t64, w: t64, z: t64 }
+let s;
+s = S { v: 1, w: 2, z: 3 }
+fnc: t64 edit(p.copy: S) {
+    p.v = 91
+    p.z = 93
+    return p.v
+}
+print(edit(s.copy))
+print(s.v)
+print(s.w)
+print(s.z)

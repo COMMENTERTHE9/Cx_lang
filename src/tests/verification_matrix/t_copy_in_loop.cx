@@ -1,0 +1,13 @@
+// Mutated repeatedly inside a loop: the caller sees the value at exit, not any
+// intermediate one, and sees it exactly once rather than per iteration.
+x: t64 = 0
+fnc: t64 accumulate(n.copy: t64) {
+    i: t64 = 0
+    while (i < 4) {
+        n = n + 10
+        i = i + 1
+    }
+    n
+}
+print(accumulate(x.copy))
+print(x)

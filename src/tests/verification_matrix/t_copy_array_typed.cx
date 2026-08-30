@@ -1,0 +1,12 @@
+// A typed array `.copy`. The declared type reaching the binding is what made
+// this expressible at all (slice 1); the write-back is what makes it `.copy`.
+a: [3: t64] = [11, 22, 33]
+fnc: t64 shift(r.copy: [3: t64]) {
+    r:[0] += 100
+    r:[2] += 300
+    return r:[0]
+}
+print(shift(a.copy))
+print(a:[0])
+print(a:[1])
+print(a:[2])

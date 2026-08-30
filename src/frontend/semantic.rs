@@ -3559,6 +3559,45 @@ impl Analyzer {
                 CallArg::Expr(_) => {}
             }
         }
+
+        // The argument's kind and the parameter's kind must agree.
+        //
+        // The interpreter registers a write-back from the ARGUMENT (`x.copy`),
+        // while a compiled callee's shape is fixed by its PARAMETER — a callee
+        // cannot have two ABIs depending on how it is called. Left to disagree,
+        // the two ends diverge in both directions: `f(x.copy)` into a plain
+        // parameter wrote back on the interpreter and could not on the JIT, and
+        // a plain argument into a `.copy` parameter wrote back on neither while
+        // reading as though it would.
+        //
+        // Requiring them to match makes the two descriptions one, and nothing in
+        // the corpus or examples ever mismatched them.
+        if let Some(params) = params {
+            for (index, arg) in args.iter().enumerate() {
+                let Some(param) = params.get(index) else { continue };
+                let arg_kind = match arg {
+                    CallArg::Copy(_) => Some(".copy"),
+                    CallArg::CopyFree(_) => Some(".copy.free"),
+                    _ => None,
+                };
+                let param_kind = match param.kind {
+                    SemanticParamKind::Copy => Some(".copy"),
+                    SemanticParamKind::CopyFree => Some(".copy.free"),
+                    _ => None,
+                };
+                if arg_kind != param_kind {
+                    return Err(sem_err!(
+                        pos,
+                        "argument {} to '{}' is {} but parameter '{}' is declared {} — the call site and the declaration must agree",
+                        index + 1,
+                        callee,
+                        arg_kind.unwrap_or("an ordinary argument"),
+                        param.name,
+                        param_kind.unwrap_or("an ordinary parameter")
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 

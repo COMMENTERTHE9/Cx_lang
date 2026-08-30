@@ -2296,3 +2296,120 @@ Every fixture's **stdout and exit code is byte-identical** across all 906 runs.
 The only stdout+stderr differences are the deprecation notice on
 `t11_copy_free_isolated` and `t24_full_system_regression`, the two fixtures that
 use `.copy.free`.
+
+---
+
+## 30. `.copy` lowers — uniform by-address ABI. Blocker #3 still not fully closed
+
+*(Implemented by the commit that introduces this entry: `copy_param_pointee`,
+`finish_return` and the caller-side copy-in/copy-out in `src/ir/lower.rs`, plus
+the kind-agreement rule in `check_copy_arg_contract`.)*
+
+**Status: `.copy` lowers on both backends. `copy_into` does not.**
+`t49_copy_contract` converted; SKIP 40 → 39. `t54_post_split_verify` still
+SKIPs — it needs `Container` lowering, a separate construct with no ABI
+question — so **the blocker is not fully closed.**
+
+### ABI option (a), as built
+
+A `.copy` parameter passes **by address, for every type**. One rule at each end:
+
+- **Caller** allocates a slot, copies the variable's current contents in, passes
+  the address, and reloads after the call returns.
+- **Callee** receives a `Ptr`, copies in to a local on entry, and copies back out
+  through that same address at every exit.
+
+Scalar and aggregate differ only in how contents move — a `Load`/`Store` pair
+versus `ret_slot_plan` parts — which is the same distinction the entry copy for
+ordinary aggregate parameters already makes. The IR shows the single rule:
+
+```
+fn bump(n: ptr) -> i64 {        fn edit(p: ptr) -> i64 {
+  bb0:(v0: ptr)                   bb0:(v0: ptr)
+    v1 = load i64 v0                v1 = alloca size 24 align 8
+    ...                             v2 = load i64 v0 ; store v1 v2   (x3)
+    store v0 v4                     ...
+    ret v4                          (copy_parts back through v0)
+```
+
+`copy_param_pointee` is the only place the slot's type is decided, and the
+signature table, the callee's entry copy, the write-back and the caller's
+store/reload all read it — so the two ends cannot disagree about what is at the
+address.
+
+### The write-back fires on every exit, structurally
+
+All four places a function body can terminate route through `finish_return`,
+which emits the write-backs before the terminator. This matches the interpreter,
+where the bleed-back is emitted from `pop_scope` and is therefore independent of
+how the function left. A write-back that fired only on the normal return would be
+worse than none.
+
+The early-return case, from the IR — two returns, two stores:
+
+```
+bb1:  v7 = const i64 99    store v0 v4     ret v7
+bb2:  v10 = add ...        store v0 v10    ret v10
+```
+
+Both backends give `99 / 15`: the caller sees the mutation even though the
+function left early, and sees the return value 99.
+
+### The divergence this surfaced, and the ruling it forced
+
+The interpreter registers a write-back from the **argument** (`x.copy`); a
+compiled callee's shape is fixed by its **parameter**. A callee cannot have two
+ABIs depending on how it is called, so the two descriptions diverged in *both*
+directions and neither was diagnosed:
+
+```
+f(x.copy)  into a plain parameter    interpreter 15 15  — wrote back
+f(x)       into a `.copy` parameter  interpreter 15 10  — did not
+```
+
+**Ruling: the argument's kind and the parameter's kind must agree**, enforced in
+`check_copy_arg_contract` — the same choke point Slice 1 built. `.copy` requires
+`.copy`, `.copy.free` requires `.copy.free`. This makes the argument-driven and
+parameter-driven descriptions one.
+
+Nothing relied on a mismatch: every `.copy` declaration and call site in the
+corpus and the examples already agreed. This ruling was not in the locked set —
+it was forced by the ABI, and is recorded here as a decision rather than an
+implementation detail.
+
+### Untyped `.copy`
+
+`t49_copy_contract` declares `n.copy` with no type, and `.copy` is **laxer than a
+plain parameter**: `fnc f(n)` is a semantic error, while `fnc f(n.copy)` is
+accepted. An undeclared `.copy` parameter therefore falls back to the target's
+default integer, the same fallback untyped numeric literals take. A `.copy`
+parameter of any other type must be declared — `f(r.copy: [3: t64])` — which
+Slice 1 made possible.
+
+### `.copy.free` lowers as an ordinary parameter
+
+It is plain passing under another name, so it is given no shape of its own. It
+remains deprecated and still warns.
+
+### Cost: zero on the ordinary parameter path — proven, not benchmarked
+
+Only `.copy` parameters changed shape. Timing over 1.8M calls put baseline and
+this slice within one timer tick of each other, which proves nothing at that
+resolution, so the claim rests on the emitted code instead: the IR for an
+ordinary-parameter benchmark is **byte-identical** between `aa76b68` and this
+commit, as it is across 24 sampled non-`.copy` fixtures.
+
+### Delta
+
+Corpus 453 → 459 (six new fixtures). `cargo test` 252/0, `--features jit` 428/0,
+parity **413/40/0 → 420 PASS / 39 SKIP / 0 PARITY_FAIL across 459**, matrix
+459/459, clippy 110/110.
+
+**SKIP 40 → 39: `t49_copy_contract` converted.** `t54_post_split_verify`
+(`copy_into`) still SKIPs, and the four `.copy`-named fixtures `t10`–`t13` remain
+blocked on nested FuncDef.
+
+One unit test changed meaning rather than breaking: `rejects_non_expr_call_arg`
+asserted that a `.copy` argument is unlowerable. Semantic analysis now rejects
+that shape outright, so the test pins lowering's defence-in-depth refusal
+instead.

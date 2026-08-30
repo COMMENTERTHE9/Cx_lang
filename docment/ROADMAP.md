@@ -155,8 +155,9 @@ remaining blockers folded into 0.4.
     `a + b` through a phen dispatches identically on both backends.
 
   *Still open, each confirmed still failing:*
-  - **`.copy` / `copy_into` parameter kinds** — partially scoped, not closed.
-    See the sub-entry below; this is the last 0.4 blocker with rulings attached.
+  - **`copy_into` parameter kind** — still open; needs `Container` lowering.
+    `.copy` itself now lowers (Slice 2), so what remains of this blocker is
+    `copy_into` alone. See the sub-entry below.
   - **Nested function definitions** — JIT exit 127. Also blocks four of the
     `.copy`-named fixtures, which is why closing `.copy` converts fewer
     fixtures than its name suggests.
@@ -176,16 +177,23 @@ remaining blockers folded into 0.4.
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
 
-  ### `.copy` / `.copy.free` / `copy_into` — semantics settled, lowering pending
+  ### `.copy` / `.copy.free` / `copy_into` — `.copy` lowers, `copy_into` does not
 
-  Scoped 2026-08-29; **Slice 1 landed 2026-08-30** — rulings 2 through 5 below
-  are implemented and tested, ruling 1 (the ABI) is not. See
-  `docs/known_issues.md` §29.
+  Scoped 2026-08-29; **Slice 1 landed 2026-08-30** (`docs/known_issues.md` §29),
+  **Slice 2 landed 2026-08-30** (§30). All five rulings are now implemented.
 
-  **The blocker remains PARTIAL and Slice 1 converted ZERO fixtures.** SKIP is
-  unchanged at 40. `t49_copy_contract` (scalar `t64`) and `t54_post_split_verify`
-  (`copy_into`) both still SKIP, and the four `.copy`-named fixtures `t10`–`t13`
-  remain blocked on nested FuncDef regardless of anything `.copy` does.
+  **The blocker is STILL NOT FULLY CLOSED.** `.copy` lowers on both backends and
+  `t49_copy_contract` converted — SKIP 40 → 39 — but `t54_post_split_verify`
+  still SKIPs: `copy_into` needs `Container` lowering, a separate construct with
+  no ABI question, and `SemanticType::Container` has no `IrType` today. The four
+  `.copy`-named fixtures `t10`–`t13` remain blocked on nested FuncDef regardless
+  of anything `.copy` does.
+
+  Slice 2 also forced a ruling that was not in the locked set. The interpreter
+  registers `.copy`'s write-back from the **argument**, while a compiled callee's
+  shape is fixed by its **parameter**, and the two diverged in both directions
+  undiagnosed. The argument's kind and the parameter's kind must now agree.
+  Nothing in the corpus or examples had ever mismatched them.
 
   Slice 1 settled the semantics beneath the ABI work, so if Slice 2 goes wrong
   the layer under it is already tested: repeated `.copy` targets rejected (they
@@ -208,7 +216,7 @@ remaining blockers folded into 0.4.
 
   Rulings — 1 pending, 2–5 landed in Slice 1:
 
-  1. **ABI option (a)** — *not implemented; this is Slice 2.* — `.copy` parameters pass **by address, uniformly**, for
+  1. **ABI option (a)** *(Landed in Slice 2.)* — `.copy` parameters pass **by address, uniformly**, for
      every type. Scalar and aggregate then stop being separate semantic cases:
      pass the address, entry-copy to a local, write back through the address at
      exit. Aggregates use `ret_slot_plan` parts; scalars a plain load/store.

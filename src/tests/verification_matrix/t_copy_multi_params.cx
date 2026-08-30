@@ -1,0 +1,15 @@
+// Several `.copy` parameters in one call, distinct targets, asymmetric values.
+// A write-back that used the wrong slot would cross the two.
+a: t64 = 1
+b: t64 = 2
+c: t64 = 3
+fnc: t64 spread(p.copy: t64, q.copy: t64, r.copy: t64) {
+    p = 10
+    q = 20
+    r = 30
+    return p + q + r
+}
+print(spread(a.copy, b.copy, c.copy))
+print(a)
+print(b)
+print(c)

@@ -114,6 +114,11 @@ type BindingMap = HashMap<BindingId, LoweredValue>;
 #[derive(Clone)]
 struct FunctionSignature {
     param_types: Vec<IrType>,
+    /// Per parameter: `Some(T)` when it is a `.copy` parameter whose caller
+    /// slot holds a `T`, `None` otherwise. Filled by `copy_param_pointee`, the
+    /// same function the callee reads, so the caller's slot and the callee's
+    /// entry copy cannot disagree about what is at the address.
+    copy_pointees: Vec<Option<SemanticType>>,
     return_ty: Option<IrType>,
     /// Struct name when the function's semantic return type is a struct.
     /// Struct returns use a caller-allocated return slot: the caller allocas
@@ -153,6 +158,32 @@ type RetSlotPlan = (usize, usize, Vec<(usize, IrType)>);
 /// parts are its fields at their layout offsets; an array's are its elements at
 /// `i * stride`. `compute_array_layout` already supplied stride and alignment;
 /// nothing about the convention itself needed inventing for arrays.
+/// The type a `.copy` parameter's caller-allocated slot holds.
+///
+/// ABI option (a): a `.copy` parameter passes BY ADDRESS for every type, so both
+/// ends need the same answer about what lives at that address. This is the only
+/// place that answer is computed — the signature table, the callee's entry copy,
+/// the callee's write-back and the caller's store/reload all read it, so they
+/// cannot disagree.
+///
+/// A declared type is used as written. An UNDECLARED `.copy` parameter falls back
+/// to the target's default integer, the same fallback untyped numeric literals
+/// already take. That fallback exists because `.copy` is laxer than a plain
+/// parameter: `fnc f(n)` is a semantic error, while `fnc f(n.copy)` is accepted —
+/// which is exactly what `t49_copy_contract` relies on.
+fn copy_param_pointee(
+    param: &crate::frontend::semantic_types::SemanticParam,
+    target: TargetConfig,
+) -> SemanticType {
+    match &param.ty {
+        Some(ty) => ty.clone(),
+        None => match target.numeric_literal_ir_type() {
+            IrType::I32 => SemanticType::I32,
+            _ => SemanticType::I64,
+        },
+    }
+}
+
 /// Byte size and alignment of the storage a slot holding `ty` occupies.
 ///
 /// Model A: a slot IS the storage. An aggregate slot holds the aggregate's
@@ -348,13 +379,18 @@ fn instantiate_struct_layout(
     Some(StructLayoutInfo { fields: ir_fields, sem_fields, layout })
 }
 
-fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionSignature> {
+fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> HashMap<String, FunctionSignature> {
     let mut table = HashMap::new();
     for stmt in &program.stmts {
         if let SemanticStmt::FuncDef(function) = stmt {
             let mut param_types = Vec::new();
+            let mut copy_pointees: Vec<Option<SemanticType>> = Vec::new();
             let mut all_params_ok = true;
             for param in &function.params {
+                copy_pointees.push(match param.kind {
+                    SemanticParamKind::Copy => Some(copy_param_pointee(param, target)),
+                    _ => None,
+                });
                 match param.kind {
                     SemanticParamKind::Typed => {
                         let Some(ref ty) = param.ty else {
@@ -362,6 +398,18 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                             break;
                         };
                         match lower_type(ty) {
+                            Ok(ir_ty) => param_types.push(ir_ty),
+                            Err(_) => { all_params_ok = false; break; }
+                        }
+                    }
+                    // ABI option (a): by address, for every type.
+                    SemanticParamKind::Copy => param_types.push(IrType::Ptr),
+                    // `.copy.free` is plain passing under another name — same
+                    // binding, no write-back — so it lowers as an ordinary
+                    // parameter rather than getting a shape of its own.
+                    SemanticParamKind::CopyFree => {
+                        let ty = copy_param_pointee(param, target);
+                        match lower_type(&ty) {
                             Ok(ir_ty) => param_types.push(ir_ty),
                             Err(_) => { all_params_ok = false; break; }
                         }
@@ -387,6 +435,7 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
             }
             table.insert(function.name.clone(), FunctionSignature {
                 param_types,
+                copy_pointees,
                 return_ty,
                 ret_slot_ty,
             });
@@ -460,7 +509,14 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                 }
                 table.insert(
                     mangle_method(&tn, &method.name),
-                    FunctionSignature { param_types, return_ty, ret_slot_ty },
+                    // Methods cannot declare a copy kind (rejected at analysis
+                    // time), so no parameter here is ever passed by address.
+                    FunctionSignature {
+                        copy_pointees: vec![None; param_types.len()],
+                        param_types,
+                        return_ty,
+                        ret_slot_ty,
+                    },
                 );
             }
         }
@@ -539,7 +595,14 @@ fn build_signature_table(program: &SemanticProgram) -> HashMap<String, FunctionS
                 }
                 table.insert(
                     mangle_method(&tn, &method.name),
-                    FunctionSignature { param_types, return_ty, ret_slot_ty },
+                    // Methods cannot declare a copy kind (rejected at analysis
+                    // time), so no parameter here is ever passed by address.
+                    FunctionSignature {
+                        copy_pointees: vec![None; param_types.len()],
+                        param_types,
+                        return_ty,
+                        ret_slot_ty,
+                    },
                 );
             }
         }
@@ -743,6 +806,11 @@ fn find_target_loop<'a>(stack: &'a [LoopContext], label: &Option<String>) -> Opt
     }
 }
 
+/// One `.copy` parameter's write-back: the caller's slot address it arrived on,
+/// the binding whose current contents must be written back through it, and the
+/// type at that address.
+type CopyWriteback = (ValueId, BindingId, SemanticType);
+
 struct FunctionLoweringSpec {
     name: String,
     return_ty: Option<IrType>,
@@ -751,6 +819,10 @@ struct FunctionLoweringSpec {
     /// function returns a struct. Every return site copies the result struct
     /// through the slot and returns the slot pointer instead of the local's.
     ret_slot: Option<(ValueId, SemanticType)>,
+    /// Every `.copy` parameter of this function. `finish_return` walks it at
+    /// EVERY exit, which is what makes the write-back match the interpreter,
+    /// where it fires in `pop_scope` and so is exit-path-independent.
+    copy_writebacks: Vec<CopyWriteback>,
 }
 
 impl LoweringCtx {
@@ -895,12 +967,12 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     };
     let mut top_level_stmts = Vec::new();
     let mut has_real_main = false;
-    let signature_table = build_signature_table(program);
-    let struct_table = build_struct_table(program);
-    let generic_structs = build_generic_struct_templates(program);
     // Single place where the compilation target is chosen; threaded into every
     // lowering context so all target-dependent decisions use the same config.
     let target = TargetConfig::host();
+    let signature_table = build_signature_table(program, target);
+    let struct_table = build_struct_table(program);
+    let generic_structs = build_generic_struct_templates(program);
 
     for stmt in &program.stmts {
         match stmt {
@@ -1044,6 +1116,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         return_ty: None,
         allow_return_stmt: false,
         ret_slot: None,
+        copy_writebacks: Vec::new(),
     };
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target);
     // D2.3d: flat name→binding map for print-time string interpolation.
@@ -1085,6 +1158,9 @@ fn lower_semantic_function(
     // Collected here because the entry block does not exist until after every
     // parameter is bound; the copies are emitted into it below.
     let mut copy_on_entry: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
+    // ABI option (a): a `.copy` parameter arrives as the caller's slot ADDRESS.
+    let mut copy_params: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
+    let mut copy_writebacks: Vec<CopyWriteback> = Vec::new();
     let return_ty = match &function.return_ty {
         Some(ty) => lower_return_type(ty)?,
         None => None,
@@ -1114,6 +1190,26 @@ fn lower_semantic_function(
                         }
                     }
                 }
+            }
+            (crate::frontend::semantic_types::SemanticParamKind::Copy, _) => {
+                // Arrives by address for every type. The body still works on a
+                // local — scalars are SSA values here — so the entry copies IN
+                // and `finish_return` copies OUT through this same address.
+                let sem_ty = copy_param_pointee(param, ctx.target);
+                ir_params.push(IrParam { name: param.name.clone(), ty: IrType::Ptr });
+                let value = ctx.fresh_value();
+                block_params.push(BlockParam { value, ty: IrType::Ptr, read_only: false });
+                copy_params.push((param.binding, value, sem_ty));
+            }
+            (crate::frontend::semantic_types::SemanticParamKind::CopyFree, _) => {
+                // Plain passing under another name — deprecated, and lowered as
+                // an ordinary parameter rather than given a shape of its own.
+                let sem_ty = copy_param_pointee(param, ctx.target);
+                let ty = lower_type(&sem_ty)?;
+                ir_params.push(IrParam { name: param.name.clone(), ty: ty.clone() });
+                let value = ctx.fresh_value();
+                block_params.push(BlockParam { value, ty: ty.clone(), read_only: false });
+                bindings.insert(param.binding, LoweredValue { value, ty });
             }
             (crate::frontend::semantic_types::SemanticParamKind::Typed, None) => {
                 return Err(LoweringError::InternalInvariantViolation {
@@ -1166,8 +1262,31 @@ fn lower_semantic_function(
         return_ty: return_ty.clone(),
         allow_return_stmt: true,
         ret_slot,
+        copy_writebacks: copy_writebacks.clone(),
     };
     let mut entry = ctx.start_block(block_params, bindings);
+    // `.copy` entry copy: bring the caller's slot contents into a local, so the
+    // body mutates its own copy. Same shape as the aggregate parameter copy
+    // below, in the other direction from `finish_return`.
+    for (binding, slot, sem_ty) in copy_params {
+        match ret_slot_plan(&sem_ty, &ctx.struct_table) {
+            Some((size, align, parts)) => {
+                let local = ctx.fresh_value();
+                entry.emit(IrInst::Alloca { dst: local, size, align })?;
+                copy_parts(slot, 0, local, 0, &parts, &mut ctx, &mut entry)?;
+                entry.bindings.insert(binding, LoweredValue { value: local, ty: IrType::Ptr });
+                copy_writebacks.push((slot, binding, sem_ty));
+            }
+            None => {
+                let ty = lower_type(&sem_ty)?;
+                let local = ctx.fresh_value();
+                entry.emit(IrInst::Load { dst: local, ptr: slot, ty: ty.clone() })?;
+                entry.bindings.insert(binding, LoweredValue { value: local, ty });
+                copy_writebacks.push((slot, binding, sem_ty));
+            }
+        }
+    }
+    let spec = FunctionLoweringSpec { copy_writebacks: copy_writebacks.clone(), ..spec };
     // Model B, the callee half: an aggregate parameter names storage the caller
     // still owns, so the callee gets its own. `ret_slot_plan` supplies the size,
     // alignment and parts — the same authority the return slot and the bind copy
@@ -1222,13 +1341,11 @@ fn lower_semantic_function(
                         ),
                     })?;
             ensure_type_match("function trailing return", expected, lowered.ty)?;
-            let ret_value = emit_return_through_slot(&spec, lowered.value, &mut ctx, &mut active)?;
+            let ret_value = finish_return(&spec, Some(lowered.value), &mut ctx, &mut active)?;
             finalize_active_block(
                 &mut ctx,
                 active,
-                IrTerminator::Return {
-                    value: Some(ret_value),
-                },
+                IrTerminator::Return { value: ret_value },
             )?;
         } else if spec.return_ty.is_some() {
             return Err(LoweringError::InternalInvariantViolation {
@@ -1238,6 +1355,7 @@ fn lower_semantic_function(
                 ),
             });
         } else {
+            let _ = finish_return(&spec, None, &mut ctx, &mut active)?;
             finalize_active_block(&mut ctx, active, IrTerminator::Return { value: None })?;
         }
     }
@@ -1496,14 +1614,13 @@ fn lower_stmt(
                 (Some(expected), Some(expr)) => {
                     let lowered = lower_expr(expr, ctx, &mut current)?;
                     ensure_type_match("function return", expected.clone(), lowered.ty)?;
-                    let ret_value = emit_return_through_slot(spec, lowered.value, ctx, &mut current)?;
-                    current.terminate(IrTerminator::Return {
-                        value: Some(ret_value),
-                    })?;
+                    let ret_value = finish_return(spec, Some(lowered.value), ctx, &mut current)?;
+                    current.terminate(IrTerminator::Return { value: ret_value })?;
                     ctx.seal_block(current)?;
                     Ok(None)
                 }
                 (None, None) => {
+                    let _ = finish_return(spec, None, ctx, &mut current)?;
                     current.terminate(IrTerminator::Return { value: None })?;
                     ctx.seal_block(current)?;
                     Ok(None)
@@ -2590,13 +2707,18 @@ fn lower_expr(
                     ),
                 });
             }
-            let (param_types, return_ty, ret_slot_ty) = {
+            let (param_types, copy_pointees, return_ty, ret_slot_ty) = {
                 let sig = ctx.signature_table.get(callee).ok_or_else(|| {
                     LoweringError::UnresolvedSemanticArtifact {
                         artifact: format!("function '{}'", callee),
                     }
                 })?;
-                (sig.param_types.clone(), sig.return_ty.clone(), sig.ret_slot_ty.clone())
+                (
+                    sig.param_types.clone(),
+                    sig.copy_pointees.clone(),
+                    sig.return_ty.clone(),
+                    sig.ret_slot_ty.clone(),
+                )
             };
 
             let return_ty = return_ty.ok_or_else(|| {
@@ -2625,6 +2747,11 @@ fn lower_expr(
             // the interpreter's left-to-right argument evaluation in
             // call_semantic_func.  See docs/backend/cx_eval_order.md.
             let mut lowered_args = Vec::new();
+            // `.copy` arguments: the slot the caller allocated, and the binding
+            // to reload into once the call returns. The reload is the copy-OUT
+            // half, and doing it here rather than in the callee is what makes it
+            // fire on every exit path without instrumenting any of them.
+            let mut copy_reloads: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
             for (i, arg) in args.iter().enumerate() {
                 match arg {
                     SemanticCallArg::Expr(expr) => {
@@ -2635,6 +2762,50 @@ fn lower_expr(
                             lowered.ty,
                         )?;
                         lowered_args.push(lowered.value);
+                    }
+                    // `.copy.free` is plain passing: hand over the value.
+                    SemanticCallArg::CopyFree { binding, name } => {
+                        let current = active.bindings.get(binding).cloned().ok_or_else(|| {
+                            LoweringError::UnresolvedSemanticArtifact {
+                                artifact: format!("`.copy.free` argument '{}'", name),
+                            }
+                        })?;
+                        lowered_args.push(current.value);
+                    }
+                    SemanticCallArg::Copy { binding, name } => {
+                        // Defence in depth: semantic analysis requires the
+                        // argument's kind and the parameter's kind to agree, so
+                        // this cannot fire from source.
+                        let sem_ty = copy_pointees.get(i).cloned().flatten().ok_or_else(|| {
+                            LoweringError::UnsupportedSemanticConstruct {
+                                construct: format!(
+                                    "`.copy` argument '{}' to '{}', whose parameter is not `.copy`",
+                                    name, callee
+                                ),
+                            }
+                        })?;
+                        let current = active.bindings.get(binding).cloned().ok_or_else(|| {
+                            LoweringError::UnresolvedSemanticArtifact {
+                                artifact: format!("`.copy` argument '{}'", name),
+                            }
+                        })?;
+                        let (size, align) = slot_size_align(&sem_ty, &ctx.struct_table)
+                            .ok_or_else(|| LoweringError::UnresolvedSemanticArtifact {
+                                artifact: format!("slot layout for `.copy` argument '{}'", name),
+                            })?;
+                        let slot = ctx.fresh_value();
+                        active.emit(IrInst::Alloca { dst: slot, size, align })?;
+                        // Copy IN: the caller's current value goes into the slot.
+                        match ret_slot_plan(&sem_ty, &ctx.struct_table) {
+                            Some((_, _, parts)) => {
+                                copy_parts(current.value, 0, slot, 0, &parts, ctx, active)?;
+                            }
+                            None => {
+                                active.emit(IrInst::Store { ptr: slot, value: current.value })?;
+                            }
+                        }
+                        lowered_args.push(slot);
+                        copy_reloads.push((*binding, slot, sem_ty));
                     }
                     _ => {
                         return Err(LoweringError::UnsupportedSemanticConstruct {
@@ -2675,6 +2846,32 @@ fn lower_expr(
                 args: lowered_args,
                 return_ty: Some(return_ty.clone()),
             })?;
+
+            // Copy OUT. The callee wrote its final parameter contents back into
+            // the slot before returning — on whichever path it took — so the
+            // caller reads the slot once, here, and rebinds. An aggregate's
+            // binding already names storage, so its reload is the copy the
+            // callee performed; a scalar's is a single Load.
+            for (binding, slot, sem_ty) in copy_reloads {
+                match ret_slot_plan(&sem_ty, &ctx.struct_table) {
+                    Some(_) => {
+                        active.bindings.insert(
+                            binding,
+                            LoweredValue { value: slot, ty: IrType::Ptr },
+                        );
+                    }
+                    None => {
+                        let ty = lower_type(&sem_ty)?;
+                        let reloaded = ctx.fresh_value();
+                        active.emit(IrInst::Load {
+                            dst: reloaded,
+                            ptr: slot,
+                            ty: ty.clone(),
+                        })?;
+                        active.bindings.insert(binding, LoweredValue { value: reloaded, ty });
+                    }
+                }
+            }
 
             Ok(LoweredValue {
                 value: dst,
@@ -4390,6 +4587,7 @@ fn lower_branch_value(
             return_ty: None,
             allow_return_stmt: false,
             ret_slot: None,
+            copy_writebacks: Vec::new(),
         };
         let result = lower_stmt(stmt, ctx, body_active, &inline_spec, &[])?;
         body_active = match result {
@@ -5464,6 +5662,42 @@ fn lower_return_type(ty: &SemanticType) -> Result<Option<IrType>, LoweringError>
 /// non-struct-returning functions this is a no-op passthrough. The copy uses
 /// the same Load/PtrOffset/Store idiom as struct-literal lowering, so no new
 /// instruction shapes are involved and nothing wider than a word moves.
+/// Write every `.copy` parameter's current contents back through the caller's
+/// slot, then route the return value through the return slot.
+///
+/// THE exit path. All four places a function body can terminate call this, so a
+/// `.copy` write-back cannot fire on the normal return and be missed on an early
+/// one — which is the failure mode that would be worse than not writing back at
+/// all. It matches the interpreter, where the bleed-back is emitted from
+/// `pop_scope` and so is independent of how the function left.
+fn finish_return(
+    spec: &FunctionLoweringSpec,
+    value: Option<ValueId>,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<Option<ValueId>, LoweringError> {
+    for (slot, binding, sem_ty) in spec.copy_writebacks.clone() {
+        let Some(current) = active.bindings.get(&binding).cloned() else {
+            continue;
+        };
+        match ret_slot_plan(&sem_ty, &ctx.struct_table) {
+            // One rule — "write the parameter's current contents back through
+            // the address it arrived on". An aggregate's contents are its parts;
+            // a scalar's are the value itself.
+            Some((_, _, parts)) => {
+                copy_parts(current.value, 0, slot, 0, &parts, ctx, active)?;
+            }
+            None => {
+                active.emit(IrInst::Store { ptr: slot, value: current.value })?;
+            }
+        }
+    }
+    match value {
+        Some(v) => Ok(Some(emit_return_through_slot(spec, v, ctx, active)?)),
+        None => Ok(None),
+    }
+}
+
 fn emit_return_through_slot(
     spec: &FunctionLoweringSpec,
     src: ValueId,
@@ -7783,10 +8017,15 @@ mod tests {
             enums: vec![],
         };
 
+        // Semantic analysis now rejects a `.copy` argument against a plain
+        // parameter outright, so this shape cannot reach lowering from source.
+        // Lowering still refuses it rather than guessing a slot type — the two
+        // ends must agree about whether an argument arrives by address.
         assert_eq!(
             lower_program(&program).expect_err("lowering should fail"),
             LoweringError::UnsupportedSemanticConstruct {
-                construct: "non-Expr call argument in call to 'takes_one'".to_string(),
+                construct: "`.copy` argument 'y' to 'takes_one', whose parameter is not `.copy`"
+                    .to_string(),
             }
         );
     }

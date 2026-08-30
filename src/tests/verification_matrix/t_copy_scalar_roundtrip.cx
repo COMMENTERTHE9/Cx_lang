@@ -1,0 +1,10 @@
+// `.copy` is copy-in/copy-out: the callee gets its own copy and the final value
+// is written back to the named caller variable at scope exit. Asymmetric values
+// so a write-back of the wrong thing is visible.
+x: t64 = 10
+fnc: t64 bump(n.copy: t64) {
+    n = n + 7
+    n
+}
+print(bump(x.copy))
+print(x)
