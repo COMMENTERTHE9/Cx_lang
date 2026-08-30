@@ -12,7 +12,6 @@ pub enum ScopeEvent {
     Close(String),
     Add(String, Value),
     Mutate(String, Value),
-    Free(String),
     BleedBack(String, Value),
     HandleAlloc { slot: u32, gen: u32 },
     HandleDrop { slot: u32, gen: u32 },
@@ -55,7 +54,6 @@ pub struct ScopeFrame {
     /// The hot path (VarRef / Assign / CompoundAssign / For var / params) goes
     /// straight through `vars` by BindingId and never touches this.
     pub by_name: HashMap<String, BindingId>,
-    pub freed: HashSet<String>,
     pub bleed_back: HashMap<String, (usize, String)>,
     pub seen: HashSet<String>,
     // inner param name -> (outer scope index, outer var name)
@@ -66,7 +64,6 @@ impl ScopeFrame {
         ScopeFrame {
             vars: VarMap::default(),
             by_name: HashMap::new(),
-            freed: HashSet::new(),
             bleed_back: HashMap::new(),
             seen: HashSet::new(),
         }
@@ -369,9 +366,9 @@ impl From<SemanticParamKind> for ParamKind {
     fn from(spk: SemanticParamKind) -> ParamKind {
         match spk {
             SemanticParamKind::Typed => ParamKind::Typed(String::new(), Type::Unknown),
-            SemanticParamKind::Copy => ParamKind::Copy(String::new()),
-            SemanticParamKind::CopyFree => ParamKind::CopyFree(String::new()),
-            SemanticParamKind::CopyInto => ParamKind::CopyInto(String::new(), vec![]),
+            SemanticParamKind::Copy => ParamKind::Copy(String::new(), None),
+            SemanticParamKind::CopyFree => ParamKind::CopyFree(String::new(), None),
+            SemanticParamKind::CopyInto(_) => ParamKind::CopyInto(String::new(), vec![]),
         }
     }
 }

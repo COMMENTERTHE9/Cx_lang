@@ -27,8 +27,12 @@ pub enum CallArg {
 #[derive(Debug, Clone)]
 pub enum ParamKind {
     Typed(String, Type),
-    Copy(String),
-    CopyFree(String),
+    /// `n.copy: T` — the declared type is retained. It was previously dropped
+    /// at the parser, which left the binding untyped and made
+    /// `r.copy: [3: t64]` fail with "index assignment target must be an array"
+    /// — a diagnostic about assignment, on a parameter declaration.
+    Copy(String, Option<Type>),
+    CopyFree(String, Option<Type>),
     CopyInto(String, Vec<String>),
 }
 

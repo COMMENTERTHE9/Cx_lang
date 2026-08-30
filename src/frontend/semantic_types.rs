@@ -310,7 +310,11 @@ pub enum SemanticParamKind {
     Typed,
     Copy,
     CopyFree,
-    CopyInto,
+    /// The names the declaration bundles. Retained so the call site's bundle can
+    /// be checked against the declaration at ANALYSIS time — both lists are
+    /// static, and a mismatch used to surface as a runtime "variable 't.a' has
+    /// not been declared", which is the wrong layer.
+    CopyInto(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

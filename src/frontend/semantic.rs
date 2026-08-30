@@ -512,7 +512,7 @@ impl Analyzer {
                         .collect::<Vec<_>>();
                     full_params.extend(params.iter().cloned());
 
-                    match self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false) {
+                    match self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false, true) {
                         Ok(SemanticStmt::FuncDef(mut sem_func)) => {
                             // Capture the alias params (carrying this method's
                             // BindingIds) BEFORE the strip. The body's
@@ -647,7 +647,7 @@ impl Analyzer {
                         .map(|s| map_stmt_types(s.clone(), &|t| substitute_self_type(t, recv_ast)))
                         .collect();
                     self.push_scope();
-                    let analyzed = self.analyze_function(mname, &[], &full_params, &sub_ret, &sub_body, ret_expr, *pos, false);
+                    let analyzed = self.analyze_function(mname, &[], &full_params, &sub_ret, &sub_body, ret_expr, *pos, false, true);
                     self.pop_scope();
                     if let SemanticStmt::FuncDef(mut sem_func) = analyzed? {
                         // Model B: the phen receiver, flagged where it is built.
@@ -910,7 +910,7 @@ impl Analyzer {
                     _ => vec![],
                 };
                 let prev_bounds = std::mem::replace(&mut self.current_type_bounds, bounds.clone());
-                let result = self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test);
+                let result = self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test, false);
                 self.current_type_bounds = prev_bounds;
                 if result.is_ok() {
                     if let Some(info) = self.funcs.get_mut(name) {
@@ -1299,7 +1299,27 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         ret_expr: &Option<Expr>,
         pos: usize,
         is_test: bool,
+        is_method: bool,
     ) -> Result<SemanticStmt, SemanticError> {
+        // Option B, applied where parameters are declared rather than at each
+        // method-dispatch path. Every impl method, phen method and free function
+        // reaches this one function, and the flag has no default — a new
+        // method-producing path has to say which it is or it does not compile.
+        if is_method {
+            for param in params {
+                let (kind, pname) = match param {
+                    ParamKind::Copy(n, _) => (".copy", n),
+                    ParamKind::CopyFree(n, _) => (".copy.free", n),
+                    ParamKind::CopyInto(n, _) => ("copy_into", n),
+                    ParamKind::Typed(..) => continue,
+                };
+                return Err(sem_err!(
+                    pos,
+                    "method '{}' cannot declare parameter '{}' as {} — a method mutates through its receiver; {} gives free functions the out-parameter they otherwise lack",
+                    name, pname, kind, kind
+                ));
+            }
+        }
         let func_id = self.fresh_function();
         self.declare(name, ret_ty.clone(), None, true, pos)?;
 
@@ -1343,32 +1363,57 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         is_receiver: false,
                     });
                 }
-                ParamKind::Copy(param_name) => {
-                    let binding = self.declare(param_name, None, None, true, pos)?;
+                ParamKind::Copy(param_name, param_ty) => {
+                    // A `.copy` parameter carries its declared type like any
+                    // other. Declaring it untyped is what made an array `.copy`
+                    // fail with a message about assignment targets.
+                    let binding =
+                        self.declare(param_name, param_ty.clone(), None, true, pos)?;
                     resolved_params.push(SemanticParam {
                         binding,
                         name: param_name.clone(),
                         kind: SemanticParamKind::Copy,
-                        ty: None,
+                        ty: param_ty
+                            .as_ref()
+                            .map(|t| semantic_type_from_decl(t.clone(), type_params)),
                         is_receiver: false,
                     });
                 }
-                ParamKind::CopyFree(param_name) => {
-                    let binding = self.declare(param_name, None, None, true, pos)?;
+                ParamKind::CopyFree(param_name, param_ty) => {
+                    // Deprecated, accepted, unchanged in behaviour. `.copy.free`
+                    // is not merely redundant with plain passing since Model B:
+                    // its `free` suffix names `free_variable`, a scope-level
+                    // reclamation operation REMOVED on 2026-03-06 when
+                    // `Handle<T>` and its generational registry took over. It
+                    // has been a no-op since March. Removal waits until `.copy`
+                    // itself settles, so the family changes once.
+                    eprintln!(
+                        "WARNING: parameter '{param_name}' uses `.copy.free`, which is deprecated."
+                    );
+                    eprintln!(
+                        "  It binds by value with no write-back — exactly like an ordinary parameter."
+                    );
+                    eprintln!(
+                        "  Its `free` suffix names free_variable, removed 2026-03-06 when Handle<T> took over reclamation; it has been a no-op since."
+                    );
+                    let binding =
+                        self.declare(param_name, param_ty.clone(), None, true, pos)?;
                     resolved_params.push(SemanticParam {
                         binding,
                         name: param_name.clone(),
                         kind: SemanticParamKind::CopyFree,
-                        ty: None,
+                        ty: param_ty
+                            .as_ref()
+                            .map(|t| semantic_type_from_decl(t.clone(), type_params)),
                         is_receiver: false,
                     });
                 }
-                ParamKind::CopyInto(param_name, _) => {
+                ParamKind::CopyInto(param_name, bundled) => {
                     let binding = self.declare(param_name, None, None, true, pos)?;
                     resolved_params.push(SemanticParam {
                         binding,
                         name: param_name.clone(),
-                        kind: SemanticParamKind::CopyInto,
+                        kind: SemanticParamKind::CopyInto(bundled.clone()),
                         ty: None,
                         is_receiver: false,
                     });
@@ -1963,6 +2008,7 @@ Expr::Unary(op, inner, pos) => {
                 if let Some(export_table) = self.module_aliases.get(instance.as_str()) {
                     if let Some(func) = export_table.functions.get(method.as_str()) {
                         let ret_ty = func.return_ty.clone().unwrap_or(SemanticType::Void);
+                        self.check_copy_arg_contract(args, Some(&func.params), method, false, *pos)?;
                         let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
                         for arg in args {
                             match arg {
@@ -2067,6 +2113,7 @@ Expr::Unary(op, inner, pos) => {
                             args.len()
                         ));
                     }
+                    self.check_copy_arg_contract(args, None, method, true, *pos)?;
                     let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
                     for (index, arg) in args.iter().enumerate() {
                         match arg {
@@ -2174,6 +2221,7 @@ Expr::Unary(op, inner, pos) => {
                 }
 
                 // analyze args
+                self.check_copy_arg_contract(args, Some(&method_fn.params), method, true, *pos)?;
                 let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
                 for (index, arg) in args.iter().enumerate() {
                     match arg {
@@ -2489,6 +2537,7 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
+        self.check_copy_arg_contract(args, Some(&function.params), name, false, pos)?;
         let mut semantic_args = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
             let expected = function
@@ -2965,24 +3014,24 @@ fn semantic_param_placeholder(param: &ParamKind) -> SemanticParam {
             ty: Some(semantic_type_from_decl(ty.clone(), &[])),
             is_receiver: false,
         },
-        ParamKind::Copy(name) => SemanticParam {
+        ParamKind::Copy(name, _) => SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
             kind: SemanticParamKind::Copy,
             ty: None,
             is_receiver: false,
         },
-        ParamKind::CopyFree(name) => SemanticParam {
+        ParamKind::CopyFree(name, _) => SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
             kind: SemanticParamKind::CopyFree,
             ty: None,
             is_receiver: false,
         },
-        ParamKind::CopyInto(name, _) => SemanticParam {
+        ParamKind::CopyInto(name, bundled) => SemanticParam {
             binding: BindingId(u32::MAX),
             name: name.clone(),
-            kind: SemanticParamKind::CopyInto,
+            kind: SemanticParamKind::CopyInto(bundled.clone()),
             ty: None,
             is_receiver: false,
         },
@@ -3430,6 +3479,89 @@ fn type_is_not_indexable(ty: &SemanticType) -> bool {
 /// `x = ..` → `x`, `x.f = ..` → `x`, `x:[i] = ..` → `x`. Used by the const
 /// immutability check (known-issues #12), where writing through a const is
 impl Analyzer {
+    /// THE check for a call's copy-kind arguments. Every call site routes its
+    /// argument list through here once, so these rules cannot be satisfied for
+    /// one call form and missed for another.
+    ///
+    /// Three rules, all of them facts the analyser already has:
+    ///
+    /// 1. `.copy` and `.copy.free` are rejected on a method call. A method
+    ///    already has a declared mutation channel — its receiver — and
+    ///    `.copy` exists to give a FREE function the out-parameter it otherwise
+    ///    lacks. The interpreter never registered a bleed-back on the method
+    ///    path, so the modifier was silently inert rather than wrong; making it
+    ///    an error says so instead of pretending.
+    /// 2. Two `.copy` arguments may not name the same variable. Both would bleed
+    ///    back to it at scope exit in `HashMap` order, and eight runs of one such
+    ///    program produced three different answers.
+    /// 3. A `copy_into` argument's bundle must match the parameter's declared
+    ///    bundle. Both lists are static; a mismatch was a runtime error.
+    fn check_copy_arg_contract(
+        &self,
+        args: &[CallArg],
+        params: Option<&[SemanticParam]>,
+        callee: &str,
+        is_method: bool,
+        pos: usize,
+    ) -> Result<(), SemanticError> {
+        let mut copied: Vec<&str> = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            match arg {
+                CallArg::Copy(name) | CallArg::CopyFree(name) => {
+                    if is_method {
+                        return Err(sem_err!(
+                            pos,
+                            "'{}' cannot take a .copy argument — a method mutates through its receiver; .copy gives free functions the out-parameter they otherwise lack",
+                            callee
+                        ));
+                    }
+                    if matches!(arg, CallArg::Copy(_)) {
+                        if copied.contains(&name.as_str()) {
+                            return Err(sem_err!(
+                                pos,
+                                "'{}' is passed as .copy more than once to '{}' — both would be written back to it on return, in no defined order",
+                                name,
+                                callee
+                            ));
+                        }
+                        copied.push(name);
+                    }
+                }
+                CallArg::CopyInto(names) => {
+                    let Some(params) = params else { continue };
+                    let Some(param) = params.get(index) else { continue };
+                    let SemanticParamKind::CopyInto(declared) = &param.kind else {
+                        continue;
+                    };
+                    for want in declared {
+                        if !names.contains(want) {
+                            return Err(sem_err!(
+                                pos,
+                                "copy_into bundle does not match '{}': parameter '{}' declares '{}', which this call does not bundle",
+                                callee,
+                                param.name,
+                                want
+                            ));
+                        }
+                    }
+                    for got in names {
+                        if !declared.contains(got) {
+                            return Err(sem_err!(
+                                pos,
+                                "copy_into bundle does not match '{}': this call bundles '{}', which parameter '{}' does not declare",
+                                callee,
+                                got,
+                                param.name
+                            ));
+                        }
+                    }
+                }
+                CallArg::Expr(_) => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve an assignment target expression to a place.
     ///
     /// The single `Expr` → `SemanticLValue` conversion. `Assign` and
@@ -3482,7 +3614,19 @@ impl Analyzer {
                 let elem_ty = match &sem_target.ty {
                     SemanticType::Array(_, elem_ty) => *elem_ty.clone(),
                     SemanticType::Unknown => SemanticType::Unknown,
-                    _ => return Err(sem_err!(pos, "index assignment target must be an array")),
+                    // Name what the target actually is. The bare form of this
+                    // message was what an array `.copy` parameter hit, because
+                    // its declared type was dropped at the parser and the
+                    // binding came back as something that is not an array —
+                    // leaving a message about assignment targets standing in
+                    // for one about a missing type.
+                    other => {
+                        return Err(sem_err!(
+                            pos,
+                            "index assignment target must be an array — it has type {}",
+                            type_name(other)
+                        ))
+                    }
                 };
                 let sem_index = self.analyze_expr(index_expr)?;
                 Ok(SemanticLValue::Index {

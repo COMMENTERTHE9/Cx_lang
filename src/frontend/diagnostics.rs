@@ -395,10 +395,10 @@ Stmt::Return { expr, .. } => {
                     ParamKind::Typed(pname, pty) => {
                         eprintln!("{}  Param({}: {:?})", pad, pname, pty);
                     }
-                    ParamKind::Copy(pname) => {
+                    ParamKind::Copy(pname, _) => {
                         eprintln!("{}  Param({}.copy)", pad, pname);
                     }
-                    ParamKind::CopyFree(pname) => {
+                    ParamKind::CopyFree(pname, _) => {
                         eprintln!("{}  Param({}.copy.free)", pad, pname);
                     }
                     ParamKind::CopyInto(name, vars) => {
@@ -560,9 +560,6 @@ pub fn print_scope_event(event: &ScopeEvent) {
         }
         ScopeEvent::Mutate(name, val) => {
             eprintln!("  {}", format!("~ {}  = {:?}", name, val).yellow());
-        }
-        ScopeEvent::Free(name) => {
-            eprintln!("  {}", format!("- {}  = freed", name).red());
         }
         ScopeEvent::BleedBack(name, val) => {
             eprintln!(

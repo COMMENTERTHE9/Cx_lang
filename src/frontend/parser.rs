@@ -698,9 +698,9 @@ where
                 .then(just(Token::PunctColon).ignore_then(ty.clone()).or_not())
                 .map(|((name, modifier), ty_opt)| match modifier {
                     Some((m1, Some(m2))) if m1 == "copy" && m2 == "free" => {
-                        ParamKind::CopyFree(name)
+                        ParamKind::CopyFree(name, ty_opt)
                     }
-                    Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name),
+                    Some((m1, None)) if m1 == "copy" => ParamKind::Copy(name, ty_opt),
                     _ => ParamKind::Typed(name, ty_opt.unwrap_or(Type::Unknown)),
                 }))
             .boxed();

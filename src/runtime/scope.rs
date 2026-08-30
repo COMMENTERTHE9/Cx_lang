@@ -45,7 +45,6 @@ impl RunTime {
             let bleeds: Vec<(String, usize, String)> = frame
                 .bleed_back
                 .iter()
-                .filter(|(param_name, _)| !frame.freed.contains(*param_name))
                 .map(|(param_name, (outer_idx, outer_name))| {
                     (param_name.clone(), *outer_idx, outer_name.clone())
                 })
@@ -69,12 +68,8 @@ impl RunTime {
                             .map(|val| (outer_name.clone(), val))
                     })
                     .collect();
-                let free_names: Vec<String> = frame.by_name.keys()
-                    .filter(|name| !frame.freed.contains(*name))
-                    .cloned()
-                    .collect();
                 let close_label = format!("scope#{}", self.scopes.len() - 1);
-                Some((free_names, bleed_events, close_label))
+                Some((bleed_events, close_label))
             } else {
                 None
             };
@@ -92,10 +87,7 @@ impl RunTime {
             }
         }
 
-        if let Some((free_names, bleed_events, close_label)) = debug_info {
-            for name in &free_names {
-                diagnostics::print_scope_event(&ScopeEvent::Free(name.clone()));
-            }
+        if let Some((bleed_events, close_label)) = debug_info {
             for (name, val) in &bleed_events {
                 diagnostics::print_scope_event(&ScopeEvent::BleedBack(name.clone(), val.clone()));
             }

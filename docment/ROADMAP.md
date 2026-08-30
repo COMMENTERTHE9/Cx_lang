@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-29
+Last updated: 2026-08-30
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -176,10 +176,26 @@ remaining blockers folded into 0.4.
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
 
-  ### `.copy` / `.copy.free` / `copy_into` — rulings made, nothing built
+  ### `.copy` / `.copy.free` / `copy_into` — semantics settled, lowering pending
 
-  Scoped 2026-08-29. **The blocker closes PARTIALLY at best on current work**,
-  and the distinction matters:
+  Scoped 2026-08-29; **Slice 1 landed 2026-08-30** — rulings 2 through 5 below
+  are implemented and tested, ruling 1 (the ABI) is not. See
+  `docs/known_issues.md` §29.
+
+  **The blocker remains PARTIAL and Slice 1 converted ZERO fixtures.** SKIP is
+  unchanged at 40. `t49_copy_contract` (scalar `t64`) and `t54_post_split_verify`
+  (`copy_into`) both still SKIP, and the four `.copy`-named fixtures `t10`–`t13`
+  remain blocked on nested FuncDef regardless of anything `.copy` does.
+
+  Slice 1 settled the semantics beneath the ABI work, so if Slice 2 goes wrong
+  the layer under it is already tested: repeated `.copy` targets rejected (they
+  were nondeterministic — ten runs, three answers), `copy_into` bundles enforced
+  at analysis time rather than at runtime, `.copy` rejected on methods at both
+  the argument and the declaration, `freed` removed, and `.copy.free` warning on
+  use. Array `.copy` was fixed rather than rejected: the parser was discarding
+  the declared type, and `f(r.copy: [3: t64])` now works.
+
+  **The distinction that still matters:**
 
   - **Aggregate `.copy` needs no ABI change** — the caller's address already
     arrives as the incoming block parameter and stays live, so write-back is
@@ -190,37 +206,36 @@ remaining blockers folded into 0.4.
     arrives as a value; there is no location to write back to, and no
     caller-side trick recovers one.
 
-  Rulings, locked:
+  Rulings — 1 pending, 2–5 landed in Slice 1:
 
-  1. **ABI option (a)** — `.copy` parameters pass **by address, uniformly**, for
+  1. **ABI option (a)** — *not implemented; this is Slice 2.* — `.copy` parameters pass **by address, uniformly**, for
      every type. Scalar and aggregate then stop being separate semantic cases:
      pass the address, entry-copy to a local, write back through the address at
      exit. Aggregates use `ret_slot_plan` parts; scalars a plain load/store.
-  2. **Option B — `.copy` on method parameters is rejected** at analysis time.
+  2. **Option B — `.copy` on method parameters is rejected** at analysis time. *(Landed.)*
      A method already has a declared mutation channel: its receiver. Today
      `call_semantic_method` never registers a bleed-back, so `.copy` there is
      silently inert; honouring it instead would add a second write-back channel
      whose collision with the receiver is decided by scope-pop order. No fixture
      or example anywhere passes `.copy` or `copy_into` to a method, so this
      rejection breaks nothing.
-  3. **Repeated `.copy` targets are rejected** at analysis time. Two `.copy`
+  3. **Repeated `.copy` targets are rejected** at analysis time. *(Landed.)* Two `.copy`
      arguments naming one variable currently bleed back in `HashMap` order —
      eight runs of one program gave three different answers, which disqualifies
      the interpreter as a parity reference for it.
-  4. **`.copy.free` is deprecated** — accept-and-warn now, removal once `.copy`
+  4. **`.copy.free` is deprecated** *(Landed — warns on use.)* — accept-and-warn now, removal once `.copy`
      settles, so the family changes once. Its `free` suffix names
      `free_variable`, a scope-level operation **removed on 2026-03-06** when
      `Handle<T>` and its generational registry took over reclamation. It has
      been a no-op since March; Model B only removed the last accidental
      difference.
-  5. **`freed` is to be removed** — a per-frame `HashSet` read by the
+  5. **`freed` removed** *(Landed.)* — a per-frame `HashSet` read by the
      bleed-back filter and never inserted into anywhere in the tree. It was
      `free_variable`'s state and outlived it by five months.
 
-  Also open, and worth closing regardless of `.copy`'s fate: `copy_into`'s
-  bundle list is **not enforced against the call site** — a mismatch is a
-  runtime error although both name lists are static, which is a layer violation
-  of the same class as the C1–C4 access-path holes.
+  `copy_into`'s bundle list is now **enforced at analysis time** in both
+  directions, closing the layer violation that made a static mismatch a runtime
+  error. *(Landed in Slice 1.)*
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
 - **1.0+** — Graphics begins: Vulkan/DX12 bindings. *(Not before 1.0 — the

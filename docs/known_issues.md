@@ -2167,3 +2167,132 @@ production returns one.
 
 Every pre-existing fixture is byte-identical on both backends across both
 changes.
+
+---
+
+## 29. `.copy` semantics settled — blocker #3 remains PARTIAL
+
+*(Implemented by the commit that introduces this entry: `check_copy_arg_contract`
+and the `is_method` parameter on `analyze_function` in `src/frontend/semantic.rs`.
+Cited by name because the work and this entry are one commit.)*
+
+**Status: semantics settled, lowering NOT done. The `.copy` blocker is PARTIAL
+and converts ZERO fixtures.** SKIP is unchanged at 40. Scalar `.copy` still does
+not lower and waits on ABI option (a); `copy_into` still does not lower.
+
+### What was wrong
+
+Four things, all of them language questions rather than lowering gaps.
+
+**Repeated `.copy` targets were nondeterministic.** `f(x.copy, x.copy, x.copy)`
+setting the three parameters to 10, 20 and 30 bled all three back to `x` in
+`HashMap` order. Ten runs of one program, before:
+
+```
+10 30 30 20 10 20 30 30 10 30
+```
+
+A program whose output varies run to run cannot be a parity reference, which is
+what the interpreter is required to be.
+
+**`copy_into`'s bundle contract was enforced at runtime.** Declared
+`copy_into(a, b)`, called `copy_into(x)`, produced
+`RUNTIME ERROR: variable 't.a' has not been declared` — although both name lists
+are static. Same layer violation as the C1–C4 access-path holes.
+
+**`.copy` on a method parameter was accepted and silently inert.**
+`call_semantic_method` never registered a bleed-back, so the modifier did
+nothing. The divergence, before: free function `f(x.copy)` gave `15` with the
+caller at `15`; method `z.take(y.copy)` gave `8` with the caller still at `7`.
+
+**Array `.copy` failed with a message about assignment targets.** Both
+`f(r.copy)` and `f(r.copy: [3: t64])` gave
+`SEMANTIC ERROR: index assignment target must be an array` — a diagnostic about
+assignment, on a parameter declaration.
+
+### The rulings, implemented
+
+**Repeated `.copy` targets are rejected** at analysis time. The ambiguous program
+is now unwritable rather than ordered. Ten runs now give one error, identically.
+
+**`copy_into` bundles are checked at analysis time**, in both directions: a name
+the parameter declares that the call does not bundle, and a name the call
+bundles that the parameter does not declare.
+
+**Option B — `.copy` is rejected on methods**, at both the argument and the
+declaration. A method already has a declared mutation channel: its receiver.
+No fixture or example anywhere passed a copy kind to a method, so this cost
+nothing.
+
+**Array `.copy` — the binding was fixed, not the arrays rejected.** The parser
+already parsed `n.copy: T` and then discarded the type; `ParamKind::Copy` had no
+slot for it. It now carries `Option<Type>` and the declared type reaches the
+binding, so `f(r.copy: [3: t64])` works and writes back: `101 / 101 / 2`.
+
+Rejecting arrays was the alternative and was not chosen, for two reasons. The
+locked ABI ruling for Slice 2 is uniform by-address `.copy` for **every** type,
+so a rejection would have to be reversed. And discarding a type the user wrote
+is the actual defect — the array failure was a symptom.
+
+An untyped `.copy` parameter still cannot be indexed, which is correct: it has no
+type. The message now says which type it does have
+(`— it has type numeric literal`) instead of asserting something about assignment
+targets.
+
+### The choke points
+
+Two, each covering every form rather than one arm per call shape.
+
+`check_copy_arg_contract` is called once per call site — four sites build
+copy-kind arguments — and carries all three argument rules. `analyze_function`
+gained a required `is_method: bool` and rejects copy kinds on method parameter
+declarations there; every impl method, phen method and free function reaches it,
+and the flag has no default, so a new method-producing path must say which it is
+or it does not compile.
+
+Proven on forms with no case written: repeated `.copy` split across three
+non-adjacent arguments, a repeated target through a different call path,
+`copy_into` with the names reordered (legal — the bundle is keyed by name, not
+position, so `copy_into(b, a)` against a declared `(a, b)` is fine and gives 12),
+and `copy_into` bundling a duplicate name.
+
+### `freed` removed
+
+A per-frame `HashSet<String>`, read by the bleed-back filter and by a
+`ScopeEvent::Free` printer, and **never inserted into anywhere in the tree**. It
+was the state of `free_variable`, a scope-level reclamation operation introduced
+`3110ffe` (2026-03-02) and removed by `5247b32` (2026-03-06) — the commit that
+added `Handle<T>` with generational indices. The state outlived its operation by
+five months.
+
+The `ScopeEvent::Free` printer went with it, and that was not merely dead: since
+the set was always empty, the debug trace printed `= freed` for **every live
+variable** at every scope close.
+
+### `.copy.free` deprecated — accept and warn
+
+Behaviour unchanged; the parameter kind still works. The warning records the real
+history: its `free` suffix names `free_variable`, removed 2026-03-06. **It has
+been a no-op since March, not since Model B** — Model B only removed the last
+accidental difference, which was plain passing aliasing on the JIT. Removal waits
+until `.copy` itself settles so the family changes once.
+
+Only two fixtures use it, neither with an output sidecar, so the notice moves no
+gate.
+
+### What this does NOT do
+
+No ABI change, no lowering. `t49_copy_contract` (scalar `t64` `.copy`) and
+`t54_post_split_verify` (`copy_into`) both still SKIP. The four `.copy`-named
+fixtures `t10`–`t13` remain blocked on nested FuncDef regardless.
+
+### Delta
+
+Corpus 453, unchanged — **no fixtures added, none converted**. `cargo test`
+252/0, `--features jit` 428/0, parity **413 PASS / 40 SKIP / 0 PARITY_FAIL across
+453**, matrix 453/453, clippy 110/110. **SKIP set unchanged at 40.**
+
+Every fixture's **stdout and exit code is byte-identical** across all 906 runs.
+The only stdout+stderr differences are the deprecation notice on
+`t11_copy_free_isolated` and `t24_full_system_regression`, the two fixtures that
+use `.copy.free`.
