@@ -70,15 +70,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Check out the PR head, not the default merge commit. The merge
+          # commit already contains the base, so measuring the base from it
+          # always yields 0 and the gate silently becomes a no-op.
+          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Check how far behind submain
+      - name: Check how far behind the PR base
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch origin submain
-          BEHIND=$(git rev-list --count HEAD..origin/submain)
-          echo "Branch is $BEHIND commits behind submain"
+          git fetch origin "$BASE_REF"
+          BEHIND=$(git rev-list --count "HEAD..origin/$BASE_REF")
+          echo "Branch is $BEHIND commits behind $BASE_REF"
           if [ "$BEHIND" -gt 20 ]; then
-            echo "STALE BASE: This branch is $BEHIND commits behind submain."
-            echo "Rebase onto submain before merging."
+            echo "STALE BASE: This branch is $BEHIND commits behind $BASE_REF."
+            echo "Rebase onto $BASE_REF before merging."
             exit 1
           fi
 
