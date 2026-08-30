@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-08-29
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -67,6 +67,29 @@ with it, also identical at the tag and at HEAD.)*
 
 ---
 
+## Branch containment
+
+**2026-08-29:** `main` was back-merged into `submain` (merge-base `a6d016f`, the
+v0.3.3 tag). The two had diverged with no common containment — 36 documentation
+commits on `main`, 9 compiler commits on `submain`, neither reachable from the
+other — which is why this file, living on `main`, still listed array returns and
+expression receivers as open 0.4 blockers months after both shipped.
+
+The merge was clean: zero conflicted paths and zero changes under `src/`. `main`
+never touched `docment/`, `docs/` or `README.md` after v0.3.3 — its migration
+commits are titled "drop roadmap hunk" and did exactly that — so `submain` was
+the only side that had changed documentation. What `main` contributed was 87
+`daily_log/` files and one CI fix.
+
+That CI fix is the stale-base check, and it is the gate this divergence should
+have tripped: it checked out the PR *merge commit*, which already contains the
+base, so the count was always 0 and the gate was silently a no-op. It now
+measures the PR head against its real base. **The rule stands: back-merge
+`main` into `submain` before resuming compiler work**, and the gate that
+enforces it now actually fires.
+
+---
+
 ## Post-0.3.3 — landed on `submain`, not yet in a tagged release
 
 **Multidimensional arrays — Model A, contiguous** — `docs/known_issues.md` §28.
@@ -120,15 +143,84 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — expression receivers for operator
-  dispatch, `.copy` / `.copy.free` / `copy_into`
-  parameter kinds, nested function definitions, `while-in`, function-body
-  `const`, `t128` printing, `char`, and non-identifier string interpolation.
-  Expression receivers were briefly carried as a prospective 0.3.4 alongside
-  array returns (since fixed); they belong here, and inventing a version slot
-  to hold them would
+  **Remaining lowering blockers.** Re-verified against the code on
+  2026-08-29, after `main` was back-merged into `submain` — every line below
+  was run on both backends, not taken from the prior list. The reconciliation
+  done on `main` could not do this, because `main` held none of the code.
+
+  *Closed since the list was last written:*
+  - **Array returns from methods** — shipped, `65736b5`. A method returning
+    `[3: t64]` now gives the same answer on both backends.
+  - **Expression receivers for operator dispatch** — shipped, `56983eb`.
+    `a + b` through a phen dispatches identically on both backends.
+
+  *Still open, each confirmed still failing:*
+  - **`.copy` / `copy_into` parameter kinds** — partially scoped, not closed.
+    See the sub-entry below; this is the last 0.4 blocker with rulings attached.
+  - **Nested function definitions** — JIT exit 127. Also blocks four of the
+    `.copy`-named fixtures, which is why closing `.copy` converts fewer
+    fixtures than its name suggests.
+  - **`while-in`** — JIT exit 127 (`t34_while_in`).
+  - **`t128` printing** — JIT exit 127.
+  - **`char`** — JIT exit 127, unsupported semantic type.
+  - **Non-identifier string interpolation** — JIT exit 127.
+
+  *Mis-categorised, corrected here:*
+  - **Function-body `const`** was listed as a lowering blocker. It is not:
+    `const k: t64 = 5` inside a function body is a **parse error on both
+    backends**, so there is nothing to lower. It is unimplemented syntax, and
+    belongs with language surface work rather than with the lowering list.
+
+  Array returns and expression receivers were briefly carried as a prospective
+  0.3.4; they belonged here, and inventing a version slot to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
+
+  ### `.copy` / `.copy.free` / `copy_into` — rulings made, nothing built
+
+  Scoped 2026-08-29. **The blocker closes PARTIALLY at best on current work**,
+  and the distinction matters:
+
+  - **Aggregate `.copy` needs no ABI change** — the caller's address already
+    arrives as the incoming block parameter and stays live, so write-back is
+    `copy_parts` through `ret_slot_plan`. It converts **zero fixtures**: every
+    `.copy` fixture in the corpus declares a scalar `t64`. Aggregate-only
+    completion is not a closed blocker and must not be reported as one.
+  - **Scalar `.copy` fundamentally lacks a caller address.** A scalar parameter
+    arrives as a value; there is no location to write back to, and no
+    caller-side trick recovers one.
+
+  Rulings, locked:
+
+  1. **ABI option (a)** — `.copy` parameters pass **by address, uniformly**, for
+     every type. Scalar and aggregate then stop being separate semantic cases:
+     pass the address, entry-copy to a local, write back through the address at
+     exit. Aggregates use `ret_slot_plan` parts; scalars a plain load/store.
+  2. **Option B — `.copy` on method parameters is rejected** at analysis time.
+     A method already has a declared mutation channel: its receiver. Today
+     `call_semantic_method` never registers a bleed-back, so `.copy` there is
+     silently inert; honouring it instead would add a second write-back channel
+     whose collision with the receiver is decided by scope-pop order. No fixture
+     or example anywhere passes `.copy` or `copy_into` to a method, so this
+     rejection breaks nothing.
+  3. **Repeated `.copy` targets are rejected** at analysis time. Two `.copy`
+     arguments naming one variable currently bleed back in `HashMap` order —
+     eight runs of one program gave three different answers, which disqualifies
+     the interpreter as a parity reference for it.
+  4. **`.copy.free` is deprecated** — accept-and-warn now, removal once `.copy`
+     settles, so the family changes once. Its `free` suffix names
+     `free_variable`, a scope-level operation **removed on 2026-03-06** when
+     `Handle<T>` and its generational registry took over reclamation. It has
+     been a no-op since March; Model B only removed the last accidental
+     difference.
+  5. **`freed` is to be removed** — a per-frame `HashSet` read by the
+     bleed-back filter and never inserted into anywhere in the tree. It was
+     `free_variable`'s state and outlived it by five months.
+
+  Also open, and worth closing regardless of `.copy`'s fate: `copy_into`'s
+  bundle list is **not enforced against the call site** — a mismatch is a
+  runtime error although both name lists are static, which is a layer violation
+  of the same class as the C1–C4 access-path holes.
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
 - **1.0+** — Graphics begins: Vulkan/DX12 bindings. *(Not before 1.0 — the
