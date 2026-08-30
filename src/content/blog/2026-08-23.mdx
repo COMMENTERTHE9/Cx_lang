@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-08-23"
+date: 2026-08-23
+description: "Cx landed Model B, formalizing value semantics for aggregates with the receiver as the declared exception."
+---
+
+Cx now has an answer to the question every language has to settle eventually: what happens when you assign one aggregate to another? As of today, Cx aggregates are values. Plain assignment copies. The receiver is the one declared exception.
+
+Three commits landed on submain in a fast two-hour window, all building toward this result. The test corpus jumped from 414 to 436, and every pre-existing fixture stays byte-identical across both backends.
+
+## Array and struct assignment copies
+
+The first commit fixed a silent backend divergence that had gone undetected because no existing test ever assigned one array variable to another and then mutated. On the JIT path, `r: [3: t64] = a` was binding `r` to `a`'s storage rather than copying the value. The interpreter did the right thing. Both backends exited 0, but with different answers.
+
+The fix introduces `copy_if_memory_resident` in `src/ir/lower.rs`, which allocates fresh storage and memcpies at the single choke point every binding form funnels through. Array and struct literals are exempt since nothing else can hold a pointer to them. Structs got the same fix for free since they alias for the identical reason.
+
+Five new test fixtures confirm the behavior: assign-and-mutate in various arrangements, including copy from a function return. Corpus moved from 424 to 429.
+
+Parameter passing was deliberately left aliasing in this commit. The receiver for `impl` and `phen` methods is argument 0, and JIT method mutation depends on that aliasing. That sets up the next commit.
+
+## Model B: aggregates are values, the receiver is the declared exception
+
+This is the headline. A new `is_receiver` field on `SemanticParam` in `src/frontend/semantic_types.rs` now distinguishes receivers from ordinary parameters. It gets set at two construction sites: impl-block alias capture and phen-def receiver capture in `src/frontend/semantic.rs`. The lowering pass in `src/ir/lower.rs` then copies every aggregate parameter that does not carry `is_receiver`.
+
+The design decision matters here. A simpler "skip argument 0" rule would have been wrong, not just fragile. Consider `impl (p: Player, w: World)`: both aliases are receivers, and `t177_multi_alias_impl` depends on the second one writing back. The field has no default value, which means a new receiver-producing path that forgets to set it will hit a compile error across all ten construction sites. That is the kind of constraint that actually holds up.
+
+Seven new test fixtures landed alongside this, covering parameter array copy, struct copy, multi-aggregate receivers, mutation in branches and loops, and nested aggregates. The corpus reached 436, with parity at 396/40/0 across both backends. The SKIP set of 40 is unchanged.
+
+Performance cost is modest: 2 ns/call to 7 ns/call for a 256-byte aggregate, roughly 36 GB/s throughput, about 9 ms total over 1.8M calls.
+
+## The .copy.free question
+
+With Model B in place, `.copy.free` has the same semantics as ordinary parameter passing. No program can write code that distinguishes `f(x.copy.free)` from `f(x)`. It is recorded in `known_issues.md` as a deprecation candidate, but the actual removal is deferred until the `.copy`/`.copy.free`/`copy_into` lowering blocker is addressed. This is the right call: the spelling exists, users may have written it, and removing it without first settling the broader parameter-kinds question would create churn for no gain.
+
+## Clippy baseline correction
+
+A smaller third commit corrected the v0.3.3 tag's recorded clippy count from 110/110 to 111/111. The original 110 was not reproducible when re-measured by building the tag in a worktree against clippy 0.1.96. No code change introduced a lint; the number was simply wrong. Per-entry deltas in the known issues doc are left as written to avoid falsifying the historical record.
+
+## What's next
+
+Submain is now 6 commits ahead of main, carrying the array returns fix from Aug 16, expression receivers from Aug 18, and all three of today's commits. A merge to main would formally close two 0.4 lowering blockers (array returns and expression receivers) and land the value-semantics model on main.
+
+With Model B settled, the `.copy`/`.copy.free`/`copy_into` parameter-kinds lowering blocker is the natural next target. The value model is clear now, and `.copy.free` is already flagged. After that, the remaining lowering blockers include nested function definitions, `while-in`, function-body `const`, `t128` printing, `char`, and non-identifier string interpolation.
