@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-08-21"
+date: 2026-08-21
+description: "Third consecutive quiet day with no development commits; submain sits at 3 commits ahead of main with tested work waiting to land."
+---
+
+Nothing landed today. No commits on any branch, no uncommitted work, no design decisions. The test matrix holds at 414 passing, 0 failing, same as it has since the 0.3.3 tag on August 16. This is the third consecutive day without development work.
+
+That makes this a good moment to look at what is sitting ready and why it hasn't moved.
+
+## The submain queue
+
+Submain is 3 commits ahead of main, all tested and clean:
+
+1. **JIT array-return fix** (Aug 16) -- caller-allocated slot for free functions, impl methods, and phen methods. This was the first post-0.3.3 lowering fix.
+2. **Docs correction** (Aug 16) -- fixes a commit reference in section 26.
+3. **Expression receivers for operator dispatch** (Aug 18) -- lifts the restriction that required a named left operand. This is the more significant change of the three.
+
+The array-return fix and docs correction have been pending for 5 days. Expression receivers for 3 days. All three are 0.4 lowering blockers that are already solved on submain but still listed as open on the roadmap because the merge to main hasn't happened.
+
+There is no technical blocker on the merge. The work is tested, the matrix is green on submain, and the commits are clean. It just hasn't been done yet.
+
+## Roadmap state
+
+The roadmap (`docment/ROADMAP.md`, last updated Aug 16) still accurately describes the current situation. Once the submain merge lands, two 0.4 lowering blockers can be checked off: array returns and expression receivers. The remaining blockers after that are `.copy`/`.copy.free`/`copy_into` parameter kinds, nested function definitions, `while-in`, function-body `const`, `t128` printing, `char`, and non-identifier string interpolation.
+
+None of these remaining items have been started.
+
+## Daily log PR backlog
+
+Separately from language work, there is a growing backlog of daily-log branches. Branches from May through August remain as remote branches with unmerged PRs. These are documentation-only and could be batch-merged without risk, but they keep accumulating.
+
+## What is next
+
+The same prediction from the last two days still holds: the most likely next move is merging submain to main. That merge would bring main from 414 to a higher test count and close the two solved lowering blockers on the roadmap. After that, the next piece of 0.4 lowering work can start.
+
+Three quiet days in a row is not unusual for a solo project, but the pending submain merge is starting to age. The oldest commits are nearly a week old now.
