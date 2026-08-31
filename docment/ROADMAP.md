@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-08-31
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -198,6 +198,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-08-30:** `.copy` lowering landed on `submain` in two slices. Slice 1 (`aa76b68`) settled the semantics: repeated `.copy` targets rejected (were nondeterministic), `copy_into` bundles enforced at analysis time, `.copy` on methods rejected, `.copy.free` deprecated. Slice 2 (`005df8c`) implemented the ABI: by-address passing for all types, `t49_copy_contract` converted (SKIP 40 → 39), six new fixtures (corpus 453 → 459), parity 420/39/0. `copy_into` still open — needs Container lowering. Back-merge `main` into `submain` (`dd6be28`) restored branch containment. Roadmap re-frozen against the code on `submain` (`5312b77`). The `submain` roadmap is now the authoritative version with a detailed `.copy`/`copy_into` sub-section and a re-verified blocker list.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
