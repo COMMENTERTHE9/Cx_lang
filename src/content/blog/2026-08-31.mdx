@@ -1,0 +1,40 @@
+---
+title: "Cx Dev Log — 2026-08-31"
+date: 2026-08-31
+description: "Rest day with no development commits; the .copy ABI work from yesterday remains on submain awaiting merge, and the test matrix holds at 414/414."
+---
+
+No development commits landed on August 31. Clean working tree, clean main, no code changes from the project author in the last 24 hours. This is a status snapshot rather than a progress report.
+
+## Where things stand
+
+The test matrix on main holds steady at 414 PASS, 0 FAIL. Submain sits 13 commits ahead of main, carrying the `.copy` semantic settlement and ABI implementation work from August 30 alongside older array-return and expression-receiver changes dating back to August 16-18.
+
+The submain parity check (which runs the full fixture suite against the submain compiler build) stood at 420 PASS / 39 SKIP / 0 PARITY_FAIL across 459 fixtures as of the previous day's close. No regressions introduced by the branch-local work.
+
+Two automated commits appeared in the 24-hour window, both documentation artifacts from the daily-log and site-publishing pipelines. Neither is compiler or language work.
+
+## Submain state
+
+The four `.copy` commits from August 30 remain branch-local on submain:
+
+1. Roadmap re-freeze against the code
+2. Back-merge of main into submain
+3. `.copy` semantic settlement (Slice 1), which pinned `.copy` as a by-value deep-copy operation at the semantic level
+4. `.copy` ABI implementation (Slice 2), which wired that semantic through to code generation
+
+The back-merge resolved containment between the branches, so the forward merge (submain into main) should be straightforward. It has not happened yet.
+
+## What's next
+
+Four items carry forward as the most likely resumption points, roughly in priority order:
+
+**`copy_into` and container lowering.** This is the direct continuation of the `.copy` ABI work. `copy_into` is the remaining piece of blocker #3 on the 0.4 roadmap, currently blocked on mapping `SemanticType::Container` to `IrType`.
+
+**Merge submain into main.** With 13 commits ahead and the oldest changes now two weeks old, this merge is overdue. The back-merge from August 30 cleared the path.
+
+**Nested function definitions.** This blocks several test fixtures (`t10` through `t13` and `t50_nested_func_no_leak`), all hitting JIT exit 127. It is a known gap rather than a regression.
+
+**Daily-log branch cleanup.** Four daily-log branches (August 27 through 30) have unmerged commits. Documentation-only, no merge risk, but the backlog keeps growing.
+
+The quiet day does not change the trajectory. The `.copy` ABI landed cleanly on submain yesterday, the parity suite confirms no regressions, and the merge path is clear. The next real development session will likely pick up with `copy_into` or the submain merge.
