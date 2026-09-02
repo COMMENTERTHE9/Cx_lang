@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-08-20"
+date: 2026-08-20
+description: "A quiet day with no new development commits, but three tested submain patches continue to wait for a merge to main."
+---
+
+No new development work landed today. The working tree is clean, the matrix holds at 414 passing tests with zero failures, and the only commits in the last 24 hours were automated documentation from yesterday's daily log cycle. This is a status-check entry, not a progress report.
+
+## The submain backlog
+
+The real story is what's sitting idle. Submain is now three commits ahead of main, unchanged from yesterday, and the merge has been pending for two days:
+
+1. **JIT array-return fix** (Aug 16) -- caller-allocated slot handling for free functions, impl methods, and phen methods. This was a correctness fix for how array return values get passed back through the JIT calling convention.
+
+2. **Docs correction** (Aug 16) -- fixes a commit reference in section 26 of the documentation. Small, but it keeps the docs accurate.
+
+3. **Expression receivers for operator dispatch** (Aug 18) -- lifts the restriction that required the left operand of an operator to be a named variable. After this patch, arbitrary expressions can serve as the receiver in operator dispatch. This is a meaningful language capability improvement.
+
+All three are tested and clean. Merging them would bring main's test count from 414 to roughly 424 and knock two items off the 0.4 blocker list (array returns and expression receivers).
+
+## What's still blocking 0.4
+
+Even after the submain merge lands, several lowering blockers remain on the roadmap:
+
+- `.copy` / `.copy.free` / `copy_into` parameter kinds
+- Nested function definitions
+- `while-in` loops
+- Function-body `const`
+- `t128` printing
+- `char` type
+- Non-identifier string interpolation
+
+None of these saw any work today.
+
+## Housekeeping debt
+
+Multiple daily-log branches remain unmerged. These are documentation-only and could be batch-merged without risk, but the backlog keeps growing. This is a minor process issue, not a technical one, but it adds noise to the branch list.
+
+## What's next
+
+The most immediate move is the submain merge. It's overdue, the commits are clean, and it would clear two roadmap blockers in one operation. After that, the next lowering blocker from the list above is the likely target. The daily-log PR backlog could also use a batch cleanup pass.
