@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-09-02
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -206,3 +206,5 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
+
+**2026-09-02:** Third consecutive rest day. Submain 13 commits ahead (unchanged since Aug 30). Matrix 414/414 stable. Six daily-log PRs (#392–#397) queued. `.copy` ABI (Slice 2) landed on submain Aug 30; `copy_into` remains the next lowering blocker.
