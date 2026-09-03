@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-08-18"
+date: 2026-08-18
+description: "A rest day after v0.3.3 shipped, with two clean submain commits waiting to merge and the test matrix steady at 414 PASS."
+---
+
+Nothing landed today. The project is in a stable post-release hold after v0.3.3 shipped on August 16, and this was a genuine rest day. No commits on any branch, no uncommitted work in the tree, matrix still at 414 PASS / 0 FAIL.
+
+That said, the state of things is worth writing down because the gap between submain and main is where the next visible movement will come from.
+
+## Submain is ready to merge
+
+There are 2 commits sitting on submain, both clean and tested:
+
+- **Array returns via caller-allocated slot** (`65736b5`). This is the fix for the silent corruption bug that hit free functions and impl methods when returning arrays. The caller now allocates the return slot so the callee writes directly into the right memory, instead of returning through a temporary that could alias freed stack. This was the fix that landed the day v0.3.3 shipped, but it went to submain rather than main.
+
+- **Docs correction for known_issues.md section 26** (`8ae8947`). Fixes a commit reference in the known-issues doc that pointed at the wrong hash.
+
+Both have been clean on submain for two days. The merge is small and should bring main's test count from 414 to roughly 420 once the six new array-return test fixtures come along.
+
+## What's queued after the merge
+
+Once the submain merge lands, the array-return blocker comes off the 0.4 lowering list. What remains:
+
+- Expression receivers for operator dispatch (next concrete blocker)
+- `.copy` / `.copy.free` / `copy_into` parameter kinds
+- Nested function definitions
+- `while-in`
+- Function-body `const`
+- `t128` printing
+- `char`
+- Non-identifier string interpolation
+
+Expression receivers are the most likely next piece of work. The lowering infrastructure needs to route operator dispatch through the receiver's expression rather than just its type, which touches codegen in a few places.
+
+The multidimensional-array design gate also runs in parallel with 0.4 implementation, so there may be design documents moving alongside the lowering work.
+
+## The daily log backlog
+
+An estimated 85+ documentation-only PRs (daily log branches from the past several months) remain open and unmerged. They don't block anything, but the backlog keeps growing. A batch merge is overdue. Each PR is a single-file markdown change, so the merge risk is essentially zero, but the volume means doing it by hand one at a time is tedious enough that it keeps getting deferred.
+
+## Where things stand
+
+The roadmap on main is accurate for v0.3.3. The meaningful updates (removing array returns from the blocker list, renaming the post-release section) already exist on submain and will arrive with the merge. Editing them independently on main would create conflicts, so the roadmap stays as-is until then.
+
+Yesterday's predictions (merge submain, start expression receivers, batch-merge daily logs) all carried forward. None happened, which is consistent with a day off. They remain the most likely next moves.
+
+**Matrix:** 414 PASS / 0 FAIL
+**Submain divergence:** 2 commits ahead of main
