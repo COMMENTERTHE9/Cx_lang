@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-08-17"
+date: 2026-08-17
+description: "v0.3.3 shipped with a 27-commit submain merge, then a silent JIT array-return corruption bug was found and fixed the same day."
+---
+
+The fourteen-day development pause ended today. PR #377 merged submain into main and shipped as v0.3.3, the largest integration since 0.3 itself. Then, immediately after tagging, a silent-corruption bug in JIT array returns surfaced and got fixed on submain. The kind of day where you ship a release and then find the scariest bug in it within hours.
+
+## v0.3.3: 27 commits land on main
+
+The merge brought everything that had been accumulating on submain into main. The highlights:
+
+- Generic-struct instantiation lowering and generic-function monomorphization, including the transitive worklist, symbolic-map composition, and per-template instantiation caps.
+- `exit()` and top-level `const` lowering.
+- Call-depth guards on both the interpreter and JIT. Unbounded recursion now produces a diagnostic instead of crashing. The JIT guards are emitted only for functions participating in call cycles, so straight-line code pays nothing.
+- An enforcement-layer audit that moved field, enum-variant, and receiver-type facts from silent access-path behavior into semantic analysis.
+- Const immutability enforced at analysis time, catching writes through a const that had previously mutated without complaint.
+- Gene-bound soundness: bounds now promise methods, not fields.
+- The rejection-shape harness honoring `.expected_fail` and `.expected_exit` in the Rust test driver.
+
+Gate state at the v0.3.3 tag: `cargo test` 250/0, `--features jit` 426/0, matrix 414/414, parity 374 PASS / 40 SKIP / 0 PARITY_FAIL, clippy 110/110 on both feature sets. The main matrix jumped from 380 tests (at v0.3.2) to 414.
+
+## The array-return corruption bug
+
+This one is worth writing up in detail because it's a textbook example of how test coverage can be structurally blind to a bug.
+
+A function returning an array would `alloca` the storage in its own stack frame, then return a pointer to it. The frame dies on return. The caller reads garbage. Both backends exited 0; the JIT just produced wrong values. Two sequential calls sharing the dead frame would produce the second call's values for both. The existing guard covered only phen methods. Free functions and impl methods were unguarded, corrupting silently.
+
+Why did no test catch it? The corpus's only array-returning fixture (`t38_generics_array`) returned a length-1 array. With a single element sitting at the top of the dead frame, it happens to survive. Length was the variable nobody varied.
+
+The fix generalized the struct-return convention. The old `ret_struct_of` check ("is this a named struct?") became `returns_via_slot` ("does this need a caller-allocated slot?"), because arrays have no `struct_table` entry to be named. A new `ret_slot_plan` computes size, alignment, and (offset, type) parts once, shared by both the caller's `Alloca` and the callee's copy.
+
+Six test fixtures were written before the fix and verified failing first: `t_array_return_free_t64`, `t_array_return_free_t8`, `t_array_return_generic_len3`, `t_array_return_impl_method`, `t_array_return_phen_method`, `t_array_return_two_calls`. The changes hit `src/ir/lower.rs` with about 148 lines reworked, plus the new fixtures and their expected outputs.
+
+Post-fix submain state: 420 tests, parity 380/40/0. Submain divergence dropped from 27 commits ahead of main to just 2.
+
+## Decisions
+
+**v0.3.3 shipped with array returns still broken, intentionally.** The fix landed after the merge and tag. The reasoning: ship what's verified, fix what's discovered, document the gap. The existing coverage was structurally incapable of detecting the problem, and the guard existed on only one of three dispatch paths, making it look handled when it wasn't.
+
+**No v0.3.4 slot.** The roadmap update folds the remaining lowering blockers (array returns, expression receivers) into 0.4. The commit message is explicit about why: creating a 0.3.4 version slot would recreate the phantom-slot problem the roadmap reconciliation cleaned up earlier. Array returns are already fixed on submain, so the submain roadmap copy has removed them from the blocker list. Main's copy still lists them because the fix hasn't been merged yet.
+
+## What's next
+
+The submain merge is now trivial: just 2 commits (the array-return fix and a docs correction for a commit hash reference). Expression receivers for operator dispatch are the next concrete implementation task and the last item that was sharing the lowering-blocker list with array returns.
+
+The daily-log PR backlog continues to grow. There are now 84+ open documentation-only PRs waiting to be batch-merged. At some point, that number stops being a queue and starts being a problem.
