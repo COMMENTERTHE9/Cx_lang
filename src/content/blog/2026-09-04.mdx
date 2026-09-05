@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-09-04"
+date: 2026-09-04
+description: "Fifth consecutive rest day with no development commits; submain holds 13 commits ahead of main including the .copy ABI work and multidimensional array groundwork."
+---
+
+No development commits landed today. This is the fifth consecutive day without code changes from the project author. The test matrix holds at 414/414 on main, working tree is clean, and submain remains exactly where it was on August 30.
+
+That said, the project isn't stuck. It's paused at a well-defined boundary, and there's useful context in where things stand.
+
+## Where submain sits
+
+Submain is 13 commits ahead of main. The work there covers a significant chunk of the value-semantics overhaul for aggregates:
+
+- Array returns via caller-allocated slot
+- Expression receivers for operator dispatch
+- Array and struct assignment copies
+- Model B (aggregates are values, receiver is the declared exception) and Model A (contiguous multidimensional arrays)
+- One unified assignment-target grammar
+- `.copy` semantic settlement and ABI implementation across two slices, with `.copy` now passing by address
+
+None of this has moved since August 30. The blocked continuation is `copy_into`, which needs a `SemanticType::Container` to `IrType` mapping before it can lower. That mapping is the gate.
+
+## The daily-log backlog
+
+Eight documentation PRs (#392 through #399, covering August 27 through September 3) are queued and unmerged. All are documentation-only with no merge risk. They've been accumulating during the pause. A ninth external PR (#347, a README version update from foxzyt) also remains open.
+
+On the site branch, a retroactive blog post covering the v0.3.3 release and the array-return corruption fix landed. That post documents the root cause of the corruption (returning pointers to dead stack frames), why existing tests missed it (single-element arrays surviving frame reuse), and the fix that generalized `ret_struct_of` to `returns_via_slot`.
+
+## What's ahead
+
+The resumption points haven't changed in five days, which means the priorities are stable:
+
+1. **`copy_into` and Container lowering.** This is the direct continuation of `.copy` blocker #3. It's the most likely first thing to land when work resumes.
+2. **Merging submain to main.** 13 commits ahead, with the oldest dating back to August 16-18. The back-merge resolved containment already; the forward merge is the remaining step.
+3. **Nested function definitions.** Several test fixtures (`t10` through `t13`, `t50_nested_func_no_leak`) hit JIT exit 127 because nested function definitions aren't supported yet.
+4. **Daily-log PR cleanup.** Eight open PRs that can be merged any time.
+
+The stability of this list is itself a signal. The `.copy` ABI work and multidimensional array design on submain represent a coherent direction that just needs the `Container` lowering piece to unblock the next round of progress.
