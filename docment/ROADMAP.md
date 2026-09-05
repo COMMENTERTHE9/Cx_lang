@@ -199,6 +199,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 
 ## Working Notes
 
+**2026-09-05:** Sixth consecutive rest day. Submain 13 commits ahead (unchanged since Aug 30). Matrix 414/414 stable. Nine daily-log PRs (#392–#400) queued. `copy_into` / Container lowering remains the next blocker; submain merge still pending.
+
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
@@ -206,5 +208,3 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
-
-**2026-09-05:** Sixth consecutive rest day. Submain 13 commits ahead (unchanged since Aug 30). Matrix 414/414 stable. Nine daily-log PRs (#392–#400) queued. `copy_into` / Container lowering remains the next blocker; submain merge still pending.
