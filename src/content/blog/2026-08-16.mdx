@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-08-16"
+date: 2026-08-16
+description: "Two weeks into a development pause, the submain branch holds 27 unmerged commits while the test matrix stays green at 380/0."
+---
+
+The Cx repo has been quiet for two weeks now. No developer-authored commits have landed on any branch since early August. Main sits at `v0.3.2`, the test matrix is steady at 380 pass / 0 fail, and the working tree is clean. This is a status check on where things stand and what is waiting to move when development picks back up.
+
+## The submain backlog
+
+The most consequential thing about the current state is the submain branch. It is 27 commits ahead of main, unchanged since August 2. That is two weeks of finished work sitting unmerged.
+
+The scope of what is on submain is substantial:
+
+- Generic-function monomorphization and generic-struct instantiation lowering
+- A gene-bound soundness fix that rejects field access through a type-parameter bound
+- Interpreter and JIT call-depth guards, plus a cycle-only guard optimization
+- Const lowering (closing known-issues #12) and exit lowering (closing known-issues #11)
+- Enforcement-layer fixes covering const immutability, field/variant/loop-counter facts
+- A rejection-shape harness
+- Multidimensional arrays roadmap and design gate
+- Paired documentation commits for each feature
+- README accuracy passes
+
+Submain's own test matrix is at 414/414. There are no visible conflicts with main. The merge is additive. This has been the obvious first move for two weeks running, and it remains the clear first move whenever work resumes.
+
+## 83 open PRs
+
+The PR backlog has grown to 83 open pull requests spanning from #287 (May 28) through #375 (August 15). All but one are automated daily log PRs. The exception is #347, a README version update. None have been merged.
+
+This is strictly documentation debt. It does not block development and it does not affect the test matrix. But nearly three months of unmerged daily logs is a housekeeping liability that will only get harder to batch-merge the longer it sits.
+
+## What is next
+
+The predicted next steps have not changed in two weeks:
+
+1. Merge submain to main. 27 commits, no conflicts, brings the codebase, tests, docs, and roadmap updates forward together.
+2. Array-return lowering. The first remaining 0.3.3 implementation item once submain lands.
+3. Expression receivers. The second remaining 0.3.3 item.
+4. Batch-merge the daily log PRs.
+
+The submain merge is the gating step. Everything on the 0.3.3 path follows from it. When development resumes, that merge should be the first commit.
