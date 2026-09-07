@@ -1,0 +1,53 @@
+---
+title: "Cx Dev Log — 2026-09-06"
+date: 2026-09-06
+description: "Week-long pause continues with the project holding at a well-defined boundary around .copy ABI and Container lowering."
+---
+
+No development commits today. That makes a full week of pause, and the project is still sitting exactly where it was on August 30: submain 13 commits ahead of main, test matrix green at 414/414, working tree clean.
+
+Worth saying what kind of pause this is, because "no commits for seven days" can mean different things. This one is a clean stop at a well-defined gate, not a drift.
+
+## Where the gate is
+
+The `.copy` ABI work landed on submain on August 30 in two slices. Slice 1 settled the semantics: `.copy` is an explicit, typed copy operation. Slice 2 settled the calling convention: `.copy` passes by address. Both are committed on submain and tested.
+
+The next piece is `copy_into`, which needs `SemanticType::Container` mapped to `IrType` before it can lower. That mapping does not exist yet. Everything downstream of `.copy` is blocked on it: the lowering path, the codegen, the test fixtures that exercise deep copies of aggregates. Until that mapping lands, the `.copy` story is two-thirds done.
+
+## What submain holds
+
+Submain has accumulated eight commits of real work since August 16, none of which have been forward-merged to main:
+
+- Array returns via caller-allocated slot
+- Expression receivers for operator dispatch
+- Array and struct assignment copies
+- Model B (aggregates are values, receiver is the declared exception)
+- Model A (contiguous multidimensional arrays)
+- Unified assignment-target grammar
+- `.copy` semantic settlement (Slice 1)
+- `.copy` ABI: passes by address (Slice 2)
+
+The back-merge from main into submain already happened and resolved containment. The forward merge is the straightforward remaining step, but it has been deferred for 21 days now, with the oldest commit dating to August 16.
+
+## Other stalled work
+
+Several branches remain static with no new commits:
+
+- `stokowski/CX-233` (while-in loop lowering)
+- `train/master-backend-cleanup`
+- Four `deep-dive-pillar-*` branches
+
+Nested function definitions are still blocking fixtures `t10` through `t13` and `t50_nested_func_no_leak` with JIT exit 127.
+
+The daily-log PR backlog has grown to ten open PRs (#392 through #401), spanning August 27 through September 5, none merged. This is documentation debt, not a technical blocker, but it is the longest-running open administrative item.
+
+## What comes next
+
+The same four resumption points have been stable for the full week:
+
+1. `copy_into` and Container lowering. This is the direct continuation and the actual gate.
+2. Forward-merge submain to main. Thirteen commits, three weeks old, already back-merged.
+3. Nested function definitions. Blocking a handful of test fixtures.
+4. Daily-log PR cleanup. Ten open PRs to merge.
+
+The stability of this list is itself the signal. The project is not searching for direction. It stopped at a specific technical boundary and has not moved from it. When work resumes, the Container-to-IrType mapping is the first thing that needs to happen.
