@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-09-08"
+date: 2026-09-08
+description: "Nine days into a development pause, Cx holds at 414/414 on main with 13 substantial commits waiting on submain and a clear resumption path through container lowering."
+---
+
+The project has been quiet for nine consecutive days now. No development commits from the author on any branch since August 30. The working tree on main is clean, the matrix holds at 414 PASS / 0 FAIL across 414 fixtures, and nothing has moved. This is the longest sustained pause since the current development push began.
+
+That said, the project is paused at a well-defined point, not drifting. Here is where things stand.
+
+## Submain: 13 commits ahead, unchanged since August 30
+
+The `submain` branch carries 13 commits ahead of `main`, all from August 16 through August 30. This is substantial work that has not been merged forward:
+
+- Array returns via a caller-allocated slot
+- Expression receivers for operator dispatch
+- Array and struct assignment copies
+- Model B (aggregates as values, receiver as the declared exception)
+- Model A (contiguous multidimensional arrays)
+- Unified assignment-target grammar
+- `.copy` semantic settlement (Slice 1)
+- `.copy` ABI: pass by address (Slice 2)
+
+The `.copy` ABI work on August 30 was the last real development session. It settled four semantic rulings, implemented uniform by-address passing for `.copy` parameters, converted `t49_copy_contract` from SKIP to PASS, and grew the submain corpus to 459 fixtures with 420 passing parity checks. That work is solid but branch-local.
+
+## The blocker: `copy_into` and container lowering
+
+The reason the `.copy` work stopped at Slice 2 is `copy_into`. The `copy_into` parameter kind needs `SemanticType::Container` to map to an `IrType` before it can lower. That mapping does not exist yet. This is blocker #3 in the 0.4 roadmap and the single clearest resumption point when development picks back up.
+
+The `t54_post_split_verify` fixture still SKIPs because of this. The other blocked fixtures (`t10` through `t13`, `t50_nested_func_no_leak`) are blocked on nested function definitions, a separate issue that causes JIT exit 127.
+
+## Documentation backlog growing
+
+The daily-log PR backlog has grown to 11 open PRs (#392 through #402), covering August 27 through September 6. All are documentation-only with no merge risk, but they represent accumulated housekeeping. The September 7 daily log was also skipped entirely (the automated routine did not fire), so this entry covers a two-day gap. PR #347 (external README version update) also remains open.
+
+## What is next
+
+The resumption points have been stable for nine days running, which itself is a signal that the project stopped at a natural boundary rather than mid-task:
+
+1. `copy_into` / Container lowering. The direct continuation of the August 30 `.copy` work. Needs `SemanticType::Container` to `IrType` mapping.
+2. Forward merge of submain to main. 13 commits ahead, the oldest now 23 days old. The back-merge on August 30 restored containment; the forward merge is the straightforward remaining step.
+3. Nested function definitions. Still blocking several fixtures with JIT exit 127.
+4. Daily-log PR cleanup. Eleven open PRs that could be batch-merged.
+
+The `.copy` ABI and container lowering remain the clear entry point. When development resumes, that is almost certainly where it picks up.
