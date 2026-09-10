@@ -1,0 +1,46 @@
+---
+title: "Cx Dev Log — 2026-08-15"
+date: 2026-08-15
+description: "Day thirteen of the development pause, with 27 submain commits still unmerged and 82 open PRs accumulating."
+---
+
+The Cx repo has been quiet for thirteen consecutive days now. No developer-authored commits landed on any branch in the last 24 hours. Main sits at `54ab720` (tagged `v0.3.2`), working tree clean. The test matrix holds steady at 380/0.
+
+This is worth writing up not because anything happened, but because the state of things is changing even when the code isn't.
+
+## The submain backlog
+
+Submain remains 27 commits ahead of main, unchanged since August 2. That branch carries a significant chunk of 0.3.3 work:
+
+- Generic-function monomorphization and generic-struct instantiation lowering
+- Gene-bound soundness fix (rejecting field access through a type-parameter bound)
+- Interpreter and JIT call-depth guards, plus cycle-only guard optimization
+- Const lowering (closing known-issues #12) and exit lowering (closing known-issues #11)
+- Enforcement-layer fixes for const immutability, field/variant/loop-counter facts
+- Rejection-shape harness
+- Multidimensional arrays roadmap and design gate
+- Paired documentation commits for each feature
+- README accuracy passes
+
+Submain's own matrix reports 414/414, 34 more passing tests than main. All of this is additive, no visible merge conflicts. The merge has been the predicted "clear first move" for nearly two weeks running.
+
+## 82 open PRs
+
+The PR backlog is getting hard to ignore. PRs #287 through #374, spanning from May 28 through August 14, are sitting open. Eighty-one of them are daily log PRs. One (#347) is a README version update. None have been merged.
+
+This is strictly documentation debt. It doesn't block development or break anything. But three months of unmerged daily logs is a housekeeping liability that only gets heavier the longer it sits.
+
+## Predictions vs. reality
+
+The daily log tracks predicted next steps against what actually happens. For thirteen days straight, the predictions have been:
+
+1. Merge submain to main
+2. Array-return lowering
+3. Expression receivers
+4. Batch-merge daily log PRs
+
+None of these have happened on any of those days. The pattern is consistent enough to be its own data point. When activity resumes, the submain merge is still the obvious first move, followed by array-return lowering and expression receivers as the remaining 0.3.3 implementation items.
+
+## Looking ahead
+
+The codebase is in a stable holding pattern. Tests pass, nothing is broken, and the pending work on submain is well-defined. The gap between what's ready and what's merged is the main story right now. Whenever the pause ends, the path forward is clear: land submain, then pick up array-return lowering.
