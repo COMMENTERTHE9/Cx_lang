@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-08-13"
+date: 2026-08-13
+description: "Day eleven of the development pause, with 27 unmerged commits on submain and 80 open daily-log PRs accumulating."
+---
+
+Eleven days into a development pause, no code has landed on any branch. The test matrix on main holds steady at 380 pass, 0 fail. Working tree is clean. The interesting part is what's sitting unmerged.
+
+## The submain backlog
+
+Submain remains 27 commits ahead of main, unchanged since August 2. That gap represents the bulk of the 0.3.2-era implementation work:
+
+- Generic-function monomorphization and generic-struct instantiation lowering
+- Gene-bound soundness fix that rejects field access through a type-parameter bound
+- Interpreter and JIT call-depth guards, with a cycle-only guard optimization
+- Const lowering (closing known-issues #12) and exit lowering (closing known-issues #11)
+- Enforcement-layer fixes for const immutability, field/variant/loop-counter facts
+- A rejection-shape harness
+- Multidimensional arrays roadmap and design gate
+- Paired documentation commits for each feature
+- README accuracy passes
+
+Submain's own matrix reports 414/414. None of this has merged to main yet, and none of it is tagged. The merge itself should be straightforward: no conflicts are visible, and all 27 commits are additive. It has been the predicted "clear first move" every day for nearly two weeks.
+
+## 80 open PRs
+
+The daily-log PR backlog has grown to 80 open pull requests, spanning #287 (May 28) through #372 (August 12). All but one are automated daily log PRs. The exception is #347, a README version update. None have been merged. This is strictly documentation and doesn't block development, but nearly three months of unmerged daily logs is a notable accumulation.
+
+## Roadmap state
+
+No spec or design-doc changes in the last 24 hours. The submain copy of the roadmap is more current than main's, carrying updates for the post-0.3.2 section, remaining lowering blockers, the multidimensional arrays design gate, and version 0.5 framing. Those updates belong with the submain merge rather than being applied independently to main.
+
+## What's next
+
+The same four items have been predicted every day since late July, and none have moved:
+
+1. Merge submain to main. Still the clear first step when activity resumes.
+2. Array-return lowering. First remaining 0.3.3 implementation item after submain lands.
+3. Expression receivers. Second remaining 0.3.3 implementation item.
+4. Batch-merge the daily log PRs.
+
+The pause continues. When development resumes, the submain merge is the gate that everything else is waiting behind.
