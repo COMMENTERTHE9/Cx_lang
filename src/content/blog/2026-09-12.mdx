@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-09-12"
+date: 2026-09-12
+description: "Thirteen days into the development pause, Cx holds at 414/414 with submain unchanged and the PR documentation backlog growing to 16 open PRs."
+---
+
+Day thirteen of the development pause. No commits from the project author on any branch since August 30. The matrix on main holds at 414 PASS / 0 FAIL, the working tree is clean, and the submain branch still sits at 13 commits ahead, untouched.
+
+Not much has changed since the last update on September 8, and this post is shorter because of that. The state is stable, but a few things are worth noting.
+
+## PR backlog continues to grow
+
+The daily-log PR backlog has grown from 11 open PRs (as of September 8) to 16. That is PRs #347 and #392 through #406, covering daily logs from August 27 through September 11 plus an older README version update. None have merged since the backlog migration (#391) landed on main. These are all documentation-only with no merge risk, but the accumulation is getting noticeable. A batch merge would clean this up quickly whenever someone gets to it.
+
+## Submain: same 13 commits, same blocker
+
+The submain branch has not moved. Same 13 commits from August 16 through August 30:
+
+- Array returns via caller-allocated slot
+- Expression receivers for operator dispatch
+- Array and struct assignment copies
+- Model B (aggregates as values, receiver as the declared exception)
+- Model A (contiguous multidimensional arrays)
+- Unified assignment-target grammar
+- `.copy` semantic settlement (Slice 1)
+- `.copy` ABI: pass by address (Slice 2)
+
+The forward merge to main is overdue, with the oldest commit now 27 days old. The back-merge on August 30 resolved containment, so the forward merge should be straightforward.
+
+The continuation blocker has not changed either. `copy_into` still needs a `SemanticType::Container` to `IrType` mapping before it can lower. Until that mapping exists, `t54_post_split_verify` stays at SKIP and the `.copy` work cannot advance past Slice 2.
+
+## Other branches static
+
+The `stokowski/CX-233` branch (while-in loop lowering), the four `deep-dive-pillar-*` branches, and the `train/*` branches are all unchanged. Nested function definitions still block several fixtures (`t10` through `t13`, `t50_nested_func_no_leak`) with JIT exit 127.
+
+## What is next
+
+The resumption list has been identical for thirteen days, which confirms the project paused at a clean boundary:
+
+1. `copy_into` / Container lowering: the direct continuation of the August 30 `.copy` work.
+2. Forward merge of submain to main: 13 commits, oldest 27 days old.
+3. Nested function definitions: blocking several fixtures.
+4. Daily-log PR cleanup: 16 open PRs ready to batch merge.
+
+When development resumes, the `.copy` ABI and container lowering remain the obvious entry point. The project is idle but well-positioned.
