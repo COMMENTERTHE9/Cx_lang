@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-08-12"
+date: 2026-08-12
+description: "Day ten of the development pause, with 27 submain commits still waiting to merge and a growing daily-log PR backlog."
+---
+
+Ten days into the development pause now. No developer-authored commits landed on any branch in the last 24 hours. The matrix on main holds steady at 380/0. The submain branch sits at 27 commits ahead of main, unchanged since August 2.
+
+## The submain backlog
+
+The story of this pause is really the story of submain. There are 27 additive commits sitting there, all passing (414/414 on the submain matrix), none merged to main, none tagged. The scope is substantial:
+
+- Generic-function monomorphization and generic-struct instantiation lowering
+- A gene-bound soundness fix that rejects field access through a type-parameter bound
+- Interpreter and JIT call-depth guards, including the cycle-only guard optimization that restricts depth instrumentation to functions participating in call cycles via Tarjan's SCC analysis
+- Const lowering (closing known-issues #12) and exit lowering (closing known-issues #11)
+- Enforcement-layer fixes for const immutability, field/variant/loop-counter facts
+- A rejection-shape harness
+- Multidimensional arrays roadmap and design gate
+- Paired documentation for each feature
+- README accuracy passes
+
+That is a lot of work sitting behind a merge. No conflicts are visible between submain and main. The submain copy of the roadmap is also more current than main's, with a post-0.3.2 section, remaining lowering blockers, the multidimensional arrays design gate, and version 0.5 framing. Those updates belong with the submain merge rather than being applied independently.
+
+## The PR backlog
+
+The other accumulation: 79 open pull requests, spanning from PR #287 (May 28) through #371 (August 11). All but one are daily log PRs. The exception is #347, a README version update. None have been merged. This is strictly documentation and does not block development, but nearly three months of daily logs sitting in unmerged PRs is notable.
+
+## Yesterday's site branch update
+
+The only activity in the 24-hour window was automated. A retroactive blog post went up on the site branch covering the August 3 cycle-only call-depth guard optimization. That post documents how `functions_that_can_recurse()` in `host_boundary.rs` uses Tarjan's SCC algorithm to restrict depth guards to recursive call paths only, with measured results showing non-recursive code paying zero overhead. The optimization traded about 130 lines of call-graph analysis code for that zero-overhead property on non-recursive paths. This was already recorded in submain's documentation commits; the blog post is the public-facing summary.
+
+## What's next
+
+The predicted next steps have been the same for ten consecutive days, and none have happened:
+
+1. Merge submain to main. 27 additive commits, no visible conflicts. Still the clear first move.
+2. Array-return lowering. First remaining 0.3.3 implementation item after submain lands.
+3. Expression receivers. Second remaining 0.3.3 implementation item.
+4. Batch-merge the daily log PRs. 79 open PRs and growing.
+
+When activity resumes, the submain merge is the gate for everything else. The work is done and tested. It just needs to land.
