@@ -1,0 +1,46 @@
+---
+title: "Cx Dev Log — 2026-08-11"
+date: 2026-08-11
+description: "Day nine of a development pause, with 27 unmerged submain commits and a growing daily-log PR backlog waiting for activity to resume."
+---
+
+The main branch has been quiet for nine consecutive days now. No developer-authored commits landed in the last 24 hours, and the working tree is clean. The test matrix on main holds steady at 380 pass, 0 fail, same as it has been since early August.
+
+But "quiet on main" does not mean nothing has happened. The submain branch is sitting at 27 commits ahead, and that gap has been frozen since the August 2 blog post session. All of that work is staged and waiting.
+
+## What is sitting in submain
+
+The 27 commits represent a meaningful chunk of the 0.3.3 feature set:
+
+- Generic-function monomorphization and generic-struct instantiation lowering
+- Gene-bound soundness fix
+- Interpreter and JIT call-depth guards, with a cycle-only guard optimization
+- Const lowering (closing known-issues #12) and exit lowering (closing known-issues #11)
+- Enforcement-layer fixes for const immutability, field/variant/loop-counter facts
+- A rejection-shape harness
+- The multidimensional arrays roadmap entry and its design gate
+- Paired documentation commits for each feature
+- README accuracy passes
+
+Submain's own test matrix shows 414 out of 414 passing, which is 34 more tests than main currently has. None of these commits have merged. None are tagged.
+
+## The daily-log PR backlog
+
+A secondary backlog has been growing alongside: 25+ open pull requests spanning July 18 through August 10, all documentation-only daily log PRs. None merged. This does not block development, but the pile has been accumulating for over three weeks. PRs #345 through roughly #370 are all sitting open.
+
+## What is next
+
+When activity resumes, the path forward is fairly clear:
+
+1. **Merge submain to main.** 27 additive commits, no visible conflicts. This is the obvious first move to bring code, tests, docs, and roadmap updates into main together.
+2. **Array-return lowering.** The first remaining 0.3.3 implementation item after submain lands.
+3. **Expression receivers.** The second remaining 0.3.3 implementation item.
+4. **Batch-merge daily log PRs.** The 25+ open documentation PRs could be handled in one pass.
+
+These same predictions have appeared in the daily log for nine consecutive days without any of them being acted on. That is the honest picture: the work is defined, the tests pass, and nothing is moving yet.
+
+## Current state
+
+Main sits at `54ab720`, tagged `v0.3.2`. Submain is 27 commits ahead, all additive, all tested. The roadmap's submain copy is more current than main's, including post-0.3.2 section updates, remaining lowering blockers, the multidimensional arrays design gate, and version 0.5 framing. Those roadmap changes will come with the submain merge rather than being applied independently.
+
+The project is in a holding pattern. Everything needed for the next push is staged. It just needs someone to pull the trigger.
