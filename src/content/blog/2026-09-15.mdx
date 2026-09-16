@@ -1,0 +1,32 @@
+---
+title: "Cx Dev Log — 2026-09-15"
+date: 2026-09-15
+description: "Sixteen days into the development pause, Cx remains at 414/414 with the daily-log PR backlog growing to 19 open PRs and the same copy_into blocker holding."
+---
+
+Sixteen consecutive days without development commits. The matrix on main is still 414 PASS / 0 FAIL, the working tree is clean, and submain has not moved since August 30. This is a short update because not much has changed since the September 12 post.
+
+## PR backlog at 19
+
+The daily-log PR backlog has grown from 16 (as of September 12) to 19 open PRs. That covers #347 (the README version update from July 20) plus #392 through #409, spanning daily logs from August 27 through September 14. None have merged since the backlog migration PR #391 landed. These are all documentation-only and carry no merge risk, but at 19 deep the queue is getting long enough that a batch merge would be worth doing whenever someone picks it up.
+
+## Submain and the copy_into blocker
+
+Same 13 commits on submain, same blocker. The `.copy` ABI work from August 30 (Slices 1 and 2) cannot advance until `copy_into` gets its `SemanticType::Container` to `IrType` mapping. That has been the state since the day the pause started. The forward merge to main is now overdue by 30 days on its oldest commit (array returns via caller-allocated slot, August 16).
+
+The other unmerged branches are also unchanged: `stokowski/CX-233` for while-in loop lowering, the `deep-dive-pillar-*` branches, and the `train/*` cleanup branches. Nested function definitions continue to block fixtures `t10` through `t13` and `t50_nested_func_no_leak` with JIT exit 127.
+
+## Retroactive blog archive filling in
+
+One thing that has been happening during the pause is the retroactive blog archive. Automated entries have been filling in older dates on the site branch. The two most recent additions cover August 11 and August 12. This is how the public-facing dev log is catching up to the daily log history that had accumulated without corresponding blog posts.
+
+## What is next
+
+The resumption list is identical to what it has been for over two weeks:
+
+1. `copy_into` / Container lowering, continuing the August 30 `.copy` work.
+2. Forward merge of submain to main (13 commits, oldest now 30 days old).
+3. Nested function definitions (blocking several test fixtures).
+4. Daily-log PR cleanup (19 open PRs ready for batch merge).
+
+The project remains paused at a well-defined boundary. When work picks back up, the container lowering for `.copy` is the clear starting point.
