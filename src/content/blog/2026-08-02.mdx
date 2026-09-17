@@ -1,0 +1,63 @@
+---
+title: "Cx Dev Log — 2026-08-02"
+date: 2026-08-02
+description: "Four interlocking commits landed on submain: a gene-bound soundness fix, generic-function monomorphization, and call-depth guards for both the interpreter and the JIT."
+---
+
+The crash-instead-of-rejection pattern is now fully closed across all three layers (harness, interpreter, JIT). Four commits landed on `submain` today in a specific sequence, each unblocking the next, spanning the semantic analyser, a new IR monomorphization module, the interpreter runtime, and the Cranelift host boundary. Eight commits total counting docs. Submain jumped from 16 to 24 commits ahead of main.
+
+## Gene-bound soundness fix
+
+This one had to go first, before the monomorphizer could be built on solid ground. The problem: genes in Cx declare `fnc` signatures only, so a gene bound promises methods, not fields. But `resolve_field_access` had no arm for `TypeParam`. That meant `t.base` through a bounded parameter compiled and ran fine for the author's intended type, then blew up at runtime for any other conforming type, with the wrong diagnostic (the field-as-variable message from the wrong section of the spec).
+
+The fix adds a `TypeParam` arm to `resolve_field_access` at the C1-C4 choke point, covering field read, write, and compound-write by construction. `type_is_not_indexable` gets the same treatment so `t:[0]` doesn't slip through to the interpreter.
+
+There was a prerequisite bug hiding under this one: three `DotAccess` sites were resolving the receiver's type with an empty type-parameter scope, so `t: T` surfaced as an unregistered struct named `"T"` instead of `TypeParam("T")`. `MethodCall` already used the real scope. The three sites now match. Five new test fixtures pin the bounded and unbounded rejection messages plus a canary for method dispatch through a bound.
+
+The docs commit codifies the "check what the check sees" rule: analysis must look at the same resolved type the rest of the pipeline does, not a stripped version. The three `DotAccess` sites are the concrete example.
+
+## Generic-function monomorphization
+
+New module: `src/ir/monomorphize.rs`, roughly 350 lines. The approach is one specialized `SemanticFunction` per (template, concrete-type-arguments) pair, emitted through the ordinary function-lowering path and called by a mangled name, the same shape phens already use.
+
+The key insight here is that `analyze_call` already derives the type substitution and was discarding it. `Call` now records it as `type_args`, and propagation is map composition, not re-derivation. That's a clean factoring that avoids a second analysis pass.
+
+The walker covers all 23 `SemanticStmt` and 20 `SemanticExprKind` variants with no catch-all arm. Adding a new variant anywhere in the AST is a compile error in the monomorphizer. Per-template cap of 64 instantiations against a corpus max of 2, with a diagnostic naming the template and first few types if you hit it. The bounded case (gene-constrained type parameters) fell out naturally because the walker rewrites `MethodCall.struct_name`, which is exactly what the bounded case needs.
+
+Four new fixtures: specialization canary, struct return, transitive instantiation, and uncalled-template suppression. This supersedes the earlier known-issues filing that had generic functions listed as open.
+
+## Interpreter call-depth guard
+
+`runtime.rs` gained a `call_depth: usize` field and a `MAX_CALL_DEPTH` of 256. The deepest corpus recursion is 15. The crash point on a debug build is around 492. Both `call_semantic_func` and `call_semantic_method` carry the guard. A new `RuntimeError::CallDepthExceeded` variant reports through the diagnostic path at exit 1, not the 127 that used to collide with the SKIP sentinel.
+
+Cost was measured on `fib(24)` (about 150k calls): run-to-run variance dwarfs the guard's overhead.
+
+This unblocked the monomorphizer's instantiation cap test, `t_mono_instantiation_cap`. The interpreter used to crash on it at exit 127, and the rejection-shape harness correctly refused to call a crash a diagnosis. Now it reports the cap cleanly.
+
+## JIT call-depth guard
+
+Frame counter via `extern "C"` host callbacks (`cx_depth_enter` / `cx_depth_exit`), implemented as a process-lifetime `AtomicUsize`, same shape as `cx_trap` and `cx_handle_new`. Both backends read the shared `MAX_CALL_DEPTH` constant so they agree on 256 frames exactly. A one-frame disagreement in the first version (counting `main`) was caught and fixed before commit.
+
+A stack probe was considered and explicitly rejected. It's cheaper (2-3 instructions, no call), but it terminates on bytes consumed, which varies per function and could never agree with the interpreter's frame-based limit. Cross-backend agreement is a design requirement, not a nice-to-have.
+
+Cost measured on `fib(30)` (about 2.7M calls): +29 ms, roughly 31%, about 11 ns per call. That's the upper bound since programs without calls pay nothing.
+
+This was the third and last instance of the crash-instead-of-rejection pattern. The evidence the pattern is closed: `t_interp_recursion_guard`, a fixture that could not be written while either backend crashed.
+
+## Design choices worth noting
+
+Three decisions from today that shaped the implementation:
+
+**Soundness before monomorphization.** The gene-bound fix was sequenced first so the monomorphizer inherits a sound access rule rather than discovering it late. The docs commit records this as a placement guarantee, not just an accident of ordering.
+
+**Frame-count guard over stack probe.** Both backends now agree on 256 frames. The stack-byte alternative is cheaper but makes cross-backend agreement structurally impossible. The cost was measured before the mechanism was committed, not after.
+
+**Exhaustive walker, no catch-all.** The monomorphizer matches every AST variant explicitly. A missed variant is a compile error, not a silent coverage hole. Same philosophy as the rejection-shape harness.
+
+## Numbers
+
+Submain delta for the day: corpus 401 to 413 (+12 fixtures), SKIP 46 to 40 (-6), parity PASS 355 to 373 (+18). `cargo test` 250/0, `--features jit` 425/0, clippy 110/110. Main holds at 380/0, unchanged.
+
+## What's next
+
+The submain merge to main is now 24 commits deep with no conflicts visible. That's the clear next move. After that, the remaining 0.3.3 items are array-return lowering (closest to today's monomorphizer work since it already handles struct returns through the caller-allocated slot) and expression receivers. The JIT depth guard has a filed follow-up for an inline Cranelift counter that would cut the ~11 ns/call overhead to roughly a tenth, but correctness is already right, so it's not urgent.
