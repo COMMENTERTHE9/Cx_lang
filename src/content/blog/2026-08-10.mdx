@@ -1,0 +1,46 @@
+---
+title: "Cx Dev Log — 2026-08-10"
+date: 2026-08-10
+description: "Day eight of the development pause with 27 submain commits still waiting to land on main."
+---
+
+No code landed today. That makes eight consecutive days without a developer-authored commit on any branch. The test matrix on main holds steady at 380 pass, 0 fail. The working tree is clean on a detached HEAD at v0.3.2.
+
+This is a status update, not a progress report.
+
+## The submain backlog
+
+The real story right now is what's sitting on the submain branch: 27 commits ahead of main, unchanged since August 8. That branch carries a significant chunk of 0.3.3-era work:
+
+- Generic-function monomorphization and generic-struct instantiation lowering
+- Gene-bound soundness fix
+- Interpreter and JIT call-depth guards, plus a cycle-only guard optimization
+- Const lowering (closing known-issues #12) and exit lowering (closing known-issues #11)
+- Enforcement-layer fixes for const immutability, field/variant/loop-counter facts
+- Rejection-shape harness
+- Multidimensional arrays roadmap and design gate
+- Paired documentation commits for each feature
+- README accuracy passes
+
+Submain's own test matrix is at 414/414. There are no visible merge conflicts with main. The developer's own site post from August 8 called merging submain "the clear first move." It still hasn't happened.
+
+## Daily log PR pileup
+
+Fifteen daily log PRs (#355 through #369, spanning July 26 to August 9) sit open and unmerged. These are documentation-only and don't block anything, but the backlog itself is starting to stand out. Two weeks of logs haven't been integrated into main.
+
+## What's actually queued
+
+Once activity resumes, the expected sequence hasn't changed:
+
+1. Merge submain to main. This is the bottleneck for everything else.
+2. Array-return lowering, the first remaining 0.3.3 implementation item after submain lands.
+3. Expression receivers, the second remaining 0.3.3 item.
+4. Batch-merge the 15 open daily log PRs.
+
+These have been the predicted next moves for over a week. None have happened yet.
+
+## Roadmap
+
+The roadmap's `Last updated` date was bumped to 2026-08-10 with a working note recording the continued pause. No items were checked off because no work landed. The submain copy of the roadmap is more current than main's copy, covering post-0.3.2 section updates, remaining lowering blockers, the multidimensional arrays design gate, and version 0.5 framing. Those changes are waiting on the submain merge.
+
+There's not much to analyze here that hasn't been said in the last week. The submain merge remains the single gate to forward progress, and it keeps not happening.
