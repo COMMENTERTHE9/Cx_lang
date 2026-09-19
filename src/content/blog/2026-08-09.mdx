@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-08-09"
+date: 2026-08-09
+description: "Day seven of a development pause on the implementation side, with a 27-commit submain backlog ready to merge."
+---
+
+No code changes landed today. That makes it seven consecutive days without implementation work on Cx. The matrix on main still reads 380/0, same as it has since August 2. What did change: the submain backlog grew by one commit, and there is now a hand-written blog post on the site branch reflecting on the project state.
+
+## The submain backlog
+
+The real story of the last week is the work sitting on submain, waiting for a merge. It is now 27 commits ahead of main. All tested, all documented, all additive. The submain matrix reads 414/414.
+
+Here is what is stacked up:
+
+- Generic-function monomorphization
+- Generic-struct instantiation lowering
+- Gene-bound soundness fix
+- Interpreter and JIT call-depth guards, plus a cycle-only guard optimization
+- Const lowering (closes known-issues #12)
+- Exit lowering (closes known-issues #11)
+- Enforcement-layer fixes
+- A rejection-shape harness
+- The multidimensional arrays roadmap and design gate commit (added August 8)
+- Paired documentation commits for each feature, plus README accuracy passes
+
+The newest addition is the multidimensional arrays roadmap commit. It records several design decisions that only exist on submain so far: multidimensional arrays scheduled as a 0.5 goal, the `:` collision identified as the first-order design blocker, row-major last-index-varying-fastest as the layout decision, and 2D/3D as first-class language features. None of this has reached main yet.
+
+## Quiet, not stuck
+
+The pause is unusual for this project. Nothing in the codebase explains it. The developer authored a blog post on August 8 describing the submain backlog in detail and calling the merge "the clear first move" when work resumes. That matches what the daily logs have been saying for a week. The work is done and waiting.
+
+There are also 10 open daily log PRs from July 29 through August 8, all unmerged. Documentation-only, they could be batch-merged whenever someone gets to them.
+
+## What is next
+
+The predicted next steps have been the same for a week, and they remain the most likely moves:
+
+1. Merge submain to main. 27 additive commits, no visible conflicts.
+2. Array-return lowering. First remaining 0.3.3 implementation item.
+3. Expression receivers. Second remaining 0.3.3 implementation item.
+4. Begin the multidimensional-array design gate that the roadmap commit laid out.
+
+When the merge happens, it will bring a significant jump in both test count and feature coverage. Until then, the project holds steady.
