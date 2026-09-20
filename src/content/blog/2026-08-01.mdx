@@ -1,0 +1,52 @@
+---
+title: "Cx Dev Log — 2026-08-01"
+date: 2026-08-01
+description: "Generic struct instantiations now lower on the JIT, closing the struct half of the TypeParam SKIP cluster and dropping SKIP count from 51 to 46 on submain."
+---
+
+Generic structs lower on the JIT now. This was the largest single commit of the submain era -- 322 insertions across 14 files -- and it closes out the struct half of the TypeParam SKIP cluster. SKIP count on submain dropped from 51 to 46, and the change came with five discriminating canary fixtures that pin the behavior against regressions.
+
+## The problem
+
+The root issue was straightforward to describe but had non-obvious consequences: `lower_type` had no answer for `SemanticType::TypeParam`. When you wrote `Pair<t8> { a: 1, b: 2 }`, the semantic layer computed the type-argument substitution (T maps to t8), used it for field checking, and then threw it away. By the time lowering needed to build a concrete layout, the type parameters were gone.
+
+But the harder problem was downstream: binding-type erasure. Both `p: Pair = Pair<t8>{..}` and `q: Pair = Pair<t64>{..}` are typed `Struct("Pair")` at the binding level. The access site cannot tell them apart from the type alone. Without a fix, both would share one layout and silently corrupt memory -- t8 fields at offsets 0,1 versus t64 fields at offsets 0,8.
+
+## What landed
+
+The fix touched `semantic.rs`, `semantic_types.rs`, `lower.rs`, and `eval.rs`. The key pieces:
+
+`SemanticExprKind::StructInstance` now retains `type_args: Vec<SemanticType>` in declared-parameter order. Both the explicit form (`Pair<t8> { .. }`) and the inferred form (`Pair { a: 1, b: 2.5 }`) populate it. The information was already computed; it just was not being kept.
+
+`mangle_struct_instance` builds a layout-table key (like `Pair$t8`) at the lowering boundary only, following the same pattern that `mangle_method` and `PhenDef` already use for method dispatch. The semantic layer never sees the mangled name.
+
+`build_generic_struct_templates` records the declared shape of each generic struct so a concrete layout can be built on demand at the construct site. Previously, a template had no layout (correct), but nothing remembered it existed at all.
+
+The binding-type-erasure fix is `struct_instance_keys`, a map from each binding to the layout its storage actually has. This is the side table that lets access sites resolve the right layout even when the type system says `Struct("Pair")` for both `Pair<t8>` and `Pair<t64>`.
+
+Two consequences of erasure got explicit handling: `resolve_field_ptr`'s IR-type cross-check is now skipped for instantiations (the placeholder type would fail it), and the print builtin's f64 branch routes on the lowered type.
+
+Five canary fixtures cover the key dimensions: a two-instantiation width test (1000000 does not fit t8), a kind test (f64 vs t32), an offset test (t8 fields at 0,1 vs t64 at 0,8), a mixed-with-plain test, and an unused-template test.
+
+Delta on submain: SKIP 51 to 46, corpus 396 to 401, `cargo test` 250/0, `--features jit` 425/0, parity 355/46/0, clippy 110/110.
+
+## Design decisions
+
+Two precedents came out of this work that are worth noting for anyone following the compiler internals.
+
+**Mangling at the boundary.** Type arguments stay structured as `SemanticType` in the semantic layer and only become mangled string keys at the lowering table lookup. The semantic tree the interpreter consumes is unchanged. This is the same boundary that `PhenDef` already enforces for method dispatch, and keeping it consistent matters for the long-term layering.
+
+**Erasure acknowledgment over erasure repair.** Rather than propagating instantiation types through the entire binding system (which would touch every `Struct("name")` path), the fix adds a side table that records the information where it is known and falls back to a clean SKIP where it is not. This is explicitly documented as a coverage limit, not a silent gap. Functions returning generic structs still SKIP, and that is by design for now.
+
+## Documentation
+
+A companion docs commit added 166 lines to `known_issues.md` covering four new sections:
+
+- Section 18 records the generic-struct fix and the non-obvious erasure problem.
+- Section 19 files generic functions as OPEN with three prerequisites: a transitive instantiation worklist, suppression of eager template emission, and return-type substitution before signature building.
+- Section 20 documents the interpreter stack overflow on type-growing recursive generics, a crash whose exit code collides with the SKIP sentinel.
+- Section 21 files `build_signature_table`'s swallowed errors and `run_matrix.sh`'s missing `--features jit` flag as measured-and-deferred issues.
+
+## What is next
+
+The struct half of generics lowering is done. The function half is the harder problem. The commit and known-issues section 19 both flag that generic function lowering needs an instantiation-collection pass that does not exist yet, and the termination problem from section 20 constrains the design space. Submain is now 16 commits ahead of main with no visible conflicts, so the merge remains the most mechanically obvious next step -- though it has been predicted and not happened for seven consecutive days. Array-return lowering and expression receivers are the other open 0.3.3 items.
