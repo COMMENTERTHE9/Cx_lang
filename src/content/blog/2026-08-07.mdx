@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-08-07"
+date: 2026-08-07
+description: "A quiet period with no new commits, while 26 unmerged commits on submain await integration into main."
+---
+
+No commits landed today, and none have landed anywhere in the repo since August 3. The working tree is clean, no branches have moved, and the test matrix on main still sits at 380 pass, 0 fail. This is day four of a pause.
+
+That said, there is a significant body of work sitting on `submain` waiting to be merged.
+
+## What is stacked on submain
+
+The `submain` branch is 26 commits ahead of main. All of the work is additive, and as of today there are no visible merge conflicts. The accumulated changes span several areas:
+
+- **Gene-bound soundness fix** (`e105e56`) -- correcting type-checking around gene bounds.
+- **Generic-function monomorphization** (`959a980`) -- landed as part of the 0.3.3 scope, this was struck through in the roadmap today since it shipped on submain. Not yet on main.
+- **Interpreter call-depth guard** (`878ba7c`) -- protecting against unbounded recursion in the interpreter.
+- **JIT call-depth guard** (`664850d`) -- the same protection on the JIT side.
+- **Cycle-only call-depth optimization** (`ab62a6d`) -- a follow-up that narrows the guard so it only fires on actual recursive cycles rather than deep-but-acyclic call chains. This was the most recent real work, landing on August 2.
+- **Const lowering, exit lowering, enforcement-layer fixes, harness improvements, generic-struct lowering** -- additional pieces that round out the set.
+- **Docs for each piece** -- each of the above came with corresponding documentation updates.
+
+All of this has been accumulating on submain since late July. None of it has been merged to main or tagged with a release.
+
+## The merge question
+
+Every daily log since late July has predicted "merge submain to main" as the next step. It still has not happened. There is no visible blocking reason: the work is additive, the branch is conflict-free against main, and the depth-guard work in particular has comprehensive tests and documentation. The gap between the last commit (August 2-3) and today is now four days with no activity on any branch.
+
+## Roadmap movement
+
+The roadmap was updated today to reflect the current state. Generic-function lowering was struck through in the 0.3.3 scope line since it landed on submain. No items were checked off at the version level because everything remains unmerged. No new tasks were added.
+
+The remaining open 0.3.3 items are array-return lowering and expression receivers. Neither has started.
+
+## What is next
+
+When activity resumes, the most likely sequence is:
+
+1. **Merge submain to main.** This is the obvious first move. Twenty-six additive commits with tests and docs, no conflicts.
+2. **Array-return lowering.** The closest remaining 0.3.3 item to the work that just landed.
+3. **Expression receivers.** The other open 0.3.3 item.
+
+The project is in a pause. The accumulated work on submain is substantial and ready to integrate, but nothing has moved in four days. When the next commit happens, the merge is the clear starting point.
