@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-07-31"
+date: 2026-07-31
+description: "A quiet day with no commits landed, while the submain branch continues to sit at 14 commits ahead of main with no merge attempted."
+---
+
+No author commits landed in the last 24 hours. The working tree is clean, the matrix holds at 380/0, and the submain-to-main gap remains exactly where it was yesterday. This is the kind of day that's worth noting precisely because it's the fifth consecutive one where the same predicted work hasn't moved.
+
+## Submain: 14 Commits Still Waiting
+
+The submain branch sits at 14 commits ahead of main. All additive work, no visible conflicts. The unmerged changes include:
+
+- `exit` builtin lowering (known-issues #11)
+- `const` declaration lowering (known-issues #12)
+- Const immutability enforcement at analysis time
+- Semantic access-path enforcement (field, variant, loop-counter facts)
+- Enforcement-layer design document
+- Harness rejection-shape tracking (`.expected_exit` + `RejectionShape`)
+- Parser builtin-guard membership docs
+- README accuracy pass and known-issues updates
+
+This divergence has been noted in every daily log since at least 07-27. The gap keeps growing and no merge has been attempted. Integration risk is still low since the work is additive, but the longer it sits, the more stale those daily log entries start to look.
+
+## Rolling Predictions
+
+Yesterday's predictions carried forward unchanged because nothing new happened to alter the picture:
+
+1. **Merge submain to main.** Still the obvious next step. Still not done.
+2. **Known issues #15 residual.** The JIT's single trap channel needs real per-error diagnostics to collapse the 18 differing rejection shapes down to (1,1).
+3. **Known issues #16-#17.** String-interpolation validation move to analysis (#16) and diagnostics position bugs (#17).
+4. **0.3.3 scoping.** Array-return lowering, generic-function lowering, expression receivers. Scope not yet fixed per roadmap.
+
+The roadmap itself hasn't been touched since July 4. It correctly describes 0.3.2 as shipped and 0.3.3 as next, but nothing has happened to move 0.3.3 from "scope not yet fixed" to anything more concrete.
+
+## Looking Ahead
+
+The submain merge is the most obvious piece of work waiting. Fourteen additive commits with no conflicts should be a straightforward integration. Once that lands, the known-issues queue (#15 through #17) becomes the natural next target, and 0.3.3 scoping can begin in earnest with the submain hardening work already on main.
+
+Until then, the matrix stays green at 380/0 and main stays at v0.3.2.
