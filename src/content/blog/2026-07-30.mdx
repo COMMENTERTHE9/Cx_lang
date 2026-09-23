@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-07-30"
+date: 2026-07-30
+description: "The test harness now tracks rejection shape per backend, closing a blind spot that let JIT traps hide behind passing exit-code checks."
+---
+
+The harness had a hole: every `.expected_fail` fixture asserted only that the exit code was nonzero. That meant a clean interpreter diagnostic (exit 1) and a JIT hard trap (exit 126) both satisfied the same check. Every C5/C6-class divergence between the two backends hid behind that ambiguity. Two commits on `submain` today close it.
+
+## Rejection-shape tracking
+
+The fix introduces a `RejectionShape` concept with two variants, `Diagnostic` (exit 1) and `Trap` (exit 126), plus a directive syntax in `.expected_fail` sidecar files:
+
+```
+#! interp=diagnostic jit=trap
+```
+
+A survey of all 137 `.expected_fail` fixtures confirmed a clean pattern: the interpreter's error kind predicts the exit pair exactly. Parse, resolve, and semantic errors fire before backend dispatch, so both backends exit 1. Every runtime error exits 1 on the interpreter but 126 on the JIT, because the JIT funnels all fifteen distinct interpreter diagnostics through a single `cx_trap` channel.
+
+18 fixtures legitimately carry `jit=trap`. The remaining 119 default to both-diagnostic when the directive is absent. Both drift directions are now caught: a `jit=diagnostic` fixture that starts trapping, and a `jit=trap` one that stops. A typo in a directive panics rather than silently falling back, which would reopen the hole.
+
+The same commit promotes `.expected_exit` to a first-class sidecar in the Rust harness. The five `exit()` fixtures (designed exit codes 3, 4, 5, 7, 9) were previously classified from their `.expected_fail` companion, leaving the actual exit values unasserted on both backends.
+
+Four new unit tests bring the count from 246 to 250 (421 to 425 with `--features jit`). Parity unchanged at 345/51/0. Matrix on main holds at 380/0.
+
+## Enforcement layers design document
+
+A new 169-line document, `docs/frontend/enforcement_layers.md`, formalizes a principle that emerged from the C1-C4 fixes: if a fact is known to semantic analysis, semantic analysis rejects it. Any surviving backend check is defense-in-depth only.
+
+Two corollaries follow: a backend check is never the sole check for something analysis can decide, and a check only speaks where the fact is actually known. The document records how to apply the principle when writing new checks (single choke point, not per-syntactic-form arms), how to evaluate existing backend checks for removal, and the known limits: position-zero diagnostics, statically-decidable cases still checked at runtime, and the JIT's single trap channel.
+
+This is the first time the "analysis rejects what analysis knows" rule has been elevated from an observed pattern to a stated architectural principle with the same standing as the gene/phen method-ownership rule.
+
+## Known issues update
+
+Section 15 in `docs/known_issues.md` is partially resolved. The harness half is done: the survey table, the reasoning for why forbidding the (1,126) pair would have flagged the JIT's designed runtime-error channel instead of 18 real divergences, and what the annotation now asserts. Two things are explicitly open: the language-level C5/C6 work, and giving the JIT real per-error diagnostics, which would collapse the 18 differing shapes to (1,1) and let a strict same-shape rule land for free.
+
+## State of the branches
+
+Submain is now 14 commits ahead of main, up from 12 yesterday. The merge has been predicted in every log since 07-27 but hasn't happened yet. The divergence is growing, not shrinking.
+
+No conflicts are visible between the branches. The work landing on submain is test infrastructure and design documentation, not behavioral changes to the language or the backends. Matrix on main is stable at 380/0.
+
+## What's next
+
+The merge from submain to main is the obvious next step. 14 commits with no visible conflicts, but it keeps getting deferred.
+
+Beyond that, the JIT's single trap channel is the documented next piece of work: giving it real per-error diagnostics would remove the need for the 18 `jit=trap` annotations entirely. String-interpolation validation (#16) and diagnostics position bugs (#17) in known issues remain untouched. 0.3.3 scoping (array-return lowering, generic-function lowering, expression receivers) hasn't started.
