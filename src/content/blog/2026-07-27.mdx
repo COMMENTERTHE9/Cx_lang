@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-07-27"
+date: 2026-07-27
+description: "Const immutability enforcement moved from runtime to the semantic analysis layer, closing a hole that let mutation through index and field assignment slip past both backends."
+---
+
+A fix for const assignment rejection at analysis time turned into something more interesting when it exposed a worse bug hiding underneath.
+
+## The const-immutability hole
+
+Up until today, assigning to a `const` binding was only rejected at interpreter runtime. The semantic layer didn't check for it, which meant the JIT had to carry its own guard (added in yesterday's `6c37339`) to cover the gap. That's the kind of redundancy that signals a check is in the wrong place.
+
+The fix was a new `reject_const_assignment` function in `semantic.rs`. It tracks const declarations via a `const_names: HashSet<String>` and rejects any assignment whose target resolves to a const binding. Straightforward enough on its own, but the implementation detail that matters is where the check sits: at the single entry point for `Stmt::Assign` and `Stmt::CompoundAssign`, using a shared `assign_target_base_name` helper that resolves `x`, `x.f`, and `x:[i]` to their root name.
+
+That placement was deliberate, because the previous approach of checking each assignment form separately is exactly what caused the next problem.
+
+## The worse bug underneath
+
+While wiring up the analysis-time check, it became clear that writing *through* a const (index assignment and field assignment) was silently accepted on both backends. Not a JIT-specific gap. A live language hole.
+
+```
+const A = [1, 2, 3]
+A:[0] = 9
+print(A)  // prints [9, 2, 3], exit 0, no error
+```
+
+This worked without complaint on both the interpreter and the JIT. Compound assignment, index assignment, and field assignment on const bindings all went through unchecked. The root cause was the per-arm checking pattern: plain assignment to a const was caught, but the other three forms were never wired up. The same class of bug that known-issues #7 documented for width checks (three missed sites, same structural cause).
+
+All six assignment forms now reject identically at analysis time. The JIT's 23-line lowering guard from the previous session was removed entirely since it only existed to compensate for the missing analysis check.
+
+## Single choke point over per-arm checks
+
+The design choice here reinforces a pattern that's been forming across the semantic layer. Width checks, the ordering-comparison allowlist, and now const immutability all live in `semantic.rs` rather than being duplicated across backends. Both backends refuse identically before either runs.
+
+The `assign_target_base_name` helper is the mechanism that makes this work. Instead of matching on each assignment variant and checking const-ness in each arm, every target form resolves to its root name at one point. If a new assignment form gets added later, there's exactly one place it needs to resolve through.
+
+The interpreter's existing runtime guard was kept as defense-in-depth. It costs one `is_empty()` call on the write path and covers the case where a future construct might reach a runtime write without going through the standard assignment statements. That's a reasonable tradeoff: nearly free at runtime, and it protects against the exact class of oversight that caused this bug.
+
+## Anti-overcorrection
+
+One thing worth noting: a `t_const_mutation_still_works` test was added to verify that ordinary (non-const) bindings still mutate normally across all affected forms: plain, compound, index, and field. Byte-identical output on both backends. When you close a hole this broad, you want proof that you didn't over-tighten.
+
+## Parity and fixture movement
+
+JIT parity moved from 328/52/0 to 333/51/0 across 384 fixtures (4 new). The matrix on main holds at 380/0. The SKIP count is down from 61 to 51 over the last two sessions, though the remaining SKIPs are the harder structural ones: array-return lowering, generic-function lowering, expression receivers.
+
+Documentation was updated to reflect the new numbers: README fixture count 380 to 384, parity 328/52 to 333/51, and "assignment to a const" removed from the not-yet-lowered list since it's now an analysis-time rejection, not a lowering question. `known_issues.md` got a full writeup covering the worse-than-expected bug, all six forms tabulated, the single-choke-point rationale, and the defense-in-depth decision.
+
+## What's ahead
+
+The `submain` branch is now 10 commits ahead of main with no visible merge conflicts. A merge would bring main up to the current parity numbers. The 0.3.3 targets (expression receivers, array-return lowering, generic-function lowering) remain unstarted, and the gap-closing work so far has been clearing the path toward them by hardening the foundations. The remaining SKIPs are where the structural JIT work begins.
