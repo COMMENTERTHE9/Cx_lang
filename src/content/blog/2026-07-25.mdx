@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-07-25"
+date: 2026-07-25
+description: "Documentation site sprint to catch up with v0.3.2, adding the first gene/phen docs, pattern binding coverage, and refreshed parity numbers across the board."
+---
+
+The implementation work paused today. After v0.3.2 shipped yesterday and the submain merge landed, the entire session went to the documentation site on the `site` branch, catching it up with two releases' worth of language features the site had never covered.
+
+Seven commits in about 30 minutes. Ten files changed, 220 insertions, 15 deletions. Everything branch-local on `site`, separate from the main language repo.
+
+## Gene/phen documentation from scratch
+
+The biggest piece: a new `gene-phen.mdx` page, 145 lines, documenting the trait system for the first time anywhere on the site. It covers gene contracts, phen expressions, cross-type dispatch, generic bounds with `T: GeneName`, and operator overloading through prelude genes. It also notes the current interim restriction on expression receivers.
+
+Every code sample in that page is pulled verbatim from real test fixtures (`t_gene_phen_call_basic`, `t_gene_phen_call_dispatch`, `t_gene_bound_dispatch`, `t_op_gene_add`, `t_op_gene_ord`), and each was verified against both the interpreter and Cranelift backends at submain HEAD. No invented examples. This is an approach worth keeping: documentation tied directly to passing tests means the samples stay honest as the language moves.
+
+## Pattern binding and guard clauses
+
+Pattern binding (`as v`) and guard clauses shipped in v0.3.1 with zero site coverage. That gap closed today with 51 lines added to `control-flow.mdx`, again using three samples drawn from real fixtures and verified on both backends.
+
+## Parity refresh
+
+The site's parity numbers were stuck at 308/248/60/0, reflecting the state as of v0.3.0. Today's update brought them to the live-verified 380/319/61/0 across `introduction.mdx`, `backend-status.mdx`, and `index.astro`. The "Phase 15 active" label was also dropped since the phase-numbered backend roadmap is now historical.
+
+Along with the numbers, the JIT gap lists were refreshed across five files. The print-in-method-body caveat, which had been documented since July 5, was retired after empirical verification that the gap closed somewhere in the v0.3.2 work. New rows for gene/phen and pattern binding were added to the backend-status table, and a gene/phen feature card went onto the homepage.
+
+Version claims were bumped from v0.3.0 to v0.3.2 in the experimental banner, introduction page, and site config. The site had not been synced since 0.3.0, so this was overdue.
+
+## Smaller fixes
+
+The stale grayscale favicon was replaced with the CX mark (655 bytes to 2696 bytes). And a rendering issue in yesterday's blog post was fixed by escaping bare `Handle<T>` syntax that MDX was parsing as JSX.
+
+## What's next
+
+Today was documentation, not implementation. The 0.3.3 scope items remain untouched: expression receivers (which would unlock chained operator expressions), array-return lowering (fixing the same ABI shape as the struct-return bug), and generic-function lowering (bringing `T: GeneName` bounds to the JIT). Those are the next implementation targets.
+
+The `site` branch is now seven commits ahead of its last sync point. Deployment path for these changes is still to be determined.
+
+Matrix holds at 380 pass, 0 fail.
