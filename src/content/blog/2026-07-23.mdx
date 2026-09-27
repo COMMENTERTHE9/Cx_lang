@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-07-23"
+date: 2026-07-23
+description: "Fixed a silent-corruption bug in struct returns across all function kinds and landed phen method lowering as slice 5 of the 0.3.4 sprint."
+---
+
+The biggest thing that happened today was finding and fixing a live silent-corruption bug in struct returns. Any function returning a struct by value -- free function, impl method, or phen method -- was returning a pointer to a callee-frame alloca. That frame is dead the instant the call returns, so the caller read garbage. The JIT would hand back wrong values with a clean exit code and no error. That is the worst failure class this project tracks.
+
+## How the bug surfaced
+
+This was not caught by a user report or a random test run. The entire verification corpus had zero fixtures that returned a struct from any function. The parity harness only catches what the corpus exercises, and struct returns had never been exercised.
+
+The bug was found during the ABI audit step of slice 5 (phen method monomorphization). Before reusing the shared lowering path for phen methods that return structs, the audit probed struct returns directly. A call like `make(13, 24)` printed `13` then `32758` on Cranelift, while the interpreter gave the correct `13`/`24`. Exit code 0, no diagnostic. This is the same "probe before reusing" discipline that found the bare-I128 issue earlier -- enumerate what crosses a boundary, probe it, don't assume it works because nothing has complained.
+
+## The fix: caller-allocated return slots
+
+`FunctionSignature` now carries a `ret_struct: Option<String>` field that identifies struct-returning functions. These receive a hidden trailing `$ret_slot: Ptr` parameter. At call sites, the caller allocates the return slot in its own frame and passes the address. At return sites, `emit_return_through_slot()` field-copies the result struct through the slot using the same Load/PtrOffset/Store sequence as struct-literal lowering. The slot pointer -- which lives in the caller's frame -- is what gets returned, not the dangling callee pointer.
+
+The fix lives in the shared `lower_semantic_function` path, so all three producer kinds (free functions, impl methods, phen methods) are covered by the single convention. Any future function kind using the shared path gets correct struct returns automatically.
+
+Four new regression fixtures prove correctness:
+
+- `t_struct_return_free` -- the exact 13/32758 reproduction case, now asserting 13/24
+- `t_struct_return_impl` -- same proof through the impl-method path
+- `t_struct_return_double_free` -- two calls with asymmetric inputs, both independently correct (no slot-reuse contamination)
+- `t_struct_return_double_method` -- same double-call proof through impl methods
+
+Array returns have the same dangling-frame shape but the slot convention is not yet built for array layouts. Those remain guarded: unregistered methods cause call sites to SKIP cleanly (exit 127) rather than silently corrupt. Array-return support is tracked as a follow-up in known_issues #10.
+
+## Slice 5: phen method monomorphization
+
+The other commit today completed slice 5 of the 0.3.4 gene/phen sprint. Phen methods now register in the signature table under the same `<ReceiverStruct>$<method>` mangling scheme as impl methods, and emit as monomorphized IrFunctions through `lower_semantic_function`. The ownership-locked rule guarantees no name collisions: one owner per method name per type, and `$` never appears in user identifiers.
+
+Call sites resolve phen methods identically to impl methods. There is no dispatch table. This confirms the core design decision from the gene/phen design pass: phen methods compile as direct-call monomorphized specializations, not through vtable dispatch. Each gene/type combination produces one named function.
+
+The commit deliberately guarded struct-returning phen methods until the struct-return fix landed. Once the caller-allocated slot convention was in place, the guard was lifted.
+
+## Where things stand
+
+Combined, these two commits add 272 net insertions to `src/ir/lower.rs`, 4 new test fixtures, and a substantial known_issues entry. Submain is now 19 commits ahead of main. The matrix holds at 321 PASS / 0 FAIL on main (the new fixtures live on submain only for now).
+
+The 0.3.4 sprint is at 5 of 6 slices landed. Slice 6 likely covers operator overloading or the remaining generics-v3 integration pieces. The submain merge to main continues to be deferred during the active sprint.
