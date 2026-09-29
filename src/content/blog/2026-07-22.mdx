@@ -1,0 +1,54 @@
+---
+title: "Cx Dev Log — 2026-07-22"
+date: 2026-07-22
+description: "Bounded generics landed on submain, connecting the gene/phen trait system to compile-time type parameter contracts with full instantiation-site checking."
+---
+
+Generic type parameters in Cx can now carry trait bounds. Slice 4 of the 0.3.4 gene/phen sprint landed on `submain` today, and it is the piece that turns the gene/phen system from a runtime dispatch mechanism into a real compile-time contract. You can write `<T: Compute>` or `<T: Attacker + Defender>`, call gene-contract methods inside the generic body, and the compiler will reject any call site where the concrete type lacks the required phen.
+
+## What changed
+
+The commit (`fc71303`) touches 15 files across the parser, AST, semantic analyzer, and test suite. 375 insertions, 23 deletions.
+
+**Parser.** Generic parameters went from a flat `Vec<String>` to `Vec<(String, Option<Vec<String>>)>`. Inside angle brackets, a type parameter can now accept `: GeneName` or `: GeneA + GeneB` after it. The FuncDef map closure splits these into `type_params` (names only) and `type_bounds` (name-to-genes pairs for bounded params). Unbounded generics parse identically to before.
+
+**AST.** `Stmt::FuncDef` gained a `type_bounds: Vec<(String, Vec<String>)>` field, threaded through every match arm that destructures FuncDef: normalize_enum_stmt, map_stmt_types, the function pre-pass, and unit tests.
+
+**Semantic analysis.** This was the bulk of the work, about 194 new lines. Three new fields on `Analyzer`: `gene_defs` (whole-graph gene signatures from Pass 0), `phen_keys` (set of `(gene, receiver_type)` pairs proving a phen exists), and `current_type_bounds` (the enclosing function's bounds, saved and restored around each FuncDef analysis).
+
+Two checking paths matter here:
+
+1. **Gene-method resolution on bounded type params.** When a method call's receiver has type `TypeParam(T)` and `T` carries bounds, the analyzer looks up each bound gene's contract in `gene_defs`, finds the method signature, and substitutes `Self -> TypeParam(T)` to keep the return type generic. If no bound provides the method, the error names the type parameter, the method, and the missing bound.
+
+2. **Instantiation-site bound satisfaction.** When a generic function is called with concrete type arguments, each `(param, bound_genes)` pair is checked against `phen_keys`. The concrete type must have a phen for every bound gene. Failure produces a diagnostic naming the type, the bound, the function, and the missing phen. This two-sided checking (definition site against the contract, call site against the phen registry) is what makes it a real static contract.
+
+The GenePhenRegistry from Pass 0 now exports `genes` and `phen_keys` alongside the existing `phen_methods`, injecting all three into every per-file Analyzer. A related fix: the method-call path now resolves the receiver's declared type against the enclosing function's type params instead of `&[]`, so a `t: T` parameter surfaces as `TypeParam("T")` rather than being misread as an unknown struct.
+
+## Test fixtures
+
+Seven new tests cover the surface area:
+
+- `t_gene_bound_dispatch`: Two types with distinct Compute phens. A bounded generic calls `t.apply(v)`. Output `15/50` proves each instantiation dispatches to its own phen. A monomorphization leak would print `15/15` or `50/50`.
+- `t_gene_bound_forward`: The generic function and call site appear before the struct, gene, and phen declarations. Output `17` confirms forward-reference resolution works with bounds.
+- `t_gene_bound_multi`: `<T: Attacker + Defender>` calling methods from two different genes. Output `31`.
+- `t_gene_bound_violation`: Calling a bounded generic with a type that lacks the required phen. Rejected at the instantiation site.
+- `t_gene_bound_unbounded_reject`: Calling a gene method on an unbounded `<T>`. Rejected even when the concrete type happens to have the phen.
+- `t_gene_bound_multi_missing`: Multi-bound where one gene is missing. Rejected.
+
+The `unbounded_reject` test codifies a deliberate design choice: bounds grant access, not runtime types. Even if a concrete type has the right phen at the call site, an unbounded type parameter cannot call gene methods. The bound is the static proof obligation.
+
+## Design decisions
+
+A few things worth noting about the direction this takes:
+
+**Self substitution tracks the type parameter.** Gene signatures carry `Self` as `TypeParam("Self")`. When resolving a gene-method call on a bounded `T`, the analyzer substitutes `Self -> TypeParam(T)`, keeping return types parametric within the generic body. This is consistent with the earlier design decision that Self is always concrete. In a generic context, "concrete" means it tracks the type parameter rather than collapsing to Unknown.
+
+**Multi-bound via `+` syntax.** `<T: GeneA + GeneB>` with plus-delimited gene names, matching conventions from Rust and similar languages. Each bound is checked independently, and the body can call methods from any of the bound genes.
+
+**Opt-in contracts, not optimization hints.** The bounded generics system is explicitly a static contract mechanism. The `unbounded_reject` test makes this clear: the bound is what grants access. This keeps the type system predictable and avoids the kind of structural typing surprises that can make generic code harder to reason about.
+
+## What is next
+
+Slices 1 through 4 of the 0.3.4 sprint are now landed on submain. The remaining slices 5 and 6 likely cover IR lowering for gene/phen/bounded-generic constructs (so the JIT backend can handle them) and possibly operator overloading, both listed in the 0.3.4 roadmap scope. The submain branch is about 17 commits ahead of main; the merge continues to be deferred while the sprint is active, with integration planned once slices 5 and 6 land or the sprint pauses.
+
+Matrix holds at 321 pass, 0 fail on main. The 7 new gene-bound fixtures exist only on submain for now.
