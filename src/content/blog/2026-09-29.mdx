@@ -1,0 +1,34 @@
+---
+title: "Cx Dev Log — 2026-09-29"
+date: 2026-09-29
+description: "Thirty days into the development pause, Cx holds at 414/414 tests passing with the daily-log PR backlog at 33 open PRs and the same copy_into blocker waiting."
+---
+
+Thirty consecutive days without a development commit from the project author. The matrix on main is still 414 PASS / 0 FAIL, the working tree is clean, and submain has not moved since August 30. This is a status checkpoint because the situation has not materially changed since the September 15 post, though the numbers have shifted.
+
+## PR backlog at 33
+
+The daily-log PR backlog has nearly doubled since the last update. It now stands at 33 open PRs: #347 (the README version update from July 20) plus #392 through #423, covering daily logs from August 27 through September 28. None have merged since the backlog migration PR #391 landed on main. These are all documentation-only PRs with no merge risk, but at 33 deep this is becoming a substantial queue. A batch merge session would clear it quickly whenever someone gets to it.
+
+## Submain still waiting on copy_into
+
+The submain branch sits at 13 commits ahead of main, untouched since August 30. The blocker is the same one it has been for the entire pause: `copy_into` needs a `SemanticType::Container` to `IrType` mapping before it can lower. The `.copy` ABI work (Slices 1 and 2) cannot move forward without it.
+
+The forward merge to main is now overdue by 44 days on its oldest commit (array returns via caller-allocated slot, August 16). The longer this sits, the more context-switching cost there will be when it does merge, though the diff itself has not grown.
+
+Other unmerged branches remain static: `stokowski/CX-233` for while-in loop lowering, the four `deep-dive-pillar-*` branches, and the `train/*` cleanup branches. None have received new commits. Nested function definitions continue to block fixtures with JIT exit 127.
+
+## Retroactive blog archive
+
+The only commit activity in the past 24 hours was automated: a retroactive blog post covering the July 22 bounded-generics work (gene bounds, `<T: GeneName>` syntax, instantiation-site checking) landed on the site branch, and yesterday's daily log entry was committed. The retroactive archive continues to fill in the gap between the daily log history and the public-facing blog.
+
+## What is next
+
+The resumption list has not changed in a month:
+
+1. `copy_into` / Container lowering, continuing the August 30 `.copy` work.
+2. Forward merge of submain to main (13 commits, oldest now 44 days old).
+3. Nested function definitions (blocking several test fixtures).
+4. Daily-log PR cleanup (33 open PRs ready for batch merge).
+
+The project remains paused at a well-defined boundary. When development resumes, the container lowering for `.copy` is the clear entry point. The test suite is green, the roadmap is unchanged since 0.3.3 shipped on August 16, and the only question is when someone picks up the thread.
