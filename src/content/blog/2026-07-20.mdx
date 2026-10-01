@@ -1,0 +1,46 @@
+---
+title: "Cx Dev Log — 2026-07-20"
+date: 2026-07-20
+description: "Gene/phen implementation begins with slice 1 of 6 landing on submain, adding declarations, a Pass-0 coherence registry, and eight new test fixtures."
+---
+
+After six quiet days, the gene/phen trait system has real code behind it. Commit `d53784b` on `submain` delivers slice 1 of 6 for the 0.3.4 milestone: gene and phen declarations, a whole-graph Pass-0 coherence registry, and eight new verification fixtures. It's 381 insertions across 24 files, and it's the first implementation work since the design was finalized on July 14.
+
+## What landed
+
+The commit spans the full pipeline from lexer to runtime, even though most of the downstream stages are deliberately inert for now.
+
+**Lexer and parser.** `gene` and `phen` are now reserved keywords. The grammar for `gene` blocks accepts signature-only method declarations with arrow-style return types. Bodies inside a gene are a parse error by design. The grammar for `phen` blocks accepts full method implementations with a typed receiver binding, reusing the existing `fnc` definition combinator from impl blocks.
+
+**AST.** Two new statement variants: `Stmt::GeneDef` and `Stmt::PhenDef`, plus a `PhenMethod` type alias that matches the existing impl-block method shape. This keeps phen methods structurally identical to what the rest of the compiler already knows how to handle.
+
+**Semantic analysis.** This is where the interesting design decision shows up. Pass 0 is a new `collect_gene_phen_registry()` function that runs before any per-file analysis. It scans the entire resolved program (all files in topological order) to build two things: a gene name set and a phen registry keyed on `(gene_name, receiver_type)`. It catches undeclared-gene references and duplicate phen registrations at insertion time, with two-location diagnostics showing both the original registration and the collision point with file paths and line numbers.
+
+This is intentionally not a field on `Analyzer`. It's a whole-graph pass, matching the coherence model from the design doc. The coherence rule is first-wins with collision-at-insert, and it's order-independent because it's a single flat scan rather than an incremental per-file walk. This is the first multi-pass structure in the Cx semantic pipeline.
+
+Per-file analysis gets header-only mirrors of gene and phen declarations into the `SemanticStmt` tree, but method bodies in phens are not analyzed yet. No receiver binding, no body walking, no Self substitution. That's all deferred to later slices.
+
+**IR lowering and runtime.** Both new variants return inert results so the rest of the pipeline doesn't crash on them. The infrastructure is there; the behavior isn't yet.
+
+**Hash derive on SemanticType.** Added so `SemanticType` can serve as a HashMap key in the coherence registry. Small change, but it unlocks the registry's type-based keying.
+
+## Test fixtures
+
+Eight new fixtures cover the expected behavior space:
+
+- `t_gene_phen_basic.cx` validates a gene + phen pair that's inert, with the program printing 42.
+- `t_gene_phen_forward_ref.cx` puts the phen before its gene, proving Pass-0 is order-independent.
+- `t_gene_phen_dup_same_file.cx` tests the duplicate phen collision within a single file.
+- `t_gene_phen_dup_cross_file.cx` (with `_a.cx` and `_b.cx`) tests the same collision across imported files with different bodies.
+- `t_gene_phen_undeclared_gene.cx` references a gene that doesn't exist.
+- `t_gene_body_reject.cx` puts a method body inside a gene, which should fail at parse time.
+
+These fixtures are on submain and aren't included in main's matrix count yet. Main still holds at 321 pass, 0 fail.
+
+## Design decisions confirmed
+
+The commit validates several choices from the gene/phen design doc. Pass ordering matches the spec: Pass 0 runs before per-file analysis. Coherence uses first-wins with collision-at-insert rather than anything more complex. Gene bodies are rejected by grammar, not by a special-case check. Phen methods reuse impl-block syntax directly. And the commit explicitly scopes itself as slice 1 of 6, keeping the delivery incremental.
+
+## What's next
+
+Five slices remain for 0.3.4. They cover method-call resolution (dispatching through a phen), Self substitution in phen bodies, conformance checking (verifying a phen satisfies its gene's full contract), and execution of dispatched calls. Submain is now 14 commits ahead of main, and the merge may continue to be deferred until more slices land, or it could happen sooner to get the accumulated audit fixes and CI cleanup onto main. Known issue #3 (explicit return plus trailing expression) is still open.
