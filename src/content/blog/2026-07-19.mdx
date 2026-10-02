@@ -1,0 +1,40 @@
+---
+title: "Cx Dev Log — 2026-07-19"
+date: 2026-07-19
+description: "Day six of a deliberate pause between gene/phen design completion and implementation, with 13 commits on submain still waiting to merge."
+---
+
+No developer commits landed today. That makes six consecutive days since the last real code change on July 14, when the gene/phen design spec was finalized on submain. Main sits at `3430e4e` (the 0.3.1 tag from July 9), submain at `3b7b7f8` with 13 commits ahead, and the test matrix holds at 321 pass, 0 fail.
+
+This is a deliberate pause, not a stall. Everything technical is ready for the next phase.
+
+## What is sitting on submain
+
+The 13 unmerged commits on submain cover three areas:
+
+**Parser and semantic fixes** from the audit findings (3.1 through 3.3 and known issue #2): scoping corrections for if/while/loop/while-in bodies, width-range enforcement at method-call arguments and reassignment, ordering comparison rejection on Bool and Enum types, and the trailing builtin call promotion fix. These are correctness patches that tighten the language semantics in places the audit identified as loose.
+
+**Runtime fix**: the enum equality/inequality interpreter crash (`7a4fd5f`). Previously, comparing enum values with `==` or `!=` would crash the interpreter rather than returning a result.
+
+**CI cleanup**: `run_matrix.sh` is now invoked directly instead of being reimplemented inline (`bdc7c8c`). Small but it removes a maintenance hazard.
+
+**Gene/phen design v1.1** (`3b7b7f8`): the full design specification covering dispatch strategy, Ord mapping, Self resolution, phen lookup, cross-module coherence, and all six open design questions. This is the work that gates the 0.3.4 implementation milestone.
+
+None of this is new. It has been in this state since July 14. There are no conflicts expected against main.
+
+## Roadmap position
+
+The roadmap reflects the current state accurately:
+
+- **0.3.1** shipped and tagged.
+- **0.3.2** (pattern matching) has guard clauses and as-v binding landed on main but is not yet tagged as a release.
+- **0.3.3** (gene/phen design) is complete on submain, pending merge.
+- **0.3.4** (gene/phen implementation) has not started.
+
+The design spec for 0.3.4 is thorough: pass ordering, canonical key format, collision detection, diagnostics, and eight required test fixtures are all specified. Implementation can start as soon as submain merges.
+
+## What is next
+
+When development resumes, the path forward is straightforward. Merge submain's 13 commits to main. Begin the 0.3.4 gene/phen implementation against the completed design spec. And pick up known issue #3 (explicit return combined with trailing expression), which lives in the same code region as the #2 fix already sitting on submain.
+
+The project is between design and implementation. The design work is done and the implementation plan is specified. The pause is at developer discretion with no visible technical blockers.
