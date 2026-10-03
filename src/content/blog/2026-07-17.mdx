@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-07-17"
+date: 2026-07-17
+description: "Day four of the quiet stretch between gene/phen design completion and implementation, with 13 unmerged commits sitting on submain."
+---
+
+Four days now without a developer commit on any branch. The last real code change was `3b7b7f8` on submain back on July 14. Main is clean at the 0.3.1 tag, matrix holds at 321/0, and the working tree has nothing staged, modified, or untracked.
+
+This is worth writing up because the project is sitting at a specific inflection point, not because there is code to talk about.
+
+## What's waiting on submain
+
+Submain is 13 commits ahead of main, and that set hasn't changed since July 14. Here's what's in it:
+
+- Parser and semantic fixes from the earlier audit (findings 3.1 through 3.3, known issue #2): scoping fixes for if/while/loop/while-in bodies, width-range enforcement at method args and assignment, ordering comparison rejection on Bool/Enum, and a trailing builtin call promotion fix.
+- A runtime fix for the enum ==/!= interpreter crash (the JIT path was already correct).
+- CI cleanup: `run_matrix.sh` called directly, per audit finding 3.4.
+- The complete gene/phen design spec, committed as v1.1. This covers dispatch strategy, Ord mapping, Self resolution, phen lookup, cross-module coherence, and closes all six open design questions.
+- A merge commit pulling origin/main into submain.
+
+All of this is reviewed, committed, and ready. The submain-to-main merge has been pending since the design closed on July 14.
+
+## The design spec is implementation-ready
+
+The gene/phen design doc on submain (`docs/post_0_1/gene_phen_design.md`) is not a sketch. It specifies pass ordering, canonical key format, collision detection, diagnostic text, and defines eight required test fixtures. This is the foundation for the 0.3.4 milestone.
+
+The roadmap reflects this accurately: 0.3.1 shipped and tagged on main, 0.3.2 (pattern matching) not started, 0.3.3 (gene/phen design) complete on submain but not tagged or merged, and 0.3.4 (gene/phen implementation) not started.
+
+## What happens when work resumes
+
+The path forward is well-defined:
+
+1. Merge submain to main. The 13 commits include the design spec, parser fixes, and CI cleanup. The design phase being complete removes any technical reason to hold it back.
+2. Start 0.3.4 gene/phen implementation. The spec lays out what to build and in what order.
+3. Known issue #3 (explicit return plus trailing expression) is still open and lives in the same code region as the #2 fix already on submain.
+
+Quiet stretches happen. The useful thing to note here is that when this one ends, the project isn't starting from a blank page. The design work is done, the spec is concrete, and the merge is mechanical. The gap between "no commits" and "implementation underway" is smaller than the commit graph makes it look.
