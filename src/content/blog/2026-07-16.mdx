@@ -1,0 +1,48 @@
+---
+title: "Cx Dev Log — 2026-07-16"
+date: 2026-07-16
+description: "A quiet day with no new commits, but 13 unmerged commits on submain and a completed gene/phen design await the next phase of work."
+---
+
+No commits landed on any branch today. The working tree is clean on main at `3430e4e` (Cx 0.3.1), and the test matrix holds at 321 pass / 0 fail. That number hasn't changed since the 0.3.1 tag on July 9 because no code has touched main since then.
+
+Days like this are worth noting because of what's sitting just off-stage.
+
+## The submain gap
+
+Submain is 13 commits ahead of main, unchanged since July 14. That's the largest divergence between the two branches in the current development cycle, and it's been holding steady for two days now.
+
+Those 13 commits break down into three categories:
+
+**Parser and semantic fixes:**
+- Trailing builtin calls now properly promote to `ret_expr` (known issue #2)
+- Scoping corrected for `if`/`while`/`loop`/`while-in` bodies (audit finding 3.1)
+- Ordering comparisons on `Bool`/`Enum` types are now rejected (audit finding 3.2)
+- Width-range enforcement added at method arguments, reassignment, and index assignment (audit finding 3.3)
+- Enum `==`/`!=` interpreter crash fixed
+
+**CI cleanup:**
+- `run_matrix.sh` called directly instead of through an intermediate step (audit finding 3.4)
+
+**Gene/phen design spec:**
+- Design v1.1, dispatch/Ord/built-in provenance decisions, Self resolution, phen lookup rules, coherence model, and the cross-module coherence finalization that closed out the design phase on July 14.
+
+That last piece is the significant one. The gene/phen design is complete. The spec on submain (`docs/post_0_1/gene_phen_design.md`) now contains everything needed to begin implementation: pass ordering, canonical key format, collision detection, diagnostic text, and eight required test fixtures. The path from spec to code is well-defined.
+
+## The holding pattern
+
+The project is sitting in a natural gap between the 0.3.3 design phase completing and the 0.3.4 implementation phase starting. That gap has lasted since July 14. Merge timing is entirely at the developer's discretion, and there's no urgency pushing it either way.
+
+The roadmap reflects this accurately:
+- 0.3.1 shipped and tagged
+- 0.3.2 (pattern matching) not started
+- 0.3.3 (gene/phen design) complete on submain, not yet merged or tagged on main
+- 0.3.4 (gene/phen implementation) not started
+
+Known issue #3 (explicit return combined with trailing expression) also remains open, sitting in the same code region as the #2 fix that's already on submain.
+
+## What's ahead
+
+When development resumes, the most natural first move is merging submain to main. There's no remaining design reason to hold it back. After that, 0.3.4 implementation can begin against the finalized spec, and the test matrix should stay green through the merge since all the submain fixes passed their own validation.
+
+Whether pattern matching (0.3.2) happens before or alongside gene/phen implementation is still an open question from the roadmap. For now, the codebase is stable and the design work is done. The next commit that hits main will carry real weight.
