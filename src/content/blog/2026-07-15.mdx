@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-07-15"
+date: 2026-07-15
+description: "The gene/phen design phase is complete after the cross-module coherence architecture was finalized, closing all six implementation questions."
+---
+
+The last open question in the gene/phen design landed today. Commit `3b7b7f8` on `submain` finalized the cross-module coherence architecture, which means all six gene/phen implementation questions are now either fully decided or explicitly deferred with named extension points. The design phase is done.
+
+## What the coherence design covers
+
+The coherence problem is about ensuring that phen implementations (Cx's version of trait impls) don't conflict across module boundaries. The design adds 180 lines to `docs/post_0_1/gene_phen_design.md` and makes several concrete architectural choices.
+
+The core idea is a dedicated whole-graph gene/phen collection pass that runs once before any per-file analysis. It scans every file in `ResolvedProgram.files`, the complete reachable module graph that the resolver has already assembled, and populates a shared registry keyed on `(gene_name, receiver_type)`. That registry lives at `analyze_resolved_program`'s top level, next to the existing `alias_exports` accumulator, not inside per-file `Analyzer` tables that get reset between files.
+
+The canonical key format is `(gene_name: String, receiver_type: SemanticType)`. No generic-argument component is needed because phen receivers are always concrete types. There is one known gap: `SemanticType::Struct` carries only a bare name, so two phens for different instantiations of a generic struct would collide. The design acknowledges this honestly and defers it to the generics v3 work.
+
+Collision detection is straightforward. Duplicate canonical keys anywhere in the reachable module graph produce a hard compile error. No silent deduplication, no specialization exceptions. Because the whole-graph scan is a flat pass over all files, collision detection is order-independent by construction. It doesn't matter what order files are imported or processed in.
+
+## Why whole-graph over incremental
+
+The design chose whole-graph registration over per-file incremental accumulation. That means scanning every reachable file in one pass before any per-file analysis begins, rather than building up phen registrations as each file gets processed.
+
+This is more expensive computationally, but it eliminates a category of bugs where source-file order or import order could affect whether a collision gets detected. For a language that doesn't have separately-compiled packages yet, the cost is acceptable and the correctness guarantee is worth it.
+
+## What got deferred and why
+
+Three items are explicitly deferred with named extension points:
+
+- **Re-exports.** Cx has no re-export concept today, so there is nothing to handle.
+- **Orphan rules.** Rust needs orphan rules because crates compile separately and coherence has to hold across crate boundaries. Cx compiles everything as one unit, so the whole-graph scan already catches all collisions. Orphan rules become relevant when Cx gets separately-compiled packages.
+- **Specialization and blanket phens.** The overlap algorithm for these is nontrivial. Without specialization in the language, the collision check is just equality on `(gene, type)` keys. Adding specialization later would require a "materially harder" overlap analysis, and the design explicitly does not attempt it speculatively.
+
+Each deferred item has a concrete extension point documented so the implementation path is clear when the prerequisite infrastructure arrives.
+
+## Pass ordering
+
+The complete semantic-pass sequence is now documented: gene/phen collection (step 0, whole-graph), then enum pre-pass, struct pre-pass, function pre-pass, and finally the main analysis pass (per-file, in topo order). The main pass handles phen body conformance verification, `T: GeneName` bound resolution, and operator expression dispatch to the correct phen method.
+
+The design doc also includes eight required test fixtures for the 0.3.4 implementation: valid multi-gene/same-type and multi-type/same-gene cases, plus invalid exact-duplicate and conflicting-overlap cases.
+
+## Current state
+
+Submain is 13 commits ahead of main, up from 12 yesterday with the coherence commit. That set includes parser fixes, scope boundary fixes, width-range enforcement, the enum equality fix, CI consolidation, and the now-complete gene/phen design spec. The test matrix holds at 321 pass, 0 fail on main, unchanged since July 10.
+
+The working tree is clean. No in-progress or uncommitted work.
+
+## What's next
+
+The design phase reaching completion sets up two concrete next moves. First, the submain-to-main merge, which now carries a complete gene/phen implementation spec across 13 commits. The merge has been predicted in daily logs for six consecutive days without happening, so timing remains at the developer's discretion.
+
+Second, 0.3.4 implementation can begin. The design doc now functions as the implementation spec: pass ordering, canonical key format, collision detection semantics, diagnostic text, and a test matrix are all specified. Pattern matching (0.3.2) is still sequenced before gene/phen implementation in the roadmap and may be addressed first.
