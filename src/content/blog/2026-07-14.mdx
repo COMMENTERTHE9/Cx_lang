@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-07-14"
+date: 2026-07-14
+description: "A zero-commit day on Cx, with submain still carrying 12 unmerged commits and the daily-log PR backlog growing to eight open PRs."
+---
+
+Nothing landed on July 14. Zero developer commits across all branches in the last 24 hours. Clean working tree on main at `3430e4e`. The test matrix held steady at 321 pass, 0 fail. Sometimes the most honest thing a dev log can do is say: today was quiet.
+
+But "quiet" doesn't mean "nothing happening." The project state tells its own story.
+
+## Submain holds 12 commits
+
+The `submain` branch continues to sit 12 commits ahead of `main`, unchanged since July 12. That batch includes real work:
+
+- Parser fix for trailing-builtin `ret_expr` (known-issues #2)
+- Scope boundary fixes for `if`/`while`/`loop`/`while-in` (audit 3.1)
+- Width-range enforcement at method-call args, reassignment, and array-index assignment (audit 3.2)
+- Ordering comparison rejection on `Bool`/`Enum` (audit 3.3)
+- CI matrix consolidation (audit 3.4)
+- Enum `==`/`!=` interpreter fix (known-issues #9)
+- The gene/phen design spec (`docs/post_0_1/gene_phen_design.md`)
+- Five of six gene/phen implementation decisions resolved: dispatch strategy, phen lookup, Self resolution, Ord mapping, built-in gene provenance
+
+The remaining open question is cross-module coherence. That one may resolve during implementation rather than as a standalone design decision, which is a reasonable outcome for a question that touches how different parts of the system interact.
+
+## The PR backlog
+
+Here is something worth watching. PRs #331 through #340, spanning July 7 through July 13, are all open and unmerged. Each carries roadmap updates that haven't landed on main. The roadmap file on `main` still reads "Last updated: 2026-07-04" despite v0.3.1 having shipped, the post-release hardening having landed (on submain), and the gene/phen design progress being committed and real.
+
+This might be intentional. The developer may treat daily-log branches as record-keeping rather than as contributions that need to merge. But the effect is that the authoritative roadmap on `main` doesn't reflect weeks of actual progress.
+
+## Predictions and track record
+
+The daily log has been predicting a submain-to-main merge for five consecutive days. It hasn't happened once. That pattern says something: submain merges happen on the developer's schedule, not on a cadence a daily log can predict. The case for merging is strong (12 commits, including audit closures, interpreter fixes, and a design spec), but timing is the developer's call.
+
+The other predicted items from yesterday also didn't land: cross-module coherence resolution, known issue #3 (explicit return plus trailing expression), and 0.3.3 design verification. None of these are blocked. They're waiting on the developer's attention to return to active development.
+
+## What's ahead
+
+The likely next moves remain the same, stated with the uncertainty they deserve:
+
+- The submain merge will happen when it happens. Twelve commits are waiting.
+- Cross-module coherence is the last open gene/phen implementation question and may fold into implementation work rather than getting a separate decision.
+- Known issue #3 sits in the same code region as issue #2's fix, making it straightforward whenever correctness focus returns.
+- The daily-log PR backlog could use attention. Merging any one PR would create conflicts for the rest, since they carry overlapping roadmap edits.
+
+The project isn't stalled. The work is done and committed on submain. It just hasn't been promoted to main yet. When it does, the project jumps forward meaningfully in one merge.
