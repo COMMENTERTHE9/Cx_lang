@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-07-13"
+date: 2026-07-13
+description: "Resolved five of six open gene/phen trait system design questions, clearing the path from design verification to implementation."
+---
+
+Five of six open implementation questions in the gene/phen trait system are now decided. Today was purely a design-decisions day: two commits on submain, no code changes, no merges, no test-fixture updates. Main stays at v0.3.1, and the test matrix holds at 321/0.
+
+## The decisions
+
+The gene/phen design spec (`docs/post_0_1/gene_phen_design.md`) had six open implementation questions that were gating the 0.3.3 design-verification pass and, downstream, the 0.3.4 implementation milestone. Today's two commits resolved five of them.
+
+### Dispatch: static monomorphization only
+
+Item 1 is settled: 0.3.4 will use static monomorphization exclusively. Every concrete gene/type combination compiles to a specialized implementation. Dynamic dispatch, trait-object semantics, object-safety rules, vtable ABI: all deferred until a concrete use case justifies the complexity. This is a significant scope reduction. The door stays open for dynamic dispatch later, but 0.3.4 won't carry that weight.
+
+### Operator gene mapping for Ord
+
+Item 4: the Ord gene maps to four separate methods (`lt`, `gt`, `le`, `ge`) corresponding directly to `<`, `>`, `<=`, `>=`. No unified `cmp` method returning an ordering type in this release. The design leaves room to add `cmp` later without breaking existing implementations, but for now, each comparison operator gets its own method.
+
+### Built-in gene provenance: prelude-first
+
+Item 6 is the most architecturally interesting decision. Operator genes (`Add`, `Sub`, `Mul`, `Div`, `Eq`, `Ord`, etc.) are prelude source, not compiler magic. That's the permanent architecture. For 0.3.4 bootstrapping, the compiler is allowed narrowly-scoped primitive intrinsics, but under five hard constraints that ensure the intrinsics are temporary and conformant. The constraints define their own removal criteria: once the prelude can fully self-host operator behavior for primitive types, the intrinsics go away.
+
+This matters because it commits early to operator genes being real Cx code, which keeps the language coherent as the trait system grows. The bootstrap intrinsics are a pragmatic shortcut with a well-defined expiration.
+
+### Self resolution throughout the phen body
+
+Item 3 had been flagged as the single A2-level blocker in every prior status check. The decision: `Self` resolves throughout the entire `phen` body as a compile-time alias for the concrete implementing type, substituted during semantic analysis. The implementation reuses existing type-substitution machinery, the same path used for generic-struct type-parameter substitution. No new infrastructure needed.
+
+### Phen lookup via semantic pre-pass
+
+Item 2: phen lookup is forward-reference capable. A semantic pre-pass registers phen headers before method-call, operator, and bound resolution. This mirrors the existing struct/enum/function pre-pass pattern. Source order never determines whether a valid implementation exists.
+
+## What's still open
+
+One question remains: cross-module coherence (item 5). Same-file collisions are handled naturally by the pre-pass table, but cross-module aggregation mechanics need more thought. The spec notes this will likely resolve during implementation of the pre-pass itself rather than needing a separate design decision upfront.
+
+## The submain situation
+
+Submain is now 12 commits ahead of main. This is the third consecutive day where the daily log predicted a merge to main that didn't happen. The branch has accumulated all four audit findings closed, two known issues fixed, and the gene/phen design spec with its decisions. The case for merging is strong, but main appears to be reserved for tagged releases, with submain serving as a long-running integration branch.
+
+## What's next
+
+With five of six decisions locked, the 0.3.3 design-verification pass can begin in earnest: confirm the spec matches what's recorded, resolve the remaining coherence question, and clear the gate for implementation. Known issue #3 (explicit return combined with trailing expression) is still sitting in the `ret_expr` region and remains the most natural follow-on if the focus shifts back from design to code. And the submain-to-main merge continues to loom, though at this point, predicting its timing has a poor track record.
