@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-07-12"
+date: 2026-07-12
+description: "All four audit findings closed, enum equality crash fixed same day it was filed, and the gene/phen trait system design spec lands in-repo."
+---
+
+The audit sweep is done. Findings 3.3 and 3.4 closed today, which means all four findings from the recent audit are now resolved on submain. Alongside that, a new interpreter crash surfaced during regression testing and got fixed within two hours. And in a different register entirely, the gene/phen trait system design spec -- the foundational abstraction for everything post-0.3 -- is now a tracked file in the repo.
+
+Six commits landed on submain. Main stays at v0.3.1.
+
+## Audit findings: closed out
+
+Finding 3.3 was the ordering-comparison gap. The semantic layer's handling of `<`, `>`, `<=`, `>=` had a fallthrough path that accepted any operand pair that wasn't numeric, including `Bool` and `Enum`. Those operand pairs would pass semantic analysis and then crash at runtime. The fix in `semantic.rs` restructures the else-branch so ordering comparisons are accepted only when both operands are numeric. Everything else gets a compile-time rejection now, which is the correct behavior.
+
+Finding 3.4 was a CI maintenance risk. The CI workflow had a 50-line inline reimplementation of `run_matrix.sh` that was already drifting from the canonical script -- missing output-verification mode, missing expected-fail handling nuances. The fix replaces that entire inline block with a single `bash src/tests/run_matrix.sh` call. Future matrix improvements now apply to both local and CI runs automatically.
+
+With 3.1 (scope leaks) and 3.2 (width-range enforcement) already fixed in earlier sessions, the audit backlog is clear.
+
+## Enum equality: filed and fixed in two hours
+
+This one is worth calling out because it's the third instance of the same bug pattern. During regression testing for finding 3.3, enum `==`/`!=` comparisons turned out to crash the interpreter. The semantic layer correctly allowed the comparison, but `ops.rs` had no `(Value::EnumVariant, Value::EnumVariant)` arm in either `Op::EqEq` or `Op::NotEq`. Both fell through to the `BadOperands` catch-all.
+
+The JIT already handled this correctly through its integer-tag representation. The fix adds explicit arms comparing both `enum_name` and `variant_name` fields. Known issue #9, filed at 15:57, fixed at 17:09.
+
+This is the same pattern as the f64 comparison crash (known issue #1): the type system promises support that the runtime dispatch table doesn't implement. Worth watching for more instances of this as the type system grows.
+
+## Gene/phen design spec committed
+
+The gene/phen trait system design has been living outside the repo until today. This commit brings in the v1.1 spec as `docs/post_0_1/gene_phen_design.md` (135 lines) and updates the roadmap to cross-reference it from the 0.3.3 entry.
+
+For context: gene is the contract side (like a trait or interface) and phen is the expression side (the implementation). The split is the foundational abstraction for operator overloading, bounded generics, and the stdlib. Every post-0.3 feature depends on it. The spec covers gene and phen declarations, bounded generics via `where T: Gene` syntax, static dispatch by default with explicit `dyn` for dynamic dispatch, and the stdlib dependency chain.
+
+The design is marked "locked" at v1.1. That doesn't mean implementation has started, but the target for the 0.3.3 design-pass milestone is now formally specified and tracked.
+
+## Test matrix
+
+Main holds at 321 pass / 0 fail. Submain has grown to 337 fixtures with a JIT parity count of 281/56/0. Four new test fixtures landed today for the ordering-comparison rejection and enum equality fix.
+
+## What's ahead
+
+Submain is now 10 commits ahead of main with 16+ new test fixtures, all four audit findings closed, two known issues resolved, and the gene/phen design doc. The merge case is strong, though it's been predicted for two days running and hasn't happened yet -- the branch keeps accumulating hardening fixes instead.
+
+Beyond the merge, known issue #3 (explicit return combined with trailing expressions) sits in the same code region that was modified for issue #2, making it a natural next target. And with the gene/phen design locked, scoping work for the 0.3.4 implementation phase could begin.
