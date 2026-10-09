@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-07-08"
+date: 2026-07-08
+description: "A known-issues tracker landed on submain, cataloging five interpreter/JIT divergences with file-level precision while the submain-to-main merge gap grew to nine commits."
+---
+
+The only commit today was documentation, not code, but it's the kind of documentation that changes how you work on the project going forward. A structured known-issues tracker landed on submain (`cff4e2d`), and it represents a deliberate shift: pausing feature work to catalog what's actually broken before building more on top of it.
+
+## The known-issues tracker
+
+The new `docs/known_issues.md` is a 180-line engineering audit that documents five known issues with code-level precision. File paths, line numbers, mechanism analysis. This isn't a vague TODO list. Each entry traces the bug to its root cause and explains why it behaves the way it does.
+
+Here's the breakdown:
+
+**1. f64 comparison in the interpreter** -- already fixed in `c5e8e22`. Four missing `Value::Float` match arms in `src/runtime/ops.rs:173-208` for relational operators. The interesting thing about this one: the JIT was already correct. The interpreter, which normally serves as the reference implementation, was the one that was wrong. That's an unusual direction for a divergence to run.
+
+**2. Bare builtin call in trailing position** -- open. If you write `print(...)` as the last statement in a function body without a semicolon, it fails to JIT-lower with `UnresolvedSemanticArtifact`. The parser promotes it to `ret_expr`, which routes through `lower_expr` instead of `lower_stmt` where builtins get intercepted. This isn't method-specific -- it reproduces with free functions too.
+
+**3. Explicit return plus trailing expression** -- open, deferred. Functions that have both an explicit `return` and a dead trailing expression trigger `InternalInvariantViolation` at `src/ir/lower.rs:677-684`. Three test cases are affected: `t03`, `t160`, `t24`.
+
+**4. print(enum) divergence** -- open. The interpreter prints `Color::Green`, the JIT prints the raw tag `1`. Enum erases to `I8` at lowering, and the JIT path doesn't reconstruct the variant name.
+
+**5. I128 printing not lowered** -- open, fully scoped, ready to build. A missing match arm in `route_print_arg` at `src/ir/lower.rs:4646-4667`. One new arm plus one host callback. This is the smallest-scoped open issue and the most likely next fix target.
+
+## Why this matters
+
+Issues #2 and #3 both live in the function trailing-expression / `ret_expr` handling area, but the document confirms they're distinct bugs with different error variants and different triggers. That's the kind of detail that prevents you from assuming a single fix will resolve both, or from accidentally regressing one while fixing the other.
+
+The tracker is structured as a living log -- entries get updated, not deleted. That signals an intention to track these systematically rather than patch them one at a time and hope nothing else surfaces.
+
+## The growing submain gap
+
+Submain is now nine commits ahead of main. That's up from eight yesterday and continues a trend that's been building for several days. Three complete feature scopes are queued: D2.5 scalar Handle, pattern matching guards and as-v binding, and the interpreter float fix. On top of those, the roadmap reconciliation and now this known-issues tracker.
+
+The merge has been predicted in four consecutive daily logs and hasn't happened. Whether this is blocked on review cadence, a confidence gate, or something external to the repo isn't clear from the commit history alone. But nine commits of accumulated work sitting on a branch is a growing integration risk, and the known-issues tracker may actually be part of building confidence for that merge.
+
+The main roadmap itself remains stale (last updated 2026-05-18). The authoritative version lives on submain, updated 2026-07-04, with the corrected version sequence from 0.3.1 through 1.0+. This divergence resolves when submain merges.
+
+## Matrix and stability
+
+The test matrix holds at 292 pass, 0 fail. No change from yesterday. No reverts, no merge commits in the 24-hour window. The working tree is clean.
+
+## What's next
+
+The most impactful next step is still the submain-to-main merge. Nine commits across three feature scopes, a roadmap update, and a known-issues catalog are all waiting.
+
+If JIT convergence work resumes first, issue #5 (I128 printing) is explicitly marked as ready to build. It's a single match arm addition -- the kind of thing you can pick up and land in one session. Issues #2 and #3, while sitting in related code, are more involved and would likely need separate fixes despite their proximity in the lowering pipeline.
