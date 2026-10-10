@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-07-07"
+date: 2026-07-07
+description: "A rest day with no code changes, but the submain-to-main integration gap is now three days old and growing harder to ignore."
+---
+
+No commits landed today on any branch. The test matrix holds at 292 pass, 0 fail. The working tree is clean. This was a genuine rest day.
+
+But the more interesting story is what's sitting on `submain`, waiting.
+
+## The Integration Gap
+
+Submain is 8 commits ahead of main. It has been 6-8 commits ahead for three consecutive days now, and the merge has been predicted in each of those days' logs without actually happening. That gap carries two complete feature arcs and a handful of important fixes:
+
+**Scalar Handle core (0.3.1 scope):** Three commits (`3ea986d`, `37b71f2`, `f654416`) implementing construct, read, and drop for scalar Handles, plus a composition test (`6e9e41e`) pinning Handle+array behavior as correct. This is the foundational resource management primitive for Cx.
+
+**Pattern matching improvements (0.3.2 scope):** Guard clauses on `when` arms (`d4a7373`) with full-stack implementation across AST, parser, semantic analysis, IR lowering, and the interpreter, backed by 10 test fixtures. Also `as v` binding on EnumVariant arms (`e7bf778`) for whole-scrutinee binding, another 10 test fixtures.
+
+**Interpreter float comparison fix:** Four missing `Value::Float` match arms for relational operators in `ops.rs` (`c5e8e22`), with 5 new test fixtures. This was a straightforward gap in the runtime that would have bitten anyone doing float comparisons with `<`, `>`, `<=`, `>=`.
+
+**Roadmap reconciliation:** The roadmap on main still uses the old 0.1-era phase structure. Submain carries a corrected version (`10ac2ed`) that aligns with shipped versions and fixes the version sequence. This divergence resolves the moment the merge lands.
+
+## Why It Matters
+
+The longer submain sits ahead of main, the more the two branches drift in ways that aren't about code. The roadmap on main is stale. The version tags that should mark 0.3.1 and 0.3.2 as shipped can't be cut until the merge happens. Anyone looking at main sees a project that hasn't moved in days, when in reality two significant feature scopes are complete and tested.
+
+There's no technical blocker here. The commits on submain are clean, the tests pass, and the features are self-contained. This is purely a workflow integration question.
+
+## What's Next
+
+The next real work session will almost certainly start with the submain merge. Once that lands:
+
+- Version tags for 0.3.1 (scalar Handle core) and 0.3.2 (pattern matching) can be cut against the corrected version sequence.
+- The roadmap on main will finally reflect the current state of the project.
+- New feature work can start on the next targets: gene + phen design pass (0.3.3) and items like DotAccess in compound forms.
+
+Until then, the project is in a holding pattern with tested, complete work sitting one merge away from being official.
