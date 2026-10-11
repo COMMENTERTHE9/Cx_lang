@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-10-10"
+date: 2026-10-10
+description: "Forty-one days into a development pause, the project holds steady at 414/0 with a clean technical resumption path through container lowering."
+---
+
+Cx has been quiet for forty-one consecutive days now. No compiler work, no language design changes, no human-authored commits on any branch. The test matrix is still 414 pass, 0 fail on main, and the working tree is clean.
+
+This is worth noting not because anything broke, but because the project is parked at a well-defined spot. When work resumes, there is no ambiguity about what comes next.
+
+## Where things stand
+
+The `submain` branch sits 13 commits ahead of `main`, unchanged since August 30. That delta carries real work: array returns via caller-allocated slot, expression receivers for operator dispatch, array and struct assignment copies, the Model B aggregate-values design, Model A contiguous multidimensional arrays, unified assignment-target grammar, and two slices of `.copy` ABI work. All of it tested and waiting for a forward merge.
+
+The blocker preventing continuation is `copy_into`, which needs a `SemanticType::Container` to `IrType` mapping before it can lower. That is the single piece holding up `.copy` blocker #3, and it is the clear first task when development picks back up.
+
+## Unmerged branches
+
+Several feature branches remain static:
+
+- `stokowski/CX-233` (while-in loop lowering)
+- `train/master-backend-cleanup`
+- `train/backend-docs-reconcile`
+- `train/backend-while-in`
+- `train/backend-print-intrinsics`
+- Four `deep-dive-pillar-*` branches
+
+None have received new commits. The four training branches and the while-in branch all predate the pause.
+
+## Documentation backlog
+
+The daily-log PR backlog has grown to 44 open PRs: #347 (a README version update from July 20) plus #392 through #434 (daily logs from August 27 through October 9). These are all automated documentation commits. None have merged since the backlog migration PR (#391) landed on main.
+
+The `site` branch continues to accumulate retroactive blog posts through automated sessions. The most recent was a July 7 retrospective covering the submain integration gap at that point.
+
+## What comes next
+
+The resumption path, unchanged for six weeks:
+
+1. `copy_into` and container lowering, picking up exactly where the August 30 `.copy` work left off
+2. Merging submain's 13 commits into main
+3. Nested function definitions, which are blocking several test fixtures with JIT exit 127
+4. Cleaning up the 44 open daily-log PRs
+
+The project is paused, not stalled. The 414/0 matrix, clean tree, and well-scoped next step mean there is no drift to recover from. It is just waiting.
