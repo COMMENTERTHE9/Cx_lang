@@ -1,0 +1,46 @@
+---
+title: "Cx Dev Log — 2026-07-06"
+date: 2026-07-06
+description: "Guard clauses land on when arms, completing the core 0.3.2 pattern matching scope, alongside a float comparison bugfix in the interpreter."
+---
+
+Guard clauses on `when` arms are done. That is the second piece of what 0.3.2 was supposed to deliver for pattern matching (the first was `as v` named bindings, which landed yesterday). Both pieces are now implemented on submain, and together they give `when` blocks the expressive filtering that makes them actually useful beyond simple value dispatch.
+
+## Guard Clauses: Full-Stack Addition
+
+The syntax is `if <expr>` between the pattern and the `=>` on a `when` arm. The guard evaluates only after the pattern already matches, and any `as v` binding from pattern matching is already in scope when the guard runs. This means you can write things like matching a value, binding it, and then filtering on the bound name inside the guard -- a single `when` arm does what would otherwise require a nested `if` inside the body.
+
+The implementation touched every layer. The `WhenArm` AST struct gained a `guard: Option<Expr>` field. The parser picks up an optional `if` token after the pattern in both when-expression and when-statement forms. Semantic analysis resolves the guard expression within the arm scope so `as v` bindings are visible to it.
+
+The interesting part is in IR lowering (`src/ir/lower.rs`, +293/-63 lines). Each arm's control flow now splits into a guard evaluation block that branches to the body on true, or falls through to the next arm's continuation block on false. The `guard_unknown_condition` rejects `unknown` guards the same way `if` conditions do, reusing the existing unknown-seam machinery. The continuation-block structure matches the existing when-arm fallthrough pattern, so this did not require rethinking the control flow graph.
+
+On the interpreter side, the guard evaluates after pattern match and `as v` binding, using the same truthiness rules as `if` conditions: Bool, TBool 0/1, Num != 0, and unknown/TBool(2) as a hard error via `UnknownCondition`. A failed guard pops the arm scope and continues to the next arm.
+
+Ten new test fixtures cover the feature:
+
+- Four positive cases: `true_enters`, `false_falls_through`, `as_v_in_guard` (composition with named bindings), and `discriminate_no_eval` (guards are not evaluated when the pattern itself does not match)
+- Six expected-fail cases: runtime and static unknown rejection, scope leak from outer scope, and scope leak between arm guards
+
+The `as_v_in_guard` fixture is the one that matters most -- it proves the two halves of 0.3.2 pattern matching compose correctly by using a pattern-bound name inside the guard expression.
+
+## Float Comparison Bugfix
+
+A separate commit fixed a coverage gap in the interpreter's `ops.rs`. The `Value::Float` match arms existed for `Eq` and `Ne` but were missing for `Lt`, `Gt`, `LtEq`, and `GtEq`. Any float relational comparison like `3.14 > 2.0` fell through to a `BadOperands` error.
+
+This was a reference-side-only bug. The JIT already handled float comparisons correctly via Cranelift's `fcmp` instruction, and mixed int/float comparisons were already promoted to `(Float, Float)` by semantic analysis before reaching the runtime. So existing tests passed on JIT but would have broken against the interpreter for any float relational operation.
+
+The fix itself was four one-line additions, each adding a `(Value::Float(a), Value::Float(b))` arm parallel to the existing integer arms. Five new test fixtures cover `>`, `<`, `>=`, mixed-literal promotion, and an equality regression guard.
+
+This kind of interpreter coverage gap is consistent with a pattern where the interpreter was the first backend and occasionally has holes in newer type paths that the JIT handles natively.
+
+## Site Build Guard Extension
+
+The MDX generics scanner (`scripts/check-mdx-generics.mjs`) was extended to also scan `src/content/docs` alongside `src/content/blog`. The docs directory now contains `Handle<T>` and `Result<T>` prose from recent JIT-status corrections and the enums page, which hit the same MDX v3 JSX-parsing failure mode that bare generics cause in blog posts. All 86 files (72 blog + 14 docs) pass clean.
+
+## Current State and What is Next
+
+Submain is now 8 commits ahead of main. That includes the scalar Handle core (D2.5a/b/c), roadmap reconciliation, `as v` bindings, guard clauses, and the float comparison fix. No merge has been attempted since 0.3 was tagged.
+
+With both pieces of 0.3.2 pattern matching landed and the float fix in place, this is a natural integration point. The most likely next steps are merging submain into main and potentially tagging 0.3.1 or 0.3.2 for the accumulated work. DotAccess in compound forms is still the last unchecked Phase 11 item from the old roadmap, though it is unclear whether it is still prioritized given the shift to pattern matching.
+
+The test matrix holds at 292 pass / 0 fail on main. No reverts and no merge commits in the 24-hour window.
