@@ -1,0 +1,49 @@
+---
+title: "Cx Dev Log — 2026-07-05"
+date: 2026-07-05
+description: "Handle.drop closes the scalar Handle arc, as-v binding opens pattern matching, and the roadmap gets its first real reconciliation."
+---
+
+Two feature arcs landed on submain today, and neither is small. `Handle.drop` closes out the scalar Handle core (D2.5), and `as v` binding on `when` arms is the first piece of pattern matching for 0.3.2. On top of that, the project roadmap got a full reconciliation that replaced stale 0.1-era plans with real version targets through 1.0 and beyond.
+
+## Handle.drop: D2.5c closes the scalar Handle arc
+
+The `cx_handle_drop(handle: i64) -> void` function landed in commit `3ea986d`. It calls the registry's `remove()`, which checks `slot.gen != handle.gen` and returns early on mismatch. That makes double-drop non-corrupting by construction, not by special-case logic.
+
+Three new test fixtures prove the safety properties directly:
+
+- `t_handle_stale_trap` constructs a handle, drops it, then forces `.val` via `assert_eq`. Both backends reject deterministically (interp exit 1, JIT exit 126 via `cx_trap`).
+- `t_handle_generational_reuse` mirrors the registry's own unit test: drop h1, construct h2 on the freed slot, confirm h2 reads correctly while h1's stale `.val` still rejects.
+- `t_handle_double_drop_no_alias` drops the same handle twice, constructs two new handles, and confirms each reads its own distinct value. Free-list corruption would cause aliasing; this proves it doesn't.
+
+The commit message explicitly marks what remains deferred: non-scalar `Handle<T>` (str, struct payloads), nested `Handle<Handle<T>>`, and t16 (blocked by two unrelated pre-existing gaps). With construct, read, and drop all in place, the scalar Handle core is done.
+
+Files changed: `src/ir/lower.rs` (+38/-1), `src/backend/cranelift/host_boundary.rs` (+43), plus the three new fixtures. Submain matrix: 300/0.
+
+## Pattern matching starts with as-v binding
+
+Commit `e7bf778` adds `as v` binding on `when` EnumVariant arms, touching the full stack: lexer (`KeywordAs`), parser (optional `as ident` after `EnumName::Variant`), semantic analyzer (arm-scoped binding declared as the enum's own type), IR lowering (SSA alias inserted into the arm body block), and interpreter (`declare` + `set_var_by_id` in the arm scope).
+
+Cx enums are tag-only, so "binding the whole scrutinee" is the only meaningful `as v` semantics. There are no fields to destructure. The implementation matches this reality directly rather than building infrastructure for a destructuring model that doesn't apply.
+
+The internal changes are straightforward but pervasive. `WhenPattern::EnumVariant` grew from a 2-tuple to a 3-tuple (`Option<String>` for the binding name). `SemanticWhenPattern::EnumVariant` gained a `binding: Option<(BindingId, String)>` field. Both `lower_when_stmt` and `lower_when_expr` got the same SSA-alias insertion logic.
+
+Ten new test fixtures cover the feature: 2 positive (nested `when` on `v` proving correct arm binding, plus a catchall fallback test) and 8 negative (rejecting `as v` on literal, range, and catchall patterns; rejecting duplicate binding names; rejecting scope leak to other arms and outer scope). 24 files changed, 202 insertions, 9 deletions.
+
+## Roadmap reconciliation
+
+Commit `10ac2ed` replaced the stale 0.1-era phase checklist in `docment/ROADMAP.md` with actual shipped state. The new structure records what has shipped (0.1/0.2/0.3 with real tag SHAs), what landed post-0.3.0 (the scalar Handle core), and the version sequence forward: 0.3.1 Handle core through 0.3.4 gene/phen, 0.4 stdlib/AOT, 1.0 stable, 1.0+ graphics begins.
+
+Two items got meaningful reclassification. NullPoint and random moved from "pending implementation" to "Future Design Work (unscheduled)" based on 0.3-cycle audit results. They aren't just unimplemented; they're genuinely undesigned. That distinction matters for anyone reading the roadmap to understand what Cx has committed to versus what's still open.
+
+The frontend and backend detailed roadmaps were marked as historical snapshots. This is the first time the project has a single living document with real version targets past 0.1.
+
+## Site build fix
+
+One practical fix also landed on the site branch: commit `786d6ed` wrapped eight occurrences of bare `<T>` tokens in blog prose with backticks to fix MDX v3 build failures on Vercel. A new `scripts/check-mdx-generics.mjs` guard script catches these before the build runs.
+
+## What's next
+
+Guard clauses on `when` arms are the natural second slice of 0.3.2 pattern matching, now that `as v` binding provides the foundation. Submain is 6 commits ahead of main with two complete feature arcs, which makes it a natural merge point. Whether that merge happens before or after guard clauses land will determine how much of 0.3.2 ships in the next main integration.
+
+Main holds at 292/0. Submain is at roughly 310/0 after the as-v binding fixtures.
