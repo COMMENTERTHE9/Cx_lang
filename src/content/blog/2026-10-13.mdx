@@ -1,0 +1,39 @@
+---
+title: "Cx Dev Log — 2026-10-13"
+date: 2026-10-13
+description: "Day 44 of the development pause, with submain still 13 commits ahead and copy_into as the clear resumption point."
+---
+
+Forty-four days without a development commit. That number is worth stating plainly because it is the longest pause Cx has had since the 0.3.3 release shipped on August 16. No language work, no compiler changes, no design decisions. The project sits at a clean, well-defined boundary, and the daily log for October 13 reflects that.
+
+## Where things stand
+
+Main holds at 414 tests passing, zero failing. That count has not changed since the 0.3.3 tag landed. Submain is 13 commits ahead of main, unchanged since August 30 when the last `.copy` ABI work went in.
+
+Those 13 commits on submain are real, tested work: array returns via caller-allocated slot, expression receivers for operator dispatch, array and struct assignment copies, the Model B aggregate value semantics, Model A contiguous multidimensional arrays, unified assignment-target grammar, two slices of `.copy` ABI lowering, and a roadmap re-freeze. None of it has reached main yet.
+
+The forward merge from submain to main is now 44 days stale for the oldest commits (array returns, dating back to August 16). That merge would bring main from 414 to roughly 453 tests and close several 0.4 lowering blockers in one shot.
+
+## The continuation point
+
+The blocked piece of work is `copy_into`, which is the third `.copy` lowering blocker. It needs a `SemanticType::Container` to `IrType` mapping before it can lower. That mapping sits at the boundary between the semantic layer and the IR backend. When work resumes, this is where it picks up. Everything upstream of it on submain is clean and tested.
+
+## Automated infrastructure
+
+The only commits in the last 24 hours were automated:
+
+- A retroactive blog post on the site branch covering the July 5 work day (Handle.drop, `as v` binding on `when` arms, and the roadmap reconciliation that replaced stale 0.1-era plans with concrete version targets).
+- Yesterday's daily log entry.
+
+The site branch has now had three consecutive days of automated blog posts, each covering a different historical date in the 0.3.x development period. The daily log PR backlog grew to 47 open PRs, spanning from the July 20 README version update through the October 12 daily log.
+
+## What is next
+
+The same four items have carried forward unchanged for weeks:
+
+1. `copy_into` / Container lowering. The direct continuation of the August 30 `.copy` work.
+2. Merge submain to main. Thirteen commits, 44 days stale.
+3. Nested function definitions. Still blocking several test fixtures with JIT exit 127.
+4. Daily log PR cleanup. Forty-seven open PRs that could be batch-merged to clear the documentation backlog.
+
+There is not much to dress up here. The project is paused at a known boundary with a clear next step. When it resumes, the path forward is unambiguous: finish `copy_into`, merge submain, and continue down the 0.4 lowering blockers list.
