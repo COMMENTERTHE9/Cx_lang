@@ -1,0 +1,69 @@
+---
+title: "Cx Dev Log — 2026-07-03"
+date: 2026-07-03
+description: "The v0.3.0 release lands with 26 commits merged from submain, bringing correctness hardening, safety gates, IR lowering for six language features, and labeled loops."
+---
+
+The submain-to-main merge finally happened. PR #326 integrated 26 commits across 148 files (3,441 insertions) and was tagged v0.3.0. This closes a 28-day integration gap that had been flagged in every daily log since mid-June. The test matrix now stands at 292 PASS / 0 FAIL, up from 230/230 at v0.2.0.
+
+## What v0.3.0 brings
+
+The release is dense, so here is the breakdown by area.
+
+### Correctness hardening
+
+Four correctness rounds (CR#1 through CR#4) landed together. These add range-checks on array elements in struct fields and call arguments, range-checks on return values at their declared width, and range-checks on literals in if/when branch tails. The pattern here is consistent: the compiler now validates numeric width at every boundary where a value crosses from one context to another.
+
+### Safety gates
+
+Five safety gates shipped in this release:
+
+- **Gate-1a:** INT_MIN/-1 division overflow guard. This is the classic signed-integer edge case where negating the minimum value overflows.
+- **Gate-1b:** Division and modulo by zero now produce a clean trap instead of undefined behavior.
+- **Gate-1b0:** Clean trap routing through the JIT host exit path, so traps surface correctly even when running compiled code.
+- **Gate-2a:** Stored-value width narrowing, preventing silent truncation when writing a wider value into a narrower slot.
+- **Gate-2b:** Array indexing bounds-check trap.
+
+Together these close a class of problems where the runtime could silently produce wrong results or crash ungracefully.
+
+### IR lowering sprint
+
+This is the bulk of the release. Six language features got full IR lowering:
+
+**If-expressions (D2.1)** now lower through a shared branch-value merge, meaning an `if` used as an expression produces a value from whichever branch executes, merged at the join point.
+
+**Tag-only enums (D2.2)** lower via variant_id for both construction and pattern matching. This covers enums that carry no data, just a tag discriminant.
+
+**Bool/TBool (D2.x-A1/A2)** got a complete treatment: unknown-value construction, condition trapping, and three-valued Kleene logic. TBool is Cx's three-valued boolean (true/false/unknown), and the Kleene semantics mean that `unknown && false` is `false`, not `unknown`.
+
+**Static strings (D2.3a through D2.3d)** cover literal construction, `cx_print_str`, constant-folded `len()`, literal concatenation, content equality, and print-time interpolation with `cx_print_f64`. This is a substantial chunk of string support, though dynamic strings remain interpreter-only.
+
+**Result\<T\> (D2.4a/b)** uses a packed i128 representation with construct, print, and the `?`/Try operator. The `?` operator is only valid inside a Result-returning function, matching the Rust convention.
+
+**Labeled loops** parse as `'label: loop` with colon-terminated labels. Both the interpreter and JIT backends execute labeled break and continue. The compiler rejects duplicate labels in overlapping scope and missing label references at compile time.
+
+### Refactoring
+
+Two unification passes cleaned up internal structure. The `when` statement and expression pattern emission paths were merged into a single codepath (D1.2a). Integer-width facts were consolidated into one frontend-owned table (D1.1), and array element types now carry through correctly on index reads (D1.1b).
+
+## JIT vs. interpreter boundary
+
+One important decision codified in v0.3.0: the interpreter (`--backend=interp`, the default) is the complete reference implementation. The Cranelift JIT lowers a growing subset, but features like `exit()`, nested functions, `const`, block scopes, `while in`, macros, generics, cross-module imports, Handle, dynamic strings, and `char` remain interpreter-only. The JIT parity numbers tell the story: 233 PASS / 59 SKIP / 0 PARITY_FAIL across 292 fixtures.
+
+## Post-merge quality review
+
+After the merge, a post-0.3 audit started. The first finding involved Handle+array composition, but it turned out to be a false alarm. The original audit used `arr[i]` syntax, which is not valid Cx. The correct array-index syntax is `arr:[i]`, and with that syntax the Handle-in-array case works correctly. A new test (`t_handle_array_no_drop.cx`) was committed on submain to pin this behavior.
+
+That test commit is the one thing sitting on submain that has not yet reached main. It is a single file with no conflict risk.
+
+## Roadmap updates
+
+ROADMAP.md was updated from its stale 2026-05-18 state. The checked-off list is long: `when` block lowering, if-expression lowering, tag-only enum lowering, bool/TBool lowering, static string lowering, Result\<T\> + Try operator, labeled break/continue, CR#1 through CR#4 hardening, the safety gates, and clean trap routing.
+
+Still open: DotAccess in compound forms (the last unchecked Phase 11 item), Phase 8 Round 2 (Handle\<T\>, strref layout, TBool calling convention), and the broader Phase 12/14/15 milestones.
+
+## What's next
+
+The immediate priorities are closing any remaining post-0.3 audit findings, merging the Handle+array test to main, and then tackling DotAccess in compound forms. Phase 8 Round 2 is the next major backend milestone after that, with static strings already providing partial groundwork.
+
+There is also a backlog of 17+ daily-log PRs against main that forked from pre-v0.3.0 state. With main having jumped forward, most of those will have ROADMAP.md conflicts to resolve.
