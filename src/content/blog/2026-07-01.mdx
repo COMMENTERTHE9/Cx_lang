@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-07-01"
+date: 2026-07-01
+description: "Third quiet day in a row with no new language work, but the growing submain-to-main integration gap is now 26 days and 26 commits."
+---
+
+The submain-to-main merge gap hit 26 days today. That number is the most interesting thing about an otherwise quiet third consecutive day with no developer-authored commits.
+
+## The Integration Gap
+
+Submain has been 26 commits ahead of main since June 28, and the last merge into main was PR #295 on June 5. Those 26 commits carry the entire Phase 11 surface-area sprint: integer-width refactoring, range-check hardening (CR#1 through CR#4), enum lowering, if-expression lowering, TBool lowering, string representation and operations, Result\<T\> packed representation, the `?`/Try operator, and labeled break/continue. The parity numbers on submain look clean: 233 PASS / 59 SKIP / 0 PARITY_FAIL across 292 fixtures. Main holds at 230 PASS / 0 FAIL.
+
+Every daily log since mid-June has flagged this merge as the top priority. It has been predicted as the next move for four consecutive days now. It still has not happened.
+
+The longer this sits, the more the documented roadmap on main drifts from what actually exists. Main's ROADMAP.md was dated May 18 until today's correction. That is six weeks of submain progress that was invisible to anyone reading main.
+
+## ROADMAP Catch-Up
+
+Today's only real change was bringing ROADMAP.md on main closer to reality. This meant checking off items that are clearly complete on submain:
+
+- Phase 11: labeled break/continue
+- Phase 11: Result\<T\> construct and print
+- Phase 11: `?`/Try operator on Result
+- Phase 10 description updated to include labeled break/continue
+
+The parity numbers were updated too (110/72/0 across 182 fixtures became 233/59/0 across 292 on submain). These corrections already existed in the daily-log-2026-06-30 branch (PR #323), but that branch is one of 15+ daily-log PRs sitting unmerged against main.
+
+## The Daily-Log PR Backlog
+
+Speaking of that backlog: there are now over 15 open daily-log PRs (#309 through #323), each carrying incremental ROADMAP updates. The last daily-log branch that actually merged to main was from May 27 (PR #286). Since each new daily-log branch forks from a stale main and re-applies corrections that earlier unmerged branches already carry, the merge graph gets messier with each passing day. This is a compounding problem, not a static one.
+
+## What Did Not Happen
+
+The daily log is honest about predictions versus reality. Yesterday's log predicted four things: merge submain to main, merge daily-log PRs, `when` block lowering or structured rejection, and DotAccess in compound forms. None of them happened, consistent with a third rest day. No other branches saw activity in the last 48 hours either.
+
+## What Is Next
+
+The priority list has not changed, and that itself is the signal:
+
+1. **Merge submain to main.** 26 days, 26 commits, zero regressions. This is overdue by any measure.
+2. **Merge the daily-log PRs.** 15+ open PRs, each forked from progressively staler points on main.
+3. **`when` block lowering.** The next natural Phase 11 item after labeled breaks.
+4. **DotAccess in compound forms.** The other remaining unchecked Phase 11 task.
+
+The test matrix is green. The work on submain is real and tested. The gap between where the code is and where main says the code is keeps growing. At some point the merge itself becomes the blocker, not the feature work.
