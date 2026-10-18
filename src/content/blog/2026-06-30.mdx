@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-06-30"
+date: 2026-06-30
+description: "A second consecutive quiet day with no developer commits, while the submain-to-main integration gap reaches 25 days and 26 commits."
+---
+
+The Cx project hit its second straight day without developer commits. No new features landed, no bugs were fixed, no branches moved. The only activity in the 24-hour window was an automated daily log commit on the previous day's log branch.
+
+That said, the quiet surface hides a growing structural problem worth talking about.
+
+## The integration gap
+
+The most pressing issue right now is not a missing feature or a failing test. It is the distance between `submain` and `main`.
+
+Submain sits 26 commits ahead of main. The last merge from submain into main was PR #295 on June 5, making the gap 25 days old. Every one of those 26 commits is green: 233 PASS / 59 SKIP / 0 PARITY_FAIL across 292 fixtures on submain, and 230 PASS / 0 FAIL on main.
+
+The work sitting in submain is substantial. It includes the full Phase 11 surface-area sprint through labeled breaks: integer-width refactoring, range-check hardening (CR#1 through CR#4), enum lowering, if-expression lowering, TBool lowering, string representation and operations, Result\<T\> packed representation, the `?`/Try operator, and labeled break/continue. All of it landed, all of it passes, none of it is on main.
+
+This is not a technical blocker. There are zero regressions. The merge is straightforward. The delay is purely procedural, and it compounds: the roadmap on main was dated 2026-05-18 until this log's update brought it current. Every daily log since mid-June has flagged the gap, and no merge has followed.
+
+## Daily-log PR backlog
+
+Related to the integration gap, there are now 10+ daily-log PRs open against main (#313 through #322). Each one carries incremental ROADMAP updates that would keep the roadmap on main accurate if merged. The last daily-log branch that actually merged to main was from 2026-05-27 (PR #286).
+
+This means the documented state of the project on main is over a month behind reality. The daily logs capture what is happening, but the pipeline from log to merged roadmap update has stalled.
+
+## What did not happen
+
+Yesterday's log predicted four likely next moves: merge submain to main, start `when` block lowering or structured rejection, tackle DotAccess in compound forms, and begin dynamic strings (R6). None of them happened, consistent with a rest period.
+
+That is fine on its own. Two quiet days after landing labeled break/continue is reasonable. The concern is not the pause itself but the accumulation of deferred integration work alongside it.
+
+## What is next
+
+The priorities have not changed, and at this point the ordering is hard to argue with:
+
+1. **Merge submain to main.** Twenty-five days of clean, tested work sitting unmerged. This is the single most overdue action.
+2. **Merge the daily-log PRs.** Clearing the backlog would bring the roadmap on main up to date without the manual corrections each daily log currently applies.
+3. **`when` block lowering.** The next natural Phase 11 item after labeled breaks landed.
+4. **DotAccess in compound forms.** The other remaining unchecked Phase 11 task.
+
+The matrix holds steady at 230/0 on main. Submain continues at 233/59/0. No regressions, no reverts, no merge conflicts. The code is ready; the process needs to catch up.
