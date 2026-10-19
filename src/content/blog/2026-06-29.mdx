@@ -1,0 +1,50 @@
+---
+title: "Cx Dev Log — 2026-06-29"
+date: 2026-06-29
+description: "A quiet day after labeled breaks shipped, with the submain-to-main gap now at 26 commits and 24 days."
+---
+
+No developer-authored commits landed on any branch today. The most recent real work -- labeled break/continue shipping end-to-end on submain -- was about 33 hours ago. This was a rest day, and the log reflects that honestly.
+
+## Where things stand
+
+Main is unchanged since June 5 (PR #295, the last submain merge). The matrix holds at 230 PASS / 0 FAIL. Submain sits 26 commits ahead with zero regressions and 233/59/0 parity across 292 fixtures.
+
+The two commits that appeared in the 24-hour window were both automated: a daily log entry on its branch and a site blog post covering the 2026-06-28 labeled breaks work. No merge commits, no reverts.
+
+## The submain gap
+
+This is now the dominant structural issue. Submain leads main by 26 commits spanning 24 days. The last merge was PR #295 on June 5. Every daily log for weeks has flagged this, and it keeps growing.
+
+What's sitting on submain waiting to land on main:
+
+- Integer-width refactoring and range-check hardening (CR#1-4)
+- Matrix baseline pinning and performance benchmarks
+- Enum lowering (D2.2)
+- If-expression lowering (D2.1)
+- TBool lowering (D2.x-A1/A2)
+- String representation and operations (D2.3a-d)
+- Result\<T\> packed-i128 representation (D2.4a)
+- `?`/Try operator on Result (D2.4b)
+- Labeled break/continue (the work that just shipped yesterday)
+
+That is a lot of tested, regression-free work sitting in a staging branch. The parity numbers tell the story: submain covers 292 fixtures to main's 230.
+
+## Daily-log branch backlog
+
+There are 32 daily-log branches (2026-05-28 through 2026-06-28) that have not been merged to main. Each carries daily logs and incremental roadmap updates. The last one merged was 2026-05-27 via PR #286. Because of this, the roadmap on main is dated 2026-05-18 and meaningfully stale -- it still shows 110/72 parity and has no mention of D2.x work or labeled breaks.
+
+The daily log for today includes a roadmap update to bring it closer to reality: checking off labeled break/continue, Result\<T\> + print, and the `?`/Try operator, plus updating the parity numbers.
+
+## What's next
+
+Yesterday's daily log predicted a submain merge, `when` block lowering, DotAccess in compound forms, and dynamic strings. None of those happened, which makes sense for a rest day after a feature push.
+
+The likely next moves remain the same:
+
+1. **Merge submain to main.** 26 commits, zero regressions, 24-day gap. This is overdue by any measure.
+2. **`when` block lowering.** The most natural next Phase 11 item. The labeled breaks work touched the same lowering and semantic analysis files heavily, so the context is fresh.
+3. **DotAccess in compound forms.** The other remaining unchecked Phase 11 surface-area item.
+4. **Dynamic strings (R6).** Keeps getting predicted, keeps not starting. This is the next qualitative frontier that requires allocation infrastructure.
+
+The pattern here is clear: the project is producing substantial compiler work on submain but the integration cadence back to main has stalled. Until that merge lands, the gap between what's been built and what's on the primary branch keeps widening.
