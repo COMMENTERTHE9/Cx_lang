@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-06-23"
+date: 2026-06-23
+description: "Static string literals now lower through IR and print correctly via a host callback, converting two more parity fixtures on submain."
+---
+
+The first real string value flowed through Cx's IR today. D2.3b landed on submain: a static string literal now lowers to a leaked `{byte_ptr, byte_len}` descriptor, and a new `cx_print_str` host callback writes it to stdout byte-for-byte matching the interpreter. Two more parity fixtures pass, bringing submain to 215/71/0.
+
+This is the second string-arc commit in two days. Yesterday was `len()` constant folding (D2.3a); today is the string representation itself.
+
+## How strings lower now
+
+The core decision is representation. A string in Cx IR is now a single SSA `Ptr` to a static `{byte_ptr: i64, byte_len: i64}` descriptor. "Static" is the key word: both the UTF-8 bytes and the two-slot descriptor are leaked to `&'static` lifetime at lowering time. No deallocation, no stack-lifetime traps, no GC. The baked addresses are process-specific and JIT-only, which is the accepted R6 non-AOT tradeoff. Dynamic strings and concatenation results will eventually need a different allocation strategy, but for literal strings this is clean and correct.
+
+Strings reuse the existing `Ptr` IR type, the same one structs and arrays already use. That means the existing binding, parameter-passing, and return conventions all work without string-specific special cases. The `ConstInt(I64)` plus `Cast(I64->Ptr)` path materializes the descriptor address, and a new relaxation allows `I64 <-> Ptr` casts as a no-op reinterpret since both map to Cranelift's `types::I64`. All other Ptr casts still reject. The existing unit test was updated from `Ptr->I64` to `Ptr->I32` to keep testing the rejection path.
+
+The `cx_print_str` host callback itself is straightforward: registered in `HostBoundary` alongside the existing `cx_printn` and `cx_print_bool`, it takes a descriptor pointer, reads `(byte_ptr, len)`, and writes the raw bytes plus a newline to stdout. No quotes, no escaping, matching the interpreter's `print_value` exactly.
+
+## Fence-first for everything else
+
+Rather than attempting partial support for string operations that aren't ready, D2.3b explicitly fences them. String literals containing `{` are rejected at the construct level with a clear SKIP pointing to D2.3d (interpolation), preventing raw-brace output that would diverge from the interpreter's expansion behavior. `str + str` (concatenation) and `==`/`!=` on Ptr operands (pointer compare vs. content compare) are refused with SKIP markers pointing to D2.3c.
+
+This fence-first approach keeps the SKIP count honest. Every unsupported string operation has a tracker reference and a clear error rather than silent divergence.
+
+## Parity movement
+
+Two fixtures converted: `t51_strref_boundary` (return a literal str, print in caller) and `t77_assert_basic` (`print("ok")`, which was blocked only on the string literal). Both match interpreter output byte-for-byte. Parity on submain moved from 213/73/0 to 215/71/0.
+
+Submain is now 20 commits ahead of main with zero regressions. The gap is 18 days old. Main remains frozen at its 230/230 matrix (110/72 parity snapshot), while submain runs 286/0 on its expanded matrix.
+
+## Roadmap catch-up
+
+The roadmap had been stale since May 18. Today's update checked off everything that landed on submain over the past few weeks: `when` block lowering (D1.2a, D2.1, D2.2), Unknown/TBool lowering (D2.x-A1, D2.x-A2), `len()` constant folding (D2.3a), string literal lowering (D2.3b), and the range-check and arithmetic safety gate work. Phase 9's description now reflects that print/println covers int, bool, and str. Phase 15 parity updated to 215/71/0 on submain.
+
+No new roadmap tasks were added. D2.3c (concat/compare) and D2.3d (interpolation) are tracked in commit messages as sub-steps of the existing Phase 9 / Phase 15 scope.
+
+## What's next
+
+The natural continuation is D2.3c: string concatenation and content comparison. Both are already fenced in the D2.3b code. Concatenation is the more interesting problem because it needs a runtime host callback (`cx_str_concat`) and likely a heap-allocated result descriptor, moving beyond the current static-only approach. Content comparison (`==`/`!=`) needs to distinguish pointer equality from byte-for-byte comparison.
+
+The submain-to-main merge keeps not happening despite 20 commits and zero regressions. DotAccess in compound forms, the last unchecked non-string Phase 11 sub-item, has been predicted for seven consecutive days and still hasn't started. String interpolation (D2.3d) is further out, involving expression evaluation inside string literals.
