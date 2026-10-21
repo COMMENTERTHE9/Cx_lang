@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-06-22"
+date: 2026-06-22
+description: "Constant-folding len() on static strings and arrays lands on submain, marking the first commit of the string arc."
+---
+
+The string arc started today, and it started small on purpose.
+
+Commit `5fbf73b` on submain introduces constant-folding for `len()` on static string and array operands. This is D2.3a in the tracker, and it is the first piece of string support that can be lowered without introducing a string representation in the IR. That constraint shaped the scope: `len()` on a string literal folds to the UTF-8 byte count at compile time, producing a single `ConstInt(I64)`. No string IR type needed. No host callback needed. Pure integer folding.
+
+## What len() folding actually does
+
+A new `try_fold_len` function in `src/ir/lower.rs` (39 lines) intercepts `len()` calls in the `lower_expr` Call arm before the `is_cx_builtin` gate. It handles two cases:
+
+- **String literals**: `len("hello")` folds to 5. `len("")` folds to 0. `len("e\xCC\x81")` folds to 2, because `len` measures UTF-8 bytes, not characters or graphemes. This matches the runtime semantics in `runtime/call.rs`, where the interpreter stores strings as arena slices and reports their byte length.
+
+- **Arrays**: `len(<array>)` folds to the declared element count from the `Array(count, _)` type. This closes an array-len gap the earlier audit had flagged. Arrays already had bounds checks and layout reads, but `len` itself was unlowered.
+
+When the length is not statically known (a dynamic string, a strref), `try_fold_len` returns `None` and falls through to the existing SKIP path. No attempt at runtime-dispatched host callbacks. That infrastructure does not exist yet, and this commit does not pretend otherwise.
+
+Four parity fixtures converted from skip to pass: `t_len_string` (5), `t_len_empty` (0), `t_len_bytes` (2, the byte-vs-char pin), `t_len_array` (4). All agree with interpreter output. Parity moved from 209/77/0 to 213/73/0.
+
+## Why start the string arc here
+
+The commit message is explicit about the reasoning. `len()` is the only string operation that can be lowered without new IR infrastructure. Everything else in the string arc (concatenation, comparison, interpolation) will require actual string IR types and host callbacks. Those are materially harder, and they overlap with Phase 8 Round 2 work (str/strref layout, Handle<T>, TBool calling convention).
+
+Starting with `len()` gets a real win shipped while the harder design questions around string representation stay open. It also tightens the array subsystem at the same time, since array `len` was unlowered even though it only needed a type read.
+
+## Submain gap keeps growing
+
+Submain is now 19 commits ahead of main. The gap is 17 days old. Matrix numbers tell the story: main sits at 230/0, submain at 286/0. Parity at 213/73/0 on submain versus a frozen 110/72 snapshot on main. Zero regressions across all 19 commits. The merge keeps getting predicted and keeps not happening.
+
+## Roadmap catch-up
+
+The main-branch roadmap was stale at 2026-05-18 (over a month). Today's work updated it to reflect what has actually landed on submain since then:
+
+- Checked off `when` block lowering (D1.2a, D2.1, D2.2 from June 13-18)
+- Added Unknown/TBool lowering items (D2.x-A1, D2.x-A2 from June 20)
+- Added the len() constant folding item (D2.3a)
+- Added the CR#1-4 range-check fixes and Gate arithmetic safety gates to post-release hardening
+- Updated parity numbers and frontend matrix counts
+
+No new tasks added. DotAccess in compound forms and Phase 8 Round 2 already cover the natural next steps.
+
+## What comes next
+
+DotAccess in compound forms has been predicted every day for a week and has not started. That pattern is worth noting honestly: something keeps pulling attention elsewhere.
+
+The more likely next move is continuing the string arc. But the jump from `len()` to anything else is steep. Concatenation and string comparison both need a string representation in the IR, host callbacks, and integration with the runtime's arena allocator. Those are design decisions that have not been made yet.
+
+The submain merge, at 19 commits and 17 days, is the clearest overdue task. The test numbers support it and there is nothing blocking it besides doing it.
