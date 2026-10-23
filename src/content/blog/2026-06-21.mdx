@@ -1,0 +1,47 @@
+---
+title: "Cx Dev Log — 2026-06-21"
+date: 2026-06-21
+description: "Bool-typed unknown lowering and full Kleene three-valued logic land in the IR backend across two commits, converting 4 more parity fixtures."
+---
+
+After a quiet day on June 20, the IR backend got 363 lines of new code tonight across two commits on submain: D2.x-A1 and D2.x-A2. These implement the bool-typed unknown (`?`) lowering and three-valued Kleene logic for TBool, moving parity from 205/81/0 to 209/77/0. This is real compiler work landing on the IR layer that has been building toward full unknown-value support for weeks.
+
+## D2.x-A1: unknown construct and condition trapping
+
+The first commit (`ae37aa0`) handles the core mechanics of what happens when you write `bool = ?` in Cx. At the IR level, this now constructs the TBool unknown wire value using `ConstInt(I8, 2)` cast to TBool, mirroring what the interpreter already does in `runtime/exec.rs` at assignment sites.
+
+The more interesting piece is condition trapping. A new `guard_unknown_condition` helper inserts a `cx_trap` when a TBool condition wire carries the unknown state (value 2). This reproduces the interpreter's UnknownCondition error for `if` and `when` scrutinees. Definite bools skip the guard entirely, so there is zero overhead on the common path.
+
+The commit also introduces deliberate refusals: `==`/`!=` on TBool are rejected because the IR's Compare instruction produces a definite Bool. It cannot return a three-state result. Silently lowering this would miscompile. The refusal is explicitly marked as the Path B seam guard for future numeric unknown work. Similarly, `&&`/`||`/`!` on TBool were temporarily refused as A2-removable markers, placeholders for the Kleene logic that landed in the next commit.
+
+This moved parity from 205/81/0 to 208/78/0, converting `t_tbool_typed_unknown`, `t_if_unknown_condition`, and `t_if_expr_unknown`.
+
+## D2.x-A2: Kleene truth tables on the I8 wire
+
+The second commit (`b1b92f7`) removes the temporary `&&`/`||`/`!` refusals and implements the actual three-valued Kleene logic. The encoding is {false=0, true=1, unknown=2} on the I8 wire, and the truth tables exploit arithmetic properties of that encoding:
+
+- **AND:** `p = a*b`, then `(p==0)?0 : (p==1)?1 : 2`. When a factor is 0, the product is 0 (false wins). When both are 1, the product is 1 (both true). Everything else is unknown.
+- **OR:** `(either==1)?1 : (a+b==0)?0 : 2`. If either operand is true, the result is true. If both are zero, false. Otherwise unknown.
+- **NOT:** `(a==2)?2 : 1-a`. Unknown stays unknown, otherwise flip.
+
+Each of these generates a compare/branch/merge CFG rather than a conditional move, because the IR does not have a `Select` instruction. The commit notes this as a design constraint, not something to fix immediately.
+
+A key addition is `expr_lowers_to_tbool`, a structural type probe that detects TBool operands before lowering them. This matters because the definite-Bool short-circuit path for `&&`/`||` eagerly lowers the right-hand side into its own block. If that block received a TBool operand, it would fail. The probe routes TBool expressions to the Kleene path before the definite-Bool CFG gets a chance to commit.
+
+TypedAssign was also updated so that `z: bool = x && y` correctly binds a Kleene result as TBool. The `==`/`!=` refusal remains as the deliberate Path B guard.
+
+Parity moved from 208/78/0 to 209/77/0, converting `t_tbool_arith_unknown`.
+
+## Design choices worth noting
+
+The I8 wire encoding for TBool is the same approach used in the interpreter. The three states (0, 1, 2) coexist on I8 with Cast instructions satisfying the IR validator's type constraints. This avoids introducing a new IR-level representation for three-valued booleans, which would ripple through every pass.
+
+The `==`/`!=` refusal is not a missing feature. The IR's Compare instruction returns a definite Bool. To compare two TBool values properly, you would need either a three-state comparison result or a decision about what "equal" means when both sides are unknown. This is deferred as Path B, separate from the Kleene logic work.
+
+## Submain gap grows to 18
+
+Submain is now 18 commits ahead of main with zero regressions. The last merge was PR #295. The gap has been growing steadily, and the technical barrier to merging remains nonexistent: 286 fixtures pass, 0 fail.
+
+## What's next
+
+The daily log's predictions have a mixed track record. DotAccess in compound forms has been predicted for five consecutive days without being started, but it remains the last unchecked Phase 11 sub-item. The submain merge continues to be overdue. The new frontier after D2.x-A2 is Path B: numeric unknown lowering, which would unlock `==`/`!=` on TBool and the remaining seam-dependent fixtures. Phase 8 Round 2 (str/strref layout, Handle<T>, TBool calling convention) is logically gated behind Phase 11 completion.
