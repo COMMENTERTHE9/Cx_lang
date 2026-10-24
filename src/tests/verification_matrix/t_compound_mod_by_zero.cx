@@ -1,0 +1,6 @@
+// Compound `%=` by zero: was a raw `srem` on the JIT — a hardware divide fault
+// (Windows 0xC0000094) instead of the clean trap.
+a: t32 = 5
+b: t32 = 0
+a %= b
+print(a)

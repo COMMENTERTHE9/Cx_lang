@@ -1,0 +1,9 @@
+// -0.0 is a zero divisor too: the interpreter's `b == 0.0` is true for it, and
+// so is the JIT's ordered `fcmp eq` against 0.0. Both reject.
+zero: f64 = 0.0
+neg: f64 = 0.0 - 1.0
+b: f64 = zero * neg
+a: f64 = 1.0
+q: f64 = a / b
+r: bool = q < 0.0
+print(r)

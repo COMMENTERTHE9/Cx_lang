@@ -2880,3 +2880,83 @@ The rejections are semantic errors on both backends, asserted as
 `interp=diagnostic jit=diagnostic`; unit tests in `semantic.rs`
 (`a_function_name_is_not_a_variable`, plus two positive controls) pin the
 message, which the harness cannot.
+
+## 35. Division by zero: floats never trapped on the JIT, and `/=` `%=` crashed it
+
+*(Found 2026-10-24 while testing §33's float narrowing; fixed by the commit that
+introduces this entry — `emit_user_arith` and `emit_guarded_div` in
+`src/ir/lower.rs`.)*
+
+**Status: FIXED.** Division and remainder by zero are a clean runtime error on
+both backends for every integer and float type, however the division is
+written, and compound `MIN /= -1` wraps to `MIN` as `MIN / -1` does.
+
+### What happened
+
+The interpreter — the reference — raises `DivByZero` for a zero divisor,
+integer or float: `runtime/ops.rs` tests `b == 0` and `b == 0.0`. Since Gate-1b
+the JIT matched it for integer `a / b` and `a % b`. Everything else slipped past:
+
+```
+z: f64 = 0.0
+q: f64 = 1.0 / z      interpreter: runtime error   JIT: q = +inf, kept running
+q: f64 = 5.0 % z      interpreter: runtime error   JIT: q = NaN, kept running
+f /= z                interpreter: runtime error   JIT: +inf, kept running
+
+b: t32 = 0
+a /= b                interpreter: runtime error   JIT: hardware fault 0xC000001D (illegal instruction)
+a %= b                interpreter: runtime error   JIT: hardware fault 0xC0000094 (integer divide by zero)
+m: t32 = -1
+a /= m   (a = MIN)    interpreter: MIN             JIT: hardware fault 0xC0000095 (integer overflow)
+```
+
+The compound cases fault the same way on a struct field (`p.x /= b`) and an
+array element (`arr:[0] /= b`). Git Bash reports the last two fault codes as
+exit 127 — the code a JIT *refusal* uses — so a shell probe can mistake them
+for "unsupported"; the parity harness reads the raw code and does not.
+
+### Why
+
+The guard was reachable only from binary-expression lowering, and only for
+integer types — its own comment said "Non-integer (F64) div/mod … do not reach
+here". Compound assignment lowered its operator separately, in three places
+(variable, field, element), each emitting a raw `Binary`, so it never met the
+guard for any type.
+
+### The fix
+
+One function, `emit_user_arith`, lowers every arithmetic operator written in a
+program: binary expressions and all three compound-assignment arms. Division
+and remainder on an integer or `F64` type go through `emit_guarded_div`
+(formerly `emit_guarded_idiv`), which now takes floats. For `F64` the zero check
+is an ordered `fcmp eq` against 0.0 — true for -0.0, false for NaN, exactly the
+interpreter's `b == 0.0` — and floats skip the integer-only `MIN / -1`
+sub-guard.
+
+Also fixed on the way: `%` by zero reported "the right-hand side of '/'" (§17);
+`RuntimeError::DivByZero` now carries the operator.
+
+Not changed: the JIT's trap reports every runtime error with one generic line,
+"cx: runtime trap (assertion failed or non-exhaustive `when`)" — division by
+zero included, as it has been for integers since Gate-1b. Naming the cause needs
+a reason code passed to `cx_trap`; that is a separate diagnostics change.
+
+### Fixtures
+
+```
+t_fdiv_by_zero                  before: JIT printed true (inf)     now: trap, both reject
+t_fmod_by_zero                  before: JIT printed true (NaN)     now: trap, both reject
+t_fdiv_by_neg_zero              before: JIT printed true (-inf)    now: trap, both reject
+t_compound_fdiv_by_zero         before: JIT printed true (inf)     now: trap, both reject
+t_compound_div_by_zero          before: JIT hardware fault         now: trap, both reject
+t_compound_mod_by_zero          before: JIT hardware fault         now: trap, both reject
+t_compound_div_by_zero_field    before: JIT hardware fault         now: trap, both reject
+t_compound_div_by_zero_elem     before: JIT hardware fault         now: trap, both reject
+t_compound_intmin_div_neg1      before: JIT hardware fault         now: PASS, both agree
+t_fdiv_nonzero                  float division that must NOT trap — NaN and infinite divisors included
+```
+
+The traps are asserted as `interp=diagnostic jit=trap`, like `t_div_by_zero`.
+Unit tests in `lower.rs` pin the guard's shape: one trap block for float `/`
+and `%`, a 0.0 compare and no `MIN / -1` check, and one trap block for compound
+`/=` and `%=`.

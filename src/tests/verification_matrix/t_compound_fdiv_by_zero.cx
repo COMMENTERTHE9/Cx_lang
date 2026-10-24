@@ -1,0 +1,7 @@
+// Compound float `/=` by zero: a runtime error on the interpreter; the JIT used
+// to compute +inf and print `true`.
+f: f64 = 1.0
+z: f64 = 0.0
+f /= z
+r: bool = f > 1.0
+print(r)

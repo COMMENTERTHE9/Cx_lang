@@ -1,0 +1,9 @@
+// Float division by zero is a runtime error on the interpreter (runtime/ops.rs
+// tests `b == 0.0`). The JIT used to emit a bare `fdiv`, produce +inf and keep
+// running — this printed `true`. It now takes the same zero gate as integer
+// division and traps cleanly (126).
+a: f64 = 1.0
+b: f64 = 0.0
+q: f64 = a / b
+r: bool = q > 1.0
+print(r)

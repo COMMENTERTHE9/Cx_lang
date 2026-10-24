@@ -1,0 +1,7 @@
+// Compound `/=` by zero. The JIT lowered compound assignment to a raw `sdiv`,
+// skipping the guard `a / b` gets, and died on a hardware fault (Windows
+// 0xC000001D, illegal instruction) instead of the clean trap.
+a: t32 = 5
+b: t32 = 0
+a /= b
+print(a)
