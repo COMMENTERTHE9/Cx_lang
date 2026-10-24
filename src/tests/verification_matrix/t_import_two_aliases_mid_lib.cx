@@ -1,0 +1,7 @@
+// Imports the leaf library as `lf`, for t_import_two_aliases.
+#![imports]
+lf: use "./t_import_two_aliases_leaf_lib"
+
+pub fnc: t32 inc2(x: t32) {
+    lf.inc(lf.inc(x))
+}

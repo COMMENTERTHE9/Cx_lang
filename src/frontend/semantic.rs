@@ -122,7 +122,17 @@ pub struct Analyzer {
     readonly_bindings: std::collections::HashSet<BindingId>,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
-    pub module_aliases: HashMap<String, ExportTable>,
+    /// The modules THIS module imports, by the alias it imports each under:
+    /// the module's key (its top-level functions are named `key$name` in the
+    /// merged program) and its exports.
+    pub module_aliases: HashMap<String, (String, ExportTable)>,
+    /// This module's own key when it is not the entry: its top-level functions
+    /// are renamed `key$name` in the merged program, so its own calls to them
+    /// must carry the same name. `None` for the entry, whose names are bare.
+    own_module_key: Option<String>,
+    /// The names of this module's top-level functions — the ones renamed with
+    /// `own_module_key`. Nested functions keep their bare names at runtime.
+    own_top_level_fns: std::collections::HashSet<String>,
     next_binding_id: u32,
     next_function_id: u32,
     next_enum_id: u32,
@@ -157,6 +167,8 @@ impl Analyzer {
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
+            own_module_key: None,
+            own_top_level_fns: std::collections::HashSet::new(),
             next_binding_id: 0,
             next_function_id: 0,
             next_enum_id: 0,
@@ -272,6 +284,31 @@ impl Analyzer {
         } else {
             sem_err!(pos, "use of undeclared variable '{}'", name)
         }
+    }
+
+    /// The callee name for a call to the user function `name`. In a library,
+    /// a call to one of its own TOP-LEVEL functions carries the name that
+    /// function has in the merged program, `key$name` — it used to stay bare,
+    /// so it named nothing at runtime and a library could not call its own
+    /// functions at all, not even recursively (known_issues §31, §37). A
+    /// nested function keeps its bare name, so the innermost FUNCTION entry
+    /// for `name` decides; a parameter or local shadowing the name is not one.
+    fn callee_name(&self, name: &str) -> String {
+        if let Some(key) = &self.own_module_key {
+            if self.own_top_level_fns.contains(name) {
+                let innermost_fn_depth = self
+                    .scopes
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, scope)| scope.get(name).is_some_and(|info| info.is_function))
+                    .map(|(depth, _)| depth);
+                if matches!(innermost_fn_depth, Some(0) | None) {
+                    return format!("{key}${name}");
+                }
+            }
+        }
+        name.to_string()
     }
 
     /// For a lookup site with its own "not declared" wording: `fallback`,
@@ -2136,7 +2173,8 @@ Expr::Unary(op, inner, pos) => {
             }
             Expr::MethodCall(instance, method, args, pos) => {
                 // Check if instance is a module alias — if so resolve from ExportTable
-                if let Some(export_table) = self.module_aliases.get(instance.as_str()) {
+                if let Some((module_key, export_table)) = self.module_aliases.get(instance.as_str()) {
+                    let module_key = module_key.clone();
                     if let Some(func) = export_table.functions.get(method.as_str()) {
                         // Checked exactly like a local call — see
                         // `check_user_call`. The exported function's real
@@ -2160,7 +2198,7 @@ Expr::Unary(op, inner, pos) => {
                         // function id and no type arguments, so it is never
                         // monomorphized — cross-module generics are a separate
                         // gap (§32).
-                        let mangled = format!("{}${}", instance, method);
+                        let mangled = format!("{}${}", module_key, method);
                         return Ok(SemanticExpr {
                             ty: ret_ty,
                             kind: SemanticExprKind::Call {
@@ -2624,7 +2662,7 @@ Expr::Unary(op, inner, pos) => {
         Ok(SemanticExpr {
             ty: ret_ty,
             kind: SemanticExprKind::Call {
-                callee: name.to_string(),
+                callee: self.callee_name(name),
                 function: function.id,
                 args: semantic_args,
                 type_args: call_type_args,
@@ -4471,7 +4509,15 @@ pub fn analyze_resolved_program(
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
     let gene_phen_registry = collect_gene_phen_registry(resolved)?;
 
-    let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
+    // Each analyzed module's key and exports, by module id. A module's
+    // analyzer sees only the modules IT imports, under ITS aliases (built from
+    // its own edges below). These used to live in one map keyed by alias,
+    // shared by every module: a file saw aliases only other files declared,
+    // a module imported under two aliases answered to one of them, and two
+    // different modules imported under the same alias by different files
+    // collided (known_issues §37).
+    let mut module_exports: HashMap<crate::frontend::resolver::ModuleId, (String, ExportTable)> =
+        HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
     let mut ids = IdCounters::default();
@@ -4488,15 +4534,25 @@ pub fn analyze_resolved_program(
 
         let is_entry = module_id == resolved.entry;
 
-        // Find alias for this file if it's an imported module
-        let alias = resolved.edges.iter()
+        // An imported module's key: its top-level functions are named
+        // `key$name` in the merged program. The alias it is first imported
+        // under keeps the name readable; the module id makes it unique — the
+        // alias alone gave two different modules imported as `u` the same
+        // names, and every call went to whichever was merged last.
+        let key = resolved.edges.iter()
             .find(|e| e.importee == module_id)
-            .map(|e| e.alias.clone());
+            .map(|e| format!("{}@{}", e.alias, module_id.0));
 
         // Build analyzer with module aliases from already-processed dependencies
         let mut analyzer = Analyzer::new();
         analyzer.continue_ids_from(ids);
-        analyzer.module_aliases = alias_exports.clone();
+        analyzer.module_aliases = resolved.edges.iter()
+            .filter(|e| e.importer == module_id)
+            .filter_map(|e| module_exports.get(&e.importee).map(|m| (e.alias.clone(), m.clone())))
+            .collect();
+        if !is_entry {
+            analyzer.own_module_key = key.clone();
+        }
         analyzer.phen_methods = gene_phen_registry.phen_methods.clone();
         analyzer.gene_defs = gene_phen_registry.genes.clone();
         analyzer.phen_keys = gene_phen_registry.phen_keys.clone();
@@ -4555,6 +4611,7 @@ pub fn analyze_resolved_program(
         // Function pre-pass
         for stmt in &normalized_stmts {
             if let Stmt::FuncDef { name, params, ret_ty, type_params, type_bounds, .. } = stmt {
+                analyzer.own_top_level_fns.insert(name.clone());
                 let placeholders = params.iter()
                     .map(semantic_param_placeholder)
                     .collect::<Vec<_>>();
@@ -4635,7 +4692,7 @@ pub fn analyze_resolved_program(
         ids = analyzer.id_counters();
 
         // Build ExportTable for imported modules
-        if let Some(ref alias_name) = alias {
+        if let Some(ref module_key) = key {
             let mut export_table = ExportTable::new();
             // Extract pub functions from analyzed stmts
             for stmt in &file_stmts {
@@ -4660,7 +4717,7 @@ pub fn analyze_resolved_program(
                     }
                 }
             }
-            alias_exports.insert(alias_name.clone(), export_table);
+            module_exports.insert(module_id, (module_key.clone(), export_table));
         }
 
         // Accumulate results
@@ -4668,10 +4725,10 @@ pub fn analyze_resolved_program(
             merged_stmts.extend(file_stmts);
             merged_enums.extend(analyzer.enum_defs);
         } else {
-            // Prefix non-entry declarations with alias$ for runtime lookup
-            if let Some(ref a) = alias {
+            // Prefix non-entry functions with key$ for runtime lookup
+            if let Some(ref k) = key {
                 for stmt in file_stmts {
-                    merged_stmts.push(prefix_stmt_name(stmt, a));
+                    merged_stmts.push(prefix_stmt_name(stmt, k));
                 }
             }
             merged_enums.extend(analyzer.enum_defs);
@@ -4684,19 +4741,20 @@ pub fn analyze_resolved_program(
     })
 }
 
+/// A library's top-level functions get the module's key: `key$name`.
+///
+/// Struct declarations keep their names. Struct TYPES are identified by bare
+/// name everywhere else — annotations, literals, field access, the layouts
+/// lowering builds — so renaming only the declaration left every use of a
+/// library's own struct pointing at no layout (the JIT refused them), or at
+/// another module's struct of the same name. Two modules declaring the same
+/// struct name with different fields are refused by the JIT instead
+/// (`lower_program_inner`).
 fn prefix_stmt_name(stmt: SemanticStmt, prefix: &str) -> SemanticStmt {
     match stmt {
         SemanticStmt::FuncDef(mut func) => {
             func.name = format!("{}${}", prefix, func.name);
             SemanticStmt::FuncDef(func)
-        }
-        SemanticStmt::StructDef { name, fields, type_params, pos } => {
-            SemanticStmt::StructDef {
-                name: format!("{}${}", prefix, name),
-                fields,
-                type_params,
-                pos,
-            }
         }
         other => other,
     }
@@ -5318,6 +5376,68 @@ print(result + result2)
                     "element 0 is not converted: {:?}", elements[0].kind);
             }
             other => panic!("expected an array literal, got {other:?}"),
+        }
+    }
+
+    /// Every call in the merged program names a function that exists in it.
+    /// A library's functions are renamed `key$name` when merged; its own calls
+    /// used to keep the bare name, so they named nothing (known_issues §37).
+    #[test]
+    fn calls_inside_a_library_name_its_merged_functions() {
+        let lib = "fnc: t32 helper(x: t32) {\n    x * 2\n}\n\npub fnc: t32 api(n: t32) {\n    if n <= 0 {\n        return helper(1)\n    }\n    api(n - 1) + helper(n)\n}\n";
+        let entry = "fnc: t32 local(x: t32) {\n    x\n}\nprint(math.api(3) + local(1))\n";
+        let program = analyze_with_library(lib, entry).expect("analyses");
+
+        let defined: std::collections::HashSet<String> = program
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                SemanticStmt::FuncDef(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut callees = Vec::new();
+        fn collect_calls(e: &SemanticExpr, out: &mut Vec<String>) {
+            if let SemanticExprKind::Call { callee, args, .. } = &e.kind {
+                out.push(callee.clone());
+                for a in args {
+                    if let SemanticCallArg::Expr(inner) = a {
+                        collect_calls(inner, out);
+                    }
+                }
+            }
+            if let SemanticExprKind::Binary { lhs, rhs, .. } = &e.kind {
+                collect_calls(lhs, out);
+                collect_calls(rhs, out);
+            }
+        }
+        fn collect_stmt(s: &SemanticStmt, out: &mut Vec<String>) {
+            match s {
+                SemanticStmt::FuncDef(f) => {
+                    for b in &f.body {
+                        collect_stmt(b, out);
+                    }
+                    if let Some(r) = &f.ret_expr {
+                        collect_calls(r, out);
+                    }
+                }
+                SemanticStmt::ExprStmt { expr, .. } => collect_calls(expr, out),
+                SemanticStmt::Return { expr: Some(e), .. } => collect_calls(e, out),
+                SemanticStmt::IfElse { then_body, .. } => {
+                    for b in then_body {
+                        collect_stmt(b, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for s in &program.stmts {
+            collect_stmt(s, &mut callees);
+        }
+        let user_calls: Vec<&String> = callees.iter().filter(|c| c.as_str() != "print").collect();
+        assert!(user_calls.len() >= 5, "expected the library's and the entry's calls, got {user_calls:?}");
+        for callee in user_calls {
+            assert!(defined.contains(callee), "call to '{callee}' names no function; defined: {defined:?}");
         }
     }
 }

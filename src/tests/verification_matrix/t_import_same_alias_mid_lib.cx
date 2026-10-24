@@ -1,0 +1,7 @@
+// Imports the first `u` library, for t_import_same_alias.
+#![imports]
+u: use "./t_import_same_alias_a_lib"
+
+pub fnc: t32 via(x: t32) {
+    u.pick(x)
+}

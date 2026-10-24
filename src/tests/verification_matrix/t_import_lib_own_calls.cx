@@ -1,0 +1,15 @@
+// A library calling its own functions — a private helper, itself recursively,
+// another public function — and using its own struct. A library's top-level
+// functions are renamed `key$name` in the merged program, but its own calls
+// kept the bare name: every call named nothing, a runtime error on the
+// interpreter ("variable 'helper' has not been declared") and a refusal on the
+// JIT, so a library could only hold leaf functions (known_issues §31, §37). Its
+// struct declaration was renamed while every use kept the bare name, so the JIT
+// refused that too.
+#![imports]
+m: use "./t_import_lib_own_calls_lib"
+
+print(m.twice_plus(5))
+print(m.fact(5))
+print(m.uses_pub(5))
+print(m.pair_sum(3, 4))

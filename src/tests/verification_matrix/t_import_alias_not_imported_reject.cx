@@ -1,0 +1,8 @@
+// An alias this file never imported. Every module saw every alias any module
+// had registered, so `u.pick` here — `u` is imported only by the middle
+// library — passed analysis and ran on both backends. A file now sees only its
+// own imports.
+#![imports]
+md: use "./t_import_same_alias_mid_lib"
+
+print(u.pick(5))

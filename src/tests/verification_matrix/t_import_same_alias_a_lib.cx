@@ -1,0 +1,5 @@
+// One of two different libraries both imported as `u`, for
+// t_import_same_alias.
+pub fnc: t32 pick(x: t32) {
+    x + 1
+}

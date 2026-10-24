@@ -1,0 +1,12 @@
+// Library with a private generic helper, for t_import_generic_collision.
+fnc: T <T> lid(x: T) {
+    x
+}
+
+pub fnc: t32 api(n: t32) {
+    lid(n) + 1
+}
+
+pub fnc: t64 wide(n: t64) {
+    lid(n) * 2
+}
