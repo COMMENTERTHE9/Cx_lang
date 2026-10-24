@@ -2558,3 +2558,68 @@ t_import_global_collision    before: interp printed 100   now: interp 7, JIT SKI
 ```
 
 If the miscompile ever returned, the first two would show PARITY_FAIL again.
+
+---
+
+## 32. Calls into an imported module were never checked against the callee
+
+*(Found 2026-10-24 during the restart review; fixed by the commit that introduces
+this entry — `check_user_call` in `src/frontend/semantic.rs`.)*
+
+**Status: FIXED.** A call through an import alias is checked exactly like a local
+call, and imported calls now run on the JIT.
+
+### What happened — on the interpreter, the reference
+
+```
+math: use "./t74_import_basic_lib"        # pub fnc: t32 add(a: t32, b: t32)
+
+print(math.add(1, 2, 3))          printed 3, exit 0           — extra argument dropped
+print(math.add(9999999999, 1))    printed 1410065408, exit 0  — literal wrapped
+print(math.add(true, 20))         RUNTIME ERROR inside `a + b` in the library
+```
+
+The same three calls to a LOCAL `add` are semantic errors at the call site. The
+JIT, meanwhile, refused every imported call — including correct ones like
+`math.add(10, 20)` — with `argument 0 of call to 'math$add' type mismatch after
+semantic analysis: expected I32, got I64`, so `t74_import_basic` and
+`t64_import_pub_only` were SKIP.
+
+### Why
+
+`analyze_call` checks a local call's arguments: arity, the `.copy` contract,
+type-parameter inference, gene bounds, and each argument's type, range and
+narrowing to the parameter's type. The import-alias branch of method-call
+analysis analysed each argument and pushed it unchanged — none of those checks,
+and no narrowing. The JIT's refusal was the visible symptom: an untyped literal
+reached lowering still at its default width, because nothing had narrowed it to
+the `t32` parameter. `.copy` arguments naming an undeclared variable were given a
+sentinel binding instead of an error.
+
+### The fix
+
+The checks moved, unchanged, out of `analyze_call` into `check_user_call`, and
+both paths call it. The imported path builds a `FunctionInfo` from the exported
+function's real signature. One implementation of "what makes a call
+well-formed", so a check added later applies to both.
+
+### Still not handled across a module boundary
+
+- **Generic functions are not monomorphized** when called through an import: the
+  call keeps carrying no function id and no type arguments, as before. Their
+  arguments are now checked against the inferred type parameters, but a generic
+  imported function that needs specialization still fails on the JIT.
+- **Gene bounds are not checked**: the export table does not carry them.
+
+Both predate this change and are left as they were.
+
+### Fixtures
+
+```
+t_import_arg_type_reject     before: runtime error in the callee    now: semantic error, both backends
+t_import_arg_arity_reject    before: printed 3, exit 0              now: semantic error, both backends
+t_import_arg_range_reject    before: printed 1410065408, exit 0     now: semantic error, both backends
+t_import_arg_narrowing       before: JIT SKIP                       now: PASS, both backends agree
+t74_import_basic             before: JIT SKIP                       now: PASS
+t64_import_pub_only          before: JIT SKIP                       now: PASS
+```

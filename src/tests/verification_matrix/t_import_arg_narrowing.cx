@@ -1,0 +1,12 @@
+// Literal and variable arguments to an imported t32 function are narrowed to the
+// parameter's type. Without that, the JIT refused the program outright
+// ("argument 0 of call to 'math$add' type mismatch: expected I32, got I64").
+// Asymmetric values and a negative so an operand swap or bad narrowing shows.
+#![imports]
+math: use "./t74_import_basic_lib"
+
+x: t32 = 7
+print(math.add(10, 20))
+print(math.add(x, -3))
+print(math.multiply(x, 6))
+print(math.add(math.multiply(2, 50), 1))

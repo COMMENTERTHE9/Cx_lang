@@ -1,0 +1,3 @@
+#! interp=diagnostic jit=diagnostic
+# An out-of-range literal argument to an imported function is a semantic error
+# on both backends, as it is for a local function.

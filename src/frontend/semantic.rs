@@ -27,6 +27,11 @@ struct VarInfo {
     initialized: bool,
 }
 
+/// A user-function call's checked arguments, its return type with type
+/// parameters substituted, and the concrete type arguments the monomorphizer
+/// needs — see `check_user_call`.
+type CheckedCall = (Vec<SemanticCallArg>, SemanticType, Vec<SemanticType>);
+
 #[derive(Debug, Clone)]
 struct FunctionInfo {
     id: FunctionId,
@@ -2042,38 +2047,28 @@ Expr::Unary(op, inner, pos) => {
                 // Check if instance is a module alias — if so resolve from ExportTable
                 if let Some(export_table) = self.module_aliases.get(instance.as_str()) {
                     if let Some(func) = export_table.functions.get(method.as_str()) {
-                        let ret_ty = func.return_ty.clone().unwrap_or(SemanticType::Void);
-                        self.check_copy_arg_contract(args, Some(&func.params), method, false, *pos)?;
-                        let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
-                        for arg in args {
-                            match arg {
-                                CallArg::Expr(expr) => {
-                                    let sem_expr = self.analyze_expr(expr)?;
-                                    semantic_args.push(SemanticCallArg::Expr(sem_expr));
-                                }
-                                CallArg::Copy(name) => {
-                                    let binding = self.lookup_var(name)
-                                        .map(|i| i.binding)
-                                        .unwrap_or(BindingId(u32::MAX));
-                                    semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
-                                }
-                                CallArg::CopyFree(name) => {
-                                    let binding = self.lookup_var(name)
-                                        .map(|i| i.binding)
-                                        .unwrap_or(BindingId(u32::MAX));
-                                    semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
-                                }
-                                CallArg::CopyInto(names) => {
-                                    let resolved = names.iter().map(|n| {
-                                        let binding = self.lookup_var(n)
-                                            .map(|i| i.binding)
-                                            .unwrap_or(BindingId(u32::MAX));
-                                        ResolvedBinding { binding, name: n.clone() }
-                                    }).collect();
-                                    semantic_args.push(SemanticCallArg::CopyInto(resolved));
-                                }
-                            }
-                        }
+                        // Checked exactly like a local call — see
+                        // `check_user_call`. The exported function's real
+                        // signature is the one to check against.
+                        let info = FunctionInfo {
+                            id: func.id,
+                            params: func.params.clone(),
+                            ret_ty: func.return_ty.clone(),
+                            type_params: func.type_params.clone(),
+                            // The export table does not carry gene bounds, so a
+                            // bounded generic called across a module boundary
+                            // is not bound-checked. That was already true; it is
+                            // recorded in known_issues §32 rather than widened
+                            // into this change.
+                            type_bounds: Vec::new(),
+                        };
+                        let display = format!("{}.{}", instance, method);
+                        let (semantic_args, ret_ty, _) =
+                            self.check_user_call(&display, &info, args, *pos)?;
+                        // Unchanged from before: an imported call carries no
+                        // function id and no type arguments, so it is never
+                        // monomorphized — cross-module generics are a separate
+                        // gap (§32).
                         let mangled = format!("{}${}", instance, method);
                         return Ok(SemanticExpr {
                             ty: ret_ty,
@@ -2528,6 +2523,39 @@ Expr::Unary(op, inner, pos) => {
         }
 
         let function = self.funcs.get(name).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
+        let (semantic_args, ret_ty, call_type_args) =
+            self.check_user_call(name, &function, args, pos)?;
+        Ok(SemanticExpr {
+            ty: ret_ty,
+            kind: SemanticExprKind::Call {
+                callee: name.to_string(),
+                function: function.id,
+                args: semantic_args,
+                type_args: call_type_args,
+            },
+        })
+    }
+
+    /// THE argument check for a call to a user-defined function: arity, the
+    /// `.copy` contract, type-parameter inference, gene bounds, and each
+    /// argument's type, range and narrowing to the parameter's type.
+    ///
+    /// Local calls and calls through an import alias (`math.add(1, 2)`) both
+    /// route here. The import path used to analyse each argument and stop, so a
+    /// call into another module was never compared with the callee's
+    /// signature: an extra argument was silently dropped, an out-of-range
+    /// literal silently wrapped, a wrong type failed at runtime inside the
+    /// callee, and nothing was narrowed — which is why the JIT refused every
+    /// imported call ("expected I32, got I64").
+    ///
+    /// `name` is used only in diagnostics.
+    fn check_user_call(
+        &mut self,
+        name: &str,
+        function: &FunctionInfo,
+        args: &[CallArg],
+        pos: usize,
+    ) -> Result<CheckedCall, SemanticError> {
 
         if args.len() != function.params.len() {
             return Err(sem_err!(pos, "function '{}' expects {} argument(s), got {}", name, function.params.len(), args.len()));
@@ -2643,7 +2671,7 @@ Expr::Unary(op, inner, pos) => {
         }
 
         let ret_ty = substitute_type_params(
-            function.ret_ty.unwrap_or(SemanticType::Void),
+            function.ret_ty.clone().unwrap_or(SemanticType::Void),
             &type_param_map,
         );
 
@@ -2667,15 +2695,7 @@ Expr::Unary(op, inner, pos) => {
             .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
             .collect();
 
-        Ok(SemanticExpr {
-            ty: ret_ty,
-            kind: SemanticExprKind::Call {
-                callee: name.to_string(),
-                function: function.id,
-                args: semantic_args,
-                type_args: call_type_args,
-            },
-        })
+        Ok((semantic_args, ret_ty, call_type_args))
     }
 
     // Analyze `expr` while hinting the declared element type of an expected array
