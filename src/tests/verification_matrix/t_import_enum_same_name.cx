@@ -1,0 +1,13 @@
+// Two modules each declare `enum Color`. Each uses its own correctly on the
+// interpreter. Enum types are identified by name alone, so analysis cannot tell
+// the two apart, and a value of one passed to the other matched by variant name
+// on the interpreter but by tag on the JIT — silently different answers. Until
+// enum types carry their declaration's identity, the JIT refuses any program
+// in which two modules declare the same enum name (SKIP), even this one, where
+// values never cross.
+#![imports]
+a: use "./t_import_enum_same_name_a_lib"
+b: use "./t_import_enum_same_name_b_lib"
+
+print(a.code(a.red()))
+print(b.code(b.red()))

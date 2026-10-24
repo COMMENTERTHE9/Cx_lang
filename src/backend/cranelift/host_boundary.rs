@@ -1640,6 +1640,13 @@ fn compile_ir_function(
                         // saturated to i32's bounds, which the clamp maps to the
                         // narrow type's bounds.
                         let to_bits = to_cl.bits();
+                        if to_bits == 128 {
+                            // Lowering refuses f64 → t128 (no Cranelift conversion);
+                            // never panic if such a cast reaches codegen anyway.
+                            return Err(JitExecutionError::UnsupportedConstruct {
+                                construct: "Cast F64 → I128".to_string(),
+                            });
+                        }
                         if to_bits == 8 || to_bits == 16 {
                             use cranelift_codegen::ir::types;
                             let (lo, hi) = if to_bits == 8 {
