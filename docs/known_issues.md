@@ -993,7 +993,8 @@ check is a pure function of a literal and the symbol table.
 
 ## 17. Diagnostics: hardcoded `pos: 0`, and `%` reporting `/`
 
-**Status: OPEN — cosmetic, but they misdirect.**
+**Status: positions OPEN — cosmetic, but they misdirect. The wrong operator is
+FIXED (§35).**
 
 **Position 0.** Fifteen runtime-error construction sites in `src/runtime/`
 (`exec.rs:72,76,102,106,123,184,188,378,382,393,422,464,493`, and others) pass
@@ -1004,9 +1005,10 @@ carry **no source position in the AST**, so the C1 field-read error and the C3
 value-position variant error both report line 1. Fixing those two requires
 adding positions to those AST nodes — worth doing, out of scope for a check.
 
-**Wrong operator in the divide-by-zero message.** `print(10 % 0)` reports
-*"division by zero — the right-hand side of `'/'` evaluated to 0"*. The `Mod`
-arm in `src/runtime/ops.rs` reuses the `Div` diagnostic verbatim.
+**Wrong operator in the divide-by-zero message — FIXED (§35).** `print(10 % 0)`
+reported *"division by zero — the right-hand side of `'/'` evaluated to 0"*: the
+`Mod` arm in `src/runtime/ops.rs` reused the `Div` diagnostic verbatim.
+`RuntimeError::DivByZero` now carries the operator, so it says `'%'`.
 
 ---
 

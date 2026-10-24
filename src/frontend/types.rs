@@ -45,6 +45,8 @@ impl PartialEq for Value {
 pub enum RuntimeError {
     DivByZero {
         pos: usize,
+        /// The operator as written, `"/"` or `"%"`, so the message names it.
+        op: &'static str,
     },
     BadOperands {
         pos: usize,

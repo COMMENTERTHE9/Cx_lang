@@ -117,8 +117,8 @@ fn value_kind(v: &Value) -> &'static str {
 
 pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
     match err {
-        RuntimeError::DivByZero { pos } => (
-            "division by zero — the right-hand side of '/' evaluated to 0".to_string(),
+        RuntimeError::DivByZero { pos, op } => (
+            format!("division by zero — the right-hand side of '{op}' evaluated to 0"),
             *pos,
         ),
         RuntimeError::BadOperands {
