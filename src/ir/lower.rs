@@ -954,6 +954,15 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
 /// Exhaustive on purpose. A declaration kind missing from this match would be
 /// treated as a function-local, and an assignment to it inside a function would
 /// compile into a fresh local — the silent miscompile this set exists to stop.
+///
+/// One gap the statement kinds cannot close: a FUNCTION's own name is also a
+/// top-level binding (`analyze_function` declares it in the enclosing scope, and
+/// impl methods are analysed in the top-level scope too), but `SemanticFunction`
+/// does not carry that binding id, so it cannot be added here. A function body
+/// that assigns to another function's name therefore still compiles a stray
+/// local. That program is invalid — the interpreter rejects it — so this is the
+/// JIT accepting an invalid program rather than miscompiling a valid one; the fix
+/// belongs in semantic analysis (known_issues §31).
 fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
     let mut set = HashSet::new();
     for stmt in &program.stmts {
@@ -963,9 +972,10 @@ fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
             | SemanticStmt::ConstDecl { binding, .. } => {
                 set.insert(*binding);
             }
-            // None of these introduces a binding visible to a top-level
+            // None of these introduces a VARIABLE visible to a top-level
             // function: they are definitions, uses, or bodies whose own
-            // declarations are scoped inside them.
+            // declarations are scoped inside them. (FuncDef and ImplBlock do
+            // bind their names — see the gap noted above.)
             SemanticStmt::Noop
             | SemanticStmt::EnumDef { .. }
             | SemanticStmt::GeneDef { .. }

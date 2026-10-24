@@ -2479,6 +2479,56 @@ The match over statement kinds is exhaustive, deliberately: a declaration kind
 left out would be treated as a function-local, and the silent insert would come
 back for it.
 
+### Independent review — what it found
+
+A focused review of this change probed every write path it could find. Inside
+functions — including generic, impl, phen and imported-module functions, inside
+loops and `when`, through `.copy`, a global method receiver, handles and
+interpolation — every write to top-level state now refuses. No valid program
+silently diverges any more. It also found:
+
+- **A function's NAME is a top-level binding the set misses.** `analyze_function`
+  declares each function's name in the enclosing scope, and impl methods are
+  analysed in the top-level scope, but `SemanticFunction` carries no binding id
+  for its own name. So `fnc: t64 g() { f = 5  return f }`, where `f` is a
+  function, still compiles a stray local on the JIT and prints 5, while the
+  interpreter rejects it (exit 1, "variable 'f' has not been declared"). This is
+  the JIT accepting an INVALID program, not miscompiling a valid one. The fix
+  belongs in semantic analysis — assigning to a function name should be a
+  compile error — and is the next item, not part of this change.
+- **The refusal is whole-program.** A function that is never called, or that
+  only writes top-level state nobody reads, now makes the whole program SKIP.
+  That is the cost of refusing up front; it ends when module-level storage
+  lands.
+- **The id carry-over (the companion commit) fixed two more silent bugs**, both
+  pre-existing:
+  - interpreter: an imported library's top-level variable shared its id with an
+    entry-module variable and was overwritten by it — `m.get()` printed the
+    entry's `100` instead of the library's `7`. `t_import_global_collision`
+    pins it.
+  - JIT: the monomorphizer keys generic templates by function id, so a
+    library's generic helper and an entry generic with the same id were
+    confused, and the entry's template was specialised for the library's call.
+    `ids_are_unique_across_modules` pins the id uniqueness; an end-to-end
+    fixture follows the library-helper fix below, because the interpreter
+    cannot yet run it.
+- **One output shifted without a collision being removed.** The JIT prints an
+  enum value as its raw program-wide variant id (the long-standing divergence
+  in §4), so enums declared in an imported module shift the entry's printed
+  numbers. Cosmetic: that output already differed from the interpreter, and
+  `when` matching is unaffected because each enum's ids stay contiguous.
+
+### Found alongside, not fixed here
+
+- **A library cannot call its own non-public functions** — on either backend.
+  `pub fnc: t64 api(n: t64) { helper(n) + 1 }` calling a private `helper` fails
+  with `variable 'helper' has not been declared` on the interpreter and
+  `function 'helper'` unresolved on the JIT. Pre-existing. It blocks any library
+  with internal helpers, so it is part of the multi-file step of milestone 1.
+- **An enum with more than 256 variants picks the wrong `when` arm on the JIT**,
+  silently: the tag is 8 bits and wraps. Pre-existing and rare; it needs either
+  a wider tag or an analysis-time limit.
+
 ### What still does not work, and is next
 
 On the JIT a function cannot read or write top-level variables or constants —
@@ -2488,9 +2538,10 @@ storage exists in the IR: milestone 1, "whole programs compile and agree".
 
 ### Fixtures
 
-Six, each with the interpreter's output as its expected output, so that when the
-JIT gains module-level storage they convert from SKIP to PASS rather than
-needing to be rewritten:
+Seven, each with the interpreter's output as its expected output, so that when
+the JIT gains module-level storage they convert from SKIP to PASS rather than
+needing to be rewritten — six for the miscompile, and `t_import_global_collision`
+for the interpreter bug the id carry-over fixed:
 
 ```
 t_global_write_from_fn       before: PARITY_FAIL (9 5)    now: SKIP
@@ -2499,6 +2550,7 @@ t_global_counter_from_fn     before: SKIP                 now: SKIP
 t_global_compound_from_fn    before: SKIP                 now: SKIP
 t_global_aggregate_from_fn   before: SKIP                 now: SKIP
 t_global_const_from_fn       before: SKIP                 now: SKIP
+t_import_global_collision    before: interp printed 100   now: interp 7, JIT SKIP
 ```
 
 If the miscompile ever returned, the first two would show PARITY_FAIL again.

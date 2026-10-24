@@ -1,0 +1,6 @@
+// Library half of t_import_global_collision: a module-level variable read by the
+// module's own function.
+counter: t64 = 7
+pub fnc: t64 get() {
+    return counter
+}
