@@ -1,0 +1,17 @@
+// Writes into a top-level array element and a top-level struct field from a
+// function, and reads of untouched neighbours.
+struct P { v: t64, w: t64 }
+g: [3: t64] = [1, 2, 3]
+let p;
+p = P { v: 10, w: 20 }
+fnc: t64 poke() {
+    g:[1] = 99
+    p.w = 77
+    return g:[0] + p.v
+}
+print(poke())
+print(g:[0])
+print(g:[1])
+print(g:[2])
+print(p.v)
+print(p.w)

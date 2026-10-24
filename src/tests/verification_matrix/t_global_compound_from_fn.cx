@@ -1,0 +1,11 @@
+// Compound assignment to top-level state, with asymmetric steps so a write
+// landing in the wrong place, or twice, is visible.
+acc: t64 = 100
+fnc: t64 add_some() {
+    acc += 7
+    acc -= 2
+    return acc
+}
+print(add_some())
+print(add_some())
+print(acc)

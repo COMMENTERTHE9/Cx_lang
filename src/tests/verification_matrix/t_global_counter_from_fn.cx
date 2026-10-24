@@ -1,0 +1,11 @@
+// Read-modify-write of top-level state across calls: the commonest real use.
+// Every call must see the previous call's write.
+calls: t64 = 0
+fnc: t64 tick() {
+    calls = calls + 1
+    return calls
+}
+print(tick())
+print(tick())
+print(tick())
+print(calls)

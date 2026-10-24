@@ -2413,3 +2413,92 @@ One unit test changed meaning rather than breaking: `rejects_non_expr_call_arg`
 asserted that a `.copy` argument is unlowerable. Semantic analysis now rejects
 that shape outright, so the test pins lowering's defence-in-depth refusal
 instead.
+
+---
+
+## 31. Assigning to a top-level variable inside a function miscompiled on the JIT
+
+*(Found 2026-10-24 during the restart review; fixed by the commit that introduces
+this entry — `top_level_bindings` and `top_level_state_unsupported` in
+`src/ir/lower.rs`.)*
+
+**Status: the silent miscompile is CLOSED — such functions are now refused.**
+Compiled functions still cannot use top-level state at all; that is the next
+step, below.
+
+### What happened
+
+```
+x: t64 = 5
+fnc: t64 set_x() {
+    x = 9
+    x
+}
+print(set_x())
+print(x)                  interpreter: 9 9      cranelift: 9 5   (both exit 0)
+```
+
+The JIT compiled `x = 9` into a brand-new LOCAL variable inside `set_x`. The
+function returned 9 because it read that local back, and the global silently
+stayed 5. The realistic form is a reset or initialise function that only writes:
+
+```
+total: t64 = 41
+fnc: t64 reset() { total = 0  return 1 }      interpreter: 1 0    cranelift: 1 41
+```
+
+Parity stayed at 0 PARITY_FAIL only because no fixture wrote a top-level
+variable from a function and then looked at it.
+
+### Why
+
+The IR has no module-level storage. Top-level values are SSA values inside
+`main` — §12 lowered top-level `const` this way deliberately, "rather than
+introducing a module-level global the IR has no concept of". A function body is
+lowered with only its own parameters bound, so a top-level binding is simply
+absent there.
+
+Every lowering path that LOOKS UP an absent binding already refused (exit 127):
+reads, compound assignment, element and field writes, handles, `.copy`
+arguments, interpolation. One path INSERTS instead — plain assignment to a
+binding — because that is also how a function's own `let x; x = ...` gets its
+first value. Under a global's binding id, that insert created the stray local.
+
+### The fix
+
+`top_level_bindings` collects every binding the program declares at top level
+(`Decl`, `TypedAssign`, `ConstDecl`), and function bodies are lowered with that
+set. Plain assignment, compound assignment and reads of a binding in it are
+refused with one message:
+
+```
+function 'reset' assigns to top-level variable 'total' — compiled code cannot reach top-level state yet
+```
+
+The match over statement kinds is exhaustive, deliberately: a declaration kind
+left out would be treated as a function-local, and the silent insert would come
+back for it.
+
+### What still does not work, and is next
+
+On the JIT a function cannot read or write top-level variables or constants —
+including a top-level `const` read inside a function body, which is how
+constants are normally used. That is refused, honestly, until module-level
+storage exists in the IR: milestone 1, "whole programs compile and agree".
+
+### Fixtures
+
+Six, each with the interpreter's output as its expected output, so that when the
+JIT gains module-level storage they convert from SKIP to PASS rather than
+needing to be rewritten:
+
+```
+t_global_write_from_fn       before: PARITY_FAIL (9 5)    now: SKIP
+t_global_reset_from_fn       before: PARITY_FAIL (1 41)   now: SKIP
+t_global_counter_from_fn     before: SKIP                 now: SKIP
+t_global_compound_from_fn    before: SKIP                 now: SKIP
+t_global_aggregate_from_fn   before: SKIP                 now: SKIP
+t_global_const_from_fn       before: SKIP                 now: SKIP
+```
+
+If the miscompile ever returned, the first two would show PARITY_FAIL again.
