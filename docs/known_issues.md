@@ -2532,8 +2532,10 @@ silently diverges any more. It also found:
   Pre-existing; it confines multi-file programs to libraries of leaf functions,
   so it is part of the multi-file step of milestone 1.
 - **An enum with more than 256 variants picks the wrong `when` arm on the JIT**,
-  silently: the tag is 8 bits and wraps. Pre-existing and rare; it needs either
-  a wider tag or an analysis-time limit.
+  silently: the tag is 8 bits and wraps. Pre-existing and rare. The JIT now
+  REFUSES such a program (`lower_program_inner`, fixture
+  `t_enum_over_256_variants`); the interpreter, which matches by name, is
+  unchanged. A wider tag would let it compile.
 
 ### What still does not work, and is next
 

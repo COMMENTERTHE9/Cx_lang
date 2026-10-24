@@ -1049,6 +1049,20 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 ),
             });
         }
+        // An enum value is an 8-bit tag in compiled code (`lower_type`), so an
+        // enum with more than 256 variants wraps: `Big::V256` compared equal
+        // to `Big::V0` and took its `when` arm — silently, where the
+        // interpreter (which matches by name) took the right one. Refuse until
+        // the tag can widen.
+        if declared.variants.len() > 256 {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "enum '{}' has {} variants — compiled code holds an enum in 8 bits, so at most 256 are supported yet",
+                    declared.name,
+                    declared.variants.len()
+                ),
+            });
+        }
     }
     // Struct types are identified by name alone as well, and every module's
     // code uses the one layout `build_struct_table` makes per name (the first
@@ -11889,5 +11903,38 @@ mod tests {
             enums: vec![],
         };
         assert!(lower_program(&reordered).is_ok(), "the same fields in another order must lower");
+    }
+
+    /// An enum is an 8-bit tag in compiled code; more than 256 variants would
+    /// wrap and alias, so lowering refuses them. 256 still fit.
+    #[test]
+    fn enum_with_more_than_256_variants_is_refused() {
+        use crate::frontend::semantic_types::{EnumId, EnumVariantId, SemanticEnum, SemanticEnumVariant};
+        let big = |count: u32| SemanticEnum {
+            id: EnumId(0),
+            name: "Big".to_string(),
+            declared_ty: crate::frontend::ast::Type::Enum("Big".to_string()),
+            variants: (0..count)
+                .map(|i| SemanticEnumVariant {
+                    id: EnumVariantId(i),
+                    name: format!("V{i}"),
+                    enum_id: EnumId(0),
+                    group: None,
+                })
+                .collect(),
+            groups: vec![],
+        };
+        let program = |count| SemanticProgram {
+            stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
+            enums: vec![big(count)],
+        };
+        assert!(lower_program(&program(256)).is_ok(), "256 variants fit in 8 bits");
+        match lower_program(&program(257)).expect_err("257 variants must be refused") {
+            LoweringError::UnsupportedSemanticConstruct { construct } => assert!(
+                construct.contains("enum 'Big' has 257 variants"),
+                "got: {construct}"
+            ),
+            other => panic!("expected an unsupported-construct refusal, got {other:?}"),
+        }
     }
 }
