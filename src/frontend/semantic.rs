@@ -3247,7 +3247,34 @@ fn normalize_enum_type(ty: Type, enums: &std::collections::HashSet<String>) -> T
 fn normalize_enum_param(p: ParamKind, enums: &std::collections::HashSet<String>) -> ParamKind {
     match p {
         ParamKind::Typed(name, ty) => ParamKind::Typed(name, normalize_enum_type(ty, enums)),
+        // `.copy` parameters keep their declared type too; skipping them left
+        // `xs.copy: [3: Color]` a struct-typed array, so assigning a `Color`
+        // into it failed with "expected Color, got Color".
+        ParamKind::Copy(name, ty) => ParamKind::Copy(name, ty.map(|t| normalize_enum_type(t, enums))),
+        ParamKind::CopyFree(name, ty) => {
+            ParamKind::CopyFree(name, ty.map(|t| normalize_enum_type(t, enums)))
+        }
         other => other,
+    }
+}
+
+/// The enum names in scope inside a generic declaration: its own type
+/// parameters shadow enums of the same name, so in `fnc: T <T> id(x: T)` every
+/// `T` stays the type parameter even when an enum `T` is visible — declared in
+/// this module or, since imported enums became visible to annotations, in a
+/// module it imports.
+fn enums_without_type_params<'a>(
+    enums: &'a std::collections::HashSet<String>,
+    type_params: &[String],
+) -> std::borrow::Cow<'a, std::collections::HashSet<String>> {
+    if type_params.iter().any(|tp| enums.contains(tp)) {
+        let mut shadowed = enums.clone();
+        for tp in type_params {
+            shadowed.remove(tp);
+        }
+        std::borrow::Cow::Owned(shadowed)
+    } else {
+        std::borrow::Cow::Borrowed(enums)
     }
 }
 
@@ -3280,10 +3307,14 @@ fn normalize_enum_when_arm(arm: WhenArm, enums: &std::collections::HashSet<Strin
 // left untouched.
 fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) -> Stmt {
     match stmt {
-        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
-            name, type_params, is_pub, pos,
-            fields: fields.into_iter().map(|(f, t)| (f, normalize_enum_type(t, enums))).collect(),
-        },
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => {
+            let in_scope = enums_without_type_params(enums, &type_params);
+            let enums = &*in_scope;
+            Stmt::StructDef {
+                fields: fields.into_iter().map(|(f, t)| (f, normalize_enum_type(t, enums))).collect(),
+                name, type_params, is_pub, pos,
+            }
+        }
         Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
             name, is_pub, pos,
             aliases: aliases.into_iter().map(|(a, t)| (a, normalize_enum_type(t, enums))).collect(),
@@ -3323,13 +3354,17 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
             name, expr, pos_type, ty: normalize_enum_type(ty, enums),
         },
-        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
-            name, type_params, type_bounds, is_pub, macros, pos,
-            params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
-            ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
-            body: normalize_enum_stmts(body, enums),
-            ret_expr,
-        },
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => {
+            let in_scope = enums_without_type_params(enums, &type_params);
+            let enums = &*in_scope;
+            Stmt::FuncDef {
+                params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
+                body: normalize_enum_stmts(body, enums),
+                name, type_params, type_bounds, is_pub, macros, pos,
+                ret_expr,
+            }
+        }
         Stmt::Block { stmts, _pos } => Stmt::Block { stmts: normalize_enum_stmts(stmts, enums), _pos },
         Stmt::While { label, cond, body, pos } => Stmt::While { label, cond, body: normalize_enum_stmts(body, enums), pos },
         Stmt::For { label, var, start, end, inclusive, body, pos } => Stmt::For {

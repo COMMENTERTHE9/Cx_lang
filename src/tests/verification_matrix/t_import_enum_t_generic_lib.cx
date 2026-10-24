@@ -1,0 +1,8 @@
+// Library that imports `enum T` and declares a generic function over its own
+// type parameter `T`, for t_import_generic_enum_shadow.
+#![imports]
+et: use "./t_import_enum_t_lib"
+
+pub fnc: T <T> ident(x: T) {
+    x
+}

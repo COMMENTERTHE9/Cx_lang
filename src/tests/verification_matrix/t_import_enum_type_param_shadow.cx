@@ -1,0 +1,14 @@
+// An imported enum named `T` must not take over a local generic function's type
+// parameter `T`. Once imported enums became visible to annotations (§32), this
+// was rejected on both backends with "expected T, got numeric literal" — a
+// regression caught in review before merge. The enum still works through the
+// import.
+#![imports]
+et: use "./t_import_enum_t_lib"
+
+fnc: T <T> ident(x: T) {
+    x
+}
+
+print(ident(5))
+print(et.code(et.b()))
