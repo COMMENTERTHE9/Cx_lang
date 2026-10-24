@@ -4310,6 +4310,10 @@ pub fn analyze_resolved_program(
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
     let mut ids = IdCounters::default();
+    // Enum names each module declares. Modules are processed dependencies-first,
+    // so a module's imports are always already in this map.
+    let mut declared_enums: HashMap<crate::frontend::resolver::ModuleId, std::collections::HashSet<String>> =
+        HashMap::new();
 
     for &module_id in &resolved.topo_order {
         let file = match resolved.files.get(&module_id) {
@@ -4332,19 +4336,45 @@ pub fn analyze_resolved_program(
         analyzer.gene_defs = gene_phen_registry.genes.clone();
         analyzer.phen_keys = gene_phen_registry.phen_keys.clone();
 
-        // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
-        // every `Type::Struct(name)` annotation that names an enum to
-        // `Type::Enum(name)` before any analysis. The parser emits all bare-name
-        // annotations as `Type::Struct`, so without this an enum used in a
-        // parameter/return/typed-binding position would not unify with enum
-        // values. Cross-module (imported) enum annotations stay `Struct` for now;
-        // resolving aliased enum types is a 0.3 follow-up.
-        let enum_names: std::collections::HashSet<String> = file.program.stmts.iter()
+        // Enum pre-pass (tracker #019): collect the enum names this module can
+        // see, then rewrite every `Type::Struct(name)` annotation that names one
+        // to `Type::Enum(name)` before any analysis. The parser emits all
+        // bare-name annotations as `Type::Struct`, so without this an enum used
+        // in a parameter/return/typed-binding position would not unify with enum
+        // values.
+        //
+        // The names come from this module AND the modules it imports directly.
+        // They used to come from this file only, so a library annotating
+        // `c: Color` with `Color` declared in a module it imports saw a struct
+        // named Color. That was invisible while calls into imported modules went
+        // unchecked; once they were checked like local calls (§32), it rejected
+        // valid programs with "expected Color, got Color". Names do not travel
+        // further: a module that imports `relay`, which imports `colors`, cannot
+        // name `Color` without importing `colors` itself — the conservative
+        // choice, since widening visibility later breaks nothing and narrowing
+        // it would. A module's own struct of the same name still wins: its
+        // annotation keeps meaning the struct.
+        let own_structs: std::collections::HashSet<String> = file.program.stmts.iter()
+            .filter_map(|s| match s {
+                Stmt::StructDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let own_enums: std::collections::HashSet<String> = file.program.stmts.iter()
             .filter_map(|s| match s {
                 Stmt::EnumDef { name, .. } => Some(name.clone()),
                 _ => None,
             })
             .collect();
+        let mut enum_names = own_enums.clone();
+        for edge in resolved.edges.iter().filter(|e| e.importer == module_id) {
+            if let Some(theirs) = declared_enums.get(&edge.importee) {
+                enum_names.extend(
+                    theirs.iter().filter(|name| !own_structs.contains(*name)).cloned(),
+                );
+            }
+        }
+        declared_enums.insert(module_id, own_enums);
         let normalized_stmts: Vec<Stmt> = file.program.stmts.iter()
             .map(|s| normalize_enum_stmt(s.clone(), &enum_names))
             .collect();

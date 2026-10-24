@@ -1,0 +1,14 @@
+// A library that names `Color` — declared in a module it imports — in its own
+// parameter annotations. Enum names used to be resolved per file, so here
+// `Color` read as a struct; once imported calls were type-checked that rejected
+// valid programs with "expected Color, got Color".
+#![imports]
+col: use "./t_import_enum_colors_lib"
+
+pub fnc: t32 relay(c: Color) {
+    col.rank(c)
+}
+
+pub fnc: t64 relay2(c: Color, k: t64) {
+    k
+}
