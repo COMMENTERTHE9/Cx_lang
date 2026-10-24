@@ -1017,6 +1017,26 @@ fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> Lowe
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
     let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
 
+    // Two modules may each declare an enum of the same name. Enum TYPES are
+    // identified by name alone (`SemanticType::Enum(name)`), so analysis treats
+    // the two as one type, while each module numbers its own variants by
+    // declaration order. A value of one passed where the other is expected then
+    // matches by variant NAME on the interpreter and by TAG here: `Red` from
+    // `enum Color { Green, Red }` landed on the other `Color`'s `Green` arm —
+    // silently different answers. Until enum types carry their declaration's
+    // identity, compiled code refuses such programs rather than guess.
+    let mut enum_names = HashSet::new();
+    for declared in &program.enums {
+        if !enum_names.insert(declared.name.as_str()) {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "enum '{}' is declared in more than one module — compiled code cannot tell them apart yet",
+                    declared.name
+                ),
+            });
+        }
+    }
+
     // known-issues §19: replace every generic call with a call to a concrete
     // specialization, and append those specializations, BEFORE the signature
     // table is built. The ordering is the point: `ret_struct_of` reads
@@ -2731,6 +2751,15 @@ fn lower_expr(
             let lowered = lower_expr(expr, ctx, active)?;
             let from_ty = lower_type(from)?;
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
+            // Cranelift has no f64 → i128 conversion (`fcvt_to_sint_sat` stops at
+            // 64 bits, and saturating through i64 would be wrong past its range):
+            // the backend used to PANIC on it. Refuse instead (known_issues §33).
+            if from_ty == IrType::F64 && to_ty == IrType::I128 {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: "converting f64 to t128 — compiled code has no such conversion yet"
+                        .to_string(),
+                });
+            }
             // Skip no-op casts only after validating source type invariants.
             if from_ty == to_ty {
                 return Ok(LoweredValue { value: lowered.value, ty: to_ty });
@@ -11539,5 +11568,32 @@ mod tests {
             sc_id,
             "The sole ConstInt(Bool, 1) must reside in the SC block"
         );
+    }
+
+    /// Two modules declaring the same enum name are one type to analysis but
+    /// number their variants independently, so compiled code would match a
+    /// value of one against the other's arms by tag while the interpreter
+    /// matches by name. Lowering refuses the program instead (known_issues §32).
+    #[test]
+    fn same_enum_name_declared_by_two_modules_is_refused() {
+        use crate::frontend::semantic_types::{EnumId, SemanticEnum};
+        let color = |id: u32| SemanticEnum {
+            id: EnumId(id),
+            name: "Color".to_string(),
+            declared_ty: crate::frontend::ast::Type::Enum("Color".to_string()),
+            variants: vec![],
+            groups: vec![],
+        };
+        let program = SemanticProgram {
+            stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
+            enums: vec![color(0), color(1)],
+        };
+        match lower_program(&program).expect_err("two enums named Color must be refused") {
+            LoweringError::UnsupportedSemanticConstruct { construct } => assert!(
+                construct.contains("enum 'Color' is declared in more than one module"),
+                "got: {construct}"
+            ),
+            other => panic!("expected an unsupported-construct refusal, got {other:?}"),
+        }
     }
 }

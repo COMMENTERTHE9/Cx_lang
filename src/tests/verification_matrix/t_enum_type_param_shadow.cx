@@ -1,0 +1,21 @@
+// A generic function's type parameter shadows an enum of the same name: inside
+// `fnc: T <T> ident(x: T)` every `T` is the type parameter. Enum annotation
+// normalization used to rewrite them to the enum, so `ident(5)` was rejected
+// ("expected T, got numeric literal") on both backends. The enum itself is
+// still usable outside the generic function.
+enum T { A, B }
+
+fnc: T <T> ident(x: T) {
+    x
+}
+
+fnc: t32 code(v: T) {
+    when v {
+        T::A => 1,
+        T::B => 2,
+        _ => 0,
+    }
+}
+
+print(ident(5))
+print(code(T::B))

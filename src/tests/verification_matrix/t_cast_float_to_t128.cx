@@ -1,0 +1,11 @@
+// A float narrowed to t128: the interpreter truncates (Rust `as i128`). The JIT
+// has no f64 -> i128 conversion and used to PANIC in Cranelift ("Invalid
+// OperandSize: 16"); it now refuses cleanly (SKIP).
+v: f64 = 300.7
+x: t128 = v
+y: t64 = x
+print(y)
+w: f64 = 0.0 - 2.9
+z: t128 = w
+y2: t64 = z
+print(y2)

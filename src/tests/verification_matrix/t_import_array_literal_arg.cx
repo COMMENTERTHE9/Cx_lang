@@ -1,0 +1,11 @@
+// Array-literal arguments to imported functions with narrow element types. The
+// imported-call path used to skip the element hint and narrowing that local
+// calls get, so the literal's elements stayed 64-bit and the JIT read them at
+// the parameter's width — silently wrong: asum printed 201, asecond 0 and
+// athird 0.
+#![imports]
+m: use "./t_import_array_literal_arg_lib"
+
+print(m.asum([1, 2, 3]))
+print(m.asecond([300, 9]))
+print(m.athird([1, 2, 3]))

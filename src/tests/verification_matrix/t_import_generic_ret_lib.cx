@@ -1,0 +1,4 @@
+// Generic library function for t_import_generic_ret.
+pub fnc: T <T> id(x: T) {
+    x
+}

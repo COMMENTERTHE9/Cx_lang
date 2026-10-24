@@ -1,0 +1,21 @@
+// An imported generic call has the type its arguments bind, as a local generic
+// call does. The imported path used to return the raw `T`, so valid programs
+// were rejected: `m.id(2) + m.id(3)` with "arithmetic requires numeric
+// operands, got T and T", and `q.x` with "'T' is an unbounded type parameter".
+// The JIT does not compile calls to imported generic functions yet (SKIP).
+#![imports]
+m: use "./t_import_generic_ret_lib"
+
+struct P { x: t32, y: t32 }
+
+s: str = "ab"
+let t;
+t = m.id(s)
+print(t)
+let u;
+u = m.id(2) + m.id(3)
+print(u)
+p: P = P { x: 3, y: 4 }
+let q;
+q = m.id(p)
+print(q.x + q.y)

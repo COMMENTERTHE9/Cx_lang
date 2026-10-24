@@ -1,0 +1,15 @@
+// Library declaring an enum named like a common type parameter, for
+// t_import_enum_type_param_shadow and t_import_generic_enum_shadow.
+enum T { A, B }
+
+pub fnc: T b() {
+    T::B
+}
+
+pub fnc: t32 code(v: T) {
+    when v {
+        T::A => 1,
+        T::B => 2,
+        _ => 0,
+    }
+}

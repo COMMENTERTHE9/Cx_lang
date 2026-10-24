@@ -1,0 +1,3 @@
+#! interp=diagnostic jit=diagnostic
+# Wrong argument count to an imported function is a semantic error on both
+# backends.

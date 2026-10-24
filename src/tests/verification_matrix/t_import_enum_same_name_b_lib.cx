@@ -1,0 +1,16 @@
+// The other library declaring `enum Color`, in a different order, for
+// t_import_enum_same_name.
+enum Color { Green, Red, Blue }
+
+pub fnc: Color red() {
+    Color::Red
+}
+
+pub fnc: t32 code(c: Color) {
+    when c {
+        Color::Green => 1,
+        Color::Red => 2,
+        Color::Blue => 3,
+        _ => 0,
+    }
+}

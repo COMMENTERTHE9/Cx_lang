@@ -1,0 +1,37 @@
+// A float narrowed to t8 or t16 must follow the interpreter's Rust `as`
+// semantics: truncate toward zero, saturate at the target type's bounds, NaN to
+// 0. The JIT used `fcvt_to_sint_sat` straight to the narrow type, which
+// Cranelift supports only for 32/64-bit targets — it panicked (exit 2) instead
+// of agreeing or refusing. Covers truncation, both saturation bounds, negatives,
+// infinities, NaN, and finite values far outside t32.
+fnc: t8 to8(x: t8) {
+    x
+}
+fnc: t16 to16(x: t16) {
+    x
+}
+print(to8(-2.9))
+print(to8(2.5))
+print(to8(300.5))
+print(to8(-300.0))
+print(to16(40000.0))
+print(to16(-40000.0))
+print(to16(-1234.99))
+
+// Float division by zero is a runtime error on the interpreter, so build the
+// infinities by overflow: 1e10 to the 32nd power exceeds f64's range.
+a: f64 = 10000000000.0
+b: f64 = a * a * a * a
+c: f64 = b * b
+d: f64 = c * c
+inf: f64 = d * d
+ninf: f64 = 0.0 - inf
+nan: f64 = inf - inf
+print(to8(inf))
+print(to8(ninf))
+print(to16(inf))
+print(to16(ninf))
+print(to8(nan))
+print(to16(nan))
+print(to8(d))
+print(to16(0.0 - d))

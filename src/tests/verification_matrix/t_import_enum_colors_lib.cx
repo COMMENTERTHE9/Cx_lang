@@ -1,0 +1,16 @@
+// Library declaring an enum, used by t_import_enum_relay (directly and through
+// a second library).
+enum Color { Red, Green, Blue }
+
+pub fnc: Color green() {
+    Color::Green
+}
+
+pub fnc: t32 rank(c: Color) {
+    when c {
+        Color::Red => 10,
+        Color::Green => 20,
+        Color::Blue => 30,
+        _ => 0,
+    }
+}

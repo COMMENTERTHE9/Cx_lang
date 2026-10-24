@@ -27,6 +27,11 @@ struct VarInfo {
     initialized: bool,
 }
 
+/// A user-function call's checked arguments, its return type with type
+/// parameters substituted, and the concrete type arguments the monomorphizer
+/// needs — see `check_user_call`.
+type CheckedCall = (Vec<SemanticCallArg>, SemanticType, Vec<SemanticType>);
+
 #[derive(Debug, Clone)]
 struct FunctionInfo {
     id: FunctionId,
@@ -2042,38 +2047,28 @@ Expr::Unary(op, inner, pos) => {
                 // Check if instance is a module alias — if so resolve from ExportTable
                 if let Some(export_table) = self.module_aliases.get(instance.as_str()) {
                     if let Some(func) = export_table.functions.get(method.as_str()) {
-                        let ret_ty = func.return_ty.clone().unwrap_or(SemanticType::Void);
-                        self.check_copy_arg_contract(args, Some(&func.params), method, false, *pos)?;
-                        let mut semantic_args: Vec<SemanticCallArg> = Vec::new();
-                        for arg in args {
-                            match arg {
-                                CallArg::Expr(expr) => {
-                                    let sem_expr = self.analyze_expr(expr)?;
-                                    semantic_args.push(SemanticCallArg::Expr(sem_expr));
-                                }
-                                CallArg::Copy(name) => {
-                                    let binding = self.lookup_var(name)
-                                        .map(|i| i.binding)
-                                        .unwrap_or(BindingId(u32::MAX));
-                                    semantic_args.push(SemanticCallArg::Copy { binding, name: name.clone() });
-                                }
-                                CallArg::CopyFree(name) => {
-                                    let binding = self.lookup_var(name)
-                                        .map(|i| i.binding)
-                                        .unwrap_or(BindingId(u32::MAX));
-                                    semantic_args.push(SemanticCallArg::CopyFree { binding, name: name.clone() });
-                                }
-                                CallArg::CopyInto(names) => {
-                                    let resolved = names.iter().map(|n| {
-                                        let binding = self.lookup_var(n)
-                                            .map(|i| i.binding)
-                                            .unwrap_or(BindingId(u32::MAX));
-                                        ResolvedBinding { binding, name: n.clone() }
-                                    }).collect();
-                                    semantic_args.push(SemanticCallArg::CopyInto(resolved));
-                                }
-                            }
-                        }
+                        // Checked exactly like a local call — see
+                        // `check_user_call`. The exported function's real
+                        // signature is the one to check against.
+                        let info = FunctionInfo {
+                            id: func.id,
+                            params: func.params.clone(),
+                            ret_ty: func.return_ty.clone(),
+                            type_params: func.type_params.clone(),
+                            // The export table does not carry gene bounds, so a
+                            // bounded generic called across a module boundary
+                            // is not bound-checked. That was already true; it is
+                            // recorded in known_issues §32 rather than widened
+                            // into this change.
+                            type_bounds: Vec::new(),
+                        };
+                        let display = format!("{}.{}", instance, method);
+                        let (semantic_args, ret_ty, _) =
+                            self.check_user_call(&display, &info, args, *pos)?;
+                        // Unchanged from before: an imported call carries no
+                        // function id and no type arguments, so it is never
+                        // monomorphized — cross-module generics are a separate
+                        // gap (§32).
                         let mangled = format!("{}${}", instance, method);
                         return Ok(SemanticExpr {
                             ty: ret_ty,
@@ -2528,6 +2523,39 @@ Expr::Unary(op, inner, pos) => {
         }
 
         let function = self.funcs.get(name).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
+        let (semantic_args, ret_ty, call_type_args) =
+            self.check_user_call(name, &function, args, pos)?;
+        Ok(SemanticExpr {
+            ty: ret_ty,
+            kind: SemanticExprKind::Call {
+                callee: name.to_string(),
+                function: function.id,
+                args: semantic_args,
+                type_args: call_type_args,
+            },
+        })
+    }
+
+    /// THE argument check for a call to a user-defined function: arity, the
+    /// `.copy` contract, type-parameter inference, gene bounds, and each
+    /// argument's type, range and narrowing to the parameter's type.
+    ///
+    /// Local calls and calls through an import alias (`math.add(1, 2)`) both
+    /// route here. The import path used to analyse each argument and stop, so a
+    /// call into another module was never compared with the callee's
+    /// signature: an extra argument was silently dropped, an out-of-range
+    /// literal silently wrapped, a wrong type failed at runtime inside the
+    /// callee, and nothing was narrowed — which is why the JIT refused every
+    /// imported call ("expected I32, got I64").
+    ///
+    /// `name` is used only in diagnostics.
+    fn check_user_call(
+        &mut self,
+        name: &str,
+        function: &FunctionInfo,
+        args: &[CallArg],
+        pos: usize,
+    ) -> Result<CheckedCall, SemanticError> {
 
         if args.len() != function.params.len() {
             return Err(sem_err!(pos, "function '{}' expects {} argument(s), got {}", name, function.params.len(), args.len()));
@@ -2643,7 +2671,7 @@ Expr::Unary(op, inner, pos) => {
         }
 
         let ret_ty = substitute_type_params(
-            function.ret_ty.unwrap_or(SemanticType::Void),
+            function.ret_ty.clone().unwrap_or(SemanticType::Void),
             &type_param_map,
         );
 
@@ -2667,15 +2695,7 @@ Expr::Unary(op, inner, pos) => {
             .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
             .collect();
 
-        Ok(SemanticExpr {
-            ty: ret_ty,
-            kind: SemanticExprKind::Call {
-                callee: name.to_string(),
-                function: function.id,
-                args: semantic_args,
-                type_args: call_type_args,
-            },
-        })
+        Ok((semantic_args, ret_ty, call_type_args))
     }
 
     // Analyze `expr` while hinting the declared element type of an expected array
@@ -3227,7 +3247,34 @@ fn normalize_enum_type(ty: Type, enums: &std::collections::HashSet<String>) -> T
 fn normalize_enum_param(p: ParamKind, enums: &std::collections::HashSet<String>) -> ParamKind {
     match p {
         ParamKind::Typed(name, ty) => ParamKind::Typed(name, normalize_enum_type(ty, enums)),
+        // `.copy` parameters keep their declared type too; skipping them left
+        // `xs.copy: [3: Color]` a struct-typed array, so assigning a `Color`
+        // into it failed with "expected Color, got Color".
+        ParamKind::Copy(name, ty) => ParamKind::Copy(name, ty.map(|t| normalize_enum_type(t, enums))),
+        ParamKind::CopyFree(name, ty) => {
+            ParamKind::CopyFree(name, ty.map(|t| normalize_enum_type(t, enums)))
+        }
         other => other,
+    }
+}
+
+/// The enum names in scope inside a generic declaration: its own type
+/// parameters shadow enums of the same name, so in `fnc: T <T> id(x: T)` every
+/// `T` stays the type parameter even when an enum `T` is visible — declared in
+/// this module or, since imported enums became visible to annotations, in a
+/// module it imports.
+fn enums_without_type_params<'a>(
+    enums: &'a std::collections::HashSet<String>,
+    type_params: &[String],
+) -> std::borrow::Cow<'a, std::collections::HashSet<String>> {
+    if type_params.iter().any(|tp| enums.contains(tp)) {
+        let mut shadowed = enums.clone();
+        for tp in type_params {
+            shadowed.remove(tp);
+        }
+        std::borrow::Cow::Owned(shadowed)
+    } else {
+        std::borrow::Cow::Borrowed(enums)
     }
 }
 
@@ -3260,10 +3307,14 @@ fn normalize_enum_when_arm(arm: WhenArm, enums: &std::collections::HashSet<Strin
 // left untouched.
 fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) -> Stmt {
     match stmt {
-        Stmt::StructDef { name, type_params, fields, is_pub, pos } => Stmt::StructDef {
-            name, type_params, is_pub, pos,
-            fields: fields.into_iter().map(|(f, t)| (f, normalize_enum_type(t, enums))).collect(),
-        },
+        Stmt::StructDef { name, type_params, fields, is_pub, pos } => {
+            let in_scope = enums_without_type_params(enums, &type_params);
+            let enums = &*in_scope;
+            Stmt::StructDef {
+                fields: fields.into_iter().map(|(f, t)| (f, normalize_enum_type(t, enums))).collect(),
+                name, type_params, is_pub, pos,
+            }
+        }
         Stmt::ImplBlock { name, aliases, methods, is_pub, pos } => Stmt::ImplBlock {
             name, is_pub, pos,
             aliases: aliases.into_iter().map(|(a, t)| (a, normalize_enum_type(t, enums))).collect(),
@@ -3303,13 +3354,17 @@ fn normalize_enum_stmt(stmt: Stmt, enums: &std::collections::HashSet<String>) ->
         Stmt::TypedAssign { name, ty, expr, pos_type } => Stmt::TypedAssign {
             name, expr, pos_type, ty: normalize_enum_type(ty, enums),
         },
-        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => Stmt::FuncDef {
-            name, type_params, type_bounds, is_pub, macros, pos,
-            params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
-            ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
-            body: normalize_enum_stmts(body, enums),
-            ret_expr,
-        },
+        Stmt::FuncDef { name, type_params, type_bounds, params, ret_ty, body, ret_expr, is_pub, macros, pos } => {
+            let in_scope = enums_without_type_params(enums, &type_params);
+            let enums = &*in_scope;
+            Stmt::FuncDef {
+                params: params.into_iter().map(|p| normalize_enum_param(p, enums)).collect(),
+                ret_ty: ret_ty.map(|t| normalize_enum_type(t, enums)),
+                body: normalize_enum_stmts(body, enums),
+                name, type_params, type_bounds, is_pub, macros, pos,
+                ret_expr,
+            }
+        }
         Stmt::Block { stmts, _pos } => Stmt::Block { stmts: normalize_enum_stmts(stmts, enums), _pos },
         Stmt::While { label, cond, body, pos } => Stmt::While { label, cond, body: normalize_enum_stmts(body, enums), pos },
         Stmt::For { label, var, start, end, inclusive, body, pos } => Stmt::For {
@@ -4290,6 +4345,10 @@ pub fn analyze_resolved_program(
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
     let mut ids = IdCounters::default();
+    // Enum names each module declares. Modules are processed dependencies-first,
+    // so a module's imports are always already in this map.
+    let mut declared_enums: HashMap<crate::frontend::resolver::ModuleId, std::collections::HashSet<String>> =
+        HashMap::new();
 
     for &module_id in &resolved.topo_order {
         let file = match resolved.files.get(&module_id) {
@@ -4312,19 +4371,45 @@ pub fn analyze_resolved_program(
         analyzer.gene_defs = gene_phen_registry.genes.clone();
         analyzer.phen_keys = gene_phen_registry.phen_keys.clone();
 
-        // Enum pre-pass (tracker #019): collect declared enum names, then rewrite
-        // every `Type::Struct(name)` annotation that names an enum to
-        // `Type::Enum(name)` before any analysis. The parser emits all bare-name
-        // annotations as `Type::Struct`, so without this an enum used in a
-        // parameter/return/typed-binding position would not unify with enum
-        // values. Cross-module (imported) enum annotations stay `Struct` for now;
-        // resolving aliased enum types is a 0.3 follow-up.
-        let enum_names: std::collections::HashSet<String> = file.program.stmts.iter()
+        // Enum pre-pass (tracker #019): collect the enum names this module can
+        // see, then rewrite every `Type::Struct(name)` annotation that names one
+        // to `Type::Enum(name)` before any analysis. The parser emits all
+        // bare-name annotations as `Type::Struct`, so without this an enum used
+        // in a parameter/return/typed-binding position would not unify with enum
+        // values.
+        //
+        // The names come from this module AND the modules it imports directly.
+        // They used to come from this file only, so a library annotating
+        // `c: Color` with `Color` declared in a module it imports saw a struct
+        // named Color. That was invisible while calls into imported modules went
+        // unchecked; once they were checked like local calls (§32), it rejected
+        // valid programs with "expected Color, got Color". Names do not travel
+        // further: a module that imports `relay`, which imports `colors`, cannot
+        // name `Color` without importing `colors` itself — the conservative
+        // choice, since widening visibility later breaks nothing and narrowing
+        // it would. A module's own struct of the same name still wins: its
+        // annotation keeps meaning the struct.
+        let own_structs: std::collections::HashSet<String> = file.program.stmts.iter()
+            .filter_map(|s| match s {
+                Stmt::StructDef { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let own_enums: std::collections::HashSet<String> = file.program.stmts.iter()
             .filter_map(|s| match s {
                 Stmt::EnumDef { name, .. } => Some(name.clone()),
                 _ => None,
             })
             .collect();
+        let mut enum_names = own_enums.clone();
+        for edge in resolved.edges.iter().filter(|e| e.importer == module_id) {
+            if let Some(theirs) = declared_enums.get(&edge.importee) {
+                enum_names.extend(
+                    theirs.iter().filter(|name| !own_structs.contains(*name)).cloned(),
+                );
+            }
+        }
+        declared_enums.insert(module_id, own_enums);
         let normalized_stmts: Vec<Stmt> = file.program.stmts.iter()
             .map(|s| normalize_enum_stmt(s.clone(), &enum_names))
             .collect();
@@ -4589,6 +4674,95 @@ print(result + result2)
         assert_eq!(distinct.len(), bindings.len(), "binding ids collide across modules: {bindings:?}");
         let distinct_fns: HashSet<_> = functions.iter().collect();
         assert_eq!(distinct_fns.len(), functions.len(), "function ids collide across modules: {functions:?}");
+    }
+
+    /// Two modules — a library `lib_src` imported by `entry_src` as `math` —
+    /// analysed together. The entry needs no `#![imports]` block here: the
+    /// alias comes from the resolved graph's edge, as it does in the real
+    /// pipeline.
+    fn analyze_with_library(
+        lib_src: &str,
+        entry_src: &str,
+    ) -> Result<SemanticProgram, Vec<SemanticError>> {
+        use crate::frontend::resolver::{
+            parse_source, ImportEdge, ModuleId, ResolvedFile, ResolvedProgram,
+        };
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let lib = parse_source(lib_src).expect("library parses");
+        let entry = parse_source(entry_src).expect("entry parses");
+        let (lib_id, entry_id) = (ModuleId(0), ModuleId(1));
+        let mut files = HashMap::new();
+        files.insert(lib_id, ResolvedFile {
+            id: lib_id,
+            path: PathBuf::from("lib.cx"),
+            program: lib,
+            imports: vec![],
+        });
+        files.insert(entry_id, ResolvedFile {
+            id: entry_id,
+            path: PathBuf::from("main.cx"),
+            program: entry,
+            imports: vec![],
+        });
+        analyze_resolved_program(&ResolvedProgram {
+            entry: entry_id,
+            files,
+            edges: vec![ImportEdge {
+                importer: entry_id,
+                importee: lib_id,
+                alias: "math".to_string(),
+                pos: 0,
+            }],
+            topo_order: vec![lib_id, entry_id],
+        })
+    }
+
+    const ADD_LIB: &str = "pub fnc: t32 add(a: t32, b: t32) {\n    a + b\n}\n";
+
+    /// The analysis errors for `entry` calling `math.add`, joined, or a panic
+    /// if analysis accepted it.
+    fn imported_call_error(entry: &str) -> String {
+        match analyze_with_library(ADD_LIB, entry) {
+            Ok(_) => panic!("expected a semantic error for {entry:?}"),
+            Err(errs) => errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "),
+        }
+    }
+
+    // The three `t_import_arg_*_reject` fixtures assert only that both backends
+    // reject with a diagnostic; the harness has no way to say WHICH one, so a
+    // fixture would also pass on an unrelated rejection — its import breaking,
+    // say. These pin each check's message at the call site, on an inline copy of
+    // the library; they do not prove the fixtures reach that check.
+    #[test]
+    fn imported_call_wrong_arity_is_rejected_at_the_call() {
+        let msg = imported_call_error("print(math.add(1, 2, 3))\n");
+        assert!(msg.contains("'math.add' expects 2 argument(s), got 3"), "got: {msg}");
+    }
+
+    #[test]
+    fn imported_call_out_of_range_literal_is_rejected_at_the_call() {
+        let msg = imported_call_error("print(math.add(9999999999, 1))\n");
+        assert!(
+            msg.contains("integer literal 9999999999 out of range for t32"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn imported_call_wrong_type_is_rejected_at_the_call() {
+        let msg = imported_call_error("print(math.add(true, 20))\n");
+        assert!(
+            msg.contains("argument 1 to 'math.add': expected t32, got bool"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn imported_call_with_correct_arguments_is_accepted() {
+        let result = analyze_with_library(ADD_LIB, "print(math.add(10, 20))\n");
+        assert!(result.is_ok(), "rejected a correct imported call: {:?}", result.err());
     }
 
     /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must

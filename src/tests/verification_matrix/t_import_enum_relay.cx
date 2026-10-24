@@ -1,0 +1,12 @@
+// An enum value from one module passed through a second module's functions.
+// Before the enum-visibility fix this was a false rejection once imported calls
+// were checked; before THAT, the JIT refused it. Both backends now agree.
+#![imports]
+r: use "./t_import_enum_relay_lib"
+col: use "./t_import_enum_colors_lib"
+
+let c;
+c = col.green()
+print(r.relay(c))
+print(r.relay2(c, 7))
+print(col.rank(c))

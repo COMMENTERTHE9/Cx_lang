@@ -1630,8 +1630,39 @@ fn compile_ir_function(
                         // Integer → F64: signed integer to float conversion.
                         builder.ins().fcvt_from_sint(to_cl, src_val)
                     } else if *from == IrType::F64 {
-                        // F64 → integer: saturating conversion (matches Rust `as` semantics).
-                        builder.ins().fcvt_to_sint_sat(to_cl, src_val)
+                        // F64 → integer: saturating conversion, matching the
+                        // interpreter's Rust `as` (truncate toward zero, clamp to the
+                        // target's range, NaN → 0). Cranelift's `fcvt_to_sint_sat`
+                        // only supports 32- and 64-bit destinations and PANICS for
+                        // narrower ones, so a t8/t16 target saturates to I32 first,
+                        // clamps to the narrow type's bounds, then reduces. That is
+                        // exactly `as i8` / `as i16`: anything outside i32 has already
+                        // saturated to i32's bounds, which the clamp maps to the
+                        // narrow type's bounds.
+                        let to_bits = to_cl.bits();
+                        if to_bits == 128 {
+                            // Lowering refuses f64 → t128 (no Cranelift conversion);
+                            // never panic if such a cast reaches codegen anyway.
+                            return Err(JitExecutionError::UnsupportedConstruct {
+                                construct: "Cast F64 → I128".to_string(),
+                            });
+                        }
+                        if to_bits == 8 || to_bits == 16 {
+                            use cranelift_codegen::ir::types;
+                            let (lo, hi) = if to_bits == 8 {
+                                (i8::MIN as i64, i8::MAX as i64)
+                            } else {
+                                (i16::MIN as i64, i16::MAX as i64)
+                            };
+                            let wide = builder.ins().fcvt_to_sint_sat(types::I32, src_val);
+                            let lo_v = builder.ins().iconst(types::I32, lo);
+                            let hi_v = builder.ins().iconst(types::I32, hi);
+                            let clamped = builder.ins().smax(wide, lo_v);
+                            let clamped = builder.ins().smin(clamped, hi_v);
+                            builder.ins().ireduce(to_cl, clamped)
+                        } else {
+                            builder.ins().fcvt_to_sint_sat(to_cl, src_val)
+                        }
                     } else {
                         // Integer → integer: choose narrowing or widening based on bit width.
                         let from_bits = from_cl.bits();

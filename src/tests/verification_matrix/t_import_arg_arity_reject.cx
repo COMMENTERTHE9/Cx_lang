@@ -1,0 +1,6 @@
+// Before, an extra argument to an imported function was silently dropped:
+// math.add(1, 2, 3) printed 3 and exited 0.
+#![imports]
+math: use "./t74_import_basic_lib"
+
+print(math.add(1, 2, 3))

@@ -1,0 +1,23 @@
+// A `.copy` parameter keeps its declared type, and enum names in it are
+// resolved like any other annotation. Normalization skipped `.copy` parameters,
+// so `xs.copy: [3: Color]` stayed an array of a struct named Color and
+// `xs:[0] = Color::Green` was rejected: "expected Color, got Color".
+enum Color { Red, Green, Blue }
+
+fnc: t32 rank(c: Color) {
+    when c {
+        Color::Red => 10,
+        Color::Green => 20,
+        _ => 0,
+    }
+}
+
+fnc: t32 mut3(xs.copy: [3: Color]) {
+    xs:[0] = Color::Green
+    rank(xs:[0])
+}
+
+ys: [3: Color] = [Color::Red, Color::Red, Color::Red]
+print(mut3(ys.copy))
+// `.copy` bleeds back into the caller (docs/cx_syntax.md §7): ys:[0] is Green now.
+print(rank(ys:[0]))

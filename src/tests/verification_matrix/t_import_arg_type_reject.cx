@@ -1,0 +1,8 @@
+// Calls through an import are checked exactly like local calls. Before, the
+// imported-call path analysed each argument but never compared it with the
+// parameter, so a bool reached `a + b` inside the library and failed there, at
+// runtime, as an operator error.
+#![imports]
+math: use "./t74_import_basic_lib"
+
+print(math.add(true, 20))
