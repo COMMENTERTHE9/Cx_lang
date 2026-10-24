@@ -1,0 +1,12 @@
+// Compound arithmetic on an enum value. It passed analysis: the interpreter
+// failed at run time, while the JIT added 1 to the tag — `Red += 1` became
+// `Green` — and printed 2. Now a semantic error on both backends.
+enum Color { Red, Green, Blue }
+let c;
+c = Color::Red
+k: t8 = 1
+c += k
+when c {
+    Color::Green => print(2),
+    _ => print(0),
+}

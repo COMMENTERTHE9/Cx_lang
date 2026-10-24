@@ -3202,3 +3202,57 @@ names a function that exists in it (`calls_inside_a_library_name_its_merged_func
 and same-named structs with different fields are refused while reordered ones
 lower (`same_struct_name_with_different_fields_is_refused`); a third pins the
 duplicate-alias message.
+
+## 38. Compound assignment checked neither operand
+
+*(Found 2026-10-24 by the review of §35; fixed by the commit that introduces
+this entry — `check_compound_operands` in `src/frontend/semantic.rs`, and the
+operand-type guard in `emit_user_arith`, `src/ir/lower.rs`.)*
+
+**Status: FIXED.** `x op= y` takes exactly the operands `x op y` takes: two
+numbers, or `str += str`.
+
+### What happened
+
+`x + d` on an unbounded type parameter is a semantic error ("arithmetic
+requires numeric operands, got T and T"); so are arithmetic on an enum, a bool,
+`str - str`, and a struct without a phen for the operator. The compound forms
+passed analysis, and what happened next depended on the backend:
+
+```
+fnc: T <T> inc(x: T, d: T) { x += d  x }      interpreter 2147483648   JIT -2147483648
+inc(t32 2147483647, 1)                        (a t32 holding a value no t32 can; the JIT's t32 instance wraps)
+
+c: Color = Red;  c += 1                       interpreter: runtime error   JIT: printed 2 — the tag became Green's
+b: bool = true;  b += 1                       interpreter: runtime error   JIT: refused
+v += w   (struct V with a phen for Add)       interpreter: runtime error   JIT: SEGFAULT
+s += "b" (str)                                interpreter: appends ("ab")  JIT: SEGFAULT
+```
+
+The two segfaults are integer addition on an address: a struct, string or
+array value is a pointer in compiled code, and the compound path emitted an
+ordinary `Binary` add on it.
+
+### The fix
+
+- `check_compound_operands` applies `analyze_binary`'s operand rule to every
+  compound assignment — variable, field and element targets alike. A struct is
+  refused even when it has a phen for the operator, with the written-out form to
+  use (`a = a + ...`): `a + b` dispatches to the phen, but `+=` doing the same
+  would be a new rule, not the binary one.
+- `emit_user_arith` refuses arithmetic on a non-numeric IR type. The one
+  non-number analysis still takes, `str += str`, is therefore a clean JIT
+  refusal: compiled code cannot append to a runtime string yet.
+
+### Fixtures
+
+```
+t_compound_generic_reject   before: interpreter 2147483648, JIT -2147483648   now: semantic error, both
+t_compound_enum_reject      before: runtime error / JIT printed 2             now: semantic error, both
+t_compound_bool_reject      before: runtime error / JIT refused               now: semantic error, both
+t_compound_struct_reject    before: runtime error / JIT SEGFAULT              now: semantic error, both
+t_compound_str_append       before: interpreter abc / JIT SEGFAULT            now: interpreter PASS, JIT SKIP
+```
+
+A unit test pins each rejection's message, and that numeric compound
+assignment and `str += str` still pass analysis.

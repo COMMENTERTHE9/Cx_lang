@@ -1410,6 +1410,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     SemanticLValue::DotAccess { ty, .. } => ty.clone(),
                     SemanticLValue::Index { elem_ty, .. } => elem_ty.clone(),
                 };
+                check_compound_operands(*op, &target_ty, &sem_operand.ty, base.as_str(), *pos)?;
                 let narrowed_operand = if is_numeric(&target_ty) && is_numeric(&sem_operand.ty) {
                     insert_cast_if_needed(sem_operand, &target_ty)
                 } else {
@@ -4173,6 +4174,60 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
     }
 }
 
+/// `x op= y` takes the operands `x op y` takes (`analyze_binary`): two numbers,
+/// or `str += str`. Analysis used to check neither, so an enum, a bool, a
+/// string with `-=`, an unbounded type parameter or a struct passed — the
+/// interpreter failed at run time (or, for `T`, kept a `t32` holding
+/// 2147483648), and the JIT did integer arithmetic on an enum's tag or on a
+/// string's or struct's address: `s += "b"` and `v += w` crashed it
+/// (known_issues §38). A struct with a phen for the operator is not taken
+/// either: `+=` would be a new rule, not the binary one, so it is spelled out.
+fn check_compound_operands(
+    op: Op,
+    target: &SemanticType,
+    operand: &SemanticType,
+    target_name: &str,
+    pos: usize,
+) -> Result<(), SemanticError> {
+    let sym = match op {
+        Op::Plus => "+=",
+        Op::Minus => "-=",
+        Op::Mul => "*=",
+        Op::Div => "/=",
+        Op::Mod => "%=",
+        _ => return Err(sem_err!(pos, "unsupported compound assignment operator")),
+    };
+    if *target == SemanticType::Unknown || *operand == SemanticType::Unknown {
+        return Ok(());
+    }
+    if is_numeric(target) && is_numeric(operand) {
+        return Ok(());
+    }
+    let is_str = |t: &SemanticType| matches!(t, SemanticType::Str | SemanticType::StrRef);
+    if op == Op::Plus && is_str(target) && is_str(operand) {
+        return Ok(());
+    }
+    if let SemanticType::Struct(_) = target {
+        let bare = &sym[..sym.len() - 1];
+        return Err(sem_err!(
+            pos,
+            "compound assignment `{}` on a struct ('{}') is not supported — write it out, as `{} = {} {} ...`",
+            sym,
+            type_name(target),
+            target_name,
+            target_name,
+            bare
+        ));
+    }
+    Err(sem_err!(
+        pos,
+        "compound assignment `{}` requires numeric operands, got {} and {}",
+        sym,
+        type_name(target),
+        type_name(operand)
+    ))
+}
+
 fn common_numeric_type(lhs: &SemanticType, rhs: &SemanticType) -> SemanticType {
     // Float wins
     if matches!(lhs, SemanticType::F64) || matches!(rhs, SemanticType::F64) {
@@ -5494,6 +5549,41 @@ print(result + result2)
                 let msg = errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | ");
                 assert!(msg.contains("duplicate import alias 'u'"), "got: {msg}");
             }
+        }
+    }
+
+    // The t_compound_*_reject fixtures assert only that both backends reject;
+    // these pin the reason, and that the forms compound assignment does take
+    // still pass analysis (known_issues §38).
+    #[test]
+    fn compound_assignment_checks_its_operands_like_the_binary_operator() {
+        let rejected = [
+            (
+                "enum C { Red, Green }\nlet c;\nc = C::Red\nk: t64 = 1\nc += k\n",
+                "compound assignment `+=` requires numeric operands, got C and t64",
+            ),
+            ("b: bool = true\nb += 1\n", "compound assignment `+=` requires numeric operands, got bool"),
+            (
+                "fnc: T <T> inc(x: T, d: T) {\n    x += d\n    x\n}\nprint(inc(1, 2))\n",
+                "compound assignment `+=` requires numeric operands, got T and T",
+            ),
+            (
+                "struct V { x: t32 }\nlet a\na = V { x: 1 }\nlet b\nb = V { x: 2 }\na += b\n",
+                "compound assignment `+=` on a struct ('V') is not supported",
+            ),
+            (
+                "s: str = \"a\"\ns -= \"b\"\n",
+                "compound assignment `-=` requires numeric operands, got str and str",
+            ),
+        ];
+        for (src, want) in rejected {
+            let msg = single_file_errors(src);
+            assert!(msg.contains(want), "for {src:?} got: {msg}");
+        }
+        for ok in ["x: t32 = 1\nx += 2\nx *= 3.5\nprint(x)\n", "s: str = \"a\"\ns += \"b\"\nprint(s)\n"] {
+            let program = crate::frontend::resolver::parse_source(ok).expect("parses");
+            let result = analyze_program(&program);
+            assert!(result.is_ok(), "rejected {ok:?}: {:?}", result.err());
         }
     }
 }
