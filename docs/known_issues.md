@@ -2646,6 +2646,29 @@ The interpreter used to pass such values through unconverted.
   (`c: Color = col.green()`), which used to be rejected with the same message.
 - **A JIT crash it exposed** — §33.
 
+A second review, of those fixes, found three more:
+
+- **A regression the enum fix introduced.** Normalization rewrote every visible
+  enum name, ignoring type parameters, so an imported `enum T` took over every
+  generic function's `T`: `fnc: T <T> ident(x: T)` then rejected `ident(5)` with
+  "expected T, got numeric literal". A generic declaration's own type
+  parameters now shadow enums of the same name. A module's OWN `enum T` had
+  always done this — that predates §32 and is fixed with it.
+- **A JIT refusal it turned into a silent wrong answer.** Enum types are
+  identified by name alone. When two modules each declare `enum Color`, with
+  different variant orders, a value of one passed where the other is expected
+  matches by variant name on the interpreter and by tag on the JIT. Before the
+  enum fix, a library annotating the other module's `Color` was refused by the
+  JIT; after it, the program compiled and printed 0 where the interpreter
+  printed 10. The JIT now refuses ANY program in which two modules declare the
+  same enum name (`lower_program_inner`) — which also closes the same divergence
+  through direct calls (`a.code(b.red())`, interpreter 10, JIT 0), which submain
+  already had. The real fix is giving each declaration its own type; that
+  is a language decision, raised separately.
+- **`.copy` parameters were never normalized**, so `xs.copy: [3: Color]` stayed
+  an array of a struct named Color and `xs:[0] = Color::Green` failed with
+  "expected Color, got Color". Predates §32, local enums too; fixed with it.
+
 ### Still not handled across a module boundary
 
 - **Generic functions are not monomorphized** when called through an import: the
@@ -2662,7 +2685,16 @@ The interpreter used to pass such values through unconverted.
   cross-module: an undeclared type name in an annotation is never reported where
   it is written, in a single file too — `fnc: t64 f(c: Colr)` compiles as long as
   `f` is never called — and the interpreter accepts `Shade::Dark` for an enum
-  that does not exist.
+  that does not exist, and `Color::Purple` for a variant `Color` does not have.
+- **Two same-named enums are one type** (above): the interpreter merges them by
+  name, the JIT refuses the program.
+- **An array VARIABLE whose element width differs from the parameter's** —
+  `xs: [3: t64]` passed to `asum(a: [3: t32])` — is accepted and not converted:
+  the interpreter prints 321, the JIT reads the 64-bit elements at 32 bits and
+  prints 201, and the other way round (`[3: t8]` into `[3: t64]`) reads past the
+  end of the array. This PR fixed the array LITERAL; the variable is the same
+  defect for local calls, bindings, returns and struct fields, and needs a
+  decision on whether arrays convert element-wise. Raised separately.
 - A semantic error inside a library is reported with the entry file's source
   line, not the library's.
 
@@ -2678,6 +2710,11 @@ t_import_arg_narrowing       before: JIT SKIP                       now: PASS, b
 t_import_array_literal_arg   before: JIT printed 201 0 0            now: PASS, 321 9 3 on both
 t_import_generic_ret         before: semantic error, both           now: interpreter PASS; JIT SKIP (generic import)
 t_import_enum_relay          before: JIT SKIP                       now: PASS — and needs the enum fix above
+t_import_enum_type_param_shadow   before: PASS; broken by the first enum fix   now: PASS
+t_enum_type_param_shadow     before: semantic error, both           now: PASS (own enum T vs <T>)
+t_import_generic_enum_shadow before: interpreter PASS; broken by the first enum fix   now: interpreter PASS; JIT SKIP (generic import)
+t_enum_copy_param            before: semantic error, both           now: PASS
+t_import_enum_same_name      before: PASS                           now: interpreter PASS; JIT SKIP (refused)
 t74_import_basic             before: JIT SKIP                       now: PASS
 t64_import_pub_only          before: JIT SKIP                       now: PASS
 ```
@@ -2711,6 +2748,22 @@ The fix saturates to `t32` first, clamps to the narrow type's bounds with
 `t32` has already saturated to `t32`'s bounds, which the clamp maps to the narrow
 type's bounds.
 
-Fixture: `t_cast_float_to_small_int` — truncation, both bounds, negatives, both
+The same arm panicked for a `t128` target ("Invalid OperandSize: 16"):
+Cranelift has no f64 → i128 conversion at all, and saturating through i64 would
+be wrong past its range. Compiled code now refuses that conversion — lowering
+returns an unsupported construct (SKIP), and codegen returns an error rather
+than panic if one ever reaches it.
+
+Fixtures: `t_cast_float_to_small_int` — truncation, both bounds, negatives, both
 infinities, NaN, and finite values far outside `t32`. Before: JIT panic. Now:
-PASS, both backends agree.
+PASS, both backends agree. `t_cast_float_to_t128` — before: JIT panic; now:
+interpreter PASS, JIT SKIP.
+
+**Not fixed, and not the JIT's fault:** the backends agree wherever a value is
+narrowed — parameters, bindings, reassignment, field and element assignment,
+compound assignment, returns — but NOT for the elements of an array or struct
+LITERAL, because the interpreter never narrows those at all.
+`xs: [1: t8] = [300.7]` holds 300.7 on the interpreter and 127 on the JIT;
+`S { a: v }` with `v: t32 = 300` and a `t8` field holds 300 and 44. The JIT's
+answers follow the narrowing rules; the reference is wrong. That predates both
+fixes and is the next one.

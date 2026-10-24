@@ -4731,9 +4731,10 @@ print(result + result2)
     }
 
     // The three `t_import_arg_*_reject` fixtures assert only that both backends
-    // reject with a diagnostic; the harness has no way to say WHICH one. These
-    // pin the specific check, at the call site, so the fixtures cannot pass on
-    // an unrelated failure such as the import itself breaking.
+    // reject with a diagnostic; the harness has no way to say WHICH one, so a
+    // fixture would also pass on an unrelated rejection — its import breaking,
+    // say. These pin each check's message at the call site, on an inline copy of
+    // the library; they do not prove the fixtures reach that check.
     #[test]
     fn imported_call_wrong_arity_is_rejected_at_the_call() {
         let msg = imported_call_error("print(math.add(1, 2, 3))\n");
