@@ -1,0 +1,6 @@
+// Assigning to a function name at top level. Before: the interpreter failed at
+// runtime ("variable 'f' has not been declared") while the JIT compiled the
+// assignment and printed 1.
+fnc: t64 f() { 1 }
+f = 5
+print(f())

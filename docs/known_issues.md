@@ -2767,3 +2767,81 @@ LITERAL, because the interpreter never narrows those at all.
 `S { a: v }` with `v: t32 = 300` and a `t8` field holds 300 and 44. The JIT's
 answers follow the narrowing rules; the reference is wrong. That predates both
 fixes and is the next one.
+
+## 34. A function's name was accepted as a variable
+
+*(Found 2026-10-24 by the independent review of §31; fixed by the commit that
+introduces this entry — `VarInfo::is_function` and `not_a_variable` in
+`src/frontend/semantic.rs`.)*
+
+**Status: FIXED.** Using a function or method name as a variable — reading it,
+assigning to it, or compound-assigning to it — is a semantic error on both
+backends.
+
+### What happened
+
+```
+fnc: t64 f() { return 1 }
+fnc: t64 g() {
+    f = 5
+    return f
+}
+print(g())          interpreter: exit 1, "variable 'f' has not been declared"
+                    cranelift:   exit 0, prints 5
+```
+
+The JIT ran a program the interpreter rejects. `f = 5` at top level printed 1 on
+the JIT, and an impl method's name assigned inside a function printed 7. Reading
+`print(f)` was refused by both, but only at runtime or in lowering.
+
+The same mistake made a nested function hide a variable. A function declared
+inside `g` and named like a variable of an enclosing scope captured every read
+of that name in `g`:
+
+```
+x: t64 = 5
+fnc: t64 g() {
+    fnc: t64 x() { 1 }
+    x
+}
+print(g())          interpreter: exit 1, "variable 'x' has not been declared"
+```
+
+### Why
+
+`analyze_function` declares each function's name in the enclosing scope, so a
+variable cannot be declared with the same name in the same scope. It declared it
+as an INITIALISED variable typed with the function's return type, so variable
+lookup found it, and `f` passed analysis as a `t64`. The interpreter keeps
+functions in a separate namespace at runtime and failed there; the JIT compiled
+the assignment into a stray local (§31's gap — a function's own name is a
+top-level binding `SemanticFunction` carries no id for). For the nested case,
+the read of `x` resolved to the function's entry, which has no value at runtime.
+
+### The fix
+
+The entry is marked `is_function`, and `lookup_var` / `lookup_var_mut` skip such
+entries — one change at the single variable-lookup point, so every use of a name
+as a variable is covered. Skipping rather than stopping is what keeps the two
+namespaces apart: a function's name never hides a variable of the same name in
+an outer scope, so the nested example now prints 5. The same-scope clash check
+in `declare` is unaffected — it looks at the scope directly, so `fnc f()`
+followed by `f: t64 = 9` is still "variable already declared". Reads,
+assignments and compound assignments name the mistake:
+`'f' is a function, not a variable — call it as f(...)`.
+
+### Fixtures
+
+```
+t_fn_name_read_reject             before: interp runtime error, JIT refused in lowering
+t_fn_name_assign_reject           before: interp runtime error, JIT printed 1
+t_fn_name_assign_in_fn_reject     before: interp runtime error, JIT printed 5
+t_method_name_assign_reject       before: interp runtime error, JIT printed 7
+t_fn_name_compound_reject         before: interp runtime error, JIT refused in lowering
+t_fn_name_does_not_hide_variable  before: interp runtime error    now: prints 5; JIT SKIP (nested functions)
+```
+
+The five rejections are semantic errors on both backends, asserted as
+`interp=diagnostic jit=diagnostic`; unit tests in `semantic.rs`
+(`a_function_name_is_not_a_variable`, plus two positive controls) pin the
+message, which the harness cannot.

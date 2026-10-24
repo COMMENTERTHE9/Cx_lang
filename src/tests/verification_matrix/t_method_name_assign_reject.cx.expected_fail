@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+# Assigning to a method name is a semantic error on both backends.

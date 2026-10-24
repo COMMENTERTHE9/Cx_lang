@@ -25,6 +25,12 @@ struct VarInfo {
     declared: Option<Type>,
     inferred: Option<SemanticType>,
     initialized: bool,
+    /// This entry is a FUNCTION's name, not a variable. Function names are
+    /// declared in the variable namespace so a variable cannot be declared with
+    /// the same name in the same scope — but they are not variables, and the
+    /// interpreter keeps functions in a separate namespace at runtime. Variable
+    /// lookup therefore skips these entries; see `lookup_var`.
+    is_function: bool,
 }
 
 /// A user-function call's checked arguments, its return type with type
@@ -229,23 +235,47 @@ impl Analyzer {
                 declared,
                 inferred,
                 initialized,
+                is_function: false,
             },
         );
         Ok(binding)
     }
 
+    /// Resolve `name` as a VARIABLE. A function's name is skipped, not
+    /// returned: before this, `print(f)` and `f = 5` with `f` a function passed
+    /// analysis as an initialised variable of the function's return type, then
+    /// failed on the interpreter at runtime ("variable 'f' has not been
+    /// declared") — while the JIT compiled and ran them. Skipping, rather than
+    /// stopping at the entry, matches the interpreter's separate namespaces: a
+    /// function name never hides a variable of the same name further out.
     fn lookup_var(&self, name: &str) -> Option<&VarInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(info) = scope.get(name) {
+                if info.is_function {
+                    continue;
+                }
                 return Some(info);
             }
         }
         None
     }
 
+    /// The error for a name that does not resolve as a variable — naming the
+    /// actual mistake when the name is a function.
+    fn not_a_variable(&self, name: &str, pos: usize) -> SemanticError {
+        if self.funcs.contains_key(name) {
+            sem_err!(pos, "'{}' is a function, not a variable — call it as {}(...)", name, name)
+        } else {
+            sem_err!(pos, "use of undeclared variable '{}'", name)
+        }
+    }
+
     fn lookup_var_mut(&mut self, name: &str) -> Option<&mut VarInfo> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(info) = scope.get_mut(name) {
+                if info.is_function {
+                    continue;
+                }
                 return Some(info);
             }
         }
@@ -759,6 +789,9 @@ impl Analyzer {
                 let tp = self.current_type_params.clone();
                 let target = match target {
                     Expr::Ident(name, _) => {
+                        if self.lookup_var(name).is_none() {
+                            return Err(self.not_a_variable(name, *pos_eq));
+                        }
                         let info = self.lookup_var_mut(name).ok_or_else(|| sem_err!(*pos_eq, "use of undeclared variable '{}'", name))?;
 
                         if let Some(declared) = &info.declared {
@@ -1362,6 +1395,9 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         }
         let func_id = self.fresh_function();
         self.declare(name, ret_ty.clone(), None, true, pos)?;
+        if let Some(entry) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+            entry.is_function = true;
+        }
 
         let placeholders = params
             .iter()
@@ -1797,7 +1833,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 kind: SemanticExprKind::Value(semantic_value_from_ast(value, &self.enums, 0)?),
             }),
             Expr::Ident(name, pos) => {
-                let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
+                let info = match self.lookup_var(name) {
+                    Some(info) => info,
+                    None => return Err(self.not_a_variable(name, *pos)),
+                };
                 if !info.initialized {
                     return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
                 }
@@ -3704,9 +3743,10 @@ impl Analyzer {
         let tp = self.current_type_params.clone();
         match target {
             Expr::Ident(name, _) => {
-                let info = self
-                    .lookup_var(name)
-                    .ok_or_else(|| sem_err!(pos, "use of undeclared variable '{}'", name))?;
+                let info = match self.lookup_var(name) {
+                    Some(info) => info,
+                    None => return Err(self.not_a_variable(name, pos)),
+                };
                 if !info.initialized {
                     return Err(sem_err!(pos, "use of uninitialized variable '{}'", name));
                 }
@@ -5071,5 +5111,63 @@ print(result + result2)
             }
             other => panic!("unexpected stmt: {:?}", other),
         }
+    }
+
+    /// Analysis errors for a one-file program, joined, or a panic if analysis
+    /// accepted it.
+    fn single_file_errors(src: &str) -> String {
+        let program = crate::frontend::resolver::parse_source(src).expect("parses");
+        match analyze_program(&program) {
+            Ok(_) => panic!("expected a semantic error for {src:?}"),
+            Err(errs) => errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "),
+        }
+    }
+
+    // The `t_fn_name_*_reject` and `t_method_name_assign_reject` fixtures assert
+    // only that both backends reject; the harness cannot say why. These pin the
+    // reason — the name is a function — for each place a variable is expected.
+    #[test]
+    fn a_function_name_is_not_a_variable() {
+        let cases = [
+            // read
+            ("fnc: t64 f() { 1 }\nprint(f)\n", "f"),
+            // assignment at top level
+            ("fnc: t64 f() { 1 }\nf = 5\nprint(f())\n", "f"),
+            // compound assignment
+            ("fnc: t64 f() { 1 }\nf += 1\nprint(1)\n", "f"),
+            // assignment inside another function
+            ("fnc: t64 f() { return 1 }\nfnc: t64 g() {\n    f = 5\n    return f\n}\nprint(g())\n", "f"),
+            // an impl method's name, inside a function
+            (
+                "struct P { v: t64 }\npm: impl (p: P) {\n    fnc: t64 get() {\n        p.v\n    }\n}\nfnc: t64 h() {\n    get = 7\n    return get\n}\nprint(h())\n",
+                "get",
+            ),
+        ];
+        for (src, name) in cases {
+            let msg = single_file_errors(src);
+            let want = format!("'{name}' is a function, not a variable");
+            assert!(msg.contains(&want), "for {src:?} got: {msg}");
+        }
+    }
+
+    /// Lookup SKIPS a function's entry rather than stopping at it, so a
+    /// parameter named like a function still resolves, and the function is still
+    /// callable.
+    #[test]
+    fn a_parameter_may_share_a_functions_name() {
+        let src = "fnc: t64 f() { 1 }\nfnc: t64 g(f: t64) {\n    f + 10\n}\nprint(g(3))\nprint(f())\n";
+        let program = crate::frontend::resolver::parse_source(src).expect("parses");
+        let result = analyze_program(&program);
+        assert!(result.is_ok(), "rejected a parameter named like a function: {:?}", result.err());
+    }
+
+    /// A nested function named like an outer variable does not hide it: the
+    /// read skips the function's entry and finds the variable.
+    #[test]
+    fn a_nested_function_does_not_hide_an_outer_variable() {
+        let src = "x: t64 = 5\nfnc: t64 g() {\n    fnc: t64 x() { 1 }\n    x\n}\nprint(g())\n";
+        let program = crate::frontend::resolver::parse_source(src).expect("parses");
+        let result = analyze_program(&program);
+        assert!(result.is_ok(), "rejected a read of an outer variable: {:?}", result.err());
     }
 }

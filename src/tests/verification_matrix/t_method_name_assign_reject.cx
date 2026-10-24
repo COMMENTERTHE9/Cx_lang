@@ -1,0 +1,12 @@
+// An impl method's name is in the same namespace. Before: the JIT printed 7.
+struct P { v: t64 }
+pm: impl (p: P) {
+    fnc: t64 get() {
+        p.v
+    }
+}
+fnc: t64 h() {
+    get = 7
+    return get
+}
+print(h())

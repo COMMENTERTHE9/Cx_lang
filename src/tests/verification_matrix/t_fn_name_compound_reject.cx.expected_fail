@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+# Compound assignment to a function name is a semantic error on both backends.
