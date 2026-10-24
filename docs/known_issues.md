@@ -2822,13 +2822,43 @@ the read of `x` resolved to the function's entry, which has no value at runtime.
 
 The entry is marked `is_function`, and `lookup_var` / `lookup_var_mut` skip such
 entries — one change at the single variable-lookup point, so every use of a name
-as a variable is covered. Skipping rather than stopping is what keeps the two
+that goes through variable lookup is covered (the forms that do not are listed
+under Not covered). Skipping rather than stopping is what keeps the two
 namespaces apart: a function's name never hides a variable of the same name in
 an outer scope, so the nested example now prints 5. The same-scope clash check
 in `declare` is unaffected — it looks at the scope directly, so `fnc f()`
 followed by `f: t64 = 9` is still "variable already declared". Reads,
 assignments and compound assignments name the mistake:
-`'f' is a function, not a variable — call it as f(...)`.
+`'f' is a function, not a variable — call it as f(...)`; a method's name gets
+`'get' is a method, not a variable — call it on a value, as v.get(...)`.
+
+### Found by review, fixed before merge
+
+**A regression the first version introduced.** The field-assignment path
+(`resolve_place`) fell back to an unknown type when its container did not
+resolve as a variable, and field access accepts an unknown type. While a
+function's name WAS a variable, typed `t64`, `f.v += 10` failed the field check;
+once lookup skipped it, the statement passed analysis — and the interpreter,
+which resolves a field write by name across call frames, wrote a CALLER's local
+`f` and printed 15 (the JIT refused). An undeclared name went through the same
+fallback before this change: `yy.v += 10` inside a function printed 15 on
+submain. The container must now resolve as a variable at every field-access
+site, reads and writes alike, and every analysis site that reports a name it
+cannot resolve names a function or method as such, instead of "has not been
+declared".
+
+### Not covered
+
+These forms do not go through variable lookup at all, so a function's name —
+or an undeclared one — still passes analysis there; the interpreter fails at
+runtime and the JIT refuses. They predate this change:
+
+- string interpolation, `print("v={f}")`;
+- `while in f:[0], 0..1 { … }`;
+- a method's name called as a free function, `get(q)` — impl methods are
+  registered with the free functions;
+- a `copy_into(...)` or `.copy` argument passed to an impl METHOD whose
+  parameter does not take one — method calls do not check argument kinds.
 
 ### Fixtures
 
@@ -2839,9 +2869,12 @@ t_fn_name_assign_in_fn_reject     before: interp runtime error, JIT printed 5
 t_method_name_assign_reject       before: interp runtime error, JIT printed 7
 t_fn_name_compound_reject         before: interp runtime error, JIT refused in lowering
 t_fn_name_does_not_hide_variable  before: interp runtime error    now: prints 5; JIT SKIP (nested functions)
+t_fn_name_field_compound_reject   before: semantic error; broken by the first version (interp printed 15)
+t_method_name_field_compound_reject  the same through a method's name
+t_undeclared_field_compound_reject   before: interp printed 15, exit 0; JIT refused
 ```
 
-The five rejections are semantic errors on both backends, asserted as
+The rejections are semantic errors on both backends, asserted as
 `interp=diagnostic jit=diagnostic`; unit tests in `semantic.rs`
 (`a_function_name_is_not_a_variable`, plus two positive controls) pin the
 message, which the harness cannot.

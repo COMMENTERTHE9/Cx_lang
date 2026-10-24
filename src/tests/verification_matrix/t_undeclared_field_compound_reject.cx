@@ -1,0 +1,16 @@
+// A compound field assignment through an undeclared name. The field-assignment
+// path fell back to an unknown type for a name that did not resolve, so this
+// passed analysis, and the interpreter wrote `caller`'s local `yy` — printing 15
+// with exit 0 on submain, a silent wrong answer (the JIT refused). Now "use of
+// undeclared variable 'yy'" on both backends.
+struct S { v: t64 }
+fnc: t64 bump() {
+    yy.v += 10
+    return 0
+}
+fnc: t64 caller() {
+    yy: S = S { v: 5 }
+    bump()
+    yy.v
+}
+print(caller())

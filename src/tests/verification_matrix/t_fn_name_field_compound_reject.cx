@@ -1,0 +1,18 @@
+// A field of a function's name is not a variable's field. The first version of
+// the function-name fix let this through the field-assignment path — the name
+// no longer resolved, and the path fell back to an unknown type — and the
+// interpreter, which resolves a field write by name across call frames, wrote
+// `caller`'s local `f` and printed 15. Caught in review before merge; now a
+// semantic error on both backends, as it was before.
+struct S { v: t64 }
+fnc: t64 f() { 1 }
+fnc: t64 bump() {
+    f.v += 10
+    return 0
+}
+fnc: t64 caller() {
+    f: S = S { v: 5 }
+    bump()
+    f.v
+}
+print(caller())

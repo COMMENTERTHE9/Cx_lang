@@ -261,12 +261,27 @@ impl Analyzer {
     }
 
     /// The error for a name that does not resolve as a variable — naming the
-    /// actual mistake when the name is a function.
+    /// actual mistake when the name is a function or a method. Methods are
+    /// registered in `funcs` too, so the method check comes first: a method is
+    /// called on a value, not by its bare name.
     fn not_a_variable(&self, name: &str, pos: usize) -> SemanticError {
-        if self.funcs.contains_key(name) {
+        if self.method_registry.keys().any(|(_, method)| method == name) {
+            sem_err!(pos, "'{}' is a method, not a variable — call it on a value, as v.{}(...)", name, name)
+        } else if self.funcs.contains_key(name) {
             sem_err!(pos, "'{}' is a function, not a variable — call it as {}(...)", name, name)
         } else {
             sem_err!(pos, "use of undeclared variable '{}'", name)
+        }
+    }
+
+    /// For a lookup site with its own "not declared" wording: `fallback`,
+    /// unless `name` is a function or method, where `not_a_variable` says what
+    /// the name really is.
+    fn unresolved(&self, name: &str, fallback: SemanticError) -> SemanticError {
+        if self.funcs.contains_key(name) || self.method_registry.keys().any(|(_, method)| method == name) {
+            self.not_a_variable(name, fallback.pos)
+        } else {
+            fallback
         }
     }
 
@@ -830,7 +845,10 @@ impl Analyzer {
                         }
                     }
                     Expr::DotAccess(container, field) => {
-                        let info = self.lookup_var(container).ok_or_else(|| sem_err!(*pos_eq, "use of undeclared variable '{}'", container))?;
+                        let info = match self.lookup_var(container) {
+                            Some(info) => info,
+                            None => return Err(self.not_a_variable(container, *pos_eq)),
+                        };
                         if !info.initialized {
                             return Err(sem_err!(*pos_eq, "use of uninitialized variable '{}'", container));
                         }
@@ -1849,7 +1867,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 })
             }
             Expr::DotAccess(container, field) => {
-                let info = self.lookup_var(container).ok_or_else(|| sem_err!(0, "use of undeclared variable '{}'", container))?;
+                let info = match self.lookup_var(container) {
+                    Some(info) => info,
+                    None => return Err(self.not_a_variable(container, 0)),
+                };
                 if !info.initialized {
                     return Err(sem_err!(0, "use of uninitialized variable '{}'", container));
                 }
@@ -1884,7 +1905,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 })
             }
             Expr::HandleVal(name, pos) => {
-                let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
+                let info = match self.lookup_var(name) {
+                    Some(info) => info,
+                    None => return Err(self.not_a_variable(name, *pos)),
+                };
                 if !info.initialized {
                     return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
                 }
@@ -1898,7 +1922,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 })
             }
             Expr::HandleDrop(name, pos) => {
-                let info = self.lookup_var(name).ok_or_else(|| sem_err!(*pos, "use of undeclared variable '{}'", name))?;
+                let info = match self.lookup_var(name) {
+                    Some(info) => info,
+                    None => return Err(self.not_a_variable(name, *pos)),
+                };
                 if !info.initialized {
                     return Err(sem_err!(*pos, "use of uninitialized variable '{}'", name));
                 }
@@ -2129,7 +2156,12 @@ Expr::Unary(op, inner, pos) => {
                 // and is less actionable for the user).
                 let instance_info = match self.lookup_var(instance) {
                     Some(info) => info,
-                    None => return Err(sem_err!(*pos, "method call receiver '{}' is not in scope", instance)),
+                    None => {
+                        return Err(self.unresolved(
+                            instance,
+                            sem_err!(*pos, "method call receiver '{}' is not in scope", instance),
+                        ))
+                    }
                 };
                 let instance_binding = instance_info.binding;
                 // Resolve the declared type against the enclosing function's
@@ -2673,7 +2705,15 @@ Expr::Unary(op, inner, pos) => {
                     semantic_args.push(SemanticCallArg::Expr(expr));
                 }
                 CallArg::Copy(outer_name) => {
-                    let info = self.lookup_var(outer_name).ok_or_else(|| sem_err!(pos, "'.copy' argument '{}' has not been declared", outer_name))?;
+                    let info = match self.lookup_var(outer_name) {
+                        Some(info) => info,
+                        None => {
+                            return Err(self.unresolved(
+                                outer_name,
+                                sem_err!(pos, "'.copy' argument '{}' has not been declared", outer_name),
+                            ))
+                        }
+                    };
                     if !info.initialized {
                         return Err(sem_err!(pos, "'.copy' argument '{}' is not initialized", outer_name));
                     }
@@ -2683,7 +2723,15 @@ Expr::Unary(op, inner, pos) => {
                     });
                 }
                 CallArg::CopyFree(outer_name) => {
-                    let info = self.lookup_var(outer_name).ok_or_else(|| sem_err!(pos, "'.copy' argument '{}' has not been declared", outer_name))?;
+                    let info = match self.lookup_var(outer_name) {
+                        Some(info) => info,
+                        None => {
+                            return Err(self.unresolved(
+                                outer_name,
+                                sem_err!(pos, "'.copy' argument '{}' has not been declared", outer_name),
+                            ))
+                        }
+                    };
                     if !info.initialized {
                         return Err(sem_err!(pos, "'.copy' argument '{}' is not initialized", outer_name));
                     }
@@ -2695,7 +2743,15 @@ Expr::Unary(op, inner, pos) => {
                 CallArg::CopyInto(outer_names) => {
                     let mut resolved = Vec::with_capacity(outer_names.len());
                     for outer_name in outer_names {
-                        let info = self.lookup_var(outer_name).ok_or_else(|| sem_err!(pos, "copy_into variable '{}' has not been declared", outer_name))?;
+                        let info = match self.lookup_var(outer_name) {
+                            Some(info) => info,
+                            None => {
+                                return Err(self.unresolved(
+                                    outer_name,
+                                    sem_err!(pos, "copy_into variable '{}' has not been declared", outer_name),
+                                ))
+                            }
+                        };
                         if !info.initialized {
                             return Err(sem_err!(pos, "copy_into variable '{}' is not initialized", outer_name));
                         }
@@ -3757,17 +3813,26 @@ impl Analyzer {
                 })
             }
             Expr::DotAccess(container, field) => {
-                let binding = self.lookup_var(container).map(|info| info.binding);
-                let instance_ty = self
-                    .lookup_var(container)
-                    .and_then(|info| {
-                        info.inferred.clone().or_else(|| {
-                            info.declared
-                                .as_ref()
-                                .map(|t| semantic_type_from_decl(t.clone(), &tp))
-                        })
-                    })
-                    .unwrap_or(SemanticType::Unknown);
+                // The container must be a variable. A function's name is not one,
+                // and neither is an undeclared name: falling through with an
+                // Unknown type let `f.v += 10` (f a function) and `yy.v += 10`
+                // (yy undeclared) pass analysis, and the interpreter — which
+                // resolves a field write by name, across call frames — then
+                // wrote a CALLER's local of that name (known_issues §34).
+                let (binding, instance_ty) = match self.lookup_var(container) {
+                    Some(info) => (
+                        Some(info.binding),
+                        info.inferred
+                            .clone()
+                            .or_else(|| {
+                                info.declared
+                                    .as_ref()
+                                    .map(|t| semantic_type_from_decl(t.clone(), &tp))
+                            })
+                            .unwrap_or(SemanticType::Unknown),
+                    ),
+                    None => return Err(self.not_a_variable(container, pos)),
+                };
                 let (struct_name, field_ty) =
                     self.resolve_field_access(container, &instance_ty, field, pos)?;
                 Ok(SemanticLValue::DotAccess {
@@ -5130,23 +5195,37 @@ print(result + result2)
     fn a_function_name_is_not_a_variable() {
         let cases = [
             // read
-            ("fnc: t64 f() { 1 }\nprint(f)\n", "f"),
+            ("fnc: t64 f() { 1 }\nprint(f)\n", "'f' is a function, not a variable"),
             // assignment at top level
-            ("fnc: t64 f() { 1 }\nf = 5\nprint(f())\n", "f"),
+            ("fnc: t64 f() { 1 }\nf = 5\nprint(f())\n", "'f' is a function, not a variable"),
             // compound assignment
-            ("fnc: t64 f() { 1 }\nf += 1\nprint(1)\n", "f"),
+            ("fnc: t64 f() { 1 }\nf += 1\nprint(1)\n", "'f' is a function, not a variable"),
             // assignment inside another function
-            ("fnc: t64 f() { return 1 }\nfnc: t64 g() {\n    f = 5\n    return f\n}\nprint(g())\n", "f"),
+            (
+                "fnc: t64 f() { return 1 }\nfnc: t64 g() {\n    f = 5\n    return f\n}\nprint(g())\n",
+                "'f' is a function, not a variable",
+            ),
             // an impl method's name, inside a function
             (
                 "struct P { v: t64 }\npm: impl (p: P) {\n    fnc: t64 get() {\n        p.v\n    }\n}\nfnc: t64 h() {\n    get = 7\n    return get\n}\nprint(h())\n",
-                "get",
+                "'get' is a method, not a variable",
+            ),
+            // a field of a function's name, compound-assigned inside a function:
+            // this one slipped through the field-target path and wrote a
+            // caller's local on the interpreter
+            (
+                "struct S { v: t64 }\nfnc: t64 f() { 1 }\nfnc: t64 bump() {\n    f.v += 10\n    return 0\n}\nprint(bump())\n",
+                "'f' is a function, not a variable",
+            ),
+            // the same with an undeclared name
+            (
+                "struct S { v: t64 }\nfnc: t64 bump() {\n    yy.v += 10\n    return 0\n}\nprint(bump())\n",
+                "use of undeclared variable 'yy'",
             ),
         ];
-        for (src, name) in cases {
+        for (src, want) in cases {
             let msg = single_file_errors(src);
-            let want = format!("'{name}' is a function, not a variable");
-            assert!(msg.contains(&want), "for {src:?} got: {msg}");
+            assert!(msg.contains(want), "for {src:?} got: {msg}");
         }
     }
 
