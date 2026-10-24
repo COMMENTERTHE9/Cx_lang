@@ -1,0 +1,10 @@
+// The realistic shape of the same bug: a reset/initialise function that only
+// writes top-level state. Nothing in the function reads the variable, so on the
+// JIT the write vanished entirely and the program printed the old value.
+total: t64 = 41
+fnc: t64 reset() {
+    total = 0
+    return 1
+}
+print(reset())
+print(total)

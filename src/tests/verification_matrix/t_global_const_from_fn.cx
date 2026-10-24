@@ -1,0 +1,13 @@
+// A top-level const read inside function bodies — the way constants are
+// normally used. Two distinct consts in one expression, both operand orders, so
+// a substitution mix-up cannot pass symmetrically.
+const LIMIT: t64 = 900
+const STEP: t64 = 7
+fnc: t64 headroom(n: t64) {
+    LIMIT - n * STEP
+}
+fnc: t64 reversed() {
+    STEP - LIMIT
+}
+print(headroom(3))
+print(reversed())

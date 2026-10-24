@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use crate::frontend::ast::Op;
@@ -743,6 +743,12 @@ impl TargetConfig {
 struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
+    /// Top-level bindings, set only while lowering a FUNCTION body (empty for
+    /// `main`, which holds them as its own SSA values). Any reference to one
+    /// from a function is refused — see `top_level_bindings`.
+    top_level_bindings: HashSet<BindingId>,
+    /// The function being lowered, for diagnostics.
+    function_name: String,
     signature_table: HashMap<String, FunctionSignature>,
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
@@ -843,6 +849,8 @@ impl LoweringCtx {
             binding_names: HashMap::new(),
             generic_structs,
             struct_instance_keys: HashMap::new(),
+            top_level_bindings: HashSet::new(),
+            function_name: String::new(),
         }
     }
 
@@ -936,6 +944,76 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
     lower_program_inner(program, false)
 }
 
+/// The bindings a program declares at top level — its module-level state.
+///
+/// Compiled function bodies cannot reach these yet. The IR has no module-level
+/// storage: top-level values live as SSA values inside `main` (see
+/// known_issues §12, where top-level `const` was lowered that way on purpose),
+/// so a function referencing one has nothing to load from or store to.
+///
+/// Exhaustive on purpose. A declaration kind missing from this match would be
+/// treated as a function-local, and an assignment to it inside a function would
+/// compile into a fresh local — the silent miscompile this set exists to stop.
+///
+/// One gap the statement kinds cannot close: a FUNCTION's own name is also a
+/// top-level binding (`analyze_function` declares it in the enclosing scope, and
+/// impl methods are analysed in the top-level scope too), but `SemanticFunction`
+/// does not carry that binding id, so it cannot be added here. A function body
+/// that assigns to another function's name therefore still compiles a stray
+/// local. That program is invalid — the interpreter rejects it — so this is the
+/// JIT accepting an invalid program rather than miscompiling a valid one; the fix
+/// belongs in semantic analysis (known_issues §31).
+fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
+    let mut set = HashSet::new();
+    for stmt in &program.stmts {
+        match stmt {
+            SemanticStmt::Decl { binding, .. }
+            | SemanticStmt::TypedAssign { binding, .. }
+            | SemanticStmt::ConstDecl { binding, .. } => {
+                set.insert(*binding);
+            }
+            // None of these introduces a VARIABLE visible to a top-level
+            // function: they are definitions, uses, or bodies whose own
+            // declarations are scoped inside them. (FuncDef and ImplBlock do
+            // bind their names — see the gap noted above.)
+            SemanticStmt::Noop
+            | SemanticStmt::EnumDef { .. }
+            | SemanticStmt::GeneDef { .. }
+            | SemanticStmt::PhenDef { .. }
+            | SemanticStmt::Assign { .. }
+            | SemanticStmt::CompoundAssign { .. }
+            | SemanticStmt::Return { .. }
+            | SemanticStmt::ExprStmt { .. }
+            | SemanticStmt::FuncDef(_)
+            | SemanticStmt::Block { .. }
+            | SemanticStmt::While { .. }
+            | SemanticStmt::For { .. }
+            | SemanticStmt::Loop { .. }
+            | SemanticStmt::Break { .. }
+            | SemanticStmt::Continue { .. }
+            | SemanticStmt::IfElse { .. }
+            | SemanticStmt::WhileIn { .. }
+            | SemanticStmt::When { .. }
+            | SemanticStmt::StructDef { .. }
+            | SemanticStmt::ImplBlock { .. } => {}
+        }
+    }
+    set
+}
+
+/// The refusal for a function body that touches top-level state.
+///
+/// An honest SKIP rather than an internal-invariant message: nothing is wrong
+/// with the program or with lowering's bookkeeping — compiled code simply has
+/// no way to reach module-level state yet.
+fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> LoweringError {
+    LoweringError::UnsupportedSemanticConstruct {
+        construct: format!(
+            "function '{function}' {access} top-level variable '{name}' — compiled code cannot reach top-level state yet"
+        ),
+    }
+}
+
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
     let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
 
@@ -971,6 +1049,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     // lowering context so all target-dependent decisions use the same config.
     let target = TargetConfig::host();
     let signature_table = build_signature_table(program, target);
+    let top_level = top_level_bindings(program);
     let struct_table = build_struct_table(program);
     let generic_structs = build_generic_struct_templates(program);
 
@@ -996,7 +1075,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, trace, target)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, trace, target)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
@@ -1046,7 +1125,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, trace, target)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target)?);
                 }
             }
             // 0.3.4 slice 5: phen methods emit exactly like impl methods —
@@ -1089,7 +1168,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, trace, target)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target)?);
                 }
             }
             other => top_level_stmts.push(other),
@@ -1148,6 +1227,7 @@ fn lower_semantic_function(
     signature_table: &HashMap<String, FunctionSignature>,
     struct_table: &HashMap<String, StructLayoutInfo>,
     generic_structs: &GenericStructTemplates,
+    top_level: &HashSet<BindingId>,
     trace: bool,
     target: TargetConfig,
 ) -> Result<IrFunction, LoweringError> {
@@ -1167,6 +1247,8 @@ fn lower_semantic_function(
     };
 
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target);
+    ctx.top_level_bindings = top_level.clone();
+    ctx.function_name = function.name.clone();
     for param in &function.params {
         match (&param.kind, &param.ty) {
             (crate::frontend::semantic_types::SemanticParamKind::Typed, Some(ty)) => {
@@ -1412,7 +1494,14 @@ fn lower_stmt(
         SemanticStmt::Assign { target, expr, .. } => {
             let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
-                SemanticLValue::Binding { binding, ty, .. } => {
+                SemanticLValue::Binding { binding, name, ty } => {
+                    // The one path that did not refuse a top-level binding: the
+                    // insert below would have bound a fresh LOCAL under the
+                    // global's id, so the program compiled, exited 0, and lost
+                    // the write. Refuse instead.
+                    if ctx.top_level_bindings.contains(binding) {
+                        return Err(top_level_state_unsupported(&ctx.function_name, name, "assigns to"));
+                    }
                     // Numeric/Unknown: binding type is a placeholder; use the
                     // lowered expression's concrete type as authoritative.
                     let target_ty = if matches!(ty, SemanticType::Numeric | SemanticType::Unknown) {
@@ -1638,7 +1727,10 @@ fn lower_stmt(
         }
         SemanticStmt::CompoundAssign { target, op, operand, .. } => {
     match target {
-        SemanticLValue::Binding { binding, ty, .. } => {
+        SemanticLValue::Binding { binding, name, ty } => {
+            if ctx.top_level_bindings.contains(binding) {
+                return Err(top_level_state_unsupported(&ctx.function_name, name, "assigns to"));
+            }
             let current_val = current.bindings.get(binding).ok_or_else(|| {
                 LoweringError::UnresolvedSemanticArtifact {
                     artifact: format!("compound assign binding {:?}", binding),
@@ -2570,6 +2662,9 @@ fn lower_expr(
     match &expr.kind {
         SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx, active),
         SemanticExprKind::VarRef { binding, name } => {
+            if ctx.top_level_bindings.contains(binding) {
+                return Err(top_level_state_unsupported(&ctx.function_name, name, "reads"));
+            }
             let lowered = active.bindings.get(binding).cloned().ok_or_else(|| {
                 LoweringError::InternalInvariantViolation {
                     detail: format!(

@@ -234,7 +234,7 @@ fn extract_imports(program: &Program) -> Vec<ImportDecl> {
     Vec::new()
 }
 
-fn parse_source(source: &str) -> Result<Program, String> {
+pub(crate) fn parse_source(source: &str) -> Result<Program, String> {
     use logos::Logos;
     let mut tokens = Vec::new();
     let mut lex = Token::lexer(source);

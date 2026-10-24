@@ -1,0 +1,11 @@
+// A function assigns to a top-level variable, then reads it back locally.
+// The interpreter writes the global. Before the fix the JIT compiled the
+// assignment into a fresh LOCAL — exit 0, the function returned 9, and the
+// global silently stayed 5. Returning the local value is what hid it.
+x: t64 = 5
+fnc: t64 set_x() {
+    x = 9
+    x
+}
+print(set_x())
+print(x)

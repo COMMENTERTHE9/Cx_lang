@@ -1,0 +1,10 @@
+// Each module is analysed separately, and before ids were carried from one
+// module to the next both modules numbered their bindings from 0. The entry's
+// top-level `x` and the library's top-level `counter` then had the SAME id, and
+// on the interpreter the entry's `x = 100` overwrote the library's `counter`:
+// m.get() printed 100, exit 0. It must print the library's own 7.
+#![imports]
+m: use "./t_import_global_collision_lib"
+x: t64 = 100
+print(m.get())
+print(x)

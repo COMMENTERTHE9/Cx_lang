@@ -48,6 +48,23 @@ struct EnumInfo {
 
 type Scope = HashMap<String, VarInfo>;
 
+/// Id counters carried from one module's analysis into the next.
+///
+/// Every module is analysed by its own `Analyzer`, and each used to start
+/// numbering bindings, functions, enums and variants at 0. The modules' results
+/// are then MERGED into one `SemanticProgram`, where those ids are no longer
+/// unique: an importing file's top-level `result` and a library function's
+/// parameter `a` could both be `BindingId(0)`. Anything that keys on an id across
+/// the merged program then confuses two different things. Carrying the counters
+/// makes every id unique program-wide.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct IdCounters {
+    binding: u32,
+    function: u32,
+    enum_def: u32,
+    enum_variant: u32,
+}
+
 pub struct Analyzer {
     scopes: Vec<Scope>,
     current_ret_ty: Option<SemanticType>,
@@ -143,6 +160,24 @@ impl Analyzer {
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
+    }
+
+    /// The next id of every kind this analyzer would hand out.
+    fn id_counters(&self) -> IdCounters {
+        IdCounters {
+            binding: self.next_binding_id,
+            function: self.next_function_id,
+            enum_def: self.next_enum_id,
+            enum_variant: self.next_enum_variant_id,
+        }
+    }
+
+    /// Continue numbering from where the previous module's analysis stopped.
+    fn continue_ids_from(&mut self, ids: IdCounters) {
+        self.next_binding_id = ids.binding;
+        self.next_function_id = ids.function;
+        self.next_enum_id = ids.enum_def;
+        self.next_enum_variant_id = ids.enum_variant;
     }
 
     fn fresh_binding(&mut self) -> BindingId {
@@ -4254,6 +4289,7 @@ pub fn analyze_resolved_program(
     let mut alias_exports: HashMap<String, ExportTable> = HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
+    let mut ids = IdCounters::default();
 
     for &module_id in &resolved.topo_order {
         let file = match resolved.files.get(&module_id) {
@@ -4270,6 +4306,7 @@ pub fn analyze_resolved_program(
 
         // Build analyzer with module aliases from already-processed dependencies
         let mut analyzer = Analyzer::new();
+        analyzer.continue_ids_from(ids);
         analyzer.module_aliases = alias_exports.clone();
         analyzer.phen_methods = gene_phen_registry.phen_methods.clone();
         analyzer.gene_defs = gene_phen_registry.genes.clone();
@@ -4379,6 +4416,8 @@ pub fn analyze_resolved_program(
         if !errors.is_empty() {
             return Err(errors);
         }
+        // Taken before `analyzer.enum_defs` is moved out below.
+        ids = analyzer.id_counters();
 
         // Build ExportTable for imported modules
         if let Some(ref alias_name) = alias {
@@ -4477,6 +4516,79 @@ mod tests {
         };
 
         analyze_resolved_program(&resolved)
+    }
+
+    /// Ids must be unique across the MERGED program. Every module is analysed
+    /// by its own `Analyzer`; before the counters were carried between them,
+    /// each module numbered from 0, so an importing file's top-level binding and
+    /// a library function's parameter could share a `BindingId`. The JIT's
+    /// top-level-state refusal then blamed the library's parameter `a` for
+    /// being a global (known_issues §31).
+    #[test]
+    fn ids_are_unique_across_modules() {
+        use crate::frontend::resolver::{
+            parse_source, ImportEdge, ModuleId, ResolvedFile, ResolvedProgram,
+        };
+        use std::collections::{HashMap, HashSet};
+        use std::path::PathBuf;
+
+        let lib = parse_source("pub fnc: t32 add(a: t32, b: t32) {
+    a + b
+}
+")
+            .expect("library parses");
+        let entry = parse_source("result: t32 = 1
+result2: t32 = 2
+print(result + result2)
+")
+            .expect("entry parses");
+        let (lib_id, entry_id) = (ModuleId(0), ModuleId(1));
+        let mut files = HashMap::new();
+        files.insert(lib_id, ResolvedFile {
+            id: lib_id,
+            path: PathBuf::from("lib.cx"),
+            program: lib,
+            imports: vec![],
+        });
+        files.insert(entry_id, ResolvedFile {
+            id: entry_id,
+            path: PathBuf::from("main.cx"),
+            program: entry,
+            imports: vec![],
+        });
+        let resolved = ResolvedProgram {
+            entry: entry_id,
+            files,
+            edges: vec![ImportEdge {
+                importer: entry_id,
+                importee: lib_id,
+                alias: "m".to_string(),
+                pos: 0,
+            }],
+            topo_order: vec![lib_id, entry_id],
+        };
+        let program = analyze_resolved_program(&resolved).expect("analyzes");
+
+        let mut bindings = Vec::new();
+        let mut functions = Vec::new();
+        for stmt in &program.stmts {
+            match stmt {
+                SemanticStmt::FuncDef(f) => {
+                    functions.push(f.id);
+                    bindings.extend(f.params.iter().map(|p| p.binding));
+                }
+                SemanticStmt::TypedAssign { binding, .. } => bindings.push(*binding),
+                _ => {}
+            }
+        }
+        assert!(
+            bindings.len() >= 4,
+            "expected the library's two parameters and the entry's two bindings, got {bindings:?}"
+        );
+        let distinct: HashSet<_> = bindings.iter().collect();
+        assert_eq!(distinct.len(), bindings.len(), "binding ids collide across modules: {bindings:?}");
+        let distinct_fns: HashSet<_> = functions.iter().collect();
+        assert_eq!(distinct_fns.len(), functions.len(), "function ids collide across modules: {functions:?}");
     }
 
     /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must
