@@ -1098,13 +1098,6 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     })?;
     let program = &owned;
 
-    if program.stmts.is_empty() {
-        return Ok(IrModule {
-            debug_name: "cxir_v0".into(),
-            functions: vec![],
-        });
-    }
-
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
         functions: vec![],
@@ -1241,7 +1234,12 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
     }
 
-    if !top_level_stmts.is_empty() {
+    // Every program gets an entry point. With no top-level statements — an
+    // empty file, a file of definitions only, a library compiled on its own —
+    // the synthetic main is empty and the program does nothing, exit 0, as on
+    // the interpreter. Without it the JIT failed at link time ("no `main`
+    // symbol found") and every library fixture was a SKIP.
+    if !top_level_stmts.is_empty() || !has_real_main {
         if has_real_main {
             return Err(LoweringError::UnsupportedSemanticConstruct {
                 construct: "real function 'main' collides with synthetic main".to_string(),
@@ -7742,9 +7740,10 @@ mod tests {
         };
 
         let module = lower_and_validate(&program);
-        assert_eq!(module.functions.len(), 1);
+        // The function, and the empty `main` every program now gets.
+        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "main"]);
         let function = &module.functions[0];
-        assert_eq!(function.name, "id");
         assert_eq!(function.params.len(), 1);
         assert_eq!(function.blocks.len(), 1);
         assert_eq!(function.blocks[0].params.len(), 1);
@@ -8525,14 +8524,41 @@ mod tests {
         );
     }
 
+    /// An empty program still has an entry point: a `main` that only returns,
+    /// so it runs and exits 0 as on the interpreter. (It used to lower to a
+    /// module with no functions at all, which the JIT then refused to link.)
     #[test]
-    fn empty_program_lowers_to_empty_module() {
+    fn empty_program_lowers_to_an_empty_main() {
         let module = lower_and_validate(&SemanticProgram {
             stmts: vec![],
             enums: vec![],
         });
 
-        assert!(module.functions.is_empty());
+        assert_eq!(module.functions.len(), 1);
+        let main = &module.functions[0];
+        assert_eq!(main.name, "main");
+        assert_eq!(main.blocks.len(), 1);
+        assert!(main.blocks[0].insts.is_empty());
+        assert!(matches!(main.blocks[0].term, IrTerminator::Return { value: None }));
+    }
+
+    /// A program of definitions only — a library compiled on its own — gets the
+    /// same empty `main` beside its functions.
+    #[test]
+    fn definitions_only_program_gets_an_empty_main() {
+        let module = lower_and_validate(&SemanticProgram {
+            stmts: vec![semantic_function(
+                "id",
+                vec![typed_param(BindingId(10), "x", SemanticType::I64)],
+                Some(SemanticType::I64),
+                vec![],
+                Some(binding_ref(BindingId(10), "x", SemanticType::I64)),
+            )],
+            enums: vec![],
+        });
+
+        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "main"]);
     }
 
     #[test]
@@ -10067,9 +10093,10 @@ mod tests {
             enums: vec![],
         };
         let module = lower_program(&program).expect("lowering must succeed");
-        assert_eq!(module.functions.len(), 1);
+        // The function, and the empty `main` every program now gets.
+        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["do_nothing", "main"]);
         let ir_func = &module.functions[0];
-        assert_eq!(ir_func.name, "do_nothing");
         // Void return must be canonicalised to None, not Some(IrType::Void).
         assert_eq!(
             ir_func.return_ty, None,
