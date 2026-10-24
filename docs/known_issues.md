@@ -2623,3 +2623,33 @@ t_import_arg_narrowing       before: JIT SKIP                       now: PASS, b
 t74_import_basic             before: JIT SKIP                       now: PASS
 t64_import_pub_only          before: JIT SKIP                       now: PASS
 ```
+
+## 33. The JIT crashed narrowing a float to `t8` or `t16`
+
+*(Found 2026-10-24 by the review of §32; fixed by the commit that introduces
+this entry — the `F64` → integer arm of `Cast` in
+`src/backend/cranelift/host_boundary.rs`.)*
+
+**Status: FIXED.**
+
+Narrowing an `f64` to `t8` or `t16` — passing `300.7` to a `t8` parameter,
+binding it to a `t16`, returning it from a `t8` function — made the JIT panic
+while generating code (exit 2, no output):
+
+```
+assertion failed: dst_size.is_one_of(&[OperandSize::Size32, OperandSize::Size64])
+```
+
+Cranelift's `fcvt_to_sint_sat` supports only 32- and 64-bit results; `t32` and
+`t64` targets were fine. Local code always hit this. Imported calls reached it
+once §32 made them narrow their arguments. The interpreter, the reference, uses
+Rust's `as`: truncate toward zero, saturate at the type's bounds, NaN to 0.
+
+The fix saturates to `t32` first, clamps to the narrow type's bounds with
+`smax`/`smin`, then truncates. That is exactly `as i8` / `as i16`: a value outside
+`t32` has already saturated to `t32`'s bounds, which the clamp maps to the narrow
+type's bounds.
+
+Fixture: `t_cast_float_to_small_int` — truncation, both bounds, negatives, both
+infinities, NaN, and finite values far outside `t32`. Before: JIT panic. Now:
+PASS, both backends agree.
