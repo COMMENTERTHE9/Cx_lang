@@ -2,7 +2,8 @@
 // MIN / -1 to MIN and gives MIN % -1 = 0. On the JIT, compound assignment used
 // a raw `sdiv`, which faults in hardware on exactly this input (Windows
 // 0xC0000095, integer overflow) — for a variable, a struct field and an array
-// element alike. Ordinary compound division is checked alongside.
+// element alike — `MIN %= -1` (0) on all three too. Ordinary compound division
+// is checked alongside.
 struct P { x: t32 }
 a: t32 = -2147483648
 m: t32 = -1
@@ -17,6 +18,12 @@ print(arr:[0])
 c: t32 = -2147483648
 c %= m
 print(c)
+p2: P = P { x: -2147483648 }
+p2.x %= m
+print(p2.x)
+arr2: [2: t32] = [-2147483648, 7]
+arr2:[0] %= m
+print(arr2:[0])
 d: t64 = 7
 d /= 2
 print(d)

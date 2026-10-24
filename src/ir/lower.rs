@@ -3899,6 +3899,13 @@ fn emit_user_arith(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    // Cranelift's x64 backend has no 128-bit division: `sdiv.i128` fails to
+    // compile and `srem.i128` PANICS inside the code generator. Refuse instead.
+    if matches!(op, BinaryOp::Div | BinaryOp::Rem) && ty == IrType::I128 {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "t128 division and remainder — compiled code has no 128-bit divide yet".to_string(),
+        });
+    }
     if matches!(op, BinaryOp::Div | BinaryOp::Rem) && (ty.int_width().is_some() || ty == IrType::F64) {
         return emit_guarded_div(dst, ty, op, lhs, rhs, ctx, active);
     }
@@ -11623,7 +11630,8 @@ mod tests {
             let program = SemanticProgram {
                 stmts: vec![
                     typed_assign(BindingId(1), "a", SemanticType::F64, float_expr(1.0)),
-                    typed_assign(BindingId(2), "b", SemanticType::F64, float_expr(0.0)),
+                    // Non-zero, so the only 0.0 constant is the guard's own.
+                    typed_assign(BindingId(2), "b", SemanticType::F64, float_expr(2.0)),
                     typed_assign(BindingId(3), "q", SemanticType::F64, quotient),
                 ],
                 enums: vec![],
@@ -11632,12 +11640,20 @@ mod tests {
             let main = &module.functions[0];
             assert_eq!(trap_blocks(main), 1, "{op:?}: one zero-divisor trap");
             let insts: Vec<&IrInst> = main.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+            let zero = insts
+                .iter()
+                .find_map(|i| match i {
+                    IrInst::ConstFloat { dst, value } if *value == 0.0 => Some(*dst),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{op:?}: no 0.0 constant for the zero check"));
+            let compares: Vec<&&IrInst> = insts.iter().filter(|i| matches!(i, IrInst::Compare { .. })).collect();
+            assert_eq!(compares.len(), 1, "{op:?}: only the zero check — no MIN / -1 guard for floats");
             assert!(
-                insts.iter().any(|i| matches!(i, IrInst::ConstFloat { value, .. } if *value == 0.0)),
-                "{op:?}: the divisor is compared with 0.0"
+                matches!(compares[0], IrInst::Compare { op: CompareOp::Eq, rhs, .. } if *rhs == zero),
+                "{op:?}: the divisor is compared with 0.0: {:?}",
+                compares[0]
             );
-            let compares = insts.iter().filter(|i| matches!(i, IrInst::Compare { .. })).count();
-            assert_eq!(compares, 1, "{op:?}: only the zero check — no MIN / -1 guard for floats");
         }
     }
 
@@ -11666,6 +11682,37 @@ mod tests {
             };
             let module = lower_and_validate(&program);
             assert_eq!(trap_blocks(&module.functions[0]), 1, "{op:?}: one zero-divisor trap");
+        }
+    }
+
+    /// Cranelift's x64 backend has no 128-bit divide (`srem.i128` panicked in
+    /// the code generator), so t128 `/` and `%` are refused in lowering.
+    #[test]
+    fn t128_division_and_remainder_are_refused() {
+        for op in [Op::Div, Op::Mod] {
+            let quotient = SemanticExpr {
+                ty: SemanticType::I128,
+                kind: SemanticExprKind::Binary {
+                    lhs: Box::new(binding_ref(BindingId(1), "a", SemanticType::I128)),
+                    op,
+                    pos: 0,
+                    rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::I128)),
+                },
+            };
+            let program = SemanticProgram {
+                stmts: vec![
+                    typed_assign(BindingId(1), "a", SemanticType::I128, int_expr(7, SemanticType::I128)),
+                    typed_assign(BindingId(2), "b", SemanticType::I128, int_expr(2, SemanticType::I128)),
+                    typed_assign(BindingId(3), "q", SemanticType::I128, quotient),
+                ],
+                enums: vec![],
+            };
+            match lower_program(&program).expect_err("t128 division must be refused") {
+                LoweringError::UnsupportedSemanticConstruct { construct } => {
+                    assert!(construct.contains("t128 division and remainder"), "{op:?}: got {construct}")
+                }
+                other => panic!("{op:?}: expected an unsupported-construct refusal, got {other:?}"),
+            }
         }
     }
 }

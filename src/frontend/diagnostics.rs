@@ -582,3 +582,17 @@ pub fn print_scope_event(event: &ScopeEvent) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `%` by zero used to report "the right-hand side of '/'" (known_issues §17).
+    #[test]
+    fn division_by_zero_names_the_operator() {
+        for op in ["/", "%"] {
+            let (msg, _) = runtime_error_message(&RuntimeError::DivByZero { pos: 0, op });
+            assert!(msg.contains(&format!("right-hand side of '{op}'")), "got: {msg}");
+        }
+    }
+}

@@ -2888,8 +2888,9 @@ introduces this entry — `emit_user_arith` and `emit_guarded_div` in
 `src/ir/lower.rs`.)*
 
 **Status: FIXED.** Division and remainder by zero are a clean runtime error on
-both backends for every integer and float type, however the division is
-written, and compound `MIN /= -1` wraps to `MIN` as `MIN / -1` does.
+both backends for `t8` to `t64` and `f64`, however the division is written, and
+compound `MIN /= -1` wraps to `MIN` as `MIN / -1` does. `t128` division and
+remainder are refused by the JIT (below).
 
 ### What happened
 
@@ -2936,6 +2937,10 @@ sub-guard.
 Also fixed on the way: `%` by zero reported "the right-hand side of '/'" (§17);
 `RuntimeError::DivByZero` now carries the operator.
 
+**`t128` division is refused**, found by the review: Cranelift's x64 backend has
+no 128-bit divide — `%` PANICKED inside the code generator (exit 2) and `/`
+failed to compile — so `emit_user_arith` refuses both before the guard.
+
 Not changed: the JIT's trap reports every runtime error with one generic line,
 "cx: runtime trap (assertion failed or non-exhaustive `when`)" — division by
 zero included, as it has been for integers since Gate-1b. Naming the cause needs
@@ -2954,9 +2959,28 @@ t_compound_div_by_zero_field    before: JIT hardware fault         now: trap, bo
 t_compound_div_by_zero_elem     before: JIT hardware fault         now: trap, both reject
 t_compound_intmin_div_neg1      before: JIT hardware fault         now: PASS, both agree
 t_fdiv_nonzero                  float division that must NOT trap — NaN and infinite divisors included
+t_t128_div_refused              before: JIT panic (`%`) / compile failure (`/`)   now: interpreter PASS; JIT SKIP
 ```
 
-The traps are asserted as `interp=diagnostic jit=trap`, like `t_div_by_zero`.
+The traps are asserted as `interp=diagnostic jit=trap`, like `t_div_by_zero`;
+`t_compound_intmin_div_neg1` covers `MIN /= -1` and `MIN %= -1` on a variable, a
+field and an element.
 Unit tests in `lower.rs` pin the guard's shape: one trap block for float `/`
 and `%`, a 0.0 compare and no `MIN / -1` check, and one trap block for compound
 `/=` and `%=`.
+
+### Found by the review, not fixed here
+
+Both predate this change; each is a separate fix.
+
+- **Compound arithmetic in a generic function does not wrap on the
+  interpreter.** In `fnc: T <T> gadd(x: T, d: T) { x += d  x }`, called with
+  `t32` 2147483647 and 1, the interpreter prints 2147483648 — a `t32` holding a
+  value no `t32` can — while the JIT, which compiles the `t32` instance,
+  prints -2147483648. The same for `/=` with `MIN` and -1. The interpreter
+  keeps a `T`-typed result at full width because `T` has no width at run time.
+  The reference is the one that is wrong.
+- **Compound arithmetic on an enum value passes analysis.** `c += k` with `c` a
+  `Color`: the interpreter fails at run time, while the JIT does integer
+  arithmetic on the tag and exits 0. Analysis should reject a non-numeric
+  compound target, as it rejects `c + k`.
