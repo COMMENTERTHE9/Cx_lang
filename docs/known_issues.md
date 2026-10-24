@@ -2520,11 +2520,15 @@ silently diverges any more. It also found:
 
 ### Found alongside, not fixed here
 
-- **A library cannot call its own non-public functions** — on either backend.
-  `pub fnc: t64 api(n: t64) { helper(n) + 1 }` calling a private `helper` fails
-  with `variable 'helper' has not been declared` on the interpreter and
-  `function 'helper'` unresolved on the JIT. Pre-existing. It blocks any library
-  with internal helpers, so it is part of the multi-file step of milestone 1.
+- **A library function cannot call another function of the same library** —
+  public or private, on either backend. `pub fnc: t64 api(n: t64) { helper(n) + 1 }`
+  fails with `variable 'helper' has not been declared` on the interpreter and
+  `function 'helper'` unresolved on the JIT, and it fails the same way when the
+  sibling is itself `pub`. When a library is merged into the program its
+  functions are renamed `alias$name`, but the calls inside the library are not.
+  On the JIT, a library's use of its own structs fails for the same reason.
+  Pre-existing; it confines multi-file programs to libraries of leaf functions,
+  so it is part of the multi-file step of milestone 1.
 - **An enum with more than 256 variants picks the wrong `when` arm on the JIT**,
   silently: the tag is 8 bits and wraps. Pre-existing and rare; it needs either
   a wider tag or an analysis-time limit.
