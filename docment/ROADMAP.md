@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-10-24
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -100,6 +100,16 @@ remaining blockers folded into 0.4.
   0.3.4; they belong here, and inventing a version slot to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
   0.3.4 is ever needed, it gets created when something actually justifies it.
+
+  **JIT soundness tightening (landed on submain, 2026-10-24):**
+  - Imported-call checking now matches local calls (arity, type, range,
+    narrowing, `.copy` contract) — PR #450.
+  - Top-level state refused from function bodies (was a silent miscompile)
+    — PR #449.
+  - Function names no longer resolve as variables — PR #451.
+  - Float division/remainder and compound `/=` `%=` guarded against zero;
+    t128 division refused — `backend/float-div-by-zero` branch (not yet
+    merged).
 - **0.5** — **Multidimensional arrays landed, or actively completing.**
 - **1.0** — First stable release.
 - **1.0+** — Graphics begins: Vulkan/DX12 bindings. *(Not before 1.0 — the
