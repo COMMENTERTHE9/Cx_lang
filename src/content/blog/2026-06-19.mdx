@@ -1,0 +1,58 @@
+---
+title: "Cx Dev Log — 2026-06-19"
+date: 2026-06-19
+description: "Tag-only enum lowering landed on submain, completing the D2.2 milestone and finishing when-block lowering in Phase 11."
+---
+
+Tag-only enums now lower to IR. The D2.2 commit landed on submain, adding construct and match support for enums through a surprisingly minimal approach: erase the type entirely and work with raw tag constants.
+
+## What landed
+
+The core change is 72 lines across four sites in `src/ir/lower.rs`:
+
+1. **Type erasure** -- `lower_type(Enum)` maps to `IrType::I8`. There is no enum IR type. Tag-only enums are just their u8 tag value at the IR level.
+
+2. **Value construction** -- `lower_value(EnumVariant)` emits `ConstInt(I8, variant_id)`. Building an enum value is a single constant.
+
+3. **Pattern matching** -- `emit_when_arm_match(EnumVariant)` generates a ConstInt + Compare(Eq) + Branch sequence, reusing the same pattern emission helper that D1.2a introduced for literal arms in `when` blocks.
+
+4. **Declaration no-op** -- `SemanticStmt::EnumDef` compiles to nothing at both top-level and statement positions. Enum declarations carry no runtime data.
+
+The variant_id is a program-global monotonic counter assigned at declaration time by `fresh_enum_variant()`. Both construct and match sites share the same counter, so tag equality is correct by construction. The ceiling is 256 total enum variants across the entire program (u8 width), which the commit message documents as intentional: "fine for 0.3's small enums; a spec footnote if enums grow."
+
+Six enum test fixtures moved from SKIP to PASS: t22_enum_basic, t27_enum_grouped, t28_super_group, t_enum_param, t_enum_return, and t_enum_state_machine. Parity shifted from 199/87/0 to 205/81/0 across 286 fixtures. The seventh candidate, t47_edge_mix, stays SKIP because it combines enums with unknown values (`?`), which are on a separate D2.x lowering path.
+
+## Completing when-block lowering
+
+This commit closes out `when` block lowering in Phase 11. The three pieces are now all done:
+
+- **D1.2a** -- stmt/expr emission unification
+- **D2.1** -- if-expression merge (value-producing branches)
+- **D2.2** -- enum construct + match
+
+Value-producing enum match routes through D2.1's `lower_branch_value`, so the if-expression merge machinery handles it without any new code for that path. Exhaustiveness is enforced at semantic time via the frontend's required `_` catchall, so the IR needs no exhaustiveness check or trap path.
+
+## Design decision: total type erasure
+
+The choice to erase enums entirely to I8 constants is worth noting. There is no enum table, no runtime representation beyond the tag. This is a deliberate simplification that works because:
+
+- The frontend already validates exhaustiveness
+- The variant_id counter is monotonic and shared between construct/match
+- Tag-only enums don't carry associated data
+
+It would need revisiting if Cx adds data-carrying enum variants, but for 0.3's scope it avoids a whole category of IR complexity.
+
+## Roadmap movement
+
+The ROADMAP got updated to reflect the new state:
+
+- `when` block lowering is now checked off in Phase 11
+- Phase 15 parity numbers updated to 205/81/0 (from a stale 110/72/0 across 182)
+- Matrix count updated to 230/230 on main
+- CR#1-4 range-check fixes and Gate safety items added to post-release hardening
+
+Submain is now 16 commits ahead of main with zero regressions. The last merge to main was PR #295 back on June 5, so the gap has been growing steadily.
+
+## What's next
+
+DotAccess in compound forms is the last unchecked item in Phase 11. With `when` block lowering complete, that is the natural next target. Unknown-value lowering (the D2.x deferred path) would unlock t47_edge_mix and other fixtures that mix known constructs with `?` values. And the submain-to-main merge keeps growing -- 16 stable commits with all gates passing, waiting for integration.
