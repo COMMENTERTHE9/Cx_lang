@@ -1777,13 +1777,10 @@ fn lower_stmt(
                 }
             };
             let result_dst = ctx.fresh_value();
-            current.emit(IrInst::Binary {
-                dst: result_dst,
-                op: bin_op,
-                ty: target_ty.clone(),
-                lhs: current_val.value,
-                rhs: rhs.value,
-            })?;
+            let result_dst = emit_user_arith(
+                result_dst, bin_op, target_ty.clone(), current_val.value, rhs.value, ctx, &mut current,
+            )?
+            .value;
             let bind_dst = ctx.fresh_value();
             current.emit(IrInst::SsaBind {
                 dst: bind_dst,
@@ -1820,13 +1817,10 @@ fn lower_stmt(
                 }
             };
             let result_dst = ctx.fresh_value();
-            current.emit(IrInst::Binary {
-                dst: result_dst,
-                op: bin_op,
-                ty: field_ir_ty.clone(),
-                lhs: current_dst,
-                rhs: rhs.value,
-            })?;
+            let result_dst = emit_user_arith(
+                result_dst, bin_op, field_ir_ty.clone(), current_dst, rhs.value, ctx, &mut current,
+            )?
+            .value;
             // Write back to the field.
             current.emit(IrInst::Store {
                 ptr: field_ptr,
@@ -1860,13 +1854,10 @@ fn lower_stmt(
                 }
             };
             let result_dst = ctx.fresh_value();
-            current.emit(IrInst::Binary {
-                dst: result_dst,
-                op: bin_op,
-                ty: elem_ir_ty.clone(),
-                lhs: current_dst,
-                rhs: rhs.value,
-            })?;
+            let result_dst = emit_user_arith(
+                result_dst, bin_op, elem_ir_ty.clone(), current_dst, rhs.value, ctx, &mut current,
+            )?
+            .value;
             // Write back to the element.
             current.emit(IrInst::Store {
                 ptr: elem_ptr,
@@ -3538,26 +3529,6 @@ fn lower_binary(
             };
             ensure_type_match("binary lhs", ty.clone(), lhs.ty)?;
             ensure_type_match("binary rhs", ty.clone(), rhs.ty)?;
-            // Integer division and modulo route through the guard helper —
-            // divisor==0 traps cleanly (Gate-1b), and Div additionally guards
-            // INT_MIN/-1 overflow (Gate-1a). Float div/mod (no int width) and the
-            // other ops fall through unchanged, so their emitted IR is identical.
-            if matches!(op, Op::Div | Op::Mod) && ty.int_width().is_some() {
-                let binop = if matches!(op, Op::Div) {
-                    BinaryOp::Div
-                } else {
-                    BinaryOp::Rem
-                };
-                return emit_guarded_idiv(
-                    dst,
-                    ty.clone(),
-                    binop,
-                    lhs.value,
-                    rhs.value,
-                    ctx,
-                    active,
-                );
-            }
             let op = match op {
                 Op::Plus => BinaryOp::Add,
                 Op::Minus => BinaryOp::Sub,
@@ -3566,14 +3537,7 @@ fn lower_binary(
                 Op::Mod => BinaryOp::Rem,
                 _ => unreachable!(),
             };
-            active.emit(IrInst::Binary {
-                dst,
-                op,
-                ty: ty.clone(),
-                lhs: lhs.value,
-                rhs: rhs.value,
-            })?;
-            Ok(LoweredValue { value: dst, ty })
+            emit_user_arith(dst, op, ty, lhs.value, rhs.value, ctx, active)
         }
         Op::EqEq | Op::NotEq | Op::Lt | Op::LtEq | Op::Gt | Op::GtEq => {
             // D2.x-A1 safety valve: `==` / `!=` on a three-state bool yields TBool
@@ -3914,36 +3878,75 @@ fn lower_logical(
     Ok(LoweredValue { value: result_param, ty: IrType::Bool })
 }
 
-/// Emit guarded integer division (`op = Div`) or modulo (`op = Rem`) — the single
-/// source for "guard a division" (trackers Gate-1a + Gate-1b). Raw Cranelift
-/// `sdiv`/`srem` trap in hardware on two inputs; this branches around both so the
-/// JIT matches the interpreter:
+/// Emit `lhs <op> rhs` at `ty` for arithmetic written in the program — the one
+/// place binary expressions AND compound assignments (`x /= y`, `p.f %= y`,
+/// `a:[i] /= y`) lower their operator. Division and remainder on an integer or
+/// float type go through `emit_guarded_div`, so a zero divisor (and integer
+/// `MIN / -1`) behaves as on the interpreter however the division is written;
+/// every other operator is a single `Binary`. Compound assignment used to emit a
+/// raw `Binary` of its own and so skipped the guard: `x /= 0` died on a hardware
+/// fault instead of the clean trap (known_issues §35).
+///
+/// The result is `dst` for an unguarded operator, and the guard's merge-block
+/// parameter for a guarded one; either way `active` is left as the block in
+/// which the result is available.
+fn emit_user_arith(
+    dst: ValueId,
+    op: BinaryOp,
+    ty: IrType,
+    lhs: ValueId,
+    rhs: ValueId,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    // Cranelift's x64 backend has no 128-bit division: `sdiv.i128` fails to
+    // compile and `srem.i128` PANICS inside the code generator. Refuse instead.
+    if matches!(op, BinaryOp::Div | BinaryOp::Rem) && ty == IrType::I128 {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: "t128 division and remainder — compiled code has no 128-bit divide yet".to_string(),
+        });
+    }
+    if matches!(op, BinaryOp::Div | BinaryOp::Rem) && (ty.int_width().is_some() || ty == IrType::F64) {
+        return emit_guarded_div(dst, ty, op, lhs, rhs, ctx, active);
+    }
+    active.emit(IrInst::Binary { dst, op, ty: ty.clone(), lhs, rhs })?;
+    Ok(LoweredValue { value: dst, ty })
+}
+
+/// Emit guarded division (`op = Div`) or remainder (`op = Rem`) on an integer or
+/// `F64` type — the single source for "guard a division" (trackers Gate-1a +
+/// Gate-1b). Callers reach it through `emit_user_arith`. It branches around the
+/// inputs on which the raw instruction would not do what the interpreter does:
 ///
 ///   - `divisor == 0` (Gate-1b): the interpreter raises a clean `DivByZero`
-///     error (R4: not overflow). Route to the `Trap` terminator, which since
-///     Gate-1b0 calls `cx_trap` for a clean process exit (126) — NOT a hardware
-///     fault. Applies to BOTH Div and Mod.
-///   - `INT_MIN / -1` (Gate-1a, Div only): signed overflow; R4 rules it wraps to
-///     `INT_MIN`. A `select` would still execute the faulting `sdiv`, so this is a
-///     BRANCH that produces `MIN` without dividing, mirroring the interpreter's
-///     `if b == -1 { a.wrapping_neg() }` (runtime/ops.rs:93). `MIN` is sourced
-///     per-width from the int-facts leaf. Mod needs no INT_MIN guard — `srem`
-///     already yields 0 for `INT_MIN % -1` (R4-confirmed), so Rem goes straight
-///     to the divide block once the zero-check passes.
+///     error (R4: not overflow) — for floats too, since runtime/ops.rs tests
+///     `b == 0.0`. Raw `sdiv`/`srem` fault in hardware, and IEEE `fdiv` / fmod
+///     would quietly produce an infinity or NaN. Route to the `Trap`
+///     terminator, which since Gate-1b0 calls `cx_trap` for a clean process
+///     exit (126). Applies to BOTH Div and Rem. For `F64` the compare is an
+///     ordered `fcmp eq` against 0.0: true for -0.0, false for NaN — exactly
+///     the interpreter's `b == 0.0`.
+///   - `INT_MIN / -1` (Gate-1a, integer Div only): signed overflow; R4 rules it
+///     wraps to `INT_MIN`. A `select` would still execute the faulting `sdiv`, so
+///     this is a BRANCH that produces `MIN` without dividing, mirroring the
+///     interpreter's `if b == -1 { a.wrapping_neg() }` (runtime/ops.rs:93). `MIN`
+///     is sourced per-width from the int-facts leaf. Rem needs no INT_MIN guard —
+///     `srem` already yields 0 for `INT_MIN % -1` (R4-confirmed) — and floats
+///     have no such input, so both go straight to the divide block once the
+///     zero-check passes.
 ///
 ///   [decision]  is_zero = Eq(divisor, 0);  Branch(is_zero, trap, nonzero)
 ///       |    \
 ///    [trap]   \                              trap: clean cx_trap exit (Gate-1b0)
 ///              \
-///           [nonzero]  — Div: the INT_MIN/-1 sub-guard below; Rem: = divide
+///           [nonzero]  — integer Div: the INT_MIN/-1 sub-guard below; else = divide
 ///   (Div)   is_min → check_neg1 → min_blk(MIN) / divide ; merge ← MIN | quotient
-///   (Rem)   divide: srem ; Jump merge(rem)
+///   (else)  divide: srem / fdiv / fmod ; Jump merge(result)
 ///     [merge(result)]  — receives the result via a block parameter
 ///
-/// The per-width `MIN` (Div only) is read from `ty`'s int-facts leaf entry inside.
-/// Non-integer (F64) div/mod and all other ops do not reach here (the caller
-/// gates on `ty.int_width()`), so their IR is unchanged.
-fn emit_guarded_idiv(
+/// The per-width `MIN` (integer Div only) is read from `ty`'s int-facts leaf
+/// entry inside.
+fn emit_guarded_div(
     dst: ValueId,
     ty: IrType,
     op: BinaryOp,
@@ -3953,11 +3956,16 @@ fn emit_guarded_idiv(
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
     let incoming = active.bindings.clone();
+    let is_float = ty == IrType::F64;
 
     // ── Outer gate (Gate-1b): divisor == 0 → clean trap. ──────────────────────
     // Decision block (current `active`): is_zero = (divisor == 0).
     let zero_const = ctx.fresh_value();
-    active.emit(IrInst::ConstInt { dst: zero_const, ty: ty.clone(), value: 0 })?;
+    if is_float {
+        active.emit(IrInst::ConstFloat { dst: zero_const, value: 0.0 })?;
+    } else {
+        active.emit(IrInst::ConstInt { dst: zero_const, ty: ty.clone(), value: 0 })?;
+    }
     let is_zero = ctx.fresh_value();
     active.emit(IrInst::Compare {
         dst: is_zero,
@@ -3981,13 +3989,14 @@ fn emit_guarded_idiv(
     let mut divide = ctx.start_block(vec![], incoming.clone());
     let divide_id = divide.id();
 
-    // Non-zero entry: Div gets the INT_MIN/-1 sub-guard (Gate-1a); Rem goes
-    // straight to the divide (srem already handles INT_MIN % -1). The sub-guard
-    // blocks are CREATED here (their ids feed the branch below) but FILLED only
-    // after the decision block is sealed — they read dividend/divisor, which are
-    // defined in the decision block and resolve cross-block only once it is
-    // sealed (the seal-order Gate-1a relied on as well).
-    let is_div = matches!(op, BinaryOp::Div);
+    // Non-zero entry: integer Div gets the INT_MIN/-1 sub-guard (Gate-1a); Rem
+    // and float Div go straight to the divide (srem already handles INT_MIN % -1;
+    // floats have no overflowing quotient). The sub-guard blocks are CREATED here
+    // (their ids feed the branch below) but FILLED only after the decision block
+    // is sealed — they read dividend/divisor, which are defined in the decision
+    // block and resolve cross-block only once it is sealed (the seal-order
+    // Gate-1a relied on as well).
+    let is_div = matches!(op, BinaryOp::Div) && !is_float;
     let mut check_min = if is_div {
         Some(ctx.start_block(vec![], incoming.clone()))
     } else {
@@ -4025,8 +4034,8 @@ fn emit_guarded_idiv(
     trap_blk.terminate(IrTerminator::Trap)?;
     ctx.seal_block(trap_blk)?;
 
-    // divide: the actual sdiv/srem — never reached for divisor 0 (or INT_MIN/-1
-    // for Div). `op` is Div or Rem; both are well-typed at `ty`.
+    // divide: the actual sdiv/srem/fdiv/fmod — never reached for divisor 0 (or
+    // INT_MIN/-1 for integer Div). `op` is Div or Rem; both are well-typed at `ty`.
     divide.emit(IrInst::Binary {
         dst,
         op,
@@ -4044,8 +4053,8 @@ fn emit_guarded_idiv(
     {
         let check_neg1_id = check_neg1_id.expect("check_neg1 id present for Div");
         let min_blk_id = min_blk_id.expect("min_blk id present for Div");
-        // Per-width INT_MIN from the int-facts leaf (Div reaches here only for an
-        // integer `ty`, so int_width() is always Some).
+        // Per-width INT_MIN from the int-facts leaf (the sub-guard exists only for
+        // integer Div, so int_width() is always Some).
         let min = ty
             .int_width()
             .expect("integer division requires an integer width")
@@ -11594,6 +11603,116 @@ mod tests {
                 "got: {construct}"
             ),
             other => panic!("expected an unsupported-construct refusal, got {other:?}"),
+        }
+    }
+
+    /// Trap blocks in `func` — the zero-divisor exits the division guard emits.
+    fn trap_blocks(func: &IrFunction) -> usize {
+        func.blocks.iter().filter(|b| matches!(b.term, IrTerminator::Trap)).count()
+    }
+
+    /// Float `/` and `%` trap on a zero divisor, as the interpreter does
+    /// (runtime/ops.rs raises `DivByZero` for `b == 0.0`); IEEE would instead
+    /// quietly produce an infinity or NaN. They share the integer zero gate,
+    /// comparing against a 0.0 constant, without the integer-only MIN / -1 guard.
+    #[test]
+    fn float_division_and_remainder_trap_on_a_zero_divisor() {
+        for op in [Op::Div, Op::Mod] {
+            let quotient = SemanticExpr {
+                ty: SemanticType::F64,
+                kind: SemanticExprKind::Binary {
+                    lhs: Box::new(binding_ref(BindingId(1), "a", SemanticType::F64)),
+                    op,
+                    pos: 0,
+                    rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::F64)),
+                },
+            };
+            let program = SemanticProgram {
+                stmts: vec![
+                    typed_assign(BindingId(1), "a", SemanticType::F64, float_expr(1.0)),
+                    // Non-zero, so the only 0.0 constant is the guard's own.
+                    typed_assign(BindingId(2), "b", SemanticType::F64, float_expr(2.0)),
+                    typed_assign(BindingId(3), "q", SemanticType::F64, quotient),
+                ],
+                enums: vec![],
+            };
+            let module = lower_and_validate(&program);
+            let main = &module.functions[0];
+            assert_eq!(trap_blocks(main), 1, "{op:?}: one zero-divisor trap");
+            let insts: Vec<&IrInst> = main.blocks.iter().flat_map(|b| b.insts.iter()).collect();
+            let zero = insts
+                .iter()
+                .find_map(|i| match i {
+                    IrInst::ConstFloat { dst, value } if *value == 0.0 => Some(*dst),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{op:?}: no 0.0 constant for the zero check"));
+            let compares: Vec<&&IrInst> = insts.iter().filter(|i| matches!(i, IrInst::Compare { .. })).collect();
+            assert_eq!(compares.len(), 1, "{op:?}: only the zero check — no MIN / -1 guard for floats");
+            assert!(
+                matches!(compares[0], IrInst::Compare { op: CompareOp::Eq, rhs, .. } if *rhs == zero),
+                "{op:?}: the divisor is compared with 0.0: {:?}",
+                compares[0]
+            );
+        }
+    }
+
+    /// Compound `/=` and `%=` go through the same guard as `/` and `%`. They used
+    /// to emit a raw `Binary`, so `x /= 0` died on a hardware fault on the JIT
+    /// (known_issues §35).
+    #[test]
+    fn compound_division_traps_on_a_zero_divisor() {
+        for op in [Op::Div, Op::Mod] {
+            let program = SemanticProgram {
+                stmts: vec![
+                    typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(5, SemanticType::I64)),
+                    typed_assign(BindingId(2), "y", SemanticType::I64, int_expr(0, SemanticType::I64)),
+                    SemanticStmt::CompoundAssign {
+                        target: SemanticLValue::Binding {
+                            binding: BindingId(1),
+                            name: "x".to_string(),
+                            ty: SemanticType::I64,
+                        },
+                        op,
+                        operand: binding_ref(BindingId(2), "y", SemanticType::I64),
+                        pos: 0,
+                    },
+                ],
+                enums: vec![],
+            };
+            let module = lower_and_validate(&program);
+            assert_eq!(trap_blocks(&module.functions[0]), 1, "{op:?}: one zero-divisor trap");
+        }
+    }
+
+    /// Cranelift's x64 backend has no 128-bit divide (`srem.i128` panicked in
+    /// the code generator), so t128 `/` and `%` are refused in lowering.
+    #[test]
+    fn t128_division_and_remainder_are_refused() {
+        for op in [Op::Div, Op::Mod] {
+            let quotient = SemanticExpr {
+                ty: SemanticType::I128,
+                kind: SemanticExprKind::Binary {
+                    lhs: Box::new(binding_ref(BindingId(1), "a", SemanticType::I128)),
+                    op,
+                    pos: 0,
+                    rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::I128)),
+                },
+            };
+            let program = SemanticProgram {
+                stmts: vec![
+                    typed_assign(BindingId(1), "a", SemanticType::I128, int_expr(7, SemanticType::I128)),
+                    typed_assign(BindingId(2), "b", SemanticType::I128, int_expr(2, SemanticType::I128)),
+                    typed_assign(BindingId(3), "q", SemanticType::I128, quotient),
+                ],
+                enums: vec![],
+            };
+            match lower_program(&program).expect_err("t128 division must be refused") {
+                LoweringError::UnsupportedSemanticConstruct { construct } => {
+                    assert!(construct.contains("t128 division and remainder"), "{op:?}: got {construct}")
+                }
+                other => panic!("{op:?}: expected an unsupported-construct refusal, got {other:?}"),
+            }
         }
     }
 }

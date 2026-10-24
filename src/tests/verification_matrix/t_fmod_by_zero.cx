@@ -1,0 +1,7 @@
+// Float remainder by zero: a runtime error on the interpreter; the JIT's fmod
+// call used to return NaN and keep running. Now it traps cleanly (126).
+a: f64 = 5.0
+b: f64 = 0.0
+q: f64 = a % b
+r: bool = q != q
+print(r)

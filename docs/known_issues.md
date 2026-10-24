@@ -993,7 +993,8 @@ check is a pure function of a literal and the symbol table.
 
 ## 17. Diagnostics: hardcoded `pos: 0`, and `%` reporting `/`
 
-**Status: OPEN — cosmetic, but they misdirect.**
+**Status: positions OPEN — cosmetic, but they misdirect. The wrong operator is
+FIXED (§35).**
 
 **Position 0.** Fifteen runtime-error construction sites in `src/runtime/`
 (`exec.rs:72,76,102,106,123,184,188,378,382,393,422,464,493`, and others) pass
@@ -1004,9 +1005,10 @@ carry **no source position in the AST**, so the C1 field-read error and the C3
 value-position variant error both report line 1. Fixing those two requires
 adding positions to those AST nodes — worth doing, out of scope for a check.
 
-**Wrong operator in the divide-by-zero message.** `print(10 % 0)` reports
-*"division by zero — the right-hand side of `'/'` evaluated to 0"*. The `Mod`
-arm in `src/runtime/ops.rs` reuses the `Div` diagnostic verbatim.
+**Wrong operator in the divide-by-zero message — FIXED (§35).** `print(10 % 0)`
+reported *"division by zero — the right-hand side of `'/'` evaluated to 0"*: the
+`Mod` arm in `src/runtime/ops.rs` reused the `Div` diagnostic verbatim.
+`RuntimeError::DivByZero` now carries the operator, so it says `'%'`.
 
 ---
 
@@ -2878,3 +2880,107 @@ The rejections are semantic errors on both backends, asserted as
 `interp=diagnostic jit=diagnostic`; unit tests in `semantic.rs`
 (`a_function_name_is_not_a_variable`, plus two positive controls) pin the
 message, which the harness cannot.
+
+## 35. Division by zero: floats never trapped on the JIT, and `/=` `%=` crashed it
+
+*(Found 2026-10-24 while testing §33's float narrowing; fixed by the commit that
+introduces this entry — `emit_user_arith` and `emit_guarded_div` in
+`src/ir/lower.rs`.)*
+
+**Status: FIXED.** Division and remainder by zero are a clean runtime error on
+both backends for `t8` to `t64` and `f64`, however the division is written, and
+compound `MIN /= -1` wraps to `MIN` as `MIN / -1` does. `t128` division and
+remainder are refused by the JIT (below).
+
+### What happened
+
+The interpreter — the reference — raises `DivByZero` for a zero divisor,
+integer or float: `runtime/ops.rs` tests `b == 0` and `b == 0.0`. Since Gate-1b
+the JIT matched it for integer `a / b` and `a % b`. Everything else slipped past:
+
+```
+z: f64 = 0.0
+q: f64 = 1.0 / z      interpreter: runtime error   JIT: q = +inf, kept running
+q: f64 = 5.0 % z      interpreter: runtime error   JIT: q = NaN, kept running
+f /= z                interpreter: runtime error   JIT: +inf, kept running
+
+b: t32 = 0
+a /= b                interpreter: runtime error   JIT: hardware fault 0xC000001D (illegal instruction)
+a %= b                interpreter: runtime error   JIT: hardware fault 0xC0000094 (integer divide by zero)
+m: t32 = -1
+a /= m   (a = MIN)    interpreter: MIN             JIT: hardware fault 0xC0000095 (integer overflow)
+```
+
+The compound cases fault the same way on a struct field (`p.x /= b`) and an
+array element (`arr:[0] /= b`). Git Bash reports the last two fault codes as
+exit 127 — the code a JIT *refusal* uses — so a shell probe can mistake them
+for "unsupported"; the parity harness reads the raw code and does not.
+
+### Why
+
+The guard was reachable only from binary-expression lowering, and only for
+integer types — its own comment said "Non-integer (F64) div/mod … do not reach
+here". Compound assignment lowered its operator separately, in three places
+(variable, field, element), each emitting a raw `Binary`, so it never met the
+guard for any type.
+
+### The fix
+
+One function, `emit_user_arith`, lowers every arithmetic operator written in a
+program: binary expressions and all three compound-assignment arms. Division
+and remainder on an integer or `F64` type go through `emit_guarded_div`
+(formerly `emit_guarded_idiv`), which now takes floats. For `F64` the zero check
+is an ordered `fcmp eq` against 0.0 — true for -0.0, false for NaN, exactly the
+interpreter's `b == 0.0` — and floats skip the integer-only `MIN / -1`
+sub-guard.
+
+Also fixed on the way: `%` by zero reported "the right-hand side of '/'" (§17);
+`RuntimeError::DivByZero` now carries the operator.
+
+**`t128` division is refused**, found by the review: Cranelift's x64 backend has
+no 128-bit divide — `%` PANICKED inside the code generator (exit 2) and `/`
+failed to compile — so `emit_user_arith` refuses both before the guard.
+
+Not changed: the JIT's trap reports every runtime error with one generic line,
+"cx: runtime trap (assertion failed or non-exhaustive `when`)" — division by
+zero included, as it has been for integers since Gate-1b. Naming the cause needs
+a reason code passed to `cx_trap`; that is a separate diagnostics change.
+
+### Fixtures
+
+```
+t_fdiv_by_zero                  before: JIT printed true (inf)     now: trap, both reject
+t_fmod_by_zero                  before: JIT printed true (NaN)     now: trap, both reject
+t_fdiv_by_neg_zero              before: JIT printed true (-inf)    now: trap, both reject
+t_compound_fdiv_by_zero         before: JIT printed true (inf)     now: trap, both reject
+t_compound_div_by_zero          before: JIT hardware fault         now: trap, both reject
+t_compound_mod_by_zero          before: JIT hardware fault         now: trap, both reject
+t_compound_div_by_zero_field    before: JIT hardware fault         now: trap, both reject
+t_compound_div_by_zero_elem     before: JIT hardware fault         now: trap, both reject
+t_compound_intmin_div_neg1      before: JIT hardware fault         now: PASS, both agree
+t_fdiv_nonzero                  float division that must NOT trap — NaN and infinite divisors included
+t_t128_div_refused              before: JIT panic (`%`) / compile failure (`/`)   now: interpreter PASS; JIT SKIP
+```
+
+The traps are asserted as `interp=diagnostic jit=trap`, like `t_div_by_zero`;
+`t_compound_intmin_div_neg1` covers `MIN /= -1` and `MIN %= -1` on a variable, a
+field and an element.
+Unit tests in `lower.rs` pin the guard's shape: one trap block for float `/`
+and `%`, a 0.0 compare and no `MIN / -1` check, and one trap block for compound
+`/=` and `%=`.
+
+### Found by the review, not fixed here
+
+Both predate this change; each is a separate fix.
+
+- **Compound arithmetic in a generic function does not wrap on the
+  interpreter.** In `fnc: T <T> gadd(x: T, d: T) { x += d  x }`, called with
+  `t32` 2147483647 and 1, the interpreter prints 2147483648 — a `t32` holding a
+  value no `t32` can — while the JIT, which compiles the `t32` instance,
+  prints -2147483648. The same for `/=` with `MIN` and -1. The interpreter
+  keeps a `T`-typed result at full width because `T` has no width at run time.
+  The reference is the one that is wrong.
+- **Compound arithmetic on an enum value passes analysis.** `c += k` with `c` a
+  `Color`: the interpreter fails at run time, while the JIT does integer
+  arithmetic on the tag and exits 0. Analysis should reject a non-numeric
+  compound target, as it rejects `c + k`.

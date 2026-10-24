@@ -1,0 +1,5 @@
+#! interp=diagnostic jit=trap
+# The interpreter raises a RUNTIME error (exit 1, rendered diagnostic);
+# the JIT routes every runtime error through the single cx_trap channel
+# (exit 126). Both reject; the shapes differ by design, so the pair is
+# recorded and asserted rather than accepted as merely "non-zero".

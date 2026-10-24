@@ -1,0 +1,25 @@
+// Float division and remainder that must NOT trap: the zero gate is taken only
+// by a zero divisor. A NaN divisor is not zero (ordered `fcmp eq` is false, as
+// is the interpreter's `b == 0.0`), so it divides to NaN; an infinite divisor
+// divides to 0. Results are compared rather than printed: the JIT cannot print
+// f64 yet.
+q: f64 = 7.0 / 2.0
+print(q == 3.5)
+m: f64 = 7.5 % 2.0
+print(m == 1.5)
+n: f64 = 0.0 - 7.5
+nm: f64 = n % 2.0
+print(nm == 0.0 - 1.5)
+f: f64 = 9.0
+f /= 2.0
+print(f == 4.5)
+big: f64 = 10000000000.0
+b2: f64 = big * big * big * big
+b3: f64 = b2 * b2
+b4: f64 = b3 * b3
+inf: f64 = b4 * b4
+nan: f64 = inf - inf
+r: f64 = 1.0 / nan
+print(r != r)
+s: f64 = 1.0 / inf
+print(s == 0.0)

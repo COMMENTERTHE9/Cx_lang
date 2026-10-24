@@ -89,12 +89,12 @@ impl RunTime {
                 }
             },
             Op::Div => match (&left, &right) {
-                (Value::Num(_), Value::Num(0)) => Err(RuntimeError::DivByZero { pos }),
+                (Value::Num(_), Value::Num(0)) => Err(RuntimeError::DivByZero { pos, op: "/" }),
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Num(if *b == -1 { a.wrapping_neg() } else { a / b })),
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         if b == 0.0 {
-                            Err(RuntimeError::DivByZero { pos })
+                            Err(RuntimeError::DivByZero { pos, op: "/" })
                         } else {
                             Ok(Value::Float(a / b))
                         }
@@ -109,12 +109,12 @@ impl RunTime {
                 }
             },
             Op::Mod => match (&left, &right) {
-                (Value::Num(_), Value::Num(0)) => Err(RuntimeError::DivByZero { pos }),
+                (Value::Num(_), Value::Num(0)) => Err(RuntimeError::DivByZero { pos, op: "%" }),
                 (Value::Num(a), Value::Num(b)) => Ok(Value::Num(if *b == -1 { 0 } else { a % b })),
                 _ => {
                     if let (Some(a), Some(b)) = (as_f64(&left), as_f64(&right)) {
                         if b == 0.0 {
-                            Err(RuntimeError::DivByZero { pos })
+                            Err(RuntimeError::DivByZero { pos, op: "%" })
                         } else {
                             Ok(Value::Float(a % b))
                         }

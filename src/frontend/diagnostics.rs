@@ -117,8 +117,8 @@ fn value_kind(v: &Value) -> &'static str {
 
 pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
     match err {
-        RuntimeError::DivByZero { pos } => (
-            "division by zero — the right-hand side of '/' evaluated to 0".to_string(),
+        RuntimeError::DivByZero { pos, op } => (
+            format!("division by zero — the right-hand side of '{op}' evaluated to 0"),
             *pos,
         ),
         RuntimeError::BadOperands {
@@ -579,6 +579,20 @@ pub fn print_scope_event(event: &ScopeEvent) {
             } else {
                 eprintln!("  ⬡ handle access slot={} gen={} ok", slot, gen);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `%` by zero used to report "the right-hand side of '/'" (known_issues §17).
+    #[test]
+    fn division_by_zero_names_the_operator() {
+        for op in ["/", "%"] {
+            let (msg, _) = runtime_error_message(&RuntimeError::DivByZero { pos: 0, op });
+            assert!(msg.contains(&format!("right-hand side of '{op}'")), "got: {msg}");
         }
     }
 }

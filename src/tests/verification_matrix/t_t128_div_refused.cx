@@ -1,0 +1,11 @@
+// t128 division and remainder. The interpreter computes them; Cranelift's x64
+// backend has no 128-bit divide — `%` PANICKED inside the code generator (exit
+// 2) and `/` failed to compile — so the JIT now refuses them cleanly (SKIP).
+a: t128 = 7
+b: t128 = 2
+q: t128 = a / b
+r: t128 = a % b
+y: t64 = q
+z: t64 = r
+print(y)
+print(z)

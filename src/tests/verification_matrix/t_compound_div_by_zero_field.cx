@@ -1,0 +1,7 @@
+// Compound `/=` by zero on a struct field — the field arm of compound
+// assignment had its own raw `sdiv` and faulted in hardware on the JIT.
+struct P { x: t32 }
+p: P = P { x: 5 }
+b: t32 = 0
+p.x /= b
+print(p.x)
