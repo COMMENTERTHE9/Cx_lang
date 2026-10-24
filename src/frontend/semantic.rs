@@ -4641,6 +4641,94 @@ print(result + result2)
         assert_eq!(distinct_fns.len(), functions.len(), "function ids collide across modules: {functions:?}");
     }
 
+    /// Two modules — a library `lib_src` imported by `entry_src` as `math` —
+    /// analysed together. The entry needs no `#![imports]` block here: the
+    /// alias comes from the resolved graph's edge, as it does in the real
+    /// pipeline.
+    fn analyze_with_library(
+        lib_src: &str,
+        entry_src: &str,
+    ) -> Result<SemanticProgram, Vec<SemanticError>> {
+        use crate::frontend::resolver::{
+            parse_source, ImportEdge, ModuleId, ResolvedFile, ResolvedProgram,
+        };
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let lib = parse_source(lib_src).expect("library parses");
+        let entry = parse_source(entry_src).expect("entry parses");
+        let (lib_id, entry_id) = (ModuleId(0), ModuleId(1));
+        let mut files = HashMap::new();
+        files.insert(lib_id, ResolvedFile {
+            id: lib_id,
+            path: PathBuf::from("lib.cx"),
+            program: lib,
+            imports: vec![],
+        });
+        files.insert(entry_id, ResolvedFile {
+            id: entry_id,
+            path: PathBuf::from("main.cx"),
+            program: entry,
+            imports: vec![],
+        });
+        analyze_resolved_program(&ResolvedProgram {
+            entry: entry_id,
+            files,
+            edges: vec![ImportEdge {
+                importer: entry_id,
+                importee: lib_id,
+                alias: "math".to_string(),
+                pos: 0,
+            }],
+            topo_order: vec![lib_id, entry_id],
+        })
+    }
+
+    const ADD_LIB: &str = "pub fnc: t32 add(a: t32, b: t32) {\n    a + b\n}\n";
+
+    /// The analysis errors for `entry` calling `math.add`, joined, or a panic
+    /// if analysis accepted it.
+    fn imported_call_error(entry: &str) -> String {
+        match analyze_with_library(ADD_LIB, entry) {
+            Ok(_) => panic!("expected a semantic error for {entry:?}"),
+            Err(errs) => errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "),
+        }
+    }
+
+    // The three `t_import_arg_*_reject` fixtures assert only that both backends
+    // reject with a diagnostic; the harness has no way to say WHICH one. These
+    // pin the specific check, at the call site, so the fixtures cannot pass on
+    // an unrelated failure such as the import itself breaking.
+    #[test]
+    fn imported_call_wrong_arity_is_rejected_at_the_call() {
+        let msg = imported_call_error("print(math.add(1, 2, 3))\n");
+        assert!(msg.contains("'math.add' expects 2 argument(s), got 3"), "got: {msg}");
+    }
+
+    #[test]
+    fn imported_call_out_of_range_literal_is_rejected_at_the_call() {
+        let msg = imported_call_error("print(math.add(9999999999, 1))\n");
+        assert!(
+            msg.contains("integer literal 9999999999 out of range for t32"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn imported_call_wrong_type_is_rejected_at_the_call() {
+        let msg = imported_call_error("print(math.add(true, 20))\n");
+        assert!(
+            msg.contains("argument 1 to 'math.add': expected t32, got bool"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn imported_call_with_correct_arguments_is_accepted() {
+        let result = analyze_with_library(ADD_LIB, "print(math.add(10, 20))\n");
+        assert!(result.is_ok(), "rejected a correct imported call: {:?}", result.err());
+    }
+
     /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must
     /// parse and semantically validate — a malformed prelude fails CI here
     /// rather than silently shipping inside the binary.

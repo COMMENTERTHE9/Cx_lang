@@ -2567,7 +2567,8 @@ If the miscompile ever returned, the first two would show PARITY_FAIL again.
 this entry — `check_user_call` in `src/frontend/semantic.rs`.)*
 
 **Status: FIXED.** A call through an import alias is checked exactly like a local
-call, and imported calls now run on the JIT.
+call, and its arguments are narrowed to the parameter types, so imported calls
+that need narrowing now run on the JIT.
 
 ### What happened — on the interpreter, the reference
 
@@ -2579,39 +2580,93 @@ print(math.add(9999999999, 1))    printed 1410065408, exit 0  — literal wrappe
 print(math.add(true, 20))         RUNTIME ERROR inside `a + b` in the library
 ```
 
-The same three calls to a LOCAL `add` are semantic errors at the call site. The
-JIT, meanwhile, refused every imported call — including correct ones like
-`math.add(10, 20)` — with `argument 0 of call to 'math$add' type mismatch after
-semantic analysis: expected I32, got I64`, so `t74_import_basic` and
-`t64_import_pub_only` were SKIP.
+The same three calls to a LOCAL `add` are semantic errors at the call site.
+
+A call to an imported GENERIC function had the callee's raw return type `T`, so
+valid programs were rejected on both backends: `m.id(2) + m.id(3)` with
+"arithmetic requires numeric operands, got T and T", and a field read on
+`m.id(p)` with "'T' is an unbounded type parameter".
+
+### What happened — on the JIT
+
+The JIT refused any imported call with an argument that needed narrowing —
+including correct ones like `math.add(10, 20)` — with `argument 0 of call to
+'math$add' type mismatch after semantic analysis: expected I32, got I64`, so
+`t74_import_basic` and `t64_import_pub_only` were SKIP. Calls whose arguments
+already had the parameter's exact type compiled. One shape compiled *wrongly*: an
+array literal passed to a narrow-element array parameter kept its 64-bit
+elements, and the compiled callee read them at the parameter's width:
+
+```
+m: use "./lib"          # pub fnc: t32 asum(a: [3: t32])  →  a:[0] + a:[1]*10 + a:[2]*100
+
+print(m.asum([1, 2, 3]))    interpreter 321, JIT 201 — silently wrong
+```
 
 ### Why
 
 `analyze_call` checks a local call's arguments: arity, the `.copy` contract,
 type-parameter inference, gene bounds, and each argument's type, range and
-narrowing to the parameter's type. The import-alias branch of method-call
-analysis analysed each argument and pushed it unchanged — none of those checks,
-and no narrowing. The JIT's refusal was the visible symptom: an untyped literal
-reached lowering still at its default width, because nothing had narrowed it to
-the `t32` parameter. `.copy` arguments naming an undeclared variable were given a
-sentinel binding instead of an error.
+narrowing to the parameter's type — including the element-type hint that makes
+an array literal's elements `t32` for a `[3: t32]` parameter. The import-alias
+branch of method-call analysis analysed each argument and pushed it unchanged —
+none of those checks, no narrowing, and the declared return type unsubstituted.
+The JIT's refusal was the visible symptom: an untyped literal reached lowering
+still at its default width, because nothing had narrowed it to the `t32`
+parameter. `.copy` arguments naming an undeclared variable were given a sentinel
+binding instead of an error.
 
 ### The fix
 
 The checks moved, unchanged, out of `analyze_call` into `check_user_call`, and
 both paths call it. The imported path builds a `FunctionInfo` from the exported
 function's real signature. One implementation of "what makes a call
-well-formed", so a check added later applies to both.
+well-formed", so a check added later applies to both. The result type is the
+return type with the inferred type arguments substituted, as for a local call.
+Error messages name the callee as written (`'math.add'`).
+
+Narrowing now follows the local-call rules at an imported call too: a `t32`
+variable passed to a `t8` parameter wraps (300 → 44), and a float passed to an
+integer parameter truncates and saturates, exactly as a local call always did.
+The interpreter used to pass such values through unconverted.
+
+### Found by review, fixed before merge
+
+- **A false rejection this change introduced.** Enum names in annotations were
+  resolved per file, so a library annotating `c: Color` — `Color` declared in a
+  module it imports — saw a struct named `Color`. Unchecked, that never mattered;
+  checked, it rejected valid programs with "expected Color, got Color". An
+  annotation now sees the enums declared in its own module and in the modules
+  that module imports directly — the cross-module enum annotation left as "a 0.3
+  follow-up" when enum annotations were introduced (2026-06-01). Not
+  transitively: a module that imports `relay`, which imports `colors`, must
+  import `colors` to name `Color`. That is the conservative choice — widening
+  visibility later breaks no program, narrowing it would. A side effect: the
+  entry may now annotate an enum from a module it imports directly
+  (`c: Color = col.green()`), which used to be rejected with the same message.
+- **A JIT crash it exposed** — §33.
 
 ### Still not handled across a module boundary
 
 - **Generic functions are not monomorphized** when called through an import: the
-  call keeps carrying no function id and no type arguments, as before. Their
-  arguments are now checked against the inferred type parameters, but a generic
-  imported function that needs specialization still fails on the JIT.
+  call carries no function id and no type arguments, so the JIT refuses it (SKIP).
+  Arguments are checked against the inferred type parameters and the result type
+  is substituted.
 - **Gene bounds are not checked**: the export table does not carry them.
+- **Enum variants of another module's enum** (`Color::Green` written in a module
+  that imports `colors`) get no resolved tag: the interpreter accepts them, the
+  JIT refuses. Values obtained through the declaring module (`col.green()`) work
+  on both.
+- **A library naming a type it neither declares nor imports** fails at the call
+  site with the confusing "expected Color, got Color". The root cause is not
+  cross-module: an undeclared type name in an annotation is never reported where
+  it is written, in a single file too — `fnc: t64 f(c: Colr)` compiles as long as
+  `f` is never called — and the interpreter accepts `Shade::Dark` for an enum
+  that does not exist.
+- A semantic error inside a library is reported with the entry file's source
+  line, not the library's.
 
-Both predate this change and are left as they were.
+All predate this change.
 
 ### Fixtures
 
@@ -2620,9 +2675,15 @@ t_import_arg_type_reject     before: runtime error in the callee    now: semanti
 t_import_arg_arity_reject    before: printed 3, exit 0              now: semantic error, both backends
 t_import_arg_range_reject    before: printed 1410065408, exit 0     now: semantic error, both backends
 t_import_arg_narrowing       before: JIT SKIP                       now: PASS, both backends agree
+t_import_array_literal_arg   before: JIT printed 201 0 0            now: PASS, 321 9 3 on both
+t_import_generic_ret         before: semantic error, both           now: interpreter PASS; JIT SKIP (generic import)
+t_import_enum_relay          before: JIT SKIP                       now: PASS — and needs the enum fix above
 t74_import_basic             before: JIT SKIP                       now: PASS
 t64_import_pub_only          before: JIT SKIP                       now: PASS
 ```
+
+The harness can assert only THAT both backends reject, not why; unit tests in
+`semantic.rs` (`imported_call_*`) pin each rejection's message at the call site.
 
 ## 33. The JIT crashed narrowing a float to `t8` or `t16`
 
