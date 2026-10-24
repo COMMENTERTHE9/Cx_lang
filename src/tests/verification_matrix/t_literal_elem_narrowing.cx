@@ -1,0 +1,39 @@
+// The elements of an array literal and the fields of a struct literal are
+// converted to their declared types, as a typed binding, an argument and a
+// return already convert a scalar. The interpreter used to store them
+// unconverted: `[v, 1]` into `[2: t8]` with `v: t32 = 300` held 300 (and
+// `s.a + 0` then wrapped to 44 — the same slot read two ways), floats stayed
+// floats in integer arrays, while compiled code, storing into the declared
+// layout, held 44 and 1. Both backends now agree on the narrowed values.
+struct S { a: t8 }
+struct H { arr: [2: t8] }
+
+fnc: t8 first(xs: [2: t8]) {
+    xs:[0]
+}
+
+fnc: t8 field(s: S) {
+    s.a
+}
+
+v: t32 = 300
+xs: [2: t8] = [v, 1]
+print(xs:[0])
+
+fs: [2: t32] = [1.5, 2.5]
+print(fs:[0] + fs:[1])
+
+s: S = S { a: v }
+print(s.a)
+print(s.a + 0)
+
+print(first([v, 1]))
+print(field(S { a: v }))
+
+h: H = H { arr: [v, 1] }
+print(h.arr:[0])
+
+// Widening keeps the value.
+n: t8 = -7
+ws: [2: t64] = [n, 1]
+print(ws:[0])

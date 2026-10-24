@@ -1808,7 +1808,13 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                                         }
                                     });
                                 }
-                                sem_expr
+                                // Narrow (or widen) the value to the field's type,
+                                // as assigning `s.f = v` already does. Without the
+                                // cast the interpreter stored the value unconverted
+                                // — `S { a: v }` with `v: t32 = 300` and `a: t8`
+                                // held 300 — while compiled code, storing into the
+                                // declared layout, held 44.
+                                insert_cast_if_needed(sem_expr, &decl_sem)
                             }
                         };
                         semantic_fields.push((fname.clone(), sem_expr));
@@ -1991,6 +1997,25 @@ Expr::Unary(op, inner, pos) => {
                     if !types_compatible(&elem_ty, &e.ty) {
                         return Err(sem_err!(*pos, "array element at index {} expects type '{}' but got '{}'", i, type_name(&elem_ty), type_name(&e.ty)));
                     }
+                }
+                // Convert every element to the DECLARED element type, as a typed
+                // binding, an argument and a return do to a scalar. Without it the
+                // elements kept their own types: the interpreter stored 300 in a
+                // `[2: t8]` and 1.5 in a `[2: t32]`, while compiled code, storing
+                // into the declared layout, held 44 and 1.
+                //
+                // Only when the declared type reaches this literal. Without a hint
+                // the element type is element[0]'s, and that is not a destination
+                // type: a nested literal, the right side of an assignment to an
+                // existing array, a method argument or an `if` branch other than
+                // the first arrive here with no hint even though their destination
+                // has a declared type, and converting to element[0]'s type there
+                // NARROWED values the destination could hold (known_issues §36).
+                if declared_elem.is_some() && is_numeric(&elem_ty) {
+                    semantic_elems = semantic_elems
+                        .into_iter()
+                        .map(|e| insert_cast_if_needed(e, &elem_ty))
+                        .collect();
                 }
                 Ok(SemanticExpr {
                     ty: SemanticType::Array(semantic_elems.len(), Box::new(elem_ty)),
@@ -5248,5 +5273,51 @@ print(result + result2)
         let program = crate::frontend::resolver::parse_source(src).expect("parses");
         let result = analyze_program(&program);
         assert!(result.is_ok(), "rejected a read of an outer variable: {:?}", result.err());
+    }
+
+    /// Analysis of a one-file program, panicking on a parse error.
+    fn analyze_source(src: &str) -> Result<SemanticProgram, Vec<SemanticError>> {
+        let program = crate::frontend::resolver::parse_source(src).expect("parses");
+        analyze_program(&program)
+    }
+
+    /// The expression a top-level typed binding `name` was initialised with.
+    fn typed_binding_expr<'a>(program: &'a SemanticProgram, name: &str) -> &'a SemanticExpr {
+        program
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                SemanticStmt::TypedAssign { name: n, expr, .. } if n == name => Some(expr),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no typed binding '{name}'"))
+    }
+
+    // A struct-literal field and an array-literal element are converted to their
+    // declared type, as a typed binding, an argument and a return already are:
+    // the value carries an explicit Cast, which both backends honour. Without it
+    // the interpreter stored `300` in a `t8` field (known_issues §36).
+    #[test]
+    fn literal_fields_and_elements_are_converted_to_their_declared_type() {
+        let program = analyze_source(
+            "struct S { a: t8 }\nv: t32 = 300\ns: S = S { a: v }\nxs: [2: t8] = [v, 1]\n",
+        )
+        .expect("analyses");
+        match &typed_binding_expr(&program, "s").kind {
+            SemanticExprKind::StructInstance { fields, .. } => {
+                let (_, a) = fields.iter().find(|(f, _)| f == "a").expect("field a");
+                assert_eq!(a.ty, SemanticType::I8);
+                assert!(matches!(&a.kind, SemanticExprKind::Cast { from: SemanticType::I32, to: SemanticType::I8, .. }),
+                    "field a is not converted: {:?}", a.kind);
+            }
+            other => panic!("expected a struct literal, got {other:?}"),
+        }
+        match &typed_binding_expr(&program, "xs").kind {
+            SemanticExprKind::ArrayLit { elements } => {
+                assert!(matches!(&elements[0].kind, SemanticExprKind::Cast { from: SemanticType::I32, to: SemanticType::I8, .. }),
+                    "element 0 is not converted: {:?}", elements[0].kind);
+            }
+            other => panic!("expected an array literal, got {other:?}"),
+        }
     }
 }
