@@ -1,0 +1,5 @@
+// A function name is not a variable. Analysis used to accept `print(f)` as a
+// read of an initialised variable typed as the function's return type, so the
+// interpreter failed only at runtime and the JIT refused only in lowering.
+fnc: t64 f() { 1 }
+print(f)

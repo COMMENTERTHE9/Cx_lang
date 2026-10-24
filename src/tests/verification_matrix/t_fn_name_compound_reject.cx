@@ -1,0 +1,4 @@
+// Compound assignment to a function name goes through the same lookup.
+fnc: t64 f() { 1 }
+f += 1
+print(1)

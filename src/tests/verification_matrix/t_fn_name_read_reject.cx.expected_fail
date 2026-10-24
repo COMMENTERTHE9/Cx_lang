@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+# Reading a function name as a value is a semantic error on both backends.

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+# Assigning to a function name inside a function is a semantic error on both backends.

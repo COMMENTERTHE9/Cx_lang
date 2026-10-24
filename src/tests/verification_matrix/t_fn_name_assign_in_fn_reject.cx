@@ -1,0 +1,8 @@
+// The same mistake inside another function. Before: the JIT compiled `f = 5`
+// into a stray local and printed 5, while the interpreter rejected the program.
+fnc: t64 f() { return 1 }
+fnc: t64 g() {
+    f = 5
+    return f
+}
+print(g())

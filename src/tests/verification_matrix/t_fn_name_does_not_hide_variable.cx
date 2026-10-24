@@ -1,0 +1,11 @@
+// A function's name is not a variable, so declaring a nested function `x` does
+// not hide the variable `x` of an enclosing scope. Before the fix the analyzer
+// resolved the read to the function's entry and the interpreter failed at
+// runtime ("variable 'x' has not been declared"). The JIT does not compile
+// nested functions yet (SKIP).
+x: t64 = 5
+fnc: t64 g() {
+    fnc: t64 x() { 1 }
+    x
+}
+print(g())

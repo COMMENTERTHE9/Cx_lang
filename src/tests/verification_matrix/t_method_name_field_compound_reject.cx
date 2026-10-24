@@ -1,0 +1,17 @@
+// The same through an impl method's name: a semantic error ("'get' is a
+// method, not a variable") on both backends.
+struct S { v: t64 }
+struct P { w: t64 }
+pm: impl (p: P) {
+    fnc: t64 get() { p.w }
+}
+fnc: t64 bump() {
+    get.v += 10
+    return 0
+}
+fnc: t64 caller() {
+    get: S = S { v: 5 }
+    bump()
+    get.v
+}
+print(caller())
