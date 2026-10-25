@@ -313,6 +313,20 @@ fn copy_if_memory_resident(
     Ok(dst_base)
 }
 
+/// The concrete type of `field` in a GENERIC instantiation's layout — the
+/// declared field type with the construct site's type arguments substituted —
+/// or `None` for a plain struct, whose fields analysis already knows.
+fn instantiated_field_type(
+    binding: &Option<BindingId>,
+    struct_name: &str,
+    field: &str,
+    ctx: &LoweringCtx,
+) -> Option<SemanticType> {
+    let key = ctx.struct_instance_keys.get(&(*binding)?)?;
+    let info = ctx.struct_table.get(key).or_else(|| ctx.struct_table.get(struct_name))?;
+    info.sem_fields.iter().find(|(name, _)| name == field).map(|(_, ty)| ty.clone())
+}
+
 /// Mangled IR name for an impl-block method: `<FirstAliasStruct>$<method>`.
 fn mangle_method(struct_name: &str, method: &str) -> String {
     format!("{}${}", struct_name, method)
@@ -1860,6 +1874,25 @@ fn lower_stmt(
             let (field_ptr, field_ir_ty) = resolve_field_ptr(
                 binding, container, field, struct_name, ty, ctx, &mut current,
             )?;
+            // A generic struct's field reaches here typed by its declared `T`:
+            // analysis does not substitute the instantiation's arguments, so it
+            // left the operands unchecked (§38). The instantiated layout has the
+            // concrete type, and compiled code took it at face value — on an
+            // enum it added to the tag (`b.v += k` on a `Box { v: C::Red }`
+            // printed Green's 2 where the interpreter stops with an error), on a
+            // number it emitted an operand of the wrong width, which Cranelift's
+            // verifier rejected. Refuse until the operand can be checked and
+            // converted against the concrete type.
+            if let Some(concrete) = instantiated_field_type(binding, struct_name, field, ctx) {
+                if concrete != *ty {
+                    return Err(LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "compound assignment on '{container}.{field}', a generic struct's field (here {}) — compiled code cannot check it against the instantiated type yet",
+                            crate::frontend::semantic::type_name(&concrete)
+                        ),
+                    });
+                }
+            }
             // Read the current field value.
             let current_dst = ctx.fresh_value();
             current.emit(IrInst::Load {
@@ -3965,6 +3998,21 @@ fn emit_user_arith(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    // Arithmetic is integer or float. A string, struct or array value is a
+    // pointer here, and arithmetic on it is arithmetic on an address — what a
+    // `str +=` reaching this point compiled to, and why it crashed (§38).
+    // Among non-numbers analysis takes `str += str`, which compiled code
+    // cannot do yet (no runtime append), and leaves targets whose type it does
+    // not know to the interpreter's run-time check (§38) — a generic struct's
+    // field, an untyped binding. Refuse rather than emit address arithmetic.
+    if ty.int_width().is_none() && ty != IrType::F64 {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "arithmetic on a {:?} value — compiled code does arithmetic on numbers only, and cannot append to a string yet",
+                ty
+            ),
+        });
+    }
     // Cranelift's x64 backend has no 128-bit division: `sdiv.i128` fails to
     // compile and `srem.i128` PANICS inside the code generator. Refuse instead.
     if matches!(op, BinaryOp::Div | BinaryOp::Rem) && ty == IrType::I128 {

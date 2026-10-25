@@ -1,0 +1,14 @@
+// Compound assignment on a struct, even one with a phen for the operator: `a + b`
+// dispatches to the phen, but `+=` is not that rule — on the interpreter it was a
+// runtime error and on the JIT a SEGFAULT (integer addition on the struct's
+// address). Now a semantic error on both backends.
+struct V { x: t32 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+let a
+a = V { x: 1 }
+let b
+b = V { x: 2 }
+a += b
+print(a.x)

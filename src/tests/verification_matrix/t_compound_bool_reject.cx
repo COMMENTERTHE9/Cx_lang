@@ -1,0 +1,5 @@
+// Compound arithmetic on a bool: a runtime error on the interpreter, a refusal
+// on the JIT. Now a semantic error on both, as `b + 1` already was.
+b: bool = true
+b += 1
+print(b)

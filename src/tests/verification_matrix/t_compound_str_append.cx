@@ -1,0 +1,8 @@
+// `str += str` appends, as `s = s + t` does, on the interpreter. Compiled code
+// cannot append to a runtime string yet, and it used to add the two strings'
+// ADDRESSES as integers — a SEGFAULT. It now refuses cleanly (SKIP).
+s: str = "a"
+s += "b"
+t: str = "c"
+s += t
+print(s)

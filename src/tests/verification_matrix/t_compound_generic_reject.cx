@@ -1,0 +1,12 @@
+// Compound arithmetic on an unbounded type parameter. `x + d` is rejected
+// ("arithmetic requires numeric operands, got T and T"), but `x += d` passed —
+// and the backends disagreed: the interpreter kept the full-width sum, printing
+// 2147483648 from a t32, while the JIT's t32 instance wrapped to -2147483648.
+// Now the same semantic error as the binary form, on both backends.
+fnc: T <T> inc(x: T, d: T) {
+    x += d
+    x
+}
+a: t32 = 2147483647
+b: t32 = 1
+print(inc(a, b))
