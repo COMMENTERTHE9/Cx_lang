@@ -3300,3 +3300,79 @@ t_compound_copy_untyped_str interpreter ab ab, JIT refused — unchanged (a firs
 
 A unit test pins each rejection's message, and that numeric compound
 assignment, `str += str` and the two unchecked targets still pass analysis.
+
+## 39. A declared element type did not reach every array literal — and the JIT read past the end of one
+
+*(Found 2026-10-24 by the review of §36; fixed by the commit that introduces
+this entry — `Stmt::Assign`, the `ArrayLit`, `If` and `When` arms and impl-method
+arguments in `src/frontend/semantic.rs`, and `analyze_branch_with_value_hint`.)*
+
+**Status: FIXED.** Every position with a declared type delivers it to the array
+literal there; an untyped array literal is typed by its element[0], widened by a
+later typed element that is wider.
+
+### What happened
+
+§36 converted an array literal's elements to the declared element type — but
+the element-type hint reached only the top-level literal of a typed
+declaration, a struct field, a call argument and a return. Everywhere else the
+literal was typed by its own element[0] and copied at the DESTINATION's width:
+
+```
+xs: [2: t64] = [0, 0];  xs = [a, b]     (a: t8, b: t64 = 300)
+                                interpreter 300   JIT 77520480 — read past the end of a 2-byte literal
+xs: [2: t8] = [0, 0];  xs = [v, 7]      (v: t32 = 300)
+                                interpreter 300 7   JIT 44 1
+```
+
+The same through `h.arr = [...]`, `m:[0] = [...]`, a literal nested in another
+literal or in a struct field's array, an impl-method argument, and an `if` /
+`when` branch other than the first. A wider destination made compiled code
+read whatever followed the literal in memory — a memory-safety bug, not only a
+disagreement. An untyped array mixing widths disagreed the same way:
+`ys = [a, b]` was a `[2: t8]` (300 became 44 on the JIT), and `[1, f]` with an
+f64 `f` put 2.5 into an integer slot.
+
+### The fix
+
+- **Assignment** resolves its destination's type first and analyses the right
+  side with it (an index target's place is resolved before the right side).
+- **Nested literals** take the inner declared element type.
+- **Impl-method arguments** take the parameter's type, as free-function
+  arguments already did.
+- **`if` / `when` values**: the hint is taken when the expression starts and
+  given to each branch's last statement — its value — and to nothing else in
+  the branch (`analyze_branch_with_value_hint`).
+- **Untyped array literals** are typed by element[0], WIDENED by any later
+  typed element that is wider (`[t8, t64]` is `[2: t64]`, `[1, f64]` is
+  `[2: f64]`). A literal element never decides the width, and a literal
+  element[0] counts as the default width it was computed at, so `[1, a]` and
+  `[a, 1]` keep the types and results they had.
+
+Where the declared type now reaches a literal, its integer literals are
+range-checked as in a declaration: `xs = [300, 1]` into a `[2: t8]`, and an
+untyped `[a, 300]` with `a: t8`, are "integer literal 300 out of range for t8"
+— before, the interpreter kept 300 and the JIT held 44.
+
+### Not changed
+
+An array VARIABLE whose element width differs from its destination's
+(`xs = ys` with `[2: t64]` and `[2: t8]`) is still accepted without conversion,
+and compiled code still reads it at the destination's width. Whether arrays of
+different element widths convert is an open language decision.
+
+### Fixtures
+
+```
+t_literal_hint_assign           before: interpreter 300 300 7 300 300, JIT garbage 44 1 garbage garbage
+t_literal_hint_nested           before: interpreter 300 300, JIT 44 44
+t_literal_hint_method_arg       before: interpreter 300 300, JIT 44 garbage
+t_literal_hint_branches         before: interpreter 300 300 300, JIT 44 garbage 44
+t_literal_untyped_widen         before: JIT 44 0 200 -56, interpreter 300 1 200 -56
+t_literal_hint_range_reject     before: interpreter 300, JIT 44    now: semantic error, both
+t_literal_untyped_range_reject  before: interpreter 300, JIT 44    now: semantic error, both
+```
+
+All PASS now, both backends agreeing. The 57 probe programs of §36's review agree
+on both backends, apart from the JIT's explicit refusals. Unit tests pin the
+untyped-array typing rule and the assignment hint.

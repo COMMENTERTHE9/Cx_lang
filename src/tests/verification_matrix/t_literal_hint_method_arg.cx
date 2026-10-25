@@ -1,0 +1,15 @@
+// An array literal passed to an impl method is converted to the parameter's
+// element type, as at a free-function call. Narrower: the interpreter kept 300
+// while the JIT held 44. Wider: the JIT read past the end of the literal.
+struct B { n: t64 }
+bm: impl (b: B) {
+    fnc: t64 first(xs: [2: t8]) { xs:[0] }
+    fnc: t64 second(xs: [2: t64]) { xs:[1] }
+}
+let x
+x = B { n: 5 }
+v: t32 = 300
+a: t8 = 5
+w: t64 = 300
+print(x.first([v, 1]))
+print(x.second([a, w]))

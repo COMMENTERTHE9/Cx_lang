@@ -1,0 +1,18 @@
+// Every branch of an `if` / `when` value gets the declared element type, not
+// only the first array literal analysed. The `else` literal arrived with no
+// hint: narrower, the interpreter kept 300 while the JIT held 44; wider, the JIT
+// read past the end of the literal.
+c: bool = false
+v: t32 = 300
+a: t8 = 5
+w: t64 = 300
+xs: [2: t8] = if c { [1, 2] } else { [v, 1] }
+print(xs:[0])
+ys: [2: t64] = if c { [1, 2] } else { [a, w] }
+print(ys:[1])
+k: t32 = 2
+zs: [2: t8] = when k {
+    1 => [1, 2],
+    _ => [v, 3],
+}
+print(zs:[0])

@@ -1,0 +1,7 @@
+// The declared element type now reaches an array literal assigned into an
+// existing array, so its integer literals are range-checked as in a
+// declaration: `300` does not fit t8. Before, the interpreter kept 300 and the
+// JIT, copying the literal's 64-bit elements at t8 width, read 44.
+xs: [2: t8] = [0, 0]
+xs = [300, 1]
+print(xs:[0])
