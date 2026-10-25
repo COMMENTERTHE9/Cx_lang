@@ -1049,6 +1049,20 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 ),
             });
         }
+        // An enum value is an 8-bit tag in compiled code (`lower_type`), so an
+        // enum with more than 256 variants wraps: `Big::V256` compared equal
+        // to `Big::V0` and took its `when` arm — silently, where the
+        // interpreter (which matches by name) took the right one. Refuse until
+        // the tag can widen.
+        if declared.variants.len() > 256 {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "enum '{}' has {} variants — compiled code holds an enum in 8 bits, so at most 256 are supported yet",
+                    declared.name,
+                    declared.variants.len()
+                ),
+            });
+        }
     }
     // Struct types are identified by name alone as well, and every module's
     // code uses the one layout `build_struct_table` makes per name (the first
@@ -1097,13 +1111,6 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         LoweringError::UnsupportedSemanticConstruct { construct: e.to_string() }
     })?;
     let program = &owned;
-
-    if program.stmts.is_empty() {
-        return Ok(IrModule {
-            debug_name: "cxir_v0".into(),
-            functions: vec![],
-        });
-    }
 
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
@@ -1241,7 +1248,12 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
     }
 
-    if !top_level_stmts.is_empty() {
+    // Every program gets an entry point. With no top-level statements — an
+    // empty file, a file of definitions only, a library compiled on its own —
+    // the synthetic main is empty and the program does nothing, exit 0, as on
+    // the interpreter. Without it the JIT failed at link time ("no `main`
+    // symbol found") and every library fixture was a SKIP.
+    if !top_level_stmts.is_empty() || !has_real_main {
         if has_real_main {
             return Err(LoweringError::UnsupportedSemanticConstruct {
                 construct: "real function 'main' collides with synthetic main".to_string(),
@@ -7742,9 +7754,10 @@ mod tests {
         };
 
         let module = lower_and_validate(&program);
-        assert_eq!(module.functions.len(), 1);
+        // The function, and the empty `main` every program now gets.
+        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "main"]);
         let function = &module.functions[0];
-        assert_eq!(function.name, "id");
         assert_eq!(function.params.len(), 1);
         assert_eq!(function.blocks.len(), 1);
         assert_eq!(function.blocks[0].params.len(), 1);
@@ -8525,14 +8538,41 @@ mod tests {
         );
     }
 
+    /// An empty program still has an entry point: a `main` that only returns,
+    /// so it runs and exits 0 as on the interpreter. (It used to lower to a
+    /// module with no functions at all, which the JIT then refused to link.)
     #[test]
-    fn empty_program_lowers_to_empty_module() {
+    fn empty_program_lowers_to_an_empty_main() {
         let module = lower_and_validate(&SemanticProgram {
             stmts: vec![],
             enums: vec![],
         });
 
-        assert!(module.functions.is_empty());
+        assert_eq!(module.functions.len(), 1);
+        let main = &module.functions[0];
+        assert_eq!(main.name, "main");
+        assert_eq!(main.blocks.len(), 1);
+        assert!(main.blocks[0].insts.is_empty());
+        assert!(matches!(main.blocks[0].term, IrTerminator::Return { value: None }));
+    }
+
+    /// A program of definitions only — a library compiled on its own — gets the
+    /// same empty `main` beside its functions.
+    #[test]
+    fn definitions_only_program_gets_an_empty_main() {
+        let module = lower_and_validate(&SemanticProgram {
+            stmts: vec![semantic_function(
+                "id",
+                vec![typed_param(BindingId(10), "x", SemanticType::I64)],
+                Some(SemanticType::I64),
+                vec![],
+                Some(binding_ref(BindingId(10), "x", SemanticType::I64)),
+            )],
+            enums: vec![],
+        });
+
+        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["id", "main"]);
     }
 
     #[test]
@@ -10067,9 +10107,10 @@ mod tests {
             enums: vec![],
         };
         let module = lower_program(&program).expect("lowering must succeed");
-        assert_eq!(module.functions.len(), 1);
+        // The function, and the empty `main` every program now gets.
+        let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["do_nothing", "main"]);
         let ir_func = &module.functions[0];
-        assert_eq!(ir_func.name, "do_nothing");
         // Void return must be canonicalised to None, not Some(IrType::Void).
         assert_eq!(
             ir_func.return_ty, None,
@@ -11862,5 +11903,38 @@ mod tests {
             enums: vec![],
         };
         assert!(lower_program(&reordered).is_ok(), "the same fields in another order must lower");
+    }
+
+    /// An enum is an 8-bit tag in compiled code; more than 256 variants would
+    /// wrap and alias, so lowering refuses them. 256 still fit.
+    #[test]
+    fn enum_with_more_than_256_variants_is_refused() {
+        use crate::frontend::semantic_types::{EnumId, EnumVariantId, SemanticEnum, SemanticEnumVariant};
+        let big = |count: u32| SemanticEnum {
+            id: EnumId(0),
+            name: "Big".to_string(),
+            declared_ty: crate::frontend::ast::Type::Enum("Big".to_string()),
+            variants: (0..count)
+                .map(|i| SemanticEnumVariant {
+                    id: EnumVariantId(i),
+                    name: format!("V{i}"),
+                    enum_id: EnumId(0),
+                    group: None,
+                })
+                .collect(),
+            groups: vec![],
+        };
+        let program = |count| SemanticProgram {
+            stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
+            enums: vec![big(count)],
+        };
+        assert!(lower_program(&program(256)).is_ok(), "256 variants fit in 8 bits");
+        match lower_program(&program(257)).expect_err("257 variants must be refused") {
+            LoweringError::UnsupportedSemanticConstruct { construct } => assert!(
+                construct.contains("enum 'Big' has 257 variants"),
+                "got: {construct}"
+            ),
+            other => panic!("expected an unsupported-construct refusal, got {other:?}"),
+        }
     }
 }
