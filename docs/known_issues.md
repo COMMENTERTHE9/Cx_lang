@@ -3303,13 +3303,17 @@ assignment, `str += str` and the two unchecked targets still pass analysis.
 
 ## 39. A declared element type did not reach every array literal — and the JIT read past the end of one
 
-*(Found 2026-10-24 by the review of §36; fixed by the commit that introduces
-this entry — `Stmt::Assign`, the `ArrayLit`, `If` and `When` arms and impl-method
-arguments in `src/frontend/semantic.rs`, and `analyze_branch_with_value_hint`.)*
+*(Found 2026-10-24 by the review of §36; fixed by the commits that introduce
+and revise this entry — `analyze_expr_with_elem_hint` and `takes_type_hint`,
+`analyze_branch_with_value_hint`, and the `Stmt::Assign`, `ConstDecl`,
+`ArrayLit`, `If`, `When` and `ResultOk` arms and method arguments in
+`src/frontend/semantic.rs`.)*
 
-**Status: FIXED.** Every position with a declared type delivers it to the array
-literal there; an untyped array literal is typed by its element[0], widened by a
-later typed element that is wider.
+**Status: FIXED.** Every typed position gives its declared type to the array
+literal there — and only to it: a declaration, a `const`, an assignment, a
+struct field, an argument (free function, impl method, gene-bound receiver), a
+return, an `Ok(...)` payload, a nested element, an `if` / `when` branch's
+value. An untyped array literal is typed by its element[0], as before.
 
 ### What happened
 
@@ -3326,12 +3330,16 @@ xs: [2: t8] = [0, 0];  xs = [v, 7]      (v: t32 = 300)
 ```
 
 The same through `h.arr = [...]`, `m:[0] = [...]`, a literal nested in another
-literal or in a struct field's array, an impl-method argument, and an `if` /
-`when` branch other than the first. A wider destination made compiled code
-read whatever followed the literal in memory — a memory-safety bug, not only a
-disagreement. An untyped array mixing widths disagreed the same way:
-`ys = [a, b]` was a `[2: t8]` (300 became 44 on the JIT), and `[1, f]` with an
-f64 `f` put 2.5 into an integer slot.
+literal or in a struct field's array, an impl-method argument, a gene-bound
+receiver's method argument, `return Ok([...])` from a `Result<[N: T]>`
+function, a `const`, and an `if` / `when` branch other than the first. A wider
+destination made compiled code read whatever followed the literal in memory —
+a memory-safety bug, not only a disagreement.
+
+`const` declarations were not checked at all: `const Q: t8 = 300` printed 300
+on the interpreter and 44 compiled, `const F: t32 = 2.5` held 2.5, and a t64
+`v = 300` in `const N: t8 = v` held 300 — where `x: t32 = 2.5` and `x: t8 = v`
+hold 2 and 44 on both backends.
 
 ### The fix
 
@@ -3343,23 +3351,58 @@ f64 `f` put 2.5 into an integer slot.
 - **`if` / `when` values**: the hint is taken when the expression starts and
   given to each branch's last statement — its value — and to nothing else in
   the branch (`analyze_branch_with_value_hint`).
-- **Untyped array literals** are typed by element[0], WIDENED by any later
-  typed element that is wider (`[t8, t64]` is `[2: t64]`, `[1, f64]` is
-  `[2: f64]`). A literal element never decides the width, and a literal
-  element[0] counts as the default width it was computed at, so `[1, a]` and
-  `[a, 1]` keep the types and results they had.
+- **Gene-bound receivers' method arguments** take the gene's parameter type,
+  and are converted to it, as any call's are.
+- **`Ok(...)`** gives its payload the declared `Result<T>`'s `T`.
+- **`const` declarations** are checked and converted as typed declarations
+  are.
+- **Only the value.** The declared type is delivered only to the forms that
+  use it — an array literal, an `if` / `when`, an `Ok(...)` — and cleared for
+  anything else. It used to stay set while the whole right side was analysed,
+  so the first array literal INSIDE a call, an index or an operator took it:
+  `xs: [2: t8] = pick([w, 0]:[0])` built `[w, 0]` as a `[2: t8]`, `w = 300`
+  became 44 and `pick` took the wrong branch, on both backends.
 
 Where the declared type now reaches a literal, its integer literals are
-range-checked as in a declaration: `xs = [300, 1]` into a `[2: t8]`, and an
-untyped `[a, 300]` with `a: t8`, are "integer literal 300 out of range for t8"
-— before, the interpreter kept 300 and the JIT held 44.
+range-checked as in a declaration: `xs = [300, 1]` into a `[2: t8]` is "integer
+literal 300 out of range for t8" — before, the interpreter kept 300 and the JIT
+held 44. So is an untyped `[a, 300]` with `a: t8`, whose element[0] makes it a
+`[2: t8]`.
+
+### Found by review, fixed before merge
+
+- **The leak above** was what the first version of this change spread: it
+  delivered the declared type to more positions, and from each it reached into
+  calls, indexes and operators — a regression wherever an argument's literal
+  was then built at the wrong width, and a false rejection where it was then
+  range-checked (`xs = rep(two([300, 0]))`, with generic `two`). Typed
+  declarations leaked before this change too.
+- **Widening untyped arrays.** The first version typed an untyped array by its
+  widest element (`[t8, t64]` a `[2: t64]`). It also widened by float literals
+  (`[1, 2.0]` became a `[2: f64]`), and with array variables still unconverted
+  (below), a widened array passed to a narrower parameter was read at the wrong
+  width: `ys = [a, b]` (t8, t16), passed to a `[2: t8]` parameter, printed 7 on
+  the interpreter and 0 compiled, where both printed 7 before. Withdrawn:
+  untyped arrays are typed by element[0], as before this change.
+- **`const`, `Ok(...)` and gene-bound method arguments** did not receive the
+  declared type before this change either; the review found them.
 
 ### Not changed
 
-An array VARIABLE whose element width differs from its destination's
-(`xs = ys` with `[2: t64]` and `[2: t8]`) is still accepted without conversion,
-and compiled code still reads it at the destination's width. Whether arrays of
-different element widths convert is an open language decision.
+- An array VARIABLE whose element width differs from its destination's
+  (`xs = ys` with `[2: t64]` and `[2: t8]`) is still accepted without
+  conversion, and compiled code still reads it at the destination's width.
+- An untyped array literal whose elements differ in width or kind is typed by
+  element[0], and its elements are not converted to it: the interpreter keeps
+  each value, compiled code converts — `[a, b]` with `a: t8` and a t64 `b` of
+  300 holds 300 and 44; `[1, f]` with an f64 `f` of 2.5 holds 2.5 and 2.
+- An untyped `if` / `when` whose branches give arrays of different widths —
+  `if c { [w, w] } else { [a, b] }` — still reads past the end on the JIT:
+  branch values are not unified.
+
+What arrays of different element widths mean — a variable passed or assigned
+to a different width, an untyped literal that mixes them — is an open language
+decision.
 
 ### Fixtures
 
@@ -3368,11 +3411,16 @@ t_literal_hint_assign           before: interpreter 300 300 7 300 300, JIT garba
 t_literal_hint_nested           before: interpreter 300 300, JIT 44 44
 t_literal_hint_method_arg       before: interpreter 300 300, JIT 44 garbage
 t_literal_hint_branches         before: interpreter 300 300 300, JIT 44 garbage 44
-t_literal_untyped_widen         before: JIT 44 0 200 -56, interpreter 300 1 200 -56
+t_literal_hint_ok_payload       before: interpreter 5 300 300, JIT garbage garbage 44
+t_literal_hint_gene_arg         before: interpreter 7 200, JIT refused
+t_literal_hint_not_leaked       before: 2 1 1 1 1 1, both — the declaration leaked; the first version: 2 2 2 2 2 2
+t_literal_hint_generic_arg      before: 2, both; the first version: semantic error
+t_const_checked                 before: interpreter 5 2.5 300, JIT refused     now: 5 2 44, both
 t_literal_hint_range_reject     before: interpreter 300, JIT 44    now: semantic error, both
 t_literal_untyped_range_reject  before: interpreter 300, JIT 44    now: semantic error, both
+t_const_range_reject            before: interpreter 300, JIT 44    now: semantic error, both
 ```
 
-All PASS now, both backends agreeing. The 57 probe programs of §36's review agree
-on both backends, apart from the JIT's explicit refusals. Unit tests pin the
-untyped-array typing rule and the assignment hint.
+All PASS now, both backends agreeing. Unit tests pin the assignment hint, that
+the declared type reaches only the value, that an untyped array is typed by its
+element[0], and that a `const` is checked like a typed declaration.

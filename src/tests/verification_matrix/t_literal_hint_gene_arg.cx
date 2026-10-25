@@ -1,0 +1,26 @@
+// A gene-bound receiver's method argument takes the gene's parameter type, as
+// any call's does. `t.second([a, b])` built a `[2: t8]` literal that compiled
+// code read as the `[2: t64]` parameter, past its end; `t.twice(a)` with a t8
+// `a` was refused by compiled code.
+struct V { n: t64 }
+gene Take {
+    fnc second(xs: [2: t64]) -> t64
+    fnc twice(x: t64) -> t64
+}
+phen Take (v: V) {
+    fnc: t64 second(xs: [2: t64]) { xs:[1] }
+    fnc: t64 twice(x: t64) { x + x }
+}
+fnc: t64 <T: Take> go(t: T, a: t8, b: t8) {
+    t.second([a, b])
+}
+fnc: t64 <T: Take> go2(t: T, a: t8) {
+    t.twice(a)
+}
+let q
+q = V { n: 4 }
+a: t8 = 5
+b: t8 = 7
+print(go(q, a, b))
+h: t8 = 100
+print(go2(q, h))

@@ -1,0 +1,12 @@
+// A literal passed to a generic parameter keeps its own type. With the
+// destination's `[2: t8]` leaking into the argument of `two`, `[300, 0]` was
+// rejected as out of range for t8.
+fnc: t64 <T> two(x: T) {
+    2
+}
+fnc: [2: t8] rep(n: t64) {
+    [n, n]
+}
+xs: [2: t8] = [0, 0]
+xs = rep(two([300, 0]))
+print(xs:[0])

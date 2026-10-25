@@ -1,0 +1,13 @@
+// A const declaration is checked and converted as a typed declaration is.
+// Unchecked, `const ZS: [2: t64] = [Q, Q]` with a t8 `Q` was a `[2: t8]` that
+// compiled code read past the end of; `const F: t32 = 2.5` held 2.5 on the
+// interpreter; `const N: t8 = v` with `v: t64 = 300` held 300 there and 44 in
+// compiled code. `x: t32 = 2.5` and `x: t8 = v` give 2 and 44 on both.
+const Q: t8 = 5
+const ZS: [2: t64] = [Q, Q]
+print(ZS:[1])
+const F: t32 = 2.5
+print(F)
+v: t64 = 300
+const N: t8 = v
+print(N)
