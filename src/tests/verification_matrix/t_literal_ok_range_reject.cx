@@ -1,0 +1,13 @@
+// A number literal in `Ok(...)` must fit the declared payload type, as a
+// returned literal must fit a return type. `return Ok(300)` from a
+// `Result<t8>` function wrapped to 44 on both backends.
+fnc: Result<t8> small() {
+    return Ok(300)
+}
+fnc: Result<t64> run() {
+    let x;
+    x = small()?
+    print(x)
+    return Ok(0)
+}
+z: Result<t64> = run()

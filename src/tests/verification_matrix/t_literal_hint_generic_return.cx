@@ -1,0 +1,17 @@
+// A generic function that returns its type parameter R gives the call's
+// declared type to its arguments of type R. `zs = id([a, w])` into a `[2: t64]`
+// built element[0]'s `[2: t8]`: the interpreter converted w = 300 to 44 at the
+// call, and compiled code read the 2-byte literal as a `[2: t64]` — garbage.
+// `xs: [2: t8] = id([v, 1])` builds a `[2: t8]`, converting v = 300 to 44, as
+// `xs: [2: t8] = [v, 1]` does.
+fnc: R <R> id(x: R) {
+    x
+}
+a: t8 = 5
+w: t64 = 300
+v: t32 = 300
+zs: [2: t64] = [0, 0]
+zs = id([a, w])
+print(zs:[1])
+xs: [2: t8] = id([v, 1])
+print(xs:[0])

@@ -2093,9 +2093,16 @@ Expr::Unary(op, inner, pos) => {
             Expr::ArrayLit(elems, pos) => {
                 // Consume the declared type up front (#031a) so the element
                 // sub-analyses below don't inherit it. Only an array type
-                // declares an element type.
+                // declares an element type, and a placeholder is not a
+                // declaration: an array inferred from `[1, 2]` has `Numeric`
+                // elements, and `w = [2.5, 3.5]` into it must not convert 2.5 to
+                // that — compiled code then truncated it to 2.
                 let declared_elem = match self.expected_value_ty.take() {
-                    Some(SemanticType::Array(_, elem)) => Some(*elem),
+                    Some(SemanticType::Array(_, elem))
+                        if !matches!(*elem, SemanticType::Numeric | SemanticType::Unknown) =>
+                    {
+                        Some(*elem)
+                    }
                     _ => None,
                 };
                 let mut semantic_elems = Vec::new();
@@ -2576,15 +2583,25 @@ Expr::Unary(op, inner, pos) => {
                     },
                 })
             }
-            Expr::ResultOk(inner, _pos) => {
+            Expr::ResultOk(inner, pos) => {
                 // A declared `Result<T>` declares the payload's type: `return
                 // Ok([a, b])` from a `Result<[2: t64]>` function builds a
                 // `[2: t64]`, where it built element[0]'s `[2: t8]` and compiled
-                // code read past its end (§39).
-                let inner_analyzed = match self.expected_value_ty.take() {
-                    Some(SemanticType::Result(payload)) => self.analyze_expr_with_elem_hint(inner, &payload)?,
-                    _ => self.analyze_expr(inner)?,
+                // code read past its end (§39). A number literal must fit it,
+                // as a returned one must fit a return type: `return Ok(300)`
+                // from a `Result<t8>` function wrapped to 44 on both backends,
+                // where `return 300` from a `t8` one is rejected.
+                let payload_ty = match self.expected_value_ty.take() {
+                    Some(SemanticType::Result(payload)) => Some(*payload),
+                    _ => None,
                 };
+                let inner_analyzed = match &payload_ty {
+                    Some(payload) => self.analyze_expr_with_elem_hint(inner, payload)?,
+                    None => self.analyze_expr(inner)?,
+                };
+                if let Some(payload) = &payload_ty {
+                    check_semantic_num_fits(&inner_analyzed, payload, *pos)?;
+                }
                 let result_ty = SemanticType::Result(Box::new(inner_analyzed.ty.clone()));
                 Ok(SemanticExpr {
                     ty: result_ty,
@@ -3032,7 +3049,8 @@ Expr::Unary(op, inner, pos) => {
     /// the single delivery point for a declared type: typed declarations,
     /// struct fields, arguments, returns, assignments. The type reaches `expr`
     /// (`expected_value_ty`) only when `expr` is a form that uses it — an array
-    /// literal, an `if` / `when`, an `Ok(...)` — and is cleared otherwise. Left
+    /// literal, an `if` / `when`, an `Ok(...)`, a call (see `check_user_call`
+    /// for what a call does with it) — and is cleared otherwise. Left
     /// set while a call, an index or an operator was analysed, it reached the
     /// first array literal INSIDE it — an argument, an operand — and converted
     /// that to the outer value's element type (§39).
@@ -3440,6 +3458,21 @@ fn check_num_range(ty: &SemanticType, n: i128, pos: usize) -> Result<(), Semanti
     Ok(())
 }
 
+/// The forms a declared type is delivered to — see `analyze_expr_with_elem_hint`.
+/// A call takes it for `check_user_call`, which gives it to the arguments of a
+/// generic function that returns their type parameter, and to nothing else.
+fn takes_type_hint(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::ArrayLit(..)
+            | Expr::If(..)
+            | Expr::When(..)
+            | Expr::ResultOk(..)
+            | Expr::Call(..)
+            | Expr::MethodCall(..)
+    )
+}
+
 /// Range-check an already-analyzed expression's integer-literal value against the
 /// declared type `expected` (#028 + #037), descending into branch tails (CR#4).
 /// This is the single width-check entry point for every site that has a
@@ -3461,21 +3494,6 @@ fn check_num_range(ty: &SemanticType, n: i128, pos: usize) -> Result<(), Semanti
 /// sites. Non-literal tails (`a + b`, a call) are not folded and so not checked
 /// here, matching the bare-literal-only policy; non-literal narrowing is tracked
 /// separately in the design queue.
-/// The forms a declared type is delivered to — see `analyze_expr_with_elem_hint`.
-/// A call takes it for `check_user_call`, which gives it to the arguments of a
-/// generic function that returns their type parameter, and to nothing else.
-fn takes_type_hint(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::ArrayLit(..)
-            | Expr::If(..)
-            | Expr::When(..)
-            | Expr::ResultOk(..)
-            | Expr::Call(..)
-            | Expr::MethodCall(..)
-    )
-}
-
 fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
     match &sem.kind {
         SemanticExprKind::Value(SemanticValue::Num(n)) => check_num_range(expected, *n, pos)?,
@@ -5825,6 +5843,27 @@ print(result + result2)
         let Some(SemanticCallArg::Expr(arg)) = args.first() else { panic!("an argument") };
         let SemanticExprKind::Index { target, .. } = &arg.kind else { panic!("an index: {arg:?}") };
         assert_eq!(target.ty, SemanticType::Array(2, Box::new(SemanticType::I64)), "the inner literal is [w, 0]'s own type");
+    }
+
+    // An inferred array's `Numeric` element type is a placeholder, not a
+    // declaration: a float literal assigned into it keeps its own type (§39).
+    #[test]
+    fn an_inferred_numeric_element_type_is_not_a_declaration() {
+        let src = "let w;\nw = [1, 2]\nw = [2.5, 3.5]\n";
+        let program = analyze_program(&crate::frontend::resolver::parse_source(src).expect("parses")).expect("analyses");
+        let assigned: Vec<&SemanticType> = program
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                SemanticStmt::Assign { expr, .. } => Some(&expr.ty),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            assigned.last().copied(),
+            Some(&SemanticType::Array(2, Box::new(SemanticType::F64))),
+            "the float literal keeps its type: {assigned:?}"
+        );
     }
 
     // A const declaration is checked as a typed declaration is.

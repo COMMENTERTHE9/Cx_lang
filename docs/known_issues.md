@@ -3353,7 +3353,14 @@ hold 2 and 44 on both backends.
   the branch (`analyze_branch_with_value_hint`).
 - **Gene-bound receivers' method arguments** take the gene's parameter type,
   and are converted to it, as any call's are.
-- **`Ok(...)`** gives its payload the declared `Result<T>`'s `T`.
+- **`Ok(...)`** gives its payload the declared `Result<T>`'s `T`, and a number
+  literal payload must fit it: `return Ok(300)` from a `Result<t8>` function
+  wrapped to 44 on both backends, where `return 300` from a `t8` one is
+  rejected.
+- **A generic function that returns its type parameter `R`** gives the call's
+  declared type to its arguments of type `R`: `xs: [2: t8] = id([v, 1])` builds
+  a `[2: t8]`. (The leak described next used to deliver that by accident;
+  without this rule the backends disagreed — 300 and 44.)
 - **`const` declarations** are checked and converted as typed declarations
   are.
 - **Only the value.** The declared type is delivered only to the forms that
@@ -3362,6 +3369,10 @@ hold 2 and 44 on both backends.
   so the first array literal INSIDE a call, an index or an operator took it:
   `xs: [2: t8] = pick([w, 0]:[0])` built `[w, 0]` as a `[2: t8]`, `w = 300`
   became 44 and `pick` took the wrong branch, on both backends.
+
+A placeholder element type is not a declaration: an array inferred from
+`[1, 2]` has `Numeric` elements, and `w = [2.5, 3.5]` into it keeps the
+literal's f64 type rather than converting 2.5 to an integer.
 
 Where the declared type now reaches a literal, its integer literals are
 range-checked as in a declaration: `xs = [300, 1]` into a `[2: t8]` is "integer
@@ -3415,12 +3426,15 @@ t_literal_hint_ok_payload       before: interpreter 5 300 300, JIT garbage garba
 t_literal_hint_gene_arg         before: interpreter 7 200, JIT refused
 t_literal_hint_not_leaked       before: 2 1 1 1 1 1, both — the declaration leaked; the first version: 2 2 2 2 2 2
 t_literal_hint_generic_arg      before: 2, both; the first version: semantic error
+t_literal_hint_generic_return   before: interpreter 44 44, JIT garbage 44   now: 300 44, both
 t_const_checked                 before: interpreter 5 2.5 300, JIT refused     now: 5 2 44, both
 t_literal_hint_range_reject     before: interpreter 300, JIT 44    now: semantic error, both
 t_literal_untyped_range_reject  before: interpreter 300, JIT 44    now: semantic error, both
 t_const_range_reject            before: interpreter 300, JIT 44    now: semantic error, both
+t_literal_ok_range_reject       before: 44, both                   now: semantic error, both
 ```
 
 All PASS now, both backends agreeing. Unit tests pin the assignment hint, that
 the declared type reaches only the value, that an untyped array is typed by its
-element[0], and that a `const` is checked like a typed declaration.
+element[0], that an inferred `Numeric` element type is not a declaration, and
+that a `const` is checked like a typed declaration.
