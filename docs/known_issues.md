@@ -3640,12 +3640,49 @@ submain too, through which arrays of different element types still passed:
 Inferring `T` from a `[N: T]` parameter also lets compiled code run calls it
 could not instantiate before (`head(arr)` with `head(a: [3: T])`).
 
+A second review, and the repository's review bot, found what the first round of
+fixes still let through or newly broke, all fixed:
+
+- A forward call — written before the function — skipped the `.copy` check:
+  the forward signature had no `.copy` types.
+- A generic `T` element was a wildcard, so `[x, a]` with a t8 `a` was a
+  `[2: t8]` that compiled code converted and the interpreter did not (300 and
+  44, where submain agreed on 300); and `[1, x]` was rejected while `[x, 1]`
+  was accepted. A `T` is now a type of its own: `[1, x]` and `[x, 1]` are
+  `[2: T]`, and `[x, a]` is two types.
+- In a generic body an abstract `T` still matched anything declared, so a
+  `[2: T]` stored as a `[2: U]`, or a `[2: t64]` returned as a `[2: T]`, was
+  read at the wrong width once instantiated. A `T` now matches only itself; at a
+  call the callee's `T` is substituted by its binding first — every binding,
+  an untyped literal's included, and `.copy` arguments bind `T` too.
+- A nested literal for a `[2: [2: T]]` parameter had its rows typed `[2: T]`,
+  for which compiled code has no layout: it stored them as pointers (6 where
+  the interpreter read 8). A declared type that mentions a `T` at any depth is
+  no declaration for a literal.
+- A row of untyped integer VARIABLES counted as literals and was silently
+  narrowed; a literal row is now literals all the way down.
+- An `Err(...)` first exempted the rest of an array; an untyped array is typed
+  by its first element whose type is fully known.
+- Inference analysed array arguments without their declared types: a literal
+  for a concrete `[2: t32]` parameter of a generic function was rejected as
+  mixed, and `[a, 300]` was range-checked as t8 where `T` was already t64.
+- Each argument was analysed twice — once for inference, once to check it — so
+  compile time was exponential in the depth of nested calls. It is analysed
+  once now where the declared type would not change it. Measured, interpreter
+  run of the whole program: `id(id(...id(5)))` at depth 20 took 7.7 s on
+  submain and takes 0.18 s; nested generic array calls at depth 20, 12.4 s with
+  the first round of fixes, take 0.25 s (0.22 s on submain).
+- A number literal given for an impl's extra receiver is converted, as an
+  argument is: it has nothing to write back.
+
 ### Consequences of the rule
 
 These follow from the rule as decided (they are listed for the owner to
 confirm): an untyped integer that is
 not a literal is its own type (`[a, n]` with `n` from `let n; n = 5`, and
-`[a, 1 + 1]`, are two types); `[100, a]` with a t8 `a` is a `[2: t8]`, so
+`[a, 1 + 1]`, are two types; so are rows `[[n, 1], xs]` with a `[2: t8]` `xs`);
+a generic `T` beside a concrete element is two types (`[x, a]`, which agreed on
+submain); an untyped integer variable cannot be `.copy`'d into a t8 parameter; `[100, a]` with a t8 `a` is a `[2: t8]`, so
 `q:[0] + q:[0]` wraps to -56 where `[100, a]` used to be untyped and print
 200; and an untyped `if c { [1, a] } else { [1, 2] }` now has branches of two
 types, which compiled code refuses (§40).
@@ -3675,7 +3712,7 @@ t_array_width_generic_reject  before: interpreter 400, JIT 1              now: s
 t_array_width_generic_body_reject  before: interpreter 6, JIT refused     now: semantic error, both
 t_array_mixed_generic_reject  before: interpreter 300, JIT 44             now: semantic error, both
 t_array_literal_rows          before: interpreter 3 3 Ok(2), JIT 3 1 Ok(2)  now: PASS, both agree
-t_array_generic_infer         before: interpreter 9, JIT -2               now: interpreter 9, JIT refused (§43 makes it 9)
+t_array_generic_infer         before: interpreter 9, JIT -2               now: interpreter 9, JIT refused (converting generic values, next, makes it 9)
 ```
 
 Unit tests pin the rejections' messages and the element type of each kind of

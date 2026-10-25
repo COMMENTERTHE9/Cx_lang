@@ -1,0 +1,11 @@
+// A number literal given for an impl's extra receiver is a value with nothing
+// to write back: it is range-checked and converted, as an argument is.
+struct P { n: t64 }
+pm: impl (p: P, k: t8) {
+    fnc: t64 total() {
+        p.n + k
+    }
+}
+let q
+q = P { n: 1 }
+print(q.total(5))

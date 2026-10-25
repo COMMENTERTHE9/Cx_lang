@@ -1,0 +1,9 @@
+// A row holding an untyped integer variable is not a row of literals: it does
+// not take the typed row's type (that silently narrowed 300 to 44 on both
+// backends) — the rows are of two types.
+let n
+n = 300
+xs: [2: t8] = [1, 2]
+let m
+m = [[n, 1], xs]
+print(m:[0]:[0])

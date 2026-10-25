@@ -1,0 +1,12 @@
+// A generic `T` element beside a t8 one is two element types. Typed t8, the
+// array was converted by compiled code but not by the interpreter, which
+// cannot convert a `T` value: 300 interpreted, 44 compiled.
+fnc: t64 <T> f(x: T) {
+    a: t8 = 5
+    let w
+    w = [x, a]
+    print(w:[0])
+    0
+}
+b: t64 = 300
+z: t64 = f(b)

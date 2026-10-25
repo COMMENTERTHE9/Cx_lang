@@ -1,0 +1,11 @@
+// An `Err(...)` first, a `Result` of unknown payload, no longer exempts the
+// rest from having one element type: `Result<t8>` and `Result<t64>` are two.
+fnc: Result<t8> r8() {
+    return Ok(5)
+}
+fnc: Result<t64> r64() {
+    return Ok(300)
+}
+let rs
+rs = [Err("x"), r8(), r64()]
+print(1)

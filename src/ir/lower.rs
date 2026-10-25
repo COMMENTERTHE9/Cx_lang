@@ -204,6 +204,9 @@ fn slot_size_align(
 /// `lower_array_lit` stores it. Without this an array of such literals had no
 /// layout when nested in another, its rows were taken for pointers, and a
 /// `[[1, 2], [3, 4]]` copied into a `[2: [2: t64]]` read garbage (§42).
+///
+/// The host target, as `lower_program_inner` lowers for; if lowering ever takes
+/// another target, this must take the context's.
 fn stored_scalar_type(ty: &SemanticType) -> Option<IrType> {
     match ty {
         SemanticType::Numeric => Some(TargetConfig::host().numeric_literal_ir_type()),
