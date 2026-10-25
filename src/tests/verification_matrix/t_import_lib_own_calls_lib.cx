@@ -1,0 +1,26 @@
+// Library whose functions call each other, for t_import_lib_own_calls.
+fnc: t32 helper(x: t32) {
+    x * 2
+}
+
+pub fnc: t32 twice_plus(x: t32) {
+    helper(x) + 1
+}
+
+pub fnc: t32 fact(n: t32) {
+    if n <= 1 {
+        return 1
+    }
+    n * fact(n - 1)
+}
+
+pub fnc: t32 uses_pub(x: t32) {
+    twice_plus(x) + 100
+}
+
+struct Pair { a: t32, b: t32 }
+
+pub fnc: t32 pair_sum(x: t32, y: t32) {
+    p: Pair = Pair { a: x, b: y }
+    p.a + p.b
+}

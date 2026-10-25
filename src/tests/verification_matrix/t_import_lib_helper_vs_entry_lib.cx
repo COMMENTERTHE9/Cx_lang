@@ -1,0 +1,8 @@
+// Library with a private `helper`, for t_import_lib_helper_vs_entry.
+fnc: t32 helper(x: t32) {
+    x * 2
+}
+
+pub fnc: t32 api(n: t32) {
+    helper(n) + 1
+}

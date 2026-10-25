@@ -1,0 +1,10 @@
+// One module imported under two aliases — `lf` by the middle library, `other`
+// by this file. Exports were registered under the first alias only, so
+// `other.inc` was rejected: "method call receiver 'other' is not in scope".
+// Each file now resolves its own aliases.
+#![imports]
+md: use "./t_import_two_aliases_mid_lib"
+other: use "./t_import_two_aliases_leaf_lib"
+
+print(md.inc2(5))
+print(other.inc(5))

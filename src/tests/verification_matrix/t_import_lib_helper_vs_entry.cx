@@ -1,0 +1,13 @@
+// The entry and a library each define `helper`. The library's call kept the
+// bare name while its own function was renamed, so it reached the ENTRY's
+// `helper` instead — silently, on both backends: `m.api(5)` printed 5001, not
+// 11. A library's call to its own function now names the library's.
+#![imports]
+m: use "./t_import_lib_helper_vs_entry_lib"
+
+fnc: t32 helper(x: t32) {
+    x * 1000
+}
+
+print(m.api(5))
+print(helper(5))

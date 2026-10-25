@@ -1,0 +1,5 @@
+// Leaf library imported under two different aliases, for
+// t_import_two_aliases.
+pub fnc: t32 inc(x: t32) {
+    x + 1
+}

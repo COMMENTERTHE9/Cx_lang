@@ -1,0 +1,11 @@
+// Two DIFFERENT libraries imported under the same alias `u` by different files.
+// Imported functions were named `alias$name`, so both `pick`s became `u$pick`:
+// the interpreter ran whichever was merged last — `md.via(5)`, which calls the
+// first library, printed 500 instead of 6, a silent wrong answer — and the JIT
+// refused the duplicate symbol. Names now come from the module, not the alias.
+#![imports]
+md: use "./t_import_same_alias_mid_lib"
+u: use "./t_import_same_alias_b_lib"
+
+print(md.via(5))
+print(u.pick(5))

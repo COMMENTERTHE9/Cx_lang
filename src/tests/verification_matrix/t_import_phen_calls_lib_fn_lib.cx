@@ -1,0 +1,20 @@
+// Library whose phen method `add` calls the library's top-level `add`, for
+// t_import_phen_calls_lib_fn.
+struct V { n: t32 }
+
+fnc: V add(a: V, b: V) {
+    V { n: a.n + b.n }
+}
+
+phen Add (v: V) {
+    fnc: V add(rhs: V) {
+        add(v, rhs)
+    }
+}
+
+pub fnc: t32 run(a: t32, b: t32) {
+    x: V = V { n: a }
+    y: V = V { n: b }
+    z: V = x + y
+    z.n
+}

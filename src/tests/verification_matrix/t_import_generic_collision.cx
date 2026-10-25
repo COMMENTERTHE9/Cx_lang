@@ -1,0 +1,18 @@
+// A library's generic helper and the entry's own generic, specialised for
+// different types. Each module numbered its function ids from 0, so the two
+// generics shared an id and the JIT's monomorphizer specialised the ENTRY's
+// template for the library's call (§31); ids are now unique program-wide. The
+// end-to-end check had to wait until a library could call its own functions
+// at all (§37).
+#![imports]
+m: use "./t_import_generic_collision_lib"
+
+fnc: T <T> eid(x: T) {
+    x
+}
+
+print(m.api(41))
+print(m.wide(21))
+print(eid(7))
+b: bool = eid(true)
+print(b)

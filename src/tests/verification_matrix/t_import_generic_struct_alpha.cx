@@ -1,0 +1,12 @@
+// The same generic struct declared in two modules under different type
+// parameter names — `Box<T>` and `Box<U>`. Same fields, same layout: the JIT
+// runs it, as it did before the same-name struct check, which first compared
+// the parameter names literally and refused.
+#![imports]
+m: use "./t_import_generic_struct_alpha_lib"
+
+struct Box<U> { v: U }
+
+b: Box = Box<t32> { v: 41 }
+print(b.v)
+print(m.unbox(9))
