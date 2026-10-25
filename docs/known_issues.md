@@ -3498,3 +3498,55 @@ t_branch_mixed_array_width   before: interpreter 400, JIT 1           now: JIT S
 t_branch_mixed_str_struct    before: interpreter A { x: 1 }, JIT ""   now: JIT SKIP
 t_branch_same_types          PASS before and after: same-typed branches still compile
 ```
+
+## 41. Two structs could not both have a method of one name
+
+*(Found 2026-10-24 while writing §39's fixtures; fixed by the commit that
+introduces this entry — the `ImplBlock` arm in `src/frontend/semantic.rs`.)*
+
+**Status: FIXED.**
+
+### What happened
+
+Analysis declares a function's name in the scope that contains it, so a
+variable cannot take the name of a function beside it (§34). An impl block
+analysed each method in the ENCLOSING scope — unlike a phen, which gives each
+method a scope of its own — so a method's name was claimed there as if it were
+a top-level function:
+
+```
+ia: impl (a: A) { fnc: t64 get() { a.x } }
+ib: impl (b: B) { fnc: t64 get() { b.y } }      SEMANTIC ERROR: variable already declared in this scope: get
+
+fnc: t64 pick(n: t64) { n }
+ia: impl (a: A) { fnc: t64 pick(n: t64) { ... } }   the same, for `pick`
+
+get: t64 = 7     (after an impl method `get`)    the same
+```
+
+Both backends, any program — two structs in one file could not both have a
+`get`. A method is called on a value, never by its bare name, so none of these
+names collide at run time: methods are `A$get` and `B$get`, apart from the
+top-level `get`.
+
+Behind the clash sat a second fault: every method, impl or phen, was entered
+in the table of free functions that a bare call is checked against, REPLACING
+the function of its name — with the method's receiver prepended as a
+parameter. A top-level `fnc pick(n)` followed by `impl (a: A) { fnc pick(n) }`
+made every later `pick(5)` "expects 2 argument(s), got 1".
+
+### The fix
+
+Each impl method is analysed in a scope of its own, as a phen's methods are,
+and no method enters the free-function table: methods are found through the
+method registry. The diagnostics for a method's name used as a variable ("'get'
+is a method, not a variable") come from that registry too, and are unchanged.
+
+### Fixtures
+
+```
+t_impl_method_same_name   before: semantic error, both    now: PASS, 1 2 5 6 10 12 15 7
+```
+
+A unit test pins that two impls may share a method name, and that a variable
+may share one.

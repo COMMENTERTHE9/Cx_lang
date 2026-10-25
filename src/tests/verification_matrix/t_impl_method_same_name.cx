@@ -1,0 +1,53 @@
+// A method's name belongs to its type. Two structs may each have a `get`, a
+// method may share its name with a top-level function — an impl method or a
+// phen method, declared before or after the function — and a variable may
+// share one with a method: a method is called on a value, never by its bare
+// name. Each impl method's name used to be declared in the enclosing scope
+// ("variable already declared in this scope"), and every method entered the
+// free-function table, replacing the function of its name with its receiver
+// prepended: `pick(5)` was "expects 2 argument(s), got 1".
+fnc: t64 pick(n: t64) {
+    n
+}
+fnc: t64 twice(n: t64) {
+    n + n
+}
+struct A { x: t64 }
+struct B { y: t64 }
+ia: impl (a: A) {
+    fnc: t64 get() {
+        a.x
+    }
+    fnc: t64 pick(n: t64) {
+        n + a.x
+    }
+}
+ib: impl (b: B) {
+    fnc: t64 get() {
+        b.y
+    }
+}
+gene Twice {
+    fnc twice(n: t64) -> t64
+}
+phen Twice (b: B) {
+    fnc: t64 twice(n: t64) {
+        n * 2 + b.y
+    }
+}
+fnc: t64 later(n: t64) {
+    pick(n) + twice(n)
+}
+let p
+p = A { x: 1 }
+let q
+q = B { y: 2 }
+print(p.get())
+print(q.get())
+print(pick(5))
+print(p.pick(5))
+print(twice(5))
+print(q.twice(5))
+print(later(5))
+get: t64 = 7
+print(get)

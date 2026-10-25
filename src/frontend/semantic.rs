@@ -658,7 +658,17 @@ impl Analyzer {
                         .collect::<Vec<_>>();
                     full_params.extend(params.iter().cloned());
 
-                    match self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false, true) {
+                    // Each method in a scope of its own, as a phen's methods are:
+                    // its name entry belongs to the method, not to the enclosing
+                    // scope. Declared there, two impls on different structs could
+                    // not both have a `get` ("variable already declared in this
+                    // scope"), and an impl method's name blocked a top-level
+                    // function or variable of the same name — though a method is
+                    // called on a value, never by its bare name.
+                    self.push_scope();
+                    let analyzed = self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false, true);
+                    self.pop_scope();
+                    match analyzed {
                         Ok(SemanticStmt::FuncDef(mut sem_func)) => {
                             // Capture the alias params (carrying this method's
                             // BindingIds) BEFORE the strip. The body's
@@ -1543,18 +1553,25 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             .map(|param| semantic_param_placeholder(param))
             .collect::<Vec<_>>();
 
-        self.funcs.insert(
-            name.to_string(),
-            FunctionInfo {
-                id: func_id,
-                params: placeholders.clone(),
-                ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
-                type_params: type_params.to_vec(),
-                // Bounds are stamped by the FuncDef arm right after this call
-                // returns (this function doesn't receive them).
-                type_bounds: vec![],
-            },
-        );
+        // The free-function table is for bare calls, which never mean a method
+        // (methods are found through `method_registry`). A method entered here
+        // REPLACED the free function of its name — with its receiver prepended
+        // as a parameter — so `pick(5)` after `impl (a: A) { fnc pick(n) }` was
+        // "expects 2 argument(s), got 1" (known_issues §41).
+        if !is_method {
+            self.funcs.insert(
+                name.to_string(),
+                FunctionInfo {
+                    id: func_id,
+                    params: placeholders.clone(),
+                    ret_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
+                    type_params: type_params.to_vec(),
+                    // Bounds are stamped by the FuncDef arm right after this call
+                    // returns (this function doesn't receive them).
+                    type_bounds: vec![],
+                },
+            );
+        }
 
         self.push_scope();
         let prev_ret_ty = self.current_ret_ty.clone();
@@ -1636,8 +1653,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             }
         }
 
-        if let Some(info) = self.funcs.get_mut(name) {
-            info.params = resolved_params.clone();
+        if !is_method {
+            if let Some(info) = self.funcs.get_mut(name) {
+                info.params = resolved_params.clone();
+            }
         }
 
         let semantic_body = body
@@ -5902,5 +5921,16 @@ print(result + result2)
         assert!(msg.contains("integer literal 300 out of range for t8"), "got: {msg}");
         let msg = single_file_errors("a: t8 = 5\nlet ys;\nys = [a, 300]\n");
         assert!(msg.contains("integer literal 300 out of range for t8"), "got: {msg}");
+    }
+
+    // An impl method's name belongs to the method: two structs may each have a
+    // `get`, and a method may share its name with a top-level function or
+    // variable.
+    #[test]
+    fn impl_methods_do_not_claim_their_names_in_the_enclosing_scope() {
+        let src = "struct A { x: t64 }\nstruct B { y: t64 }\nia: impl (a: A) {\n    fnc: t64 get() {\n        a.x\n    }\n}\nib: impl (b: B) {\n    fnc: t64 get() {\n        b.y\n    }\n}\nfnc: t64 get_one() {\n    1\n}\nget: t64 = 7\nprint(get)\n";
+        let program = crate::frontend::resolver::parse_source(src).expect("parses");
+        let result = analyze_program(&program);
+        assert!(result.is_ok(), "rejected: {:?}", result.err());
     }
 }
