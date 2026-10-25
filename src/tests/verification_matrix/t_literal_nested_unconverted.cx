@@ -1,10 +1,10 @@
-// Literals that the declared type does NOT reach keep their values. An inner
-// literal of a nested array arrives with no element-type hint; converting it to
-// its element[0]'s type — as a first version of the literal-narrowing fix did —
-// silently turned 300 into 44 in a `[2: [2: t64]]`, crashed the interpreter on
-// an f64 inner array whose element[0] is an integer, and rejected `300` in a
-// t64 array as out of range for t8. Each value here is the one submain gave on
-// both backends.
+// Inner literals of a nested array take the INNER declared element type. A
+// first version of the literal-narrowing fix converted them to their own
+// element[0]'s type instead — they arrived with no hint then — which silently
+// turned 300 into 44 in a `[2: [2: t64]]`, crashed the interpreter on an f64
+// inner array whose element[0] is an integer, and rejected `300` in a t64 array
+// as out of range for t8. Each value here is the one submain gave on both
+// backends; the inner literals now carry the declared type (known_issues §39).
 a: t8 = 5
 b: t64 = 300
 m: [2: [2: t64]] = [[a, b], [1, 2]]

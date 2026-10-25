@@ -1,0 +1,32 @@
+// A declared type reaches only the value itself. Left set while the right side
+// was analysed, it reached the first array literal INSIDE it — a call's
+// argument, through an index or an operator, in a declaration, an assignment,
+// a nested element, a method argument or an else-branch — and built that
+// literal at the destination's element type: `[w, 0]` became a `[2: t8]`, 300
+// became 44, and `pick` took the wrong branch. Every line prints 1.
+fnc: [2: t8] pick(n: t64) {
+    if n > 100 { [1, 1] } else { [2, 2] }
+}
+struct B { n: t64 }
+bm: impl (b: B) {
+    fnc: [2: t8] choose(n: t64) {
+        if n > 100 { [1, 1] } else { [2, 2] }
+    }
+}
+w: t64 = 300
+c: bool = false
+xs: [2: t8] = pick([w, 0]:[0])
+print(xs:[0])
+xs = [0, 0]
+xs = pick([w, 0]:[0])
+print(xs:[0])
+xs = pick([w, 0]:[0] + 0)
+print(xs:[0])
+m: [2: [2: t8]] = [pick([w, 0]:[0]), [5, 5]]
+print(m:[0]:[0])
+ys: [2: t8] = if c { [7, 7] } else { pick([w, 0]:[0]) }
+print(ys:[0])
+let q
+q = B { n: 1 }
+xs = q.choose([w, 0]:[0])
+print(xs:[0])

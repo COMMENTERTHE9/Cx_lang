@@ -1,0 +1,5 @@
+// An integer literal must fit a const's declared type, as a typed
+// declaration's must. `const Q: t8 = 300` printed 300 on the interpreter and
+// 44 in compiled code.
+const Q: t8 = 300
+print(Q)

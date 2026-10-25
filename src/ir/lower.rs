@@ -2095,12 +2095,10 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
                 && is_integer_ir_ty(&target_ty)
             {
                 // Narrow/widen the value to the const's declared width, the same
-                // way struct-field stores do (Gate-2a). Needed because the
-                // semantic ConstDecl arm — unlike TypedAssign — does not call
-                // `insert_cast_if_needed`, so `const A: t32 = 5` arrives here
-                // with an I64-typed literal against an I32 target. Handling it
-                // in lowering keeps this a lowering-only change: the semantic
-                // tree the interpreter consumes is untouched.
+                // way struct-field stores do (Gate-2a). Analysis now converts a
+                // const's value to its declared type as it does a typed
+                // binding's (§39), so this is defense in depth: it was needed
+                // when `const A: t32 = 5` arrived with an I64-typed literal.
                 let narrowed = ctx.fresh_value();
                 current.emit(IrInst::Cast {
                     dst: narrowed,

@@ -1,0 +1,9 @@
+// A literal nested in another literal, or in a struct field's array, is
+// converted to the inner element type. It arrived with no hint: the interpreter
+// kept 300 in a `[2: [2: t8]]` while the JIT held 44.
+struct G { m: [2: [2: t8]] }
+v: t32 = 300
+m: [2: [2: t8]] = [[v, 1], [2, 3]]
+print(m:[0]:[0])
+g: G = G { m: [[v, 1], [2, 3]] }
+print(g.m:[0]:[0])

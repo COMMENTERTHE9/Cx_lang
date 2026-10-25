@@ -1,0 +1,27 @@
+// An array literal assigned into an existing array, field or row is converted
+// to the destination's element type, as in a declaration. It used to arrive with
+// no element-type hint: typed by its element[0], it was copied at the
+// destination's width — into a narrower array the interpreter kept 300 while the
+// JIT held 44, and into a WIDER one the JIT read past the end of the literal and
+// printed whatever followed it in memory.
+struct H { arr: [2: t64] }
+a: t8 = 5
+b: t64 = 300
+v: t32 = 300
+
+wide: [2: t64] = [0, 0]
+wide = [a, b]
+print(wide:[1])
+
+narrow: [2: t8] = [0, 0]
+narrow = [v, 7]
+print(narrow:[0])
+print(narrow:[1])
+
+h: H = H { arr: [0, 0] }
+h.arr = [a, b]
+print(h.arr:[1])
+
+m: [2: [2: t64]] = [[0, 0], [0, 0]]
+m:[0] = [a, b]
+print(m:[0]:[1])

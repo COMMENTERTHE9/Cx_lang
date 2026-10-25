@@ -1,0 +1,7 @@
+// An untyped array literal typed `[2: t8]` by its element[0] range-checks its
+// integer literals against that type: `300` does not fit. Before, the
+// interpreter kept 300 and the JIT wrapped it to 44.
+a: t8 = 5
+let xs;
+xs = [a, 300]
+print(xs:[1])

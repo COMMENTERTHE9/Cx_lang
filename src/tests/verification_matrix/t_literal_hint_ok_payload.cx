@@ -1,0 +1,26 @@
+// `Ok(...)` gives its payload the declared `Result<T>`'s T. The literal in
+// `return Ok([a, w])` used to be typed by element[0] — a `[2: t8]` — and
+// compiled code read it as the declared `[2: t64]`, past its end; in a
+// `Result<[2: t8]>`, `[v, 1]` with `v: t32 = 300` kept 300 on the interpreter
+// while compiled code held 44.
+fnc: Result<[2: t64]> mk(a: t8, w: t64) {
+    return Ok([a, w])
+}
+fnc: Result<[2: t8]> mk8(v: t32) {
+    return Ok([v, 1])
+}
+fnc: Result<t64> use_it(a: t8, w: t64, v: t32) {
+    let r;
+    r = mk(a, w)?
+    print(r:[0])
+    print(r:[1])
+    let q;
+    q = mk8(v)?
+    print(q:[0])
+    return Ok(0)
+}
+a: t8 = 5
+w: t64 = 300
+v: t32 = 300
+z: Result<t64> = use_it(a, w, v)
+print(1)
