@@ -1,0 +1,36 @@
+// A generic function's `T` value stored where a number of a declared width is
+// expected is converted to it, as any number is: into a typed binding, an
+// array element, a struct field, a return value and an argument. Analysis
+// cannot know T, so it inserted no conversion — the interpreter, running the
+// generic body, kept a t64 300 in each t8 slot, while compiled code converted
+// it after monomorphization or refused the program.
+struct S { a: t8 }
+fnc: t8 <T> narrow(x: T) {
+    y: t8 = x
+    y
+}
+fnc: t64 <T> elem(x: T) {
+    ys: [2: t8] = [x, 1]
+    ys:[0]
+}
+fnc: t64 <T> field(x: T) {
+    s: S = S { a: x }
+    s.a
+}
+fnc: t8 <T> ret(x: T) {
+    x
+}
+fnc: t64 take8(n: t8) {
+    n
+}
+fnc: t64 <T> arg(x: T) {
+    take8(x)
+}
+w: t64 = 300
+print(narrow(w))
+print(elem(w))
+print(field(w))
+print(ret(w))
+print(arg(w))
+v: t64 = 5
+print(narrow(v))

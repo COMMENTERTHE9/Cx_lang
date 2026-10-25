@@ -4911,6 +4911,35 @@ fn insert_cast_if_needed(expr: SemanticExpr, target: &SemanticType) -> SemanticE
         return expr;
     }
 
+    // A generic function's `T` value going where a number of a declared width
+    // goes is converted like any number. Analysis cannot know `T` here, so it
+    // used to insert nothing: the interpreter, running the generic body, kept
+    // a t64 300 in a t8 slot while compiled code converted it after
+    // monomorphization — or refused the program (known_issues §43). The cast
+    // converts the runtime value on the interpreter (`apply_numeric_cast`
+    // reads only the target) and the instantiated one in compiled code
+    // (monomorphize substitutes its `from`).
+    //
+    // Not a generic STRUCT's field read: inside a generic function its `T` is
+    // taken for the function's same-named `T` (struct type arguments are not
+    // tracked), so the cast's source would be instantiated wrong — compiled
+    // code refused `b.v` of a `Box<t64>` read as the function's t8. Such a read
+    // stays unconverted, as before.
+    if matches!(expr.ty, SemanticType::TypeParam(_))
+        && is_numeric(target)
+        && *target != SemanticType::Numeric
+        && !reads_struct_field(&expr)
+    {
+        return SemanticExpr {
+            ty: target.clone(),
+            kind: SemanticExprKind::Cast {
+                from: expr.ty.clone(),
+                to: target.clone(),
+                expr: Box::new(expr),
+            },
+        };
+    }
+
     if !is_numeric(&expr.ty) || !is_numeric(target) {
         return expr;
     }
@@ -4922,6 +4951,15 @@ fn insert_cast_if_needed(expr: SemanticExpr, target: &SemanticType) -> SemanticE
             to: target.clone(),
             expr: Box::new(expr),
         },
+    }
+}
+
+/// A read of a struct's field, or of an element of one (`b.v`, `b.items:[0]`).
+fn reads_struct_field(e: &SemanticExpr) -> bool {
+    match &e.kind {
+        SemanticExprKind::DotAccess { .. } => true,
+        SemanticExprKind::Index { target, .. } => reads_struct_field(target),
+        _ => false,
     }
 }
 
@@ -6393,5 +6431,34 @@ print(result + result2)
         assert!(float.contains("array elements are t8 and f64"), "got: {float}");
         let range = single_file_errors("a: t8 = 5\nlet ys\nys = [300, a]\n");
         assert!(range.contains("integer literal 300 out of range for t8"), "got: {range}");
+    }
+    // A generic `T` value stored into a declared-width slot is converted to it,
+    // as any number is (known_issues §43).
+    #[test]
+    fn a_generic_value_is_converted_to_a_declared_number_type() {
+        let src = "fnc: t8 <T> narrow(x: T) {\n    y: t8 = x\n    y\n}\n";
+        let program = analyze_program(&crate::frontend::resolver::parse_source(src).expect("parses")).expect("analyses");
+        let body = program
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                SemanticStmt::FuncDef(f) if f.name == "narrow" => Some(&f.body),
+                _ => None,
+            })
+            .expect("the function");
+        let init = body
+            .iter()
+            .find_map(|s| match s {
+                SemanticStmt::TypedAssign { name, expr, .. } if name == "y" => Some(expr),
+                _ => None,
+            })
+            .expect("the typed binding");
+        match &init.kind {
+            SemanticExprKind::Cast { from, to, .. } => {
+                assert_eq!(*from, SemanticType::TypeParam("T".to_string()));
+                assert_eq!(*to, SemanticType::I8);
+            }
+            other => panic!("expected a cast from T, got {other:?}"),
+        }
     }
 }
