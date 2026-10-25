@@ -1041,25 +1041,30 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     // declaration). Harmless when same-named declarations have the same fields,
     // in any order; wrong when they differ — one module would read the other's
     // layout. Refuse that case rather than guess.
-    let mut struct_fields: HashMap<&str, (&[String], Vec<(&str, &SemanticType)>)> = HashMap::new();
+    // Generic structs compare up to the NAMES of their type parameters:
+    // `Box<T> { v: T }` and `Box<U> { v: U }` are the same layout.
+    let mut struct_fields: HashMap<&str, StructShape> = HashMap::new();
     for stmt in &program.stmts {
         let SemanticStmt::StructDef { name, type_params, fields, .. } = stmt else {
             continue;
         };
-        let mut sorted: Vec<(&str, &SemanticType)> = fields.iter().map(|(f, ty)| (f.as_str(), ty)).collect();
+        let mut sorted: Vec<(&str, SemanticType)> = fields
+            .iter()
+            .map(|(f, ty)| (f.as_str(), positional_type_params(ty, type_params)))
+            .collect();
         sorted.sort_by(|a, b| a.0.cmp(b.0));
         match struct_fields.get(name.as_str()) {
-            Some((seen_params, seen_fields)) if *seen_params != type_params.as_slice() || *seen_fields != sorted => {
+            Some((seen_arity, seen_fields)) if *seen_arity != type_params.len() || *seen_fields != sorted => {
                 return Err(LoweringError::UnsupportedSemanticConstruct {
                     construct: format!(
-                        "struct '{}' is declared in more than one module with different fields — compiled code cannot tell them apart yet",
+                        "struct '{}' has more than one declaration, with different fields — compiled code cannot tell them apart yet",
                         name
                     ),
                 });
             }
             Some(_) => {}
             None => {
-                struct_fields.insert(name.as_str(), (type_params.as_slice(), sorted));
+                struct_fields.insert(name.as_str(), (type_params.len(), sorted));
             }
         }
     }
@@ -1233,7 +1238,41 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
             .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, trace, target)?);
     }
 
+    // Two definitions of one function name — two modules each implementing a
+    // method on a same-named struct (`P$get`) — used to reach Cranelift, which
+    // failed on the duplicate symbol after dumping the IR. Refuse first.
+    let mut defined = HashSet::new();
+    for function in &module.functions {
+        if !defined.insert(function.name.as_str()) {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "function '{}' is defined more than once — two modules declare a method on the same struct name",
+                    function.name
+                ),
+            });
+        }
+    }
+
     Ok(module)
+}
+
+/// A struct declaration's shape for the same-name check: its type-parameter
+/// count and its fields, sorted by name, with parameters made positional.
+type StructShape<'a> = (usize, Vec<(&'a str, SemanticType)>);
+
+/// `ty` with each of `params` replaced by its position, so struct declarations
+/// that differ only in the names of their type parameters compare equal.
+fn positional_type_params(ty: &SemanticType, params: &[String]) -> SemanticType {
+    match ty {
+        SemanticType::TypeParam(p) => match params.iter().position(|q| q == p) {
+            Some(i) => SemanticType::TypeParam(format!("#{i}")),
+            None => ty.clone(),
+        },
+        SemanticType::Array(n, elem) => SemanticType::Array(*n, Box::new(positional_type_params(elem, params))),
+        SemanticType::Handle(inner) => SemanticType::Handle(Box::new(positional_type_params(inner, params))),
+        SemanticType::Result(inner) => SemanticType::Result(Box::new(positional_type_params(inner, params))),
+        other => other.clone(),
+    }
 }
 
 fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, trace: bool, target: TargetConfig) -> Result<IrFunction, LoweringError> {
@@ -11764,7 +11803,7 @@ mod tests {
         };
         match lower_program(&differing).expect_err("different fields must be refused") {
             LoweringError::UnsupportedSemanticConstruct { construct } => assert!(
-                construct.contains("struct 'Point' is declared in more than one module with different fields"),
+                construct.contains("struct 'Point' has more than one declaration, with different fields"),
                 "got: {construct}"
             ),
             other => panic!("expected an unsupported-construct refusal, got {other:?}"),

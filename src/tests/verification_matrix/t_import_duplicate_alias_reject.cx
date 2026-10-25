@@ -1,0 +1,9 @@
+// Two imports under one alias in one file. The rule that rejects it never ran
+// for multi-file programs, so the second import silently replaced the first:
+// the interpreter printed 500, and once imports were named by module the JIT
+// did too. Now "duplicate import alias 'u'" on both backends.
+#![imports]
+u: use "./t_import_same_alias_a_lib"
+u: use "./t_import_same_alias_b_lib"
+
+print(u.pick(5))

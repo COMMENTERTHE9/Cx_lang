@@ -3105,9 +3105,12 @@ entry imports only mid; mid imports util_a as `u`
 u.pick(5) in the entry     both: accepted and ran — the entry never imported `u`
 ```
 
-The first confined multi-file programs to libraries of leaf functions. The
-third is a silent wrong answer on the interpreter, the reference, and needs
-nothing unusual: two libraries each importing their own `util` as `util`.
+The first confined multi-file programs to libraries of leaf functions — and
+was SILENTLY wrong when the entry defined a function of the same name: the
+library's bare `helper(n)` reached the entry's `helper`, on both backends
+(`m.api(5)` printed 5001, not 11). The third is a silent wrong answer on the
+interpreter, the reference, and needs nothing unusual: two libraries each
+importing their own `util` as `util`.
 
 ### Why
 
@@ -3140,6 +3143,45 @@ same names — `u$pick` twice — so whichever was merged last answered every ca
   different modules should be one type at all is an open language decision
   (§32).
 
+### Found by review, fixed before merge
+
+- **A phen method calling the library's own top-level function of the same
+  name** kept the bare name: the method's name sat in the phen's scope and
+  looked like a nested function. With an `add` in the entry too, `add(v, rhs)`
+  inside `phen Add { fnc add(...) }` silently ran the entry's — 600, not 5, on
+  both backends (a pre-existing bug the first version did not reach). A method
+  is never called by its bare name, so method entries no longer count.
+- **Two imports under one alias in one file** were accepted, the second
+  silently replacing the first: the rule's own check sits on the ImportBlock
+  statement, which the multi-module path skips. Submain's interpreter printed
+  500 for `u.pick(5)` imported from two modules; the first version of this
+  change made the JIT agree. Now "duplicate import alias 'u'".
+- **`Box<T>` and `Box<U>`**, the same generic struct under different parameter
+  names, were refused as different structs: parameters are now compared by
+  position, not name.
+- Two definitions of one method — two modules each implementing a method on a
+  same-named struct, `P$get` — now get a clean refusal in lowering instead of a
+  Cranelift duplicate-symbol failure.
+
+### Not covered
+
+All predate this change:
+
+- **Same-named types are still one type** (§32): the interpreter runs the wrong
+  module's method when two modules each implement a method on a same-named
+  struct (`P$get` twice — 500 500 where 6 500 is right), and the JIT refuses
+  any program where two same-named structs differ in their fields, even when
+  one of them is never used.
+- **A nested function overwrites a top-level one on the interpreter**: nested
+  functions keep their bare names, and the interpreter registers every function
+  in one global table at run time, so a library's nested `helper` replaces the
+  entry's top-level `helper` once it has run (6 50 50 where 6 50 6 is right).
+  The JIT refuses nested functions.
+- **The argument check for a call uses one flat function table**, in which a
+  nested function's signature replaces the top-level one's: a valid
+  `helper(n)` can be rejected and an invalid `helper(n, 5)` accepted — single
+  files too.
+
 ### Fixtures
 
 ```
@@ -3149,9 +3191,14 @@ t_import_same_alias                before: interpreter 500 500, JIT refused   no
 t_import_alias_not_imported_reject before: ran, printed 6, both            now: semantic error, both
 t_import_generic_collision         before: interpreter runtime error       now: PASS — the end-to-end
                                                                            check §31 promised
+t_import_lib_helper_vs_entry       before: 5001 5000, both — silently wrong   now: PASS, 11 5000
+t_import_phen_calls_lib_fn         before: 600, both — silently wrong      now: PASS, 5
+t_import_duplicate_alias_reject    before: interpreter 500, JIT refused    now: semantic error, both
+t_import_generic_struct_alpha      before: PASS (refused by a first version of this change)
 ```
 
 Unit tests pin the two invariants: every call in a merged two-module program
 names a function that exists in it (`calls_inside_a_library_name_its_merged_functions`),
 and same-named structs with different fields are refused while reordered ones
-lower (`same_struct_name_with_different_fields_is_refused`).
+lower (`same_struct_name_with_different_fields_is_refused`); a third pins the
+duplicate-alias message.

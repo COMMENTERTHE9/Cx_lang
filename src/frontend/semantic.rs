@@ -31,6 +31,11 @@ struct VarInfo {
     /// interpreter keeps functions in a separate namespace at runtime. Variable
     /// lookup therefore skips these entries; see `lookup_var`.
     is_function: bool,
+    /// The function entry is an impl or phen METHOD's name. A method is called
+    /// on a value, never by its bare name, so a bare call never means it: in a
+    /// library, `add(v, rhs)` inside `phen Add { fnc add(...) }` calls the
+    /// library's top-level `add` (see `callee_name`).
+    is_method: bool,
 }
 
 /// A user-function call's checked arguments, its return type with type
@@ -248,6 +253,7 @@ impl Analyzer {
                 inferred,
                 initialized,
                 is_function: false,
+                is_method: false,
             },
         );
         Ok(binding)
@@ -301,7 +307,9 @@ impl Analyzer {
                     .iter()
                     .enumerate()
                     .rev()
-                    .find(|(_, scope)| scope.get(name).is_some_and(|info| info.is_function))
+                    .find(|(_, scope)| {
+                        scope.get(name).is_some_and(|info| info.is_function && !info.is_method)
+                    })
                     .map(|(depth, _)| depth);
                 if matches!(innermost_fn_depth, Some(0) | None) {
                     return format!("{key}${name}");
@@ -1452,6 +1460,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         self.declare(name, ret_ty.clone(), None, true, pos)?;
         if let Some(entry) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
             entry.is_function = true;
+            entry.is_method = is_method;
         }
 
         let placeholders = params
@@ -4546,6 +4555,16 @@ pub fn analyze_resolved_program(
         // Build analyzer with module aliases from already-processed dependencies
         let mut analyzer = Analyzer::new();
         analyzer.continue_ids_from(ids);
+        // Rule 2, no duplicate import aliases within a file. The ImportBlock
+        // statement that checks it is skipped on this path, so two imports
+        // under one alias used to be accepted, the last silently replacing the
+        // first — `u.pick` then ran whichever module was imported last.
+        let mut seen_aliases = std::collections::HashSet::new();
+        for edge in resolved.edges.iter().filter(|e| e.importer == module_id) {
+            if !seen_aliases.insert(edge.alias.as_str()) {
+                return Err(vec![sem_err!(edge.pos, "duplicate import alias '{}'", edge.alias)]);
+            }
+        }
         analyzer.module_aliases = resolved.edges.iter()
             .filter(|e| e.importer == module_id)
             .filter_map(|e| module_exports.get(&e.importee).map(|m| (e.alias.clone(), m.clone())))
@@ -5438,6 +5457,43 @@ print(result + result2)
         assert!(user_calls.len() >= 5, "expected the library's and the entry's calls, got {user_calls:?}");
         for callee in user_calls {
             assert!(defined.contains(callee), "call to '{callee}' names no function; defined: {defined:?}");
+        }
+    }
+
+    // Two imports under one alias in one file are rejected (Rule 2). The rule's
+    // own check sits on the ImportBlock statement, which the multi-module path
+    // skips, so the second import used to replace the first without a word.
+    #[test]
+    fn a_duplicate_import_alias_in_one_file_is_rejected() {
+        use crate::frontend::resolver::{
+            parse_source, ImportEdge, ModuleId, ResolvedFile, ResolvedProgram,
+        };
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let lib = |src: &str| parse_source(src).expect("library parses");
+        let (a, b, entry) = (ModuleId(0), ModuleId(1), ModuleId(2));
+        let mut files = HashMap::new();
+        for (id, path, program) in [
+            (a, "a.cx", lib("pub fnc: t32 pick(x: t32) {\n    x + 1\n}\n")),
+            (b, "b.cx", lib("pub fnc: t32 pick(x: t32) {\n    x * 100\n}\n")),
+            (entry, "main.cx", parse_source("print(u.pick(5))\n").expect("entry parses")),
+        ] {
+            files.insert(id, ResolvedFile { id, path: PathBuf::from(path), program, imports: vec![] });
+        }
+        let edge = |importee, pos| ImportEdge { importer: entry, importee, alias: "u".to_string(), pos };
+        let result = analyze_resolved_program(&ResolvedProgram {
+            entry,
+            files,
+            edges: vec![edge(a, 0), edge(b, 1)],
+            topo_order: vec![a, b, entry],
+        });
+        match result {
+            Ok(_) => panic!("two imports under one alias must be rejected"),
+            Err(errs) => {
+                let msg = errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | ");
+                assert!(msg.contains("duplicate import alias 'u'"), "got: {msg}");
+            }
         }
     }
 }

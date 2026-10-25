@@ -1,0 +1,15 @@
+// A phen method that calls the library's top-level function of the same name.
+// The method's own name sat in an inner scope and looked like a nested
+// function, so the call kept the bare name — and reached the ENTRY's `add`:
+// 600, not 5, on both backends. A method is never called by its bare name, so
+// it no longer shadows the top-level function for call resolution.
+#![imports]
+m: use "./t_import_phen_calls_lib_fn_lib"
+
+struct V { n: t32 }
+
+fnc: V add(a: V, b: V) {
+    V { n: a.n * b.n * 100 }
+}
+
+print(m.run(2, 3))

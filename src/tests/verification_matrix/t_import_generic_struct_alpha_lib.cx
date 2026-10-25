@@ -1,0 +1,8 @@
+// Library declaring `struct Box<T>`, for t_import_generic_struct_alpha.
+struct Box<T> { v: T }
+
+pub fnc: t32 unbox(n: t32) {
+    b: Box = Box<t32> { v: n }
+    print(b.v)
+    n + 1
+}
