@@ -3253,6 +3253,10 @@ ordinary `Binary` add on it.
 - `emit_user_arith` refuses arithmetic on a non-numeric IR type. The one
   non-number analysis still takes, `str += str`, is therefore a clean JIT
   refusal: compiled code cannot append to a runtime string yet.
+- Lowering refuses compound assignment on a generic struct's field whose
+  instantiated type is not its declared one: analysis sees only `T` and checks
+  nothing, while the instantiated layout has the real type
+  (`instantiated_field_type`).
 
 ### Found by review, fixed before merge
 
@@ -3261,6 +3265,13 @@ interpreter has always run: `p.first += 5` on a `Pair<t32>` (105) — the field'
 type is the struct's `T`, which the check took for a struct named `T` — and
 `s += "b"` on an untyped `s.copy` parameter holding `"a"` (ab), taken for a
 number. Both are fixtures now.
+
+The repository's review bot found a third case, on submain too: an enum in a
+generic struct's field. `b = Box { v: C::Red }; b.v += k` passes analysis (the
+field is `T`), the interpreter stops at run time, and compiled code added `k` to
+the tag and printed 2. Compiled code now refuses compound assignment on any
+generic instantiation's field — a numeric one used to fail Cranelift's verifier
+on an operand of the wrong width, and is now a clean refusal too.
 
 ### Not changed
 
@@ -3283,6 +3294,7 @@ t_compound_bool_reject      before: runtime error / JIT refused               no
 t_compound_struct_reject    before: runtime error / JIT SEGFAULT              now: semantic error, both
 t_compound_str_append       before: interpreter abc / JIT SEGFAULT            now: interpreter PASS, JIT SKIP
 t_compound_generic_field    interpreter 105 11, JIT refused — unchanged (a first version refused it)
+t_compound_generic_enum_field  before: runtime error / JIT printed 2       now: runtime error / JIT SKIP
 t_compound_copy_untyped_str interpreter ab ab, JIT refused — unchanged (a first version refused it)
 ```
 

@@ -1,0 +1,14 @@
+// Compound assignment on a generic struct's field holding an enum. Analysis
+// types the field by its declared `T`, so it cannot check the operands, and the
+// interpreter stops at run time; compiled code added 1 to the enum's tag and
+// printed 2 — `Red` became `Green`. It now refuses the program (SKIP).
+enum C { Red, Green }
+struct Box<T> { v: T }
+let b
+b = Box { v: C::Red }
+k: t8 = 1
+b.v += k
+when b.v {
+    C::Green => print(2),
+    _ => print(0),
+}
