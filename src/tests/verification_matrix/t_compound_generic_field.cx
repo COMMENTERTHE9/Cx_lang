@@ -1,0 +1,15 @@
+// Compound assignment on a generic struct's field. The field keeps its
+// declared type `T` even through a `Pair<t32>`, so a first version of the
+// operand check refused `p.first += 5` as arithmetic on a struct named 'T' —
+// a false rejection of what the interpreter has always run.
+struct Pair<T> {
+    first: T,
+    second: T,
+}
+struct Box<T> { items: [3: T] }
+p: Pair = Pair<t32> { first: 100, second: 200 }
+p.first += 5
+print(p.first)
+b: Box = Box<t32> { items: [1, 2, 3] }
+b.items:[0] += 10
+print(b.items:[0])

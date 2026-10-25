@@ -3968,12 +3968,14 @@ fn emit_user_arith(
     // Arithmetic is integer or float. A string, struct or array value is a
     // pointer here, and arithmetic on it is arithmetic on an address — what a
     // `str +=` reaching this point compiled to, and why it crashed (§38).
-    // Analysis takes only `str += str` among non-numbers, and compiled code
-    // cannot append to a runtime string yet; refuse rather than emit it.
+    // Among non-numbers analysis takes `str += str`, which compiled code
+    // cannot do yet (no runtime append), and leaves targets whose type it does
+    // not know to the interpreter's run-time check (§38) — a generic struct's
+    // field, an untyped binding. Refuse rather than emit address arithmetic.
     if ty.int_width().is_none() && ty != IrType::F64 {
         return Err(LoweringError::UnsupportedSemanticConstruct {
             construct: format!(
-                "arithmetic on a {:?} value — compiled code appends to a string only by literals yet",
+                "arithmetic on a {:?} value — compiled code does arithmetic on numbers only, and cannot append to a string yet",
                 ty
             ),
         });

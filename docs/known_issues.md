@@ -3210,7 +3210,8 @@ this entry — `check_compound_operands` in `src/frontend/semantic.rs`, and the
 operand-type guard in `emit_user_arith`, `src/ir/lower.rs`.)*
 
 **Status: FIXED.** `x op= y` takes exactly the operands `x op y` takes: two
-numbers, or `str += str`.
+numbers, or `str += str`. A target whose type the analyzer does not know is
+left to the interpreter's run-time check, as before.
 
 ### What happened
 
@@ -3223,7 +3224,7 @@ passed analysis, and what happened next depended on the backend:
 fnc: T <T> inc(x: T, d: T) { x += d  x }      interpreter 2147483648   JIT -2147483648
 inc(t32 2147483647, 1)                        (a t32 holding a value no t32 can; the JIT's t32 instance wraps)
 
-c: Color = Red;  c += 1                       interpreter: runtime error   JIT: printed 2 — the tag became Green's
+c = Color::Red;  c += k   (k: t8 = 1)        interpreter: runtime error   JIT: printed 2 — the tag became Green's
 b: bool = true;  b += 1                       interpreter: runtime error   JIT: refused
 v += w   (struct V with a phen for Add)       interpreter: runtime error   JIT: SEGFAULT
 s += "b" (str)                                interpreter: appends ("ab")  JIT: SEGFAULT
@@ -3237,12 +3238,41 @@ ordinary `Binary` add on it.
 
 - `check_compound_operands` applies `analyze_binary`'s operand rule to every
   compound assignment — variable, field and element targets alike. A struct is
-  refused even when it has a phen for the operator, with the written-out form to
-  use (`a = a + ...`): `a + b` dispatches to the phen, but `+=` doing the same
-  would be a new rule, not the binary one.
+  refused even when it has a phen for the operator: `a + b` dispatches to the
+  phen, but `+=` doing the same would be a new rule, not the binary one. So is
+  a bounded type parameter (`<T: Add>`), as `x + d` on one is — the compound
+  form was a runtime error on the interpreter and a SEGFAULT on the JIT. A
+  `strref` target is refused too: `r = r + "x"` is a type mismatch, since
+  appending makes a `str`.
+- Two kinds of target are not checked, because their type is not known: an
+  untyped binding with nothing inferred — `binding_type`'s `Numeric` is a
+  default, not a fact, and an untyped `s.copy` parameter can hold a string —
+  and a generic struct's field, which keeps its declared `T` even when read
+  through a `Pair<t32>`. Both behave as before: the interpreter checks the
+  value at run time, and the JIT refuses (the guard below).
 - `emit_user_arith` refuses arithmetic on a non-numeric IR type. The one
   non-number analysis still takes, `str += str`, is therefore a clean JIT
   refusal: compiled code cannot append to a runtime string yet.
+
+### Found by review, fixed before merge
+
+The first version checked every target, and so refused two programs the
+interpreter has always run: `p.first += 5` on a `Pair<t32>` (105) — the field's
+type is the struct's `T`, which the check took for a struct named `T` — and
+`s += "b"` on an untyped `s.copy` parameter holding `"a"` (ab), taken for a
+number. Both are fixtures now.
+
+### Not changed
+
+- An `if` or `when` whose branches have different types — `if c { k } else
+  { C::Green }` with `k: t8` — takes its first branch's type, so `y += 1` and
+  `y = y + 1` on the result both pass analysis: a runtime error on the
+  interpreter, while the JIT adds 1 to the enum's tag and prints 2. That is the
+  branch-typing rule, not compound assignment, and is unchanged here; the
+  lowering guard below sees an integer.
+- The guard in `emit_user_arith` refuses any operand that is not an integer
+  or a float in compiled code — and an enum there IS its integer tag, so the
+  guard cannot catch the case above.
 
 ### Fixtures
 
@@ -3252,7 +3282,9 @@ t_compound_enum_reject      before: runtime error / JIT printed 2             no
 t_compound_bool_reject      before: runtime error / JIT refused               now: semantic error, both
 t_compound_struct_reject    before: runtime error / JIT SEGFAULT              now: semantic error, both
 t_compound_str_append       before: interpreter abc / JIT SEGFAULT            now: interpreter PASS, JIT SKIP
+t_compound_generic_field    interpreter 105 11, JIT refused — unchanged (a first version refused it)
+t_compound_copy_untyped_str interpreter ab ab, JIT refused — unchanged (a first version refused it)
 ```
 
 A unit test pins each rejection's message, and that numeric compound
-assignment and `str += str` still pass analysis.
+assignment, `str += str` and the two unchecked targets still pass analysis.

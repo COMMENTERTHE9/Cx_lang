@@ -1,0 +1,11 @@
+// `+=` on an untyped `.copy` parameter that holds a string. Its type is not
+// known to the analyzer (nothing declared, nothing inferred), so a first
+// version of the operand check took it for a number and refused `s += "b"` —
+// a false rejection of what the interpreter has always run.
+fnc: app(s.copy) {
+    s += "b"
+    print(s)
+}
+t: str = "a"
+app(t.copy)
+print(t)

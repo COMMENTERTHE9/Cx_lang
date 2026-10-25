@@ -1410,7 +1410,25 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     SemanticLValue::DotAccess { ty, .. } => ty.clone(),
                     SemanticLValue::Index { elem_ty, .. } => elem_ty.clone(),
                 };
-                check_compound_operands(*op, &target_ty, &sem_operand.ty, base.as_str(), *pos)?;
+                // What the analyzer does not know it does not check: the
+                // interpreter checks the value at run time, and lowering
+                // refuses arithmetic on a non-numeric type. Two such targets:
+                // an untyped binding with nothing inferred, whose `Numeric` is
+                // binding_type's default rather than a fact (an untyped
+                // `s.copy` parameter can hold a string, and `s += "b"`
+                // appends), and a struct name this module does not declare —
+                // in practice a generic struct's field, which keeps its
+                // declared `T` even when read through a `Box<t32>`.
+                let untyped_binding = matches!(sem_target, SemanticLValue::Binding { .. })
+                    && self
+                        .lookup_var(&base)
+                        .is_some_and(|info| info.declared.is_none() && info.inferred.is_none());
+                let checked_ty = match &target_ty {
+                    _ if untyped_binding => SemanticType::Unknown,
+                    SemanticType::Struct(name) if !self.structs.contains_key(name) => SemanticType::Unknown,
+                    ty => ty.clone(),
+                };
+                check_compound_operands(*op, &checked_ty, &sem_operand.ty, *pos)?;
                 let narrowed_operand = if is_numeric(&target_ty) && is_numeric(&sem_operand.ty) {
                     insert_cast_if_needed(sem_operand, &target_ty)
                 } else {
@@ -4186,7 +4204,6 @@ fn check_compound_operands(
     op: Op,
     target: &SemanticType,
     operand: &SemanticType,
-    target_name: &str,
     pos: usize,
 ) -> Result<(), SemanticError> {
     let sym = match op {
@@ -4205,18 +4222,24 @@ fn check_compound_operands(
     }
     let is_str = |t: &SemanticType| matches!(t, SemanticType::Str | SemanticType::StrRef);
     if op == Op::Plus && is_str(target) && is_str(operand) {
+        // `r + "x"` is a str, and `r = r + "x"` is a type mismatch for a
+        // strref `r`; the compound form must not store what the written-out
+        // one cannot.
+        if *target == SemanticType::StrRef {
+            return Err(sem_err!(
+                pos,
+                "compound assignment `+=` on a strref is not supported — appending makes a str, which a strref cannot hold"
+            ));
+        }
         return Ok(());
     }
     if let SemanticType::Struct(_) = target {
-        let bare = &sym[..sym.len() - 1];
         return Err(sem_err!(
             pos,
-            "compound assignment `{}` on a struct ('{}') is not supported — write it out, as `{} = {} {} ...`",
+            "compound assignment `{}` on a struct ('{}') is not supported — spell it out with `{}`",
             sym,
             type_name(target),
-            target_name,
-            target_name,
-            bare
+            &sym[..sym.len() - 1]
         ));
     }
     Err(sem_err!(
@@ -5575,12 +5598,24 @@ print(result + result2)
                 "s: str = \"a\"\ns -= \"b\"\n",
                 "compound assignment `-=` requires numeric operands, got str and str",
             ),
+            (
+                "fnc: f(r: strref) {\n    r += \"x\"\n}\n",
+                "compound assignment `+=` on a strref is not supported",
+            ),
         ];
         for (src, want) in rejected {
             let msg = single_file_errors(src);
             assert!(msg.contains(want), "for {src:?} got: {msg}");
         }
-        for ok in ["x: t32 = 1\nx += 2\nx *= 3.5\nprint(x)\n", "s: str = \"a\"\ns += \"b\"\nprint(s)\n"] {
+        // Targets whose type the analyzer does not know are left to the
+        // interpreter's run-time check: a generic struct's field (typed by its
+        // declared `T`) and an untyped `.copy` parameter.
+        for ok in [
+            "x: t32 = 1\nx += 2\nx *= 3.5\nprint(x)\n",
+            "s: str = \"a\"\ns += \"b\"\nprint(s)\n",
+            "struct Box<T> { items: [3: T] }\nb: Box = Box<t32> { items: [1, 2, 3] }\nb.items:[0] += 10\n",
+            "fnc: app(s.copy) {\n    s += \"b\"\n}\nt: str = \"a\"\napp(t.copy)\n",
+        ] {
             let program = crate::frontend::resolver::parse_source(ok).expect("parses");
             let result = analyze_program(&program);
             assert!(result.is_ok(), "rejected {ok:?}: {:?}", result.err());
