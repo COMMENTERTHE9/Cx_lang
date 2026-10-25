@@ -1,0 +1,22 @@
+// Literals that the declared type does NOT reach keep their values. An inner
+// literal of a nested array arrives with no element-type hint; converting it to
+// its element[0]'s type — as a first version of the literal-narrowing fix did —
+// silently turned 300 into 44 in a `[2: [2: t64]]`, crashed the interpreter on
+// an f64 inner array whose element[0] is an integer, and rejected `300` in a
+// t64 array as out of range for t8. Each value here is the one submain gave on
+// both backends.
+a: t8 = 5
+b: t64 = 300
+m: [2: [2: t64]] = [[a, b], [1, 2]]
+print(m:[0]:[1])
+
+i: t32 = 1
+fm: [2: [2: f64]] = [[i, 2.5], [1.0, 2.0]]
+if fm:[0]:[1] > 2.0 {
+    print(1)
+} else {
+    print(0)
+}
+
+lm: [2: [2: t64]] = [[a, 300], [1, 2]]
+print(lm:[0]:[1])

@@ -2984,3 +2984,88 @@ Both predate this change; each is a separate fix.
   `Color`: the interpreter fails at run time, while the JIT does integer
   arithmetic on the tag and exits 0. Analysis should reject a non-numeric
   compound target, as it rejects `c + k`.
+
+## 36. Array- and struct-literal elements were not converted on the interpreter
+
+*(Found 2026-10-24 by the second review of §32; fixed — where the declared type
+reaches the literal — by the commit that introduces this entry: the
+`StructInstance` and `ArrayLit` arms of `analyze_expr` in
+`src/frontend/semantic.rs`.)*
+
+**Status: FIXED where the declared type reaches the literal; OPEN where it does
+not (below).**
+
+### What happened
+
+The interpreter — the reference — stored the elements of an array literal and
+the fields of a struct literal as they came, whatever the declared type:
+
+```
+v: t32 = 300
+xs: [2: t8] = [v, 1]        interpreter: xs:[0] is 300               JIT: 44
+fs: [2: t32] = [1.5, 2.5]   interpreter: fs:[0] + fs:[1] is 4        JIT: 3
+s: S = S { a: v }  (a: t8)  interpreter: s.a is 300, s.a + 0 is 44  JIT: 44, 44
+```
+
+The same for literals passed as arguments, returned, or nested in a struct
+literal's field. The interpreter even disagreed with itself: reading the field
+gave 300, while arithmetic on it, typed `t8`, wrapped to 44. A typed binding, an
+argument and a return all convert a scalar, and so do `s.a = v` and
+`xs:[i] = v`.
+
+### Why
+
+Analysis checked a literal's elements and fields against the declared types —
+the range of integer literals, type compatibility — but inserted no conversion.
+Compiled code converted anyway, because it stores each element into the
+declared layout; the interpreter keeps values as they are.
+
+### The fix
+
+Each struct-literal field value is converted to the field's declared type, and
+each array-literal element to the DECLARED element type, through
+`insert_cast_if_needed`. Generic fields (`v: T`) are not numeric types and are
+unchanged. Compiled code produces the same values as before at these sites.
+
+**Found by review, fixed before merge.** A first version also converted an
+array literal with NO declared element type to the type of its element[0]. That
+is not a destination type: many literals whose destination does have a declared
+type arrive with no hint (below). It silently turned 300 into 44 on both
+backends in `m: [2: [2: t64]] = [[a, b], [1, 2]]` (`a: t8`, `b: t64`), crashed
+the interpreter on an `f64` inner array whose element[0] is an integer, and
+rejected `300` in a `t64` array as out of range for `t8`. The conversion is now
+applied only when the declared type reaches the literal;
+`t_literal_nested_unconverted` pins those three shapes at submain's values.
+
+### Not fixed yet — the declared type does not reach the literal
+
+The element-type hint reaches the top-level literal of a typed declaration, a
+struct field, a call argument and a return. It does not reach:
+
+- the right side of an assignment to an existing array, field or row
+  (`xs = [v, 7]`, `h.arr = [...]`, `m:[0] = [...]`);
+- a literal nested inside another literal;
+- a method-call argument;
+- an `if` / `when` branch after the first;
+- an untyped array (`let ys; ys = [a, b]`), typed by its element[0].
+
+There the interpreter keeps the values while compiled code uses the literal's
+own element[0]-derived layout. When the destination is narrower, the backends
+disagree (interpreter 300, JIT 44). When it is WIDER, compiled code reads past
+the end of the narrower literal and prints whatever follows it in memory — a
+memory-safety bug, not only a disagreement. Mixed integer and float elements in
+an untyped array disagree the same way. All of these predate this change; the
+fix is to deliver the declared type to every one of those positions, and to type
+an untyped array by its widest element rather than its first.
+
+### Fixtures
+
+```
+t_literal_elem_narrowing      before: interpreter 300 4 300 44 300 300 300 -7
+                                      JIT         44  3  44 44  44  44  44 -7
+                              now: PASS, both agree
+t_literal_nested_unconverted  submain's values, kept: 300 1 300 (both backends)
+```
+
+A unit test pins that a struct-literal field and a declared array's element
+carry an explicit conversion.
