@@ -3601,6 +3601,54 @@ element (narrowing would wrap) or widening:
   if one of them is a float, and of untyped integers otherwise.
 - A declared element type is unchanged: `zs: [2: t64] = [a, b]` converts each
   element to it, as before.
+- **Arguments passed by address — `.copy`, `.copy.free` — and an impl's extra
+  receivers must have the declared type exactly**, numbers included: nothing
+  converted on the way in could be written back. `shift(xs.copy)` with
+  `xs: [3: t8]` and `r.copy: [3: t64]`, and `bump(x.copy)` with `x: t8` and
+  `n.copy: t64`, are errors.
+- **Generic calls.** `T` inside a parameter's type is inferred from the
+  argument and substituted for the check: `k(a, ys)` with `k(x: T, v: [2: T])`
+  and a t8 `a` needs a `[2: t8]`. An array decides `T` over an untyped literal,
+  because the array cannot convert and the literal can: `k(5, ys)` with a
+  `[2: t8]` `ys` has `T` = t8. Inside a generic body a `[N: T]` is not known
+  to be a `[N: t64]` and is not taken for one.
+- **Rows and `Result`s.** A row of untyped literals takes the type of the
+  typed rows (`[[a, 2], [3, 4]]` with `a: t8` is a `[2: [2: t8]]`), and an
+  untyped integer is a t64 inside a `Result` as in an array (`[Ok(1), Ok(2)]`
+  fits a `[2: Result<t64>]`). A generic `T` or unknown element does not exempt
+  a literal from having one element type.
+
+### Found by review, fixed before merge
+
+The review of the first version found two false rejections — a literal row
+beside a typed one, and `Result`s of untyped integers — and five holes, all on
+submain too, through which arrays of different element types still passed:
+
+- `.copy` arguments were never type-checked: a `[3: t8]` given to a
+  `[3: t64]` `.copy` parameter printed 3 interpreted and 67305985 compiled, and
+  was written back as 24 bytes into its 3.
+- An impl's extra receivers were passed through unchecked (6 and garbage).
+- A generic call substituted `T` only into a parameter whose whole type was
+  `T`: `k(a, ys)` above passed the `[2: t64]` (400 interpreted, 1 compiled).
+- An element of a generic or unknown type exempted a literal from the rule:
+  `[a, x, b]` held 300 interpreted and 44 compiled.
+- Compiled code had no layout for an array of integer-literal rows: it took the
+  rows for pointers, and `w = [[1, 2], [3, 4]]` copied into a `[2: [2: t64]]`
+  read 1 where the interpreter read 3. Integer literals are now stored as t64
+  at every depth (`stored_scalar_type` in `src/ir/lower.rs`).
+
+Inferring `T` from a `[N: T]` parameter also lets compiled code run calls it
+could not instantiate before (`head(arr)` with `head(a: [3: T])`).
+
+### Consequences of the rule
+
+These follow from the rule as decided (they are listed for the owner to
+confirm): an untyped integer that is
+not a literal is its own type (`[a, n]` with `n` from `let n; n = 5`, and
+`[a, 1 + 1]`, are two types); `[100, a]` with a t8 `a` is a `[2: t8]`, so
+`q:[0] + q:[0]` wraps to -56 where `[100, a]` used to be untyped and print
+200; and an untyped `if c { [1, a] } else { [1, 2] }` now has branches of two
+types, which compiled code refuses (§40).
 
 ### Not changed
 
@@ -3620,6 +3668,14 @@ t_array_width_field_reject    before: interpreter 2, JIT garbage          now: s
 t_array_mixed_literal_reject  before: interpreter 300, JIT 44             now: semantic error, both
 t_array_mixed_float_reject    before: interpreter 2.5, JIT 2              now: semantic error, both
 t_array_literal_types         before: JIT 2 where the interpreter has 2.5 now: PASS, both agree
+t_array_width_copy_reject     before: interpreter 3, JIT garbage          now: semantic error, both
+t_copy_scalar_width_reject    before: interpreter 1005 in a t8, JIT refused  now: semantic error, both
+t_array_width_receiver_reject before: interpreter 6, JIT garbage          now: semantic error, both
+t_array_width_generic_reject  before: interpreter 400, JIT 1              now: semantic error, both
+t_array_width_generic_body_reject  before: interpreter 6, JIT refused     now: semantic error, both
+t_array_mixed_generic_reject  before: interpreter 300, JIT 44             now: semantic error, both
+t_array_literal_rows          before: interpreter 3 3 Ok(2), JIT 3 1 Ok(2)  now: PASS, both agree
+t_array_generic_infer         before: interpreter 9, JIT -2               now: interpreter 9, JIT refused (§43 makes it 9)
 ```
 
 Unit tests pin the rejections' messages and the element type of each kind of

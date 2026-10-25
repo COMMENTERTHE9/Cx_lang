@@ -1,0 +1,12 @@
+// A generic `T` element does not exempt an untyped array literal from having
+// one element type: `[a, x, b]` with a t8 `a` and a t64 `b` is two types. It
+// was typed by its first element; the interpreter kept b = 300 and compiled
+// code stored 44.
+fnc: t64 <T> g(x: T) {
+    a: t8 = 5
+    b: t64 = 300
+    let w
+    w = [a, x, b]
+    w:[2]
+}
+print(g(7))

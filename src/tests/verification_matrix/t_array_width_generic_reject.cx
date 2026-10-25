@@ -1,0 +1,11 @@
+// A generic parameter `[2: T]` takes the `T` its other arguments bind: with a
+// t8 `a`, `k(a, ys)` needs a `[2: t8]`. Only a parameter whose whole type was
+// `T` used to have it substituted, so a `[2: t64]` passed unconverted and
+// compiled code read it at t8 width.
+fnc: [2: T] <T> k(x: T, v: [2: T]) {
+    v
+}
+a: t8 = 5
+ys: [2: t64] = [300, 400]
+r: [2: t8] = k(a, ys)
+print(r:[1])

@@ -1,0 +1,11 @@
+// In a generic body a `[3: T]` is not a `[3: t64]` — `T` may be t8, and arrays
+// do not convert. Accepted, compiled code read the t8 array at t64 width once
+// the function was instantiated.
+fnc: t64 sum(v: [3: t64]) {
+    v:[0] + v:[1] + v:[2]
+}
+fnc: t64 <T> g(v: [3: T]) {
+    sum(v)
+}
+xs: [3: t8] = [1, 2, 3]
+print(g(xs))

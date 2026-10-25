@@ -1,0 +1,8 @@
+// A generic `[2: T]` parameter binds `T` from its array, over an untyped
+// literal elsewhere in the call: `k(5, ys)` with a `[2: t8]` `ys` has `T` = t8
+// and the 5 converted to it. The array decides because it cannot convert.
+fnc: t64 <T> k(x: T, v: [2: T]) {
+    v:[1]
+}
+ys: [2: t8] = [7, 9]
+print(k(5, ys))

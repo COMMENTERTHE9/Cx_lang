@@ -97,6 +97,11 @@ pub struct Analyzer {
     structs: HashMap<String, Vec<(String, Type)>>,
     pub method_registry: HashMap<(String, String), SemanticFunction>,
     pub method_alias_counts: HashMap<(String, String), usize>,
+    /// The declared types of an impl method's receivers, in order — the first
+    /// is the value the method is called on, the rest are passed as its first
+    /// arguments. They are passed by reference, so an argument must have its
+    /// receiver's type exactly (§42).
+    pub method_alias_types: HashMap<(String, String), Vec<SemanticType>>,
     /// Whole-graph phen-provided method names, injected from Pass 0's
     /// registry (0.3.4 slice 2). Consulted at impl-block registration to
     /// enforce the method-ownership locked rule, application 2: an impl
@@ -168,6 +173,7 @@ impl Analyzer {
             structs: HashMap::new(),
             method_registry: HashMap::new(),
             method_alias_counts: HashMap::new(),
+            method_alias_types: HashMap::new(),
             phen_methods: HashMap::new(),
             gene_defs: HashMap::new(),
             phen_keys: std::collections::HashSet::new(),
@@ -295,6 +301,37 @@ impl Analyzer {
         } else {
             sem_err!(pos, "use of undeclared variable '{}'", name)
         }
+    }
+
+    /// A `.copy` argument is passed BY ADDRESS and written back, so the variable
+    /// must have the parameter's declared type exactly — no conversion can be
+    /// made on the way in and undone on the way out. Unchecked, a `[3: t8]`
+    /// variable given a `[3: t64]` `.copy` parameter was read as three t64s and
+    /// written back as 24 bytes into its 3 (§42); a t8 given a t64 likewise.
+    fn check_by_address_arg(
+        &self,
+        name: &str,
+        param: Option<&SemanticParam>,
+        form: &str,
+        pos: usize,
+    ) -> Result<(), SemanticError> {
+        let (Some(param), Some(info)) = (param, self.lookup_var(name)) else {
+            return Ok(());
+        };
+        let Some(expected) = &param.ty else { return Ok(()) };
+        let got = binding_type(info, &self.current_type_params);
+        if !same_element_type(expected, &got) {
+            return Err(sem_err!(
+                pos,
+                "'{}' argument '{}' is a {}, but parameter '{}' is a {} — it is passed by address and written back, so it must have the parameter's type",
+                form,
+                name,
+                type_name(&got),
+                param.name,
+                type_name(expected)
+            ));
+        }
+        Ok(())
     }
 
     /// The callee name for a call to the user function `name`. In a library,
@@ -730,6 +767,10 @@ impl Analyzer {
                             self.method_alias_counts.insert(
                                 (type_name.clone(), sem_func.name.clone()),
                                 semantic_aliases.len(),
+                            );
+                            self.method_alias_types.insert(
+                                (type_name.clone(), sem_func.name.clone()),
+                                semantic_aliases.iter().map(|(_, ty)| ty.clone()).collect(),
                             );
                         }
                     }
@@ -2116,9 +2157,14 @@ Expr::Unary(op, inner, pos) => {
                 // declaration: an array inferred from `[1, 2]` has `Numeric`
                 // elements, and `w = [2.5, 3.5]` into it must not convert 2.5 to
                 // that — compiled code then truncated it to 2.
+                // Nor is a generic `T` (or a generic struct's field type, which
+                // reads as a struct named `T`): it does not say what the elements
+                // are, and taken as a declaration it let `first([a, b])` mix a t8
+                // and a t64 (§42).
                 let declared_elem = match self.expected_value_ty.take() {
                     Some(SemanticType::Array(_, elem))
-                        if !matches!(*elem, SemanticType::Numeric | SemanticType::Unknown) =>
+                        if !matches!(*elem, SemanticType::Numeric | SemanticType::Unknown | SemanticType::TypeParam(_))
+                            && !matches!(&*elem, SemanticType::Struct(name) if !self.structs.contains_key(name)) =>
                     {
                         Some(*elem)
                     }
@@ -2147,6 +2193,12 @@ Expr::Unary(op, inner, pos) => {
                     Some(_) => None,
                     None => untyped_numeric_elem_type(&semantic_elems, *pos)?,
                 };
+                // Rows that are literals of untyped numbers take the type of the
+                // typed rows, as a literal element does: `[[a, 2], [3, 4]]` with a
+                // t8 `a` is a `[2: [2: t8]]`.
+                if declared_elem.is_none() && untyped_numeric.is_none() {
+                    semantic_elems = adopt_literal_rows(semantic_elems, *pos)?;
+                }
                 let (elem_ty, check_from) = match (&declared_elem, &untyped_numeric) {
                     (Some(t), _) | (None, Some(t)) => (t.clone(), 0),
                     (None, None) => (
@@ -2160,7 +2212,14 @@ Expr::Unary(op, inner, pos) => {
                         // Range-check integer literals against the element type (#028).
                         check_semantic_num_fits(e, &elem_ty, *pos)?;
                     }
-                    if !types_compatible(&elem_ty, &e.ty) {
+                    // An untyped array's elements must have one type — rows of
+                    // arrays, `Result`s and all — not merely compatible ones.
+                    let fits = if declared_elem.is_none() && untyped_numeric.is_none() {
+                        same_element_type(&elem_ty, &e.ty)
+                    } else {
+                        types_compatible(&elem_ty, &e.ty)
+                    };
+                    if !fits {
                         return Err(sem_err!(*pos, "array element at index {} expects type '{}' but got '{}'", i, type_name(&elem_ty), type_name(&e.ty)));
                     }
                 }
@@ -2536,7 +2595,12 @@ Expr::Unary(op, inner, pos) => {
                             let declared_param = if index >= extra_alias_count {
                                 method_fn.params.get(index - extra_alias_count).and_then(|p| p.ty.clone())
                             } else {
-                                None
+                                // An extra receiver: its alias's declared type
+                                // (receiver 0 is the value called on).
+                                self.method_alias_types
+                                    .get(&(struct_name.clone(), method.clone()))
+                                    .and_then(|tys| tys.get(index + 1))
+                                    .cloned()
                             };
                             let sem_expr = match &declared_param {
                                 Some(hint) => self.analyze_expr_with_elem_hint(expr, hint)?,
@@ -2564,7 +2628,21 @@ Expr::Unary(op, inner, pos) => {
                                 }
                             } else {
                                 // extra-alias (struct receiver-alias) arg:
-                                // pass through, never narrow.
+                                // pass through, never narrow — it is a receiver,
+                                // passed by reference, so it must have the
+                                // alias's declared type exactly. Unchecked, a
+                                // `[3: t8]` given a `[3: t64]` alias was read at
+                                // t64 width (§42).
+                                if let Some(expected) = declared_param {
+                                    if !same_element_type(&expected, &sem_expr.ty) {
+                                        return Err(sem_err!(
+                                            *pos,
+                                            "receiver argument {} to method '{}.{}': expected {}, got {} — an impl's receivers are passed by reference, so it must have the declared type",
+                                            index + 1, instance, method,
+                                            type_name(&expected), type_name(&sem_expr.ty)
+                                        ));
+                                    }
+                                }
                                 sem_expr
                             };
                             semantic_args.push(SemanticCallArg::Expr(sem_expr));
@@ -2905,6 +2983,26 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
+        // `T` inside a parameter's type — `v: [2: T]` — is inferred from the
+        // argument too, and substituted for the check below: only a parameter
+        // whose WHOLE type was `T` used to be, so `k(a, ys)` with a t8 `a` and
+        // a `[2: t64]` `ys` passed the t64 array where a `[2: t8]` was meant —
+        // the interpreter kept it, compiled code read it at t8 width (§42).
+        if !function.type_params.is_empty() {
+            for (index, arg) in args.iter().enumerate() {
+                let Some(param_ty) = function.params.get(index).and_then(|p| p.ty.clone()) else {
+                    continue;
+                };
+                if !matches!(param_ty, SemanticType::Array(..) | SemanticType::Result(_) | SemanticType::Handle(_)) {
+                    continue;
+                }
+                if let CallArg::Expr(expr) = arg {
+                    let analyzed = self.analyze_expr(expr)?;
+                    bind_nested_type_params(&param_ty, &analyzed.ty, &mut type_param_map, false);
+                }
+            }
+        }
+
         // 0.3.4 slice 4: bound satisfaction at the instantiation site —
         // `T: GeneName` is satisfied only if a phen exists binding that gene
         // to the concrete type substituted for T (design doc, Locked Rules);
@@ -2926,6 +3024,14 @@ Expr::Unary(op, inner, pos) => {
         self.check_copy_arg_contract(args, Some(&function.params), name, false, pos)?;
         let mut semantic_args = Vec::with_capacity(args.len());
         for (index, arg) in args.iter().enumerate() {
+            // A binding from an untyped literal (`Numeric`) is substituted only
+            // where the parameter IS `T`; inside an array it would declare an
+            // element type the literal does not have.
+            let concrete: std::collections::HashMap<String, SemanticType> = type_param_map
+                .iter()
+                .filter(|(_, ty)| **ty != SemanticType::Numeric)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             let expected = function
                 .params
                 .get(index)
@@ -2934,7 +3040,7 @@ Expr::Unary(op, inner, pos) => {
                     SemanticType::TypeParam(ref tname) => {
                         type_param_map.get(tname).cloned().unwrap_or(ty)
                     }
-                    other => other,
+                    other => substitute_type_params(other, &concrete),
                 });
             match arg {
                 CallArg::Expr(expr) => {
@@ -2969,6 +3075,7 @@ Expr::Unary(op, inner, pos) => {
                     if !info.initialized {
                         return Err(sem_err!(pos, "'.copy' argument '{}' is not initialized", outer_name));
                     }
+                    self.check_by_address_arg(outer_name, function.params.get(index), ".copy", pos)?;
                     semantic_args.push(SemanticCallArg::Copy {
                         binding: info.binding,
                         name: outer_name.clone(),
@@ -2987,6 +3094,7 @@ Expr::Unary(op, inner, pos) => {
                     if !info.initialized {
                         return Err(sem_err!(pos, "'.copy' argument '{}' is not initialized", outer_name));
                     }
+                    self.check_by_address_arg(outer_name, function.params.get(index), ".copy.free", pos)?;
                     semantic_args.push(SemanticCallArg::CopyFree {
                         binding: info.binding,
                         name: outer_name.clone(),
@@ -4345,14 +4453,17 @@ pub(crate) fn type_name(ty: &SemanticType) -> String {
         SemanticType::Enum(name) => name.clone(),
         SemanticType::Struct(name) => name.clone(),
         SemanticType::TypeParam(name) => name.clone(),
-        SemanticType::Handle(inner) => format!("Handle<{}>", type_name(inner)),
-        // An array of untyped integer literals: its elements are integers,
-        // not literals, once they are in it ("expected [2: t32], got
-        // [2: integer]").
-        SemanticType::Array(size, elem) if **elem == SemanticType::Numeric => format!("[{}: integer]", size),
-        SemanticType::Array(size, elem) => format!("[{}: {}]", size, type_name(elem)),
-        SemanticType::Result(inner) => format!("Result<{}>", type_name(inner)),
+        SemanticType::Handle(inner) => format!("Handle<{}>", stored_type_name(inner)),
+        SemanticType::Array(size, elem) => format!("[{}: {}]", size, stored_type_name(elem)),
+        SemanticType::Result(inner) => format!("Result<{}>", stored_type_name(inner)),
     }
+}
+
+/// A type held inside an array, a `Result` or a `Handle`: an untyped integer
+/// literal stored there is an integer, not a literal ("expected [2: t32], got
+/// [2: integer]").
+fn stored_type_name(ty: &SemanticType) -> String {
+    if *ty == SemanticType::Numeric { "integer".to_string() } else { type_name(ty) }
 }
 
 fn binding_type(info: &VarInfo, type_params: &[String]) -> SemanticType {
@@ -4403,19 +4514,26 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
 /// Whether array elements of type `got` can stand where elements of type
 /// `expected` are declared — see the `Array` arm of `types_compatible`. The
 /// same type, at any depth; an untyped integer literal's `Numeric` is stored as
-/// a t64; unknown and generic element types are left to the checks that know
-/// them, as for any value.
+/// a t64; an unknown type is left to the checks that know it, as for any value,
+/// and a generic `T` is declared as any type, but given as none in particular.
 fn same_element_type(expected: &SemanticType, got: &SemanticType) -> bool {
+    // A `[N: T]` parameter takes any array of N — `T` is bound from it. The
+    // converse does not hold: in a generic body a `[3: T]` given where a
+    // `[3: t64]` is declared is not known to be one (`T` may be t8), and arrays
+    // do not convert — accepted, compiled code read a t8 array at t64 width
+    // once the function was instantiated (§42).
     if expected == got
         || *got == SemanticType::Unknown
         || *expected == SemanticType::Unknown
         || matches!(expected, SemanticType::TypeParam(_))
-        || matches!(got, SemanticType::TypeParam(_))
     {
         return true;
     }
     match (expected, got) {
         (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && same_element_type(a, b),
+        // An `Err(...)` element's payload is unknown — `[Err("a"), Err("b")]` is
+        // an array of any `Result`.
+        (SemanticType::Result(a), SemanticType::Result(b)) => same_element_type(a, b),
         (SemanticType::Numeric, SemanticType::I64) | (SemanticType::I64, SemanticType::Numeric) => true,
         _ => false,
     }
@@ -4441,10 +4559,22 @@ fn is_number_literal(e: &SemanticExpr) -> bool {
 /// (the caller range-checks it); a float literal among integers does not.
 /// `None` for an array whose elements are not all numbers.
 fn untyped_numeric_elem_type(elems: &[SemanticExpr], pos: usize) -> Result<Option<SemanticType>, SemanticError> {
-    if elems.is_empty() || !elems.iter().all(|e| is_numeric(&e.ty)) {
+    // A generic `T` or unknown element does not decide the type, nor exempt the
+    // array from the rule (`[a, x, b]` with a t8 `a`, a `T` `x` and a t64 `b`
+    // is two types); an array whose numbers are only literals beside such
+    // elements keeps element[0]'s type, as before.
+    let wildcard = |e: &SemanticExpr| matches!(e.ty, SemanticType::TypeParam(_) | SemanticType::Unknown);
+    if elems.is_empty() || !elems.iter().all(|e| is_numeric(&e.ty) || wildcard(e)) {
         return Ok(None);
     }
-    let typed: Vec<&SemanticType> = elems.iter().filter(|e| !is_number_literal(e)).map(|e| &e.ty).collect();
+    let typed: Vec<&SemanticType> = elems
+        .iter()
+        .filter(|e| !is_number_literal(e) && !wildcard(e))
+        .map(|e| &e.ty)
+        .collect();
+    if typed.is_empty() && elems.iter().any(wildcard) {
+        return Ok(None);
+    }
     let elem_ty = match typed.first() {
         Some(_) if typed.iter().all(|t| matches!(t, SemanticType::I64 | SemanticType::Numeric))
             && typed.iter().any(|t| **t == SemanticType::I64) =>
@@ -4460,17 +4590,23 @@ fn untyped_numeric_elem_type(elems: &[SemanticExpr], pos: usize) -> Result<Optio
         if is_number_literal(e) {
             e.ty == SemanticType::F64 && elem_ty != SemanticType::F64
         } else {
-            !same(&e.ty)
+            !wildcard(e) && !same(&e.ty)
         }
     });
     if let Some(other) = clash {
         let shown = |t: &SemanticType| {
             if *t == SemanticType::Numeric { "integer".to_string() } else { type_name(t) }
         };
-        let wider = match common_numeric_type(&elem_ty, &other.ty) {
-            SemanticType::Numeric => SemanticType::I64,
-            t => t,
+        // The type that holds every element without loss: the widest of them,
+        // an untyped integer counting as the t64 it is stored as.
+        let as_stored = |t: &SemanticType| {
+            if *t == SemanticType::Numeric { SemanticType::I64 } else { t.clone() }
         };
+        let wider = elems
+            .iter()
+            .filter(|e| !wildcard(e))
+            .map(|e| as_stored(&e.ty))
+            .fold(as_stored(&elem_ty), |acc, t| common_numeric_type(&acc, &t));
         return Err(sem_err!(
             pos,
             "array elements are {} and {} — an array holds one element type; declare it, as `xs: [{}: {}] = [...]`",
@@ -4481,6 +4617,88 @@ fn untyped_numeric_elem_type(elems: &[SemanticExpr], pos: usize) -> Result<Optio
         ));
     }
     Ok(Some(elem_ty))
+}
+
+/// The rows of an untyped array literal whose rows are arrays: a row written as
+/// a literal of untyped numbers — `[3, 4]`, `[[1, 2], [3, 4]]` — takes the type
+/// of the first typed row, its literals range-checked against it and converted,
+/// as a literal element takes the type of the typed elements (§42). Rows that
+/// are not arrays, or no typed row, leave the elements as they are.
+fn adopt_literal_rows(elems: Vec<SemanticExpr>, pos: usize) -> Result<Vec<SemanticExpr>, SemanticError> {
+    let literal_row = |e: &SemanticExpr| {
+        matches!(e.kind, SemanticExprKind::ArrayLit { .. }) && innermost_is_numeric(&e.ty)
+    };
+    if !elems.iter().all(|e| matches!(e.ty, SemanticType::Array(..))) {
+        return Ok(elems);
+    }
+    let Some(target) = elems.iter().find(|e| !literal_row(e)).map(|e| e.ty.clone()) else {
+        return Ok(elems);
+    };
+    elems
+        .into_iter()
+        .map(|e| if literal_row(&e) { convert_literal_row(e, &target, pos) } else { Ok(e) })
+        .collect()
+}
+
+/// Whether the innermost element type of `ty` is the untyped integer.
+fn innermost_is_numeric(ty: &SemanticType) -> bool {
+    match ty {
+        SemanticType::Array(_, inner) => innermost_is_numeric(inner),
+        SemanticType::Numeric => true,
+        _ => false,
+    }
+}
+
+/// A literal row rebuilt at `target`'s type — see `adopt_literal_rows`. A row
+/// of another length or depth is left as it is, for the element check to name.
+fn convert_literal_row(row: SemanticExpr, target: &SemanticType, pos: usize) -> Result<SemanticExpr, SemanticError> {
+    let SemanticType::Array(n, inner) = target else { return Ok(row) };
+    let SemanticExprKind::ArrayLit { elements } = row.kind else { return Ok(row) };
+    if elements.len() != *n {
+        return Ok(SemanticExpr { ty: row.ty, kind: SemanticExprKind::ArrayLit { elements } });
+    }
+    let mut converted = Vec::with_capacity(elements.len());
+    for e in elements {
+        converted.push(match &e.kind {
+            SemanticExprKind::ArrayLit { .. } => convert_literal_row(e, inner, pos)?,
+            _ => {
+                check_semantic_num_fits(&e, inner, pos)?;
+                insert_cast_if_needed(e, inner)
+            }
+        });
+    }
+    let ty = SemanticType::Array(converted.len(), Box::new(
+        converted.first().map(|e| e.ty.clone()).unwrap_or_else(|| (**inner).clone()),
+    ));
+    Ok(SemanticExpr { ty, kind: SemanticExprKind::ArrayLit { elements: converted } })
+}
+
+/// Bind the type parameters a parameter's type mentions INSIDE an array, a
+/// `Result` or a `Handle`, from the argument's type — `T` from a `[2: T]`
+/// parameter given a `[2: t8]`. An array's element type is storage and does
+/// not convert (§42), so it decides `T` over a binding from an untyped literal,
+/// which adapts: in `k(5, ys)` with `ys: [2: t8]`, `T` is t8 and the 5 one.
+fn bind_nested_type_params(
+    param: &SemanticType,
+    arg: &SemanticType,
+    map: &mut std::collections::HashMap<String, SemanticType>,
+    nested: bool,
+) {
+    match (param, arg) {
+        (SemanticType::TypeParam(name), _) if nested => match map.get(name) {
+            None => {
+                map.insert(name.clone(), arg.clone());
+            }
+            Some(SemanticType::Numeric) if is_numeric(arg) && *arg != SemanticType::Numeric => {
+                map.insert(name.clone(), arg.clone());
+            }
+            Some(_) => {}
+        },
+        (SemanticType::Array(_, p), SemanticType::Array(_, a))
+        | (SemanticType::Result(p), SemanticType::Result(a))
+        | (SemanticType::Handle(p), SemanticType::Handle(a)) => bind_nested_type_params(p, a, map, true),
+        _ => {}
+    }
 }
 
 /// `x op= y` takes the operands `x op y` takes (`analyze_binary`): two numbers,
