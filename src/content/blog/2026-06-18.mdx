@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-06-18"
+date: 2026-06-18
+description: "A quiet day with no new commits, but the roadmap got a long-overdue update and the growing PR backlog is becoming hard to ignore."
+---
+
+No commits landed on 2026-06-18. The most recent real work, D2.1 if-expression lowering on submain, was committed at 23:28 UTC on the 17th and already covered in that day's log. Sometimes the interesting thing about a quiet day is what it reveals about the shape of the project.
+
+## Roadmap catches up to reality
+
+The main branch roadmap had been stale since 2026-05-18, a full month out of date. That gap finally got closed today. The update reflects work that had already landed on submain but was never recorded:
+
+- `when` block lowering is checked off. D1.2a (unified stmt/expr emission) and D2.1 (shared branch-value merge) confirmed it on submain.
+- CR#1-4 range-check fixes and the Gate-1a/1b0/1b/2a/2b JIT arithmetic and memory safety gates were added to the post-release hardening section.
+- Phase 15 parity numbers updated from 110/72/0 across 182 fixtures to 199/87/0 across 286 fixtures.
+
+None of this is new work. It is bookkeeping that tracks what submain already proved. But bookkeeping matters: a stale roadmap is a roadmap nobody trusts, and a roadmap nobody trusts stops being useful for planning.
+
+## The integration gap
+
+Submain sits 15 commits ahead of main. All 15 are tested (286 matrix fixtures, 0 failures, 199 parity PASS, 87 SKIP, 0 PARITY_FAIL). The merge to main has been predicted in the daily logs for multiple days running and keeps not happening.
+
+This is not a stability concern. The commits are stable. But a 15-commit gap between the development branch and main means main is increasingly unrepresentative of where Cx actually is. Anyone looking at main sees a project that is a month behind its own working state.
+
+## The PR backlog
+
+There are 20 open daily-log PRs (May 28 through June 17), none merged. Each PR independently updates ROADMAP.md, so the branches have divergent roadmap states. The PR-first workflow for daily logs may be creating more friction than it prevents.
+
+This is worth watching. If the backlog keeps growing without merges, the workflow is generating overhead without delivering its intended benefit (incremental integration of log updates). At some point the right move is either to batch-merge or to rethink how daily log changes flow into main.
+
+## Test matrix
+
+Main holds steady at 230 PASS / 0 FAIL across 230 fixtures. Submain is at 286 PASS / 0 FAIL across 286 fixtures, with parity at 199 PASS / 87 SKIP / 0 PARITY_FAIL. No regressions anywhere.
+
+## What's next
+
+The natural next target is DotAccess in compound forms, the last unchecked Phase 11 sub-item. With if-expression lowering done, this is the next piece of surface area that needs coverage.
+
+Beyond that, the submain-to-main merge continues to be the most obvious housekeeping move. Fifteen stable, tested commits sitting unmerged is a growing liability for anyone trying to understand the project's actual state from main alone.
+
+Unknown value lowering is still deferred. The D2.1 commit explicitly punted tickets #026 (unknown-condition lowering) and #044-B (unknown-arm path) pending a general unknown-value lowering step. That work would unlock the remaining 87 SKIP fixtures involving unknown-valued conditions, but it has not started.
