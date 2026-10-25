@@ -1,0 +1,11 @@
+// A value-producing `if` takes its first branch's type, and a later branch may
+// produce a value of another type that compiled code stores the same way — an
+// enum's tag where a t8 was expected. Compiled code read the tag as the t8 and
+// printed 1 for `C::Green`; the interpreter prints the variant. Compiled code
+// now refuses the program (SKIP) rather than answer differently.
+enum C { Red, Green, Blue }
+c: bool = false
+k: t8 = 0
+let y;
+y = if c { k } else { C::Green }
+print(y)

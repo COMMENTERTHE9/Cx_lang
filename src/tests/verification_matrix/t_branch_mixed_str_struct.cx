@@ -1,0 +1,9 @@
+// A string in one branch and a struct in the other: compiled code read the
+// struct as the first branch's string and printed nothing. The interpreter
+// prints the struct.
+struct A { x: t64 }
+c: bool = false
+a: A = A { x: 1 }
+let v;
+v = if c { "hi" } else { a }
+print(v)
