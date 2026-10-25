@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-10-25
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -65,6 +65,21 @@ feature sets.
 `T` (`{I8, I16, I32, I64, Bool}`): construct, read, drop, all checked against
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
+
+**Type-safety and backend-agreement sweep** — landed on submain through PRs
+#452–#461 (2026-10-24/25). Closes a class of silent miscompilation where the
+interpreter and JIT produced different values:
+- [x] Literal elements convert to their declared type (struct fields, array elements)
+- [x] Declared-type propagation to every typed position (assignments, arguments, branches, nested arrays)
+- [x] Arrays enforce one element type; different element types are a type mismatch
+- [x] Array-width rule extended to generics, forward calls, row variables
+- [x] Module naming by identity (`alias@id`), per-file import visibility
+- [x] Compound assignment checks operands like the binary operator
+- [x] JIT refuses branch values with different semantic types in if/when expressions
+- [x] JIT refuses enums over 256 variants; empty programs run correctly
+- [x] Impl method names scoped to their type
+- [x] Float division and compound `/=` `%=` guarded against zero
+- [ ] Generic value conversion to declared number types (on `backend/generic-value-conversion`, not yet merged)
 
 ---
 
