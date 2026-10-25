@@ -4684,7 +4684,7 @@ fn lower_when_expr(
     let lower_arm_body =
         |ctx: &mut LoweringCtx, body_active: ActiveBlock, arm: &SemanticWhenArm|
          -> Result<(), LoweringError> {
-            lower_branch_value(&arm.body, &result_ir_ty, merge_id, body_active, ctx)
+            lower_branch_value(&arm.body, result_ty, &result_ir_ty, merge_id, body_active, ctx)
         };
 
     for arm in arms.iter() {
@@ -4820,11 +4820,13 @@ fn lower_when_expr(
 /// Lower a value-producing branch body — a `when`-expr arm or an if-expr branch
 /// (tracker D2.1) — and `Jump` to `merge_id` with its value. Leading statements
 /// lower via the void path; the trailing `ExprStmt` is the branch value, type-
-/// checked against `result_ir_ty`. If the body diverges before the trailing
+/// checked against the expression's type `result_ty` (see `branch_value_fits`)
+/// and its IR type `result_ir_ty`. If the body diverges before the trailing
 /// expression (a leading stmt that never returns control), no merge edge is
 /// added — that branch simply contributes nothing to the merge.
 fn lower_branch_value(
     body: &[SemanticStmt],
+    result_ty: &SemanticType,
     result_ir_ty: &IrType,
     merge_id: crate::ir::types::BlockId,
     mut body_active: ActiveBlock,
@@ -4863,6 +4865,23 @@ fn lower_branch_value(
             });
         }
     };
+    // A value-producing `if` / `when` is typed by its FIRST branch (#046 —
+    // branch unification is not done yet), so another branch can yield a value
+    // of a different type with the same IR type: an enum's tag where a t8 was
+    // expected, one struct's, array's or string's address where another's was.
+    // `ensure_type_match` compares IR types only, and compiled code read the
+    // value as the wrong type — `C::Green` printed as 1, a `B` read as an `A`,
+    // a t64 array read at t8 width, a struct printed as a string. The
+    // interpreter keeps the real value.
+    if !branch_value_fits(result_ty, &trailing_expr.ty, &ctx.target.numeric_literal_ir_type()) {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "an if/when value whose branches have different types ({} and {}) — compiled code would read one as the other",
+                crate::frontend::semantic::type_name(result_ty),
+                crate::frontend::semantic::type_name(&trailing_expr.ty)
+            ),
+        });
+    }
     let value = lower_expr(trailing_expr, ctx, &mut body_active)?;
     ensure_type_match("branch result", result_ir_ty.clone(), value.ty)?;
     body_active.terminate(IrTerminator::Jump {
@@ -5007,8 +5026,8 @@ fn lower_if_expr(
     ctx.seal_block(old_active)?;
 
     // Lower each branch to a value merging into the result param.
-    lower_branch_value(then_body, &result_ir_ty, merge_id, then_block, ctx)?;
-    lower_branch_value(else_body, &result_ir_ty, merge_id, else_block, ctx)?;
+    lower_branch_value(then_body, result_ty, &result_ir_ty, merge_id, then_block, ctx)?;
+    lower_branch_value(else_body, result_ty, &result_ir_ty, merge_id, else_block, ctx)?;
 
     Ok(LoweredValue { value: result_param, ty: result_ir_ty })
 }
@@ -6005,6 +6024,56 @@ fn is_integer_ir_ty(ty: &IrType) -> bool {
         ty,
         IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 | IrType::I128
     )
+}
+
+/// Whether a branch value of type `value` can stand in a value-producing `if`
+/// or `when` typed `result` (see `lower_branch_value`). Two numbers always can
+/// here — `ensure_type_match` then compares their IR widths, as before; an
+/// unknown type is refused elsewhere. Anything else needs the same layout.
+fn branch_value_fits(result: &SemanticType, value: &SemanticType, literal: &IrType) -> bool {
+    let number = |t: &SemanticType| {
+        matches!(
+            t,
+            SemanticType::I8
+                | SemanticType::I16
+                | SemanticType::I32
+                | SemanticType::I64
+                | SemanticType::I128
+                | SemanticType::F64
+                | SemanticType::Numeric
+        )
+    };
+    if (number(result) && number(value))
+        || *result == SemanticType::Unknown
+        || *value == SemanticType::Unknown
+    {
+        return true;
+    }
+    same_layout(result, value, literal)
+}
+
+/// The same type, or one compiled code stores identically: arrays of one
+/// length whose elements have the same layout, `Result`s whose payloads do,
+/// and numbers of one IR type (a `Numeric` literal is `literal`, the default
+/// integer width). `[3: t8]` and `[3: t64]` differ — elements are read at
+/// the declared width.
+fn same_layout(a: &SemanticType, b: &SemanticType, literal: &IrType) -> bool {
+    let scalar = |t: &SemanticType| match t {
+        SemanticType::Numeric => Some(literal.clone()),
+        SemanticType::I8
+        | SemanticType::I16
+        | SemanticType::I32
+        | SemanticType::I64
+        | SemanticType::I128
+        | SemanticType::F64 => lower_type(t).ok(),
+        _ => None,
+    };
+    match (a, b) {
+        _ if a == b => true,
+        (SemanticType::Array(n, x), SemanticType::Array(m, y)) => n == m && same_layout(x, y, literal),
+        (SemanticType::Result(x), SemanticType::Result(y)) => same_layout(x, y, literal),
+        _ => matches!((scalar(a), scalar(b)), (Some(x), Some(y)) if x == y),
+    }
 }
 
 fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(), LoweringError> {
@@ -11873,6 +11942,28 @@ mod tests {
     /// per name. Two modules declaring the same struct name with different
     /// fields would share it, so lowering refuses (known_issues §37); the same
     /// fields in another order are harmless and still lower.
+    // A branch value must fit its `if` / `when`'s type: numbers always do here
+    // (their widths are compared afterwards); anything else needs the same
+    // layout. Compiled code read an enum's tag as a t8, one struct as another
+    // and a t64 array at t8 width (known_issues §40).
+    #[test]
+    fn branch_values_must_fit_the_expression_type() {
+        let lit = IrType::I64;
+        let arr = |n, t| SemanticType::Array(n, Box::new(t));
+        let named = |s: &str| SemanticType::Struct(s.to_string());
+        let fits = |a: &SemanticType, b: &SemanticType| branch_value_fits(a, b, &lit);
+        assert!(fits(&SemanticType::I8, &SemanticType::I64), "numbers: widths are checked later");
+        assert!(fits(&SemanticType::Numeric, &SemanticType::I64));
+        assert!(fits(&named("A"), &named("A")));
+        assert!(fits(&arr(3, SemanticType::I64), &arr(3, SemanticType::Numeric)), "a literal array is at the default width");
+        assert!(!fits(&SemanticType::I8, &SemanticType::Enum("C".to_string())), "an enum is not a t8");
+        assert!(!fits(&SemanticType::Enum("C".to_string()), &SemanticType::Enum("D".to_string())));
+        assert!(!fits(&named("A"), &named("B")));
+        assert!(!fits(&arr(3, SemanticType::I8), &arr(3, SemanticType::I64)), "element widths differ");
+        assert!(!fits(&arr(3, SemanticType::I8), &arr(2, SemanticType::I8)));
+        assert!(!fits(&SemanticType::Str, &named("A")));
+    }
+
     #[test]
     fn same_struct_name_with_different_fields_is_refused() {
         let point = |fields: Vec<(&str, SemanticType)>| SemanticStmt::StructDef {

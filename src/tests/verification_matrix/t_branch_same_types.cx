@@ -1,0 +1,35 @@
+// Branches whose values have the expression's type — or are numbers, which
+// compiled code compares by width — still compile, on both backends.
+enum C { Red, Green }
+struct A { x: t64 }
+c: bool = false
+a: A = A { x: 1 }
+b: A = A { x: 2 }
+let s;
+s = if c { a } else { b }
+print(s.x)
+x: t64 = 9
+let n;
+n = if c { 5 } else { x }
+print(n)
+let e;
+e = if c { C::Red } else { C::Green }
+when e {
+    C::Red => print(0),
+    _ => print(1),
+}
+let t;
+t = if c { "p" } else { "q" }
+print(t)
+xs: [2: t32] = [1, 2]
+ys: [2: t32] = [3, 4]
+let arr;
+arr = if c { xs } else { ys }
+print(arr:[1])
+k: t64 = 3
+let w;
+w = when k {
+    1 => a,
+    _ => b,
+}
+print(w.x)

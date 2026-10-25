@@ -1,0 +1,11 @@
+// The same for a value-producing `when`: an arm's enum tag read as the first
+// arm's t8 printed 2 for `C::Blue`.
+enum C { Red, Green, Blue }
+n: t64 = 2
+k: t8 = 0
+let y;
+y = when n {
+    1 => k,
+    _ => C::Blue,
+}
+print(y)

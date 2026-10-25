@@ -1,0 +1,9 @@
+// Arrays of different element widths in the branches of one `if`: compiled
+// code read the t64 array at the first branch's t8 width and printed 1, the
+// second byte of 300. The interpreter prints 400.
+c: bool = false
+xs: [3: t8] = [1, 2, 3]
+ys: [3: t64] = [300, 400, 500]
+let v;
+v = if c { xs } else { ys }
+print(v:[1])

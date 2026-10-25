@@ -3440,3 +3440,61 @@ All PASS now, both backends agreeing. Unit tests pin the assignment hint, that
 the declared type reaches only the value, that an untyped array is typed by its
 element[0], that an inferred `Numeric` element type is not a declaration, and
 that a `const` is checked like a typed declaration.
+
+## 40. An `if` / `when` value whose branches have different types: compiled code read one as the other
+
+*(Found 2026-10-24 by the review of §38; fixed by the commit that introduces
+this entry — `branch_value_fits` and `same_layout` in `src/ir/lower.rs`, called
+from `lower_branch_value`.)*
+
+**Status: FIXED on the JIT — it refuses these programs. Branch types are still
+not unified at analysis (below).**
+
+### What happened
+
+A value-producing `if` or `when` is typed by its FIRST branch (#046: branch
+unification is not done yet), so another branch can produce a value of a
+different type. Lowering compared the branches' IR types only, and several
+different types share one: an enum's tag is an `I8` like a t8, and a struct,
+an array and a string are all pointers. Compiled code then read one value as
+the other type — silently, on every one of these, all on submain:
+
+```
+y = if c { k } else { C::Green }     (k: t8)         interpreter C::Green          JIT 1
+y = when n { 1 => k, _ => C::Blue }                  interpreter C::Blue           JIT 2
+v = if c { a } else { b }; v.x       (A { x }, B { y, z })
+                                                     interpreter: error (no field x)   JIT 7 — B's y
+v = if c { xs } else { ys }; v:[1]   ([3: t8], [3: t64])
+                                                     interpreter 400               JIT 1 — read at t8 width
+v = if c { "hi" } else { a }; print(v)  (a struct)   interpreter A { x: 1 }        JIT printed nothing
+```
+
+`y += 1` and `y = y + 1` on the first are what §38's review found: the JIT
+added 1 to the tag and printed 2.
+
+### The fix
+
+`lower_branch_value` refuses a branch whose value's type does not fit the
+expression's: both numbers (whose IR widths `ensure_type_match` compares, as
+before), or the same layout — the same type, arrays of one length whose
+elements have the same layout, `Result`s whose payloads do. The program is a
+clean JIT refusal; the interpreter is unchanged.
+
+### Not changed
+
+The analyzer still types these expressions by their first branch, so the
+programs above are accepted and the interpreter runs them, holding a value of
+one type in a binding of another. Unifying branch types at analysis — and
+deciding what `if c { a_t8 } else { b_t64 }` is — is the planned branch
+unification ("W1" in `semantic.rs`), a language-level change.
+
+### Fixtures
+
+```
+t_branch_mixed_if_enum       before: interpreter C::Green, JIT 1      now: JIT SKIP
+t_branch_mixed_when_enum     before: interpreter C::Blue, JIT 2       now: JIT SKIP
+t_branch_mixed_struct        before: interpreter error, JIT 7         now: JIT SKIP
+t_branch_mixed_array_width   before: interpreter 400, JIT 1           now: JIT SKIP
+t_branch_mixed_str_struct    before: interpreter A { x: 1 }, JIT ""   now: JIT SKIP
+t_branch_same_types          PASS before and after: same-typed branches still compile
+```

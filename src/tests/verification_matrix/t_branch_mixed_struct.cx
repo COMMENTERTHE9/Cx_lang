@@ -1,0 +1,11 @@
+// Two struct types in the branches of one `if`: compiled code read a `B` as the
+// first branch's `A` and printed B's first field, 7. The interpreter finds no
+// field `x` on a `B` and stops with an error.
+struct A { x: t64 }
+struct B { y: t64, z: t64 }
+c: bool = false
+a: A = A { x: 1 }
+b: B = B { y: 7, z: 9 }
+let v;
+v = if c { a } else { b }
+print(v.x)
