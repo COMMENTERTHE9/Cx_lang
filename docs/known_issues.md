@@ -3315,7 +3315,8 @@ and revise this entry — `analyze_expr_with_elem_hint` and `takes_type_hint`,
 literal there — and only to it: a declaration, a `const`, an assignment, a
 struct field, an argument (free function, impl method, gene-bound receiver), a
 return, an `Ok(...)` payload, a nested element, an `if` / `when` branch's
-value. An untyped array literal is typed by its element[0], as before.
+value. An untyped array literal is typed by its element[0], as before (§42
+has since replaced that rule).
 
 ### What happened
 
@@ -3414,8 +3415,8 @@ held 44. So is an untyped `[a, 300]` with `a: t8`, whose element[0] makes it a
   branch values are not unified.
 
 What arrays of different element widths mean — a variable passed or assigned
-to a different width, an untyped literal that mixes them — is an open language
-decision.
+to a different width, an untyped literal that mixes them — was then an open
+language decision; §42 records the owner's answer: both are compile errors.
 
 ### Fixtures
 
@@ -3550,3 +3551,169 @@ t_impl_method_same_name   before: semantic error, both    now: PASS, 1 2 5 6 10 
 
 A unit test pins that two impls may share a method name, and that a variable
 may share one.
+
+## 42. Arrays of different element types: compiled code read one as the other
+
+*(Decided by the owner on 2026-10-24; implemented by the commit that introduces
+this entry — `same_element_type`, the `Array` arm of `types_compatible`, and
+`untyped_numeric_elem_type` in `src/frontend/semantic.rs`.)*
+
+**Status: FIXED — by a language decision: arrays have one element type, and
+arrays of different element types do not convert.**
+
+### What happened
+
+`types_compatible` took any two numeric arrays of one length as compatible, so
+an array of one element type went unconverted wherever an array of another was
+declared — an assignment, an argument, a return, a struct field. The
+interpreter kept each value; compiled code read the bytes at the declared
+width:
+
+```
+xs: [3: t8] = [1, 2, 3];  ys: [3: t64] = xs      interpreter 3     JIT 67305985
+sum(xs), sum(v: [3: t64])                         interpreter 6     JIT 77765951
+```
+
+An untyped array literal was typed by its element[0], and its other elements
+kept their own types on the interpreter while compiled code converted them:
+
+```
+ys = [a, b]      (a: t8, b: t64 = 300)    interpreter 300   JIT 44
+ys = [a, 2.5]    (a: t8)                  interpreter 2.5   JIT 2
+r = [1, 2.5]                              interpreter 2.5   JIT 2
+```
+
+### The decision and the rule
+
+The owner chose a compile error in both cases over converting element by
+element (narrowing would wrap) or widening:
+
+- **Arrays of different element types are a type mismatch**, at any depth:
+  `ys: [3: t64] = xs` with `xs: [3: t8]` is "expected [3: t64], got [3: t8]".
+  An array inferred from integer literals (`w = [1, 2]`) holds t64s and fits a
+  `[2: t64]`, but not a `[2: t32]` ("got [2: integer]").
+- **An untyped array literal has one element type** — that of its elements
+  that are not literals. Two are an error that asks for the type:
+  "array elements are t8 and t64 — an array holds one element type; declare
+  it, as `xs: [2: t64] = [...]`". Literals must fit the type (`[a, 300]` and
+  `[300, a]` with `a: t8` are out of range) and are converted to it; a float
+  literal does not fit an integer type. With literals only, the array is f64
+  if one of them is a float, and of untyped integers otherwise.
+- A declared element type is unchanged: `zs: [2: t64] = [a, b]` converts each
+  element to it, as before.
+- **Arguments passed by address — `.copy`, `.copy.free` — and an impl's extra
+  receivers must have the declared type exactly**, numbers included: nothing
+  converted on the way in could be written back. `shift(xs.copy)` with
+  `xs: [3: t8]` and `r.copy: [3: t64]`, and `bump(x.copy)` with `x: t8` and
+  `n.copy: t64`, are errors.
+- **Generic calls.** `T` inside a parameter's type is inferred from the
+  argument and substituted for the check: `k(a, ys)` with `k(x: T, v: [2: T])`
+  and a t8 `a` needs a `[2: t8]`. An array decides `T` over an untyped literal,
+  because the array cannot convert and the literal can: `k(5, ys)` with a
+  `[2: t8]` `ys` has `T` = t8. Inside a generic body a `[N: T]` is not known
+  to be a `[N: t64]` and is not taken for one.
+- **Rows and `Result`s.** A row of untyped literals takes the type of the
+  typed rows (`[[a, 2], [3, 4]]` with `a: t8` is a `[2: [2: t8]]`), and an
+  untyped integer is a t64 inside a `Result` as in an array (`[Ok(1), Ok(2)]`
+  fits a `[2: Result<t64>]`). A generic `T` or unknown element does not exempt
+  a literal from having one element type.
+
+### Found by review, fixed before merge
+
+The review of the first version found two false rejections — a literal row
+beside a typed one, and `Result`s of untyped integers — and five holes, all on
+submain too, through which arrays of different element types still passed:
+
+- `.copy` arguments were never type-checked: a `[3: t8]` given to a
+  `[3: t64]` `.copy` parameter printed 3 interpreted and 67305985 compiled, and
+  was written back as 24 bytes into its 3.
+- An impl's extra receivers were passed through unchecked (6 and garbage).
+- A generic call substituted `T` only into a parameter whose whole type was
+  `T`: `k(a, ys)` above passed the `[2: t64]` (400 interpreted, 1 compiled).
+- An element of a generic or unknown type exempted a literal from the rule:
+  `[a, x, b]` held 300 interpreted and 44 compiled.
+- Compiled code had no layout for an array of integer-literal rows: it took the
+  rows for pointers, and `w = [[1, 2], [3, 4]]` copied into a `[2: [2: t64]]`
+  read 1 where the interpreter read 3. Integer literals are now stored as t64
+  at every depth (`stored_scalar_type` in `src/ir/lower.rs`).
+
+Inferring `T` from a `[N: T]` parameter also lets compiled code run calls it
+could not instantiate before (`head(arr)` with `head(a: [3: T])`).
+
+A second review, and the repository's review bot, found what the first round of
+fixes still let through or newly broke, all fixed:
+
+- A forward call — written before the function — skipped the `.copy` check:
+  the forward signature had no `.copy` types.
+- A generic `T` element was a wildcard, so `[x, a]` with a t8 `a` was a
+  `[2: t8]` that compiled code converted and the interpreter did not (300 and
+  44, where submain agreed on 300); and `[1, x]` was rejected while `[x, 1]`
+  was accepted. A `T` is now a type of its own: `[1, x]` and `[x, 1]` are
+  `[2: T]`, and `[x, a]` is two types.
+- In a generic body an abstract `T` still matched anything declared, so a
+  `[2: T]` stored as a `[2: U]`, or a `[2: t64]` returned as a `[2: T]`, was
+  read at the wrong width once instantiated. A `T` now matches only itself; at a
+  call the callee's `T` is substituted by its binding first — every binding,
+  an untyped literal's included, and `.copy` arguments bind `T` too.
+- A nested literal for a `[2: [2: T]]` parameter had its rows typed `[2: T]`,
+  for which compiled code has no layout: it stored them as pointers (6 where
+  the interpreter read 8). A declared type that mentions a `T` at any depth is
+  no declaration for a literal.
+- A row of untyped integer VARIABLES counted as literals and was silently
+  narrowed; a literal row is now literals all the way down.
+- An `Err(...)` first exempted the rest of an array; an untyped array is typed
+  by its first element whose type is fully known.
+- Inference analysed array arguments without their declared types: a literal
+  for a concrete `[2: t32]` parameter of a generic function was rejected as
+  mixed, and `[a, 300]` was range-checked as t8 where `T` was already t64.
+- Each argument was analysed twice — once for inference, once to check it — so
+  compile time was exponential in the depth of nested calls. It is analysed
+  once now where the declared type would not change it. Measured, interpreter
+  run of the whole program: `id(id(...id(5)))` at depth 20 took 7.7 s on
+  submain and takes 0.18 s; nested generic array calls at depth 20, 12.4 s with
+  the first round of fixes, take 0.25 s (0.22 s on submain).
+- A number literal given for an impl's extra receiver is converted, as an
+  argument is: it has nothing to write back.
+
+### Consequences of the rule
+
+These follow from the rule as decided (they are listed for the owner to
+confirm): an untyped integer that is
+not a literal is its own type (`[a, n]` with `n` from `let n; n = 5`, and
+`[a, 1 + 1]`, are two types; so are rows `[[n, 1], xs]` with a `[2: t8]` `xs`);
+a generic `T` beside a concrete element is two types (`[x, a]`, which agreed on
+submain); an untyped integer variable cannot be `.copy`'d into a t8 parameter; `[100, a]` with a t8 `a` is a `[2: t8]`, so
+`q:[0] + q:[0]` wraps to -56 where `[100, a]` used to be untyped and print
+200; and an untyped `if c { [1, a] } else { [1, 2] }` now has branches of two
+types, which compiled code refuses (§40).
+
+### Not changed
+
+- A generic function's `T` value stored into a declared-width slot —
+  `ys: [2: t8] = [x, 1]` with `x: T` — is converted by compiled code after
+  monomorphization but not by the interpreter, which runs the generic body;
+  the conversion analysis cannot insert for a `T` is the next fix.
+- Branch values of different types: §40.
+
+### Fixtures
+
+```
+t_array_width_var_reject      before: interpreter 3, JIT garbage          now: semantic error, both
+t_array_width_arg_reject      before: interpreter 6, JIT garbage          now: semantic error, both
+t_array_width_return_reject   before: interpreter 2, JIT garbage          now: semantic error, both
+t_array_width_field_reject    before: interpreter 2, JIT garbage          now: semantic error, both
+t_array_mixed_literal_reject  before: interpreter 300, JIT 44             now: semantic error, both
+t_array_mixed_float_reject    before: interpreter 2.5, JIT 2              now: semantic error, both
+t_array_literal_types         before: JIT 2 where the interpreter has 2.5 now: PASS, both agree
+t_array_width_copy_reject     before: interpreter 3, JIT garbage          now: semantic error, both
+t_copy_scalar_width_reject    before: interpreter 1005 in a t8, JIT refused  now: semantic error, both
+t_array_width_receiver_reject before: interpreter 6, JIT garbage          now: semantic error, both
+t_array_width_generic_reject  before: interpreter 400, JIT 1              now: semantic error, both
+t_array_width_generic_body_reject  before: interpreter 6, JIT refused     now: semantic error, both
+t_array_mixed_generic_reject  before: interpreter 300, JIT 44             now: semantic error, both
+t_array_literal_rows          before: interpreter 3 3 Ok(2), JIT 3 1 Ok(2)  now: PASS, both agree
+t_array_generic_infer         before: interpreter 9, JIT -2               now: interpreter 9, JIT refused (converting generic values, next, makes it 9)
+```
+
+Unit tests pin the rejections' messages and the element type of each kind of
+untyped literal.

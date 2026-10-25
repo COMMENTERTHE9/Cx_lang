@@ -1,0 +1,14 @@
+// Literals beside a generic `T` element make a `[2: T]` whichever comes first:
+// `[1, x]` was rejected while `[x, 1]` was accepted.
+fnc: T <T> second(x: T) {
+    let a
+    a = [1, x]
+    a:[1]
+}
+fnc: T <T> first(x: T) {
+    let b
+    b = [x, 1]
+    b:[0]
+}
+print(second(7))
+print(first(7))

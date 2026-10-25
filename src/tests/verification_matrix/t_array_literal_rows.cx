@@ -1,0 +1,19 @@
+// Untyped literals in arrays of arrays and of `Result`s:
+// - a row of untyped literals takes the type of the typed rows, as a literal
+//   element takes the elements' type: `[[a, 2], [3, 4]]` with a t8 `a`;
+// - an array of integer-literal rows is stored as t64s at every depth — compiled
+//   code laid its rows out as pointers and read garbage when it was copied into
+//   a `[2: [2: t64]]`;
+// - a `Result` of an untyped integer is a `Result<t64>` element.
+a: t8 = 1
+let m
+m = [[a, 2], [3, 4]]
+print(m:[1]:[0])
+let w
+w = [[1, 2], [3, 4]]
+mm: [2: [2: t64]] = w
+print(mm:[1]:[0])
+let rs
+rs = [Ok(1), Ok(2)]
+xs: [2: Result<t64>] = rs
+print(xs:[1])

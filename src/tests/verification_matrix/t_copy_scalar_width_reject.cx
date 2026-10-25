@@ -1,0 +1,10 @@
+// The same for a number: a t8 variable given to a t64 `.copy` parameter would
+// have 8 bytes written back into its 1, and the interpreter stored a value no
+// t8 can hold in it. A `.copy` argument must have the parameter's type.
+fnc: t64 bump(n.copy: t64) {
+    n += 1000
+    n
+}
+x: t8 = 5
+print(bump(x.copy))
+print(x)

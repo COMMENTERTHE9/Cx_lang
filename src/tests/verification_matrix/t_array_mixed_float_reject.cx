@@ -1,0 +1,6 @@
+// A float literal among integers of a declared width: `[a, 2.5]` with a t8 `a`
+// was a `[2: t8]`, holding 2.5 on the interpreter and 2 in compiled code.
+a: t8 = 5
+let ys
+ys = [a, 2.5]
+print(ys:[1])

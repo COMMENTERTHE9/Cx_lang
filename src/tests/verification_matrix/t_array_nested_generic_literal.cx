@@ -1,0 +1,7 @@
+// A nested literal given for a `[2: [2: T]]` parameter: its rows were typed
+// `[2: T]`, which compiled code has no layout for — it stored them as pointers
+// and read 6 where the interpreter read 8.
+fnc: T <T> corner(m: [2: [2: T]]) {
+    m:[1]:[1]
+}
+print(corner([[5, 6], [7, 8]]))

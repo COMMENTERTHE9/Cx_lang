@@ -195,8 +195,23 @@ fn slot_size_align(
     if let Some((size, align, _)) = ret_slot_plan(ty, struct_table) {
         return Some((size, align));
     }
-    let ir = lower_type(ty).ok()?;
+    let ir = stored_scalar_type(ty)?;
     Some((ir.size_bytes(), ir.align_bytes()))
+}
+
+/// The IR type a scalar of `ty` is stored as. An untyped integer literal's
+/// `Numeric` is stored at the target's default integer width, as
+/// `lower_array_lit` stores it. Without this an array of such literals had no
+/// layout when nested in another, its rows were taken for pointers, and a
+/// `[[1, 2], [3, 4]]` copied into a `[2: [2: t64]]` read garbage (§42).
+///
+/// The host target, as `lower_program_inner` lowers for; if lowering ever takes
+/// another target, this must take the context's.
+fn stored_scalar_type(ty: &SemanticType) -> Option<IrType> {
+    match ty {
+        SemanticType::Numeric => Some(TargetConfig::host().numeric_literal_ir_type()),
+        _ => lower_type(ty).ok(),
+    }
 }
 
 /// Distance between consecutive elements of an array of `elem`.
@@ -255,7 +270,7 @@ fn ret_slot_plan(
                     Some((_, _, sub)) => {
                         parts.extend(sub.into_iter().map(|(o, t)| (base + o, t)));
                     }
-                    None => parts.push((base, lower_type(elem).ok()?)),
+                    None => parts.push((base, stored_scalar_type(elem)?)),
                 }
             }
             Some((stride * count, align.max(1), parts))

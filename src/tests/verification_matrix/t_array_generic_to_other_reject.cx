@@ -1,0 +1,10 @@
+// In a generic body a `[2: T]` is not a `[2: U]`: stored as one, it was read at
+// the other's width once instantiated (400 interpreted, 1 compiled).
+fnc: t64 <T, U> f(a: [2: T], b: [2: U]) {
+    c: [2: U] = a
+    print(c:[1])
+    0
+}
+xs: [2: t8] = [1, 2]
+ys: [2: t64] = [300, 400]
+z: t64 = f(ys, xs)

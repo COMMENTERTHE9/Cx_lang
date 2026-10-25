@@ -1,0 +1,11 @@
+// A generic `.copy` parameter `r.copy: [2: T]` has `T` substituted for the
+// by-address check: with a t8 `x`, a `[2: t64]` is not a `[2: t8]`. It was
+// compared unsubstituted and passed — 5 400 interpreted, garbage compiled.
+fnc: t64 <T> setv(x: T, r.copy: [2: T]) {
+    r:[0] = x
+    0
+}
+a: t8 = 5
+ys: [2: t64] = [300, 400]
+z: t64 = setv(a, ys.copy)
+print(ys:[1])

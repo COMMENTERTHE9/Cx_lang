@@ -1,0 +1,9 @@
+// A generic function's concrete array parameter gives its literal argument the
+// declared type: `g(1, [a, b])` into `v: [2: t32]` converts `a` — the
+// inference pass analysed it without the declared type and rejected it as mixed.
+fnc: t64 <T> g(x: T, v: [2: t32]) {
+    v:[1]
+}
+a: t8 = 1
+b: t32 = 5
+print(g(1, [a, b]))

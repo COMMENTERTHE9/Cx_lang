@@ -1,0 +1,10 @@
+// A call written before the function's definition is checked against the
+// declared types too: the forward placeholder of a `.copy` parameter had no
+// type, so the by-address check was skipped and a `[3: t8]` reached a
+// `[3: t64]` `.copy` parameter.
+xs: [3: t8] = [1, 2, 3]
+print(shift(xs.copy))
+fnc: t64 shift(r.copy: [3: t64]) {
+    r:[0] += 100
+    return r:[2]
+}
