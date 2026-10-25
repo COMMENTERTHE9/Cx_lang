@@ -11187,6 +11187,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn conversions_between_t128_and_f64_are_refused() {
+        // Cranelift has neither conversion: f64 → i128 panicked the backend
+        // (known_issues §33) and i128 → f64 failed in code generation after
+        // dumping the IR (§43). Lowering refuses both. The fixture
+        // t_t128_to_f64_refused cannot tell the refusal from that failure —
+        // both are a JIT SKIP — so this pins the refusal.
+        for (from, to, value) in [
+            (SemanticType::I128, SemanticType::F64, int_expr(1000, SemanticType::I128)),
+            (SemanticType::F64, SemanticType::I128, float_expr(2.5)),
+        ] {
+            let program = SemanticProgram {
+                stmts: vec![typed_assign(
+                    BindingId(1),
+                    "x",
+                    to.clone(),
+                    SemanticExpr {
+                        ty: to.clone(),
+                        kind: SemanticExprKind::Cast {
+                            expr: Box::new(value),
+                            from: from.clone(),
+                            to: to.clone(),
+                        },
+                    },
+                )],
+                enums: vec![],
+            };
+            let err = lower_program(&program).expect_err("the conversion must be refused");
+            assert!(
+                matches!(
+                    &err,
+                    LoweringError::UnsupportedSemanticConstruct { construct }
+                    if construct.contains("no such conversion")
+                ),
+                "{from:?} -> {to:?}: expected the refusal, got {err:?}"
+            );
+        }
+    }
+
     fn logical_and_expr(lhs: SemanticExpr, rhs: SemanticExpr) -> SemanticExpr {
         SemanticExpr {
             ty: SemanticType::Bool,
