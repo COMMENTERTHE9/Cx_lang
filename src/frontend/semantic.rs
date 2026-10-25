@@ -2136,14 +2136,20 @@ Expr::Unary(op, inner, pos) => {
                     semantic_elems.push(sem);
                 }
                 // With a declared element type, every element (including index 0)
-                // must unify with the DECLARED type, and mismatches name it. Without
-                // one (untyped array), element[0] fixes the type and later elements
-                // must unify with it — and an integer literal among them must fit
-                // it, as in a declaration: `[a, 300]` with `a: t8` is a `[2: t8]`,
-                // and compiled code held 44 where the interpreter kept 300 (§39).
-                let (elem_ty, check_from) = match &declared_elem {
-                    Some(t) => (t.clone(), 0),
-                    None => (
+                // must unify with the DECLARED type, and mismatches name it. An
+                // untyped array of numbers has the one type of its non-literal
+                // elements, and its literals must fit it — `[a, 300]` with `a: t8`
+                // is out of range, as in a declaration (§39); two element types
+                // are an error (§42, `untyped_numeric_elem_type`). Any other
+                // untyped array is typed by element[0], and later elements must
+                // unify with it.
+                let untyped_numeric = match &declared_elem {
+                    Some(_) => None,
+                    None => untyped_numeric_elem_type(&semantic_elems, *pos)?,
+                };
+                let (elem_ty, check_from) = match (&declared_elem, &untyped_numeric) {
+                    (Some(t), _) | (None, Some(t)) => (t.clone(), 0),
+                    (None, None) => (
                         semantic_elems.first().map(|e| e.ty.clone()).unwrap_or(SemanticType::Unknown),
                         1,
                     ),
@@ -2164,13 +2170,12 @@ Expr::Unary(op, inner, pos) => {
                 // `[2: t8]` and 1.5 in a `[2: t32]`, while compiled code, storing
                 // into the declared layout, held 44 and 1.
                 //
-                // Only when the declared type reaches this literal. Element[0]'s
-                // type is not a destination type, and converting to it NARROWED
-                // values the destination could hold (§36). An untyped array whose
-                // elements differ in width or kind therefore still holds them
-                // unconverted on the interpreter — what such a literal's type
-                // should be is an open language decision (§39).
-                if declared_elem.is_some() && has_width {
+                // Only when the type is the literal's own: declared, or the one
+                // type of an untyped array of numbers, whose LITERALS this
+                // converts (`[1, f]` with an f64 `f` holds 1.0). Element[0]'s
+                // type is not a destination type, and converting other values to
+                // it NARROWED what the destination could hold (§36).
+                if (declared_elem.is_some() || untyped_numeric.is_some()) && has_width {
                     semantic_elems = semantic_elems
                         .into_iter()
                         .map(|e| insert_cast_if_needed(e, &elem_ty))
@@ -4341,6 +4346,10 @@ pub(crate) fn type_name(ty: &SemanticType) -> String {
         SemanticType::Struct(name) => name.clone(),
         SemanticType::TypeParam(name) => name.clone(),
         SemanticType::Handle(inner) => format!("Handle<{}>", type_name(inner)),
+        // An array of untyped integer literals: its elements are integers,
+        // not literals, once they are in it ("expected [2: t32], got
+        // [2: integer]").
+        SemanticType::Array(size, elem) if **elem == SemanticType::Numeric => format!("[{}: integer]", size),
         SemanticType::Array(size, elem) => format!("[{}: {}]", size, type_name(elem)),
         SemanticType::Result(inner) => format!("Result<{}>", type_name(inner)),
     }
@@ -4375,13 +4384,103 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
         return true;
     }
     match (expected, got) {
+        // An array is stored, passed and returned as its elements, so arrays
+        // must agree on the element type, not merely both hold numbers: a
+        // `[3: t8]` given where a `[3: t64]` is declared was accepted
+        // unconverted, the interpreter kept its values and compiled code read
+        // the bytes at the declared width. Arrays of different element types
+        // do not convert — the owner's decision of 2026-10-24 (known_issues
+        // §42).
         (SemanticType::Array(size1, elem1), SemanticType::Array(size2, elem2)) if size1 == size2 => {
-            types_compatible(elem1, elem2)
+            same_element_type(elem1, elem2)
         }
         (SemanticType::Result(a), SemanticType::Result(b)) => types_compatible(a, b),
         (SemanticType::Numeric, other) | (other, SemanticType::Numeric) => is_numeric(other),
         _ => is_numeric(expected) && is_numeric(got),
     }
+}
+
+/// Whether array elements of type `got` can stand where elements of type
+/// `expected` are declared — see the `Array` arm of `types_compatible`. The
+/// same type, at any depth; an untyped integer literal's `Numeric` is stored as
+/// a t64; unknown and generic element types are left to the checks that know
+/// them, as for any value.
+fn same_element_type(expected: &SemanticType, got: &SemanticType) -> bool {
+    if expected == got
+        || *got == SemanticType::Unknown
+        || *expected == SemanticType::Unknown
+        || matches!(expected, SemanticType::TypeParam(_))
+        || matches!(got, SemanticType::TypeParam(_))
+    {
+        return true;
+    }
+    match (expected, got) {
+        (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && same_element_type(a, b),
+        (SemanticType::Numeric, SemanticType::I64) | (SemanticType::I64, SemanticType::Numeric) => true,
+        _ => false,
+    }
+}
+
+/// A number written as a literal — `5`, `2.5`, `-3` — whose value analysis
+/// knows; a variable or `1 + 1` has only its type.
+fn is_number_literal(e: &SemanticExpr) -> bool {
+    let literal = |e: &SemanticExpr| {
+        matches!(e.kind, SemanticExprKind::Value(SemanticValue::Num(_) | SemanticValue::Float(_)))
+    };
+    literal(e) || matches!(&e.kind, SemanticExprKind::Unary { op: Op::Minus, expr, .. } if literal(expr))
+}
+
+/// The element type of an UNTYPED array literal whose elements are all numbers
+/// — the owner's decision of 2026-10-24 (known_issues §42). It is the one type
+/// of the elements that are not literals (an untyped integer and a t64 being
+/// one); with only literals, f64 if one of them is a float and the untyped
+/// integer otherwise. Two element types are an error asking for a declared
+/// type: typed by element[0], the other elements kept their values on the
+/// interpreter and were converted by compiled code — `[a, b]` with a t8 `a`
+/// and a t64 `b` of 300 held 300 and 44. A literal must fit the element type
+/// (the caller range-checks it); a float literal among integers does not.
+/// `None` for an array whose elements are not all numbers.
+fn untyped_numeric_elem_type(elems: &[SemanticExpr], pos: usize) -> Result<Option<SemanticType>, SemanticError> {
+    if elems.is_empty() || !elems.iter().all(|e| is_numeric(&e.ty)) {
+        return Ok(None);
+    }
+    let typed: Vec<&SemanticType> = elems.iter().filter(|e| !is_number_literal(e)).map(|e| &e.ty).collect();
+    let elem_ty = match typed.first() {
+        Some(_) if typed.iter().all(|t| matches!(t, SemanticType::I64 | SemanticType::Numeric))
+            && typed.iter().any(|t| **t == SemanticType::I64) =>
+        {
+            SemanticType::I64
+        }
+        Some(first) => (*first).clone(),
+        None if elems.iter().any(|e| e.ty == SemanticType::F64) => SemanticType::F64,
+        None => SemanticType::Numeric,
+    };
+    let same = |t: &SemanticType| same_element_type(&elem_ty, t);
+    let clash = elems.iter().find(|e| {
+        if is_number_literal(e) {
+            e.ty == SemanticType::F64 && elem_ty != SemanticType::F64
+        } else {
+            !same(&e.ty)
+        }
+    });
+    if let Some(other) = clash {
+        let shown = |t: &SemanticType| {
+            if *t == SemanticType::Numeric { "integer".to_string() } else { type_name(t) }
+        };
+        let wider = match common_numeric_type(&elem_ty, &other.ty) {
+            SemanticType::Numeric => SemanticType::I64,
+            t => t,
+        };
+        return Err(sem_err!(
+            pos,
+            "array elements are {} and {} — an array holds one element type; declare it, as `xs: [{}: {}] = [...]`",
+            shown(&elem_ty),
+            shown(&other.ty),
+            elems.len(),
+            type_name(&wider)
+        ));
+    }
+    Ok(Some(elem_ty))
 }
 
 /// `x op= y` takes the operands `x op y` takes (`analyze_binary`): two numbers,
@@ -5830,20 +5929,6 @@ print(result + result2)
         panic!("no array literal bound to '{name}'")
     }
 
-    // An untyped array literal is typed by its element[0], as before §39: a
-    // later element, typed or a float literal, does not change the type.
-    #[test]
-    fn untyped_array_literal_is_typed_by_element_zero() {
-        let program = crate::frontend::resolver::parse_source(
-            "a: t8 = 5\nb: t64 = 300\nlet w;\nw = [a, b]\nlet fl;\nfl = [1, 2.5]\nlet all;\nall = [1, 2]\n",
-        )
-        .expect("parses");
-        let program = analyze_program(&program).expect("analyses");
-        assert_eq!(literal_elem_ty(&program, "w"), SemanticType::I8, "[t8, t64] is element[0]'s t8");
-        assert_eq!(literal_elem_ty(&program, "fl"), SemanticType::Numeric, "[literal, float literal] stays untyped");
-        assert_eq!(literal_elem_ty(&program, "all"), SemanticType::Numeric, "an all-literal array stays untyped");
-    }
-
     // The declared type reaches only the value: an array literal inside a call,
     // an index or an operand on the right side keeps its own type (§39).
     #[test]
@@ -5865,24 +5950,12 @@ print(result + result2)
     }
 
     // An inferred array's `Numeric` element type is a placeholder, not a
-    // declaration: a float literal assigned into it keeps its own type (§39).
+    // declaration: a float literal assigned into it keeps its own type (§39) —
+    // and an f64 array is then not an integer one (§42).
     #[test]
     fn an_inferred_numeric_element_type_is_not_a_declaration() {
-        let src = "let w;\nw = [1, 2]\nw = [2.5, 3.5]\n";
-        let program = analyze_program(&crate::frontend::resolver::parse_source(src).expect("parses")).expect("analyses");
-        let assigned: Vec<&SemanticType> = program
-            .stmts
-            .iter()
-            .filter_map(|s| match s {
-                SemanticStmt::Assign { expr, .. } => Some(&expr.ty),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(
-            assigned.last().copied(),
-            Some(&SemanticType::Array(2, Box::new(SemanticType::F64))),
-            "the float literal keeps its type: {assigned:?}"
-        );
+        let msg = single_file_errors("let w;\nw = [1, 2]\nw = [2.5, 3.5]\n");
+        assert!(msg.contains("expected [2: integer], got [2: f64]"), "got: {msg}");
     }
 
     // A const declaration is checked as a typed declaration is.
@@ -5932,5 +6005,62 @@ print(result + result2)
         let program = crate::frontend::resolver::parse_source(src).expect("parses");
         let result = analyze_program(&program);
         assert!(result.is_ok(), "rejected: {:?}", result.err());
+    }
+    // Arrays of different element types do not convert, wherever an array goes
+    // (owner's decision, 2026-10-24 — known_issues §42).
+    #[test]
+    fn arrays_of_different_element_types_do_not_convert() {
+        let rejected = [
+            ("xs: [3: t8] = [1, 2, 3]\nys: [3: t64] = xs\n", "type mismatch: expected [3: t64], got [3: t8]"),
+            (
+                "fnc: t64 sum(v: [3: t64]) {\n    v:[0]\n}\nxs: [3: t8] = [1, 2, 3]\nprint(sum(xs))\n",
+                "argument 1 to 'sum': expected [3: t64], got [3: t8]",
+            ),
+            (
+                "fnc: [2: t64] widen(v: [2: t8]) {\n    v\n}\n",
+                "return type mismatch: expected [2: t64], got [2: t8]",
+            ),
+            ("let w\nw = [1, 2]\nzs: [2: t32] = w\n", "expected [2: t32], got [2: integer]"),
+            ("xs: [2: [2: t8]] = [[1, 2], [3, 4]]\nys: [2: [2: t16]] = xs\n", "type mismatch"),
+        ];
+        for (src, want) in rejected {
+            let msg = single_file_errors(src);
+            assert!(msg.contains(want), "for {src:?} got: {msg}");
+        }
+        for ok in [
+            "xs: [3: t8] = [1, 2, 3]\nys: [3: t8] = xs\n",
+            "let w\nw = [1, 2]\nys: [2: t64] = w\n",
+        ] {
+            let program = crate::frontend::resolver::parse_source(ok).expect("parses");
+            let result = analyze_program(&program);
+            assert!(result.is_ok(), "rejected {ok:?}: {:?}", result.err());
+        }
+    }
+
+    // An untyped array literal has the one type of its non-literal elements;
+    // two are an error asking for a declared type (owner's decision, §42).
+    #[test]
+    fn an_untyped_array_literal_has_one_element_type() {
+        let program = analyze_program(
+            &crate::frontend::resolver::parse_source(
+                "a: t8 = 5\nf: f64 = 2.5\nlet p;\np = [a, 1]\nlet q;\nq = [1, a]\nlet r;\nr = [1, 2.5]\nlet s;\ns = [1, f]\nlet n;\nn = [1, 2]\n",
+            )
+            .expect("parses"),
+        )
+        .expect("analyses");
+        assert_eq!(literal_elem_ty(&program, "p"), SemanticType::I8);
+        assert_eq!(literal_elem_ty(&program, "q"), SemanticType::I8, "a literal first does not decide");
+        assert_eq!(literal_elem_ty(&program, "r"), SemanticType::F64, "a float literal makes an all-literal array f64");
+        assert_eq!(literal_elem_ty(&program, "s"), SemanticType::F64);
+        assert_eq!(literal_elem_ty(&program, "n"), SemanticType::Numeric);
+        let mixed = single_file_errors("a: t8 = 5\nb: t64 = 300\nlet ys\nys = [a, b]\n");
+        assert!(
+            mixed.contains("array elements are t8 and t64 — an array holds one element type; declare it, as `xs: [2: t64] = [...]`"),
+            "got: {mixed}"
+        );
+        let float = single_file_errors("a: t8 = 5\nlet ys\nys = [a, 2.5]\n");
+        assert!(float.contains("array elements are t8 and f64"), "got: {float}");
+        let range = single_file_errors("a: t8 = 5\nlet ys\nys = [300, a]\n");
+        assert!(range.contains("integer literal 300 out of range for t8"), "got: {range}");
     }
 }

@@ -3315,7 +3315,8 @@ and revise this entry — `analyze_expr_with_elem_hint` and `takes_type_hint`,
 literal there — and only to it: a declaration, a `const`, an assignment, a
 struct field, an argument (free function, impl method, gene-bound receiver), a
 return, an `Ok(...)` payload, a nested element, an `if` / `when` branch's
-value. An untyped array literal is typed by its element[0], as before.
+value. An untyped array literal is typed by its element[0], as before (§42
+has since replaced that rule).
 
 ### What happened
 
@@ -3414,8 +3415,8 @@ held 44. So is an untyped `[a, 300]` with `a: t8`, whose element[0] makes it a
   branch values are not unified.
 
 What arrays of different element widths mean — a variable passed or assigned
-to a different width, an untyped literal that mixes them — is an open language
-decision.
+to a different width, an untyped literal that mixes them — was then an open
+language decision; §42 records the owner's answer: both are compile errors.
 
 ### Fixtures
 
@@ -3550,3 +3551,76 @@ t_impl_method_same_name   before: semantic error, both    now: PASS, 1 2 5 6 10 
 
 A unit test pins that two impls may share a method name, and that a variable
 may share one.
+
+## 42. Arrays of different element types: compiled code read one as the other
+
+*(Decided by the owner on 2026-10-24; implemented by the commit that introduces
+this entry — `same_element_type`, the `Array` arm of `types_compatible`, and
+`untyped_numeric_elem_type` in `src/frontend/semantic.rs`.)*
+
+**Status: FIXED — by a language decision: arrays have one element type, and
+arrays of different element types do not convert.**
+
+### What happened
+
+`types_compatible` took any two numeric arrays of one length as compatible, so
+an array of one element type went unconverted wherever an array of another was
+declared — an assignment, an argument, a return, a struct field. The
+interpreter kept each value; compiled code read the bytes at the declared
+width:
+
+```
+xs: [3: t8] = [1, 2, 3];  ys: [3: t64] = xs      interpreter 3     JIT 67305985
+sum(xs), sum(v: [3: t64])                         interpreter 6     JIT 77765951
+```
+
+An untyped array literal was typed by its element[0], and its other elements
+kept their own types on the interpreter while compiled code converted them:
+
+```
+ys = [a, b]      (a: t8, b: t64 = 300)    interpreter 300   JIT 44
+ys = [a, 2.5]    (a: t8)                  interpreter 2.5   JIT 2
+r = [1, 2.5]                              interpreter 2.5   JIT 2
+```
+
+### The decision and the rule
+
+The owner chose a compile error in both cases over converting element by
+element (narrowing would wrap) or widening:
+
+- **Arrays of different element types are a type mismatch**, at any depth:
+  `ys: [3: t64] = xs` with `xs: [3: t8]` is "expected [3: t64], got [3: t8]".
+  An array inferred from integer literals (`w = [1, 2]`) holds t64s and fits a
+  `[2: t64]`, but not a `[2: t32]` ("got [2: integer]").
+- **An untyped array literal has one element type** — that of its elements
+  that are not literals. Two are an error that asks for the type:
+  "array elements are t8 and t64 — an array holds one element type; declare
+  it, as `xs: [2: t64] = [...]`". Literals must fit the type (`[a, 300]` and
+  `[300, a]` with `a: t8` are out of range) and are converted to it; a float
+  literal does not fit an integer type. With literals only, the array is f64
+  if one of them is a float, and of untyped integers otherwise.
+- A declared element type is unchanged: `zs: [2: t64] = [a, b]` converts each
+  element to it, as before.
+
+### Not changed
+
+- A generic function's `T` value stored into a declared-width slot —
+  `ys: [2: t8] = [x, 1]` with `x: T` — is converted by compiled code after
+  monomorphization but not by the interpreter, which runs the generic body;
+  the conversion analysis cannot insert for a `T` is the next fix.
+- Branch values of different types: §40.
+
+### Fixtures
+
+```
+t_array_width_var_reject      before: interpreter 3, JIT garbage          now: semantic error, both
+t_array_width_arg_reject      before: interpreter 6, JIT garbage          now: semantic error, both
+t_array_width_return_reject   before: interpreter 2, JIT garbage          now: semantic error, both
+t_array_width_field_reject    before: interpreter 2, JIT garbage          now: semantic error, both
+t_array_mixed_literal_reject  before: interpreter 300, JIT 44             now: semantic error, both
+t_array_mixed_float_reject    before: interpreter 2.5, JIT 2              now: semantic error, both
+t_array_literal_types         before: JIT 2 where the interpreter has 2.5 now: PASS, both agree
+```
+
+Unit tests pin the rejections' messages and the element type of each kind of
+untyped literal.

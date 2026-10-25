@@ -1,0 +1,24 @@
+// The type of an untyped array literal (owner's decision, 2026-10-24): the one
+// type of its non-literal elements, which its literals must fit; with only
+// literals, f64 if one is a float. A declared type always wins.
+a: t8 = 5
+b: t64 = 300
+f: f64 = 2.5
+let p
+p = [a, 1]
+print(p:[1])
+let q
+q = [1, a]
+print(q:[0] + q:[1])
+let r
+r = [1, 2.5]
+print(r:[1])
+let s
+s = [1, f]
+if s:[0] < 1.5 { print(1) } else { print(0) }
+zs: [2: t64] = [a, b]
+print(zs:[1])
+let w
+w = [1, 2]
+ws: [2: t64] = w
+print(ws:[1])

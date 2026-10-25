@@ -388,6 +388,14 @@ arr:[0]
 ```
 Arrays support declaration, initialization, partial init, index read/write, function pass/return, and copy semantics.
 
+An array has one element type. A declared type converts each element to it
+(`xs: [2: t8] = [a, b]`). An untyped literal takes the type of its non-literal
+elements, and its literals must fit it: `[a, 1]` with `a: t8` is a `[2: t8]`,
+`[1, 2.5]` is a `[2: f64]`, and `[a, b]` with `a: t8` and `b: t64` is an error
+— declare the type. Arrays of different element types do not convert: a
+`[3: t8]` is not a `[3: t64]`, as an assignment, an argument, a return or a
+field.
+
 ## 13. Unknown and State Checks
 
 ### Unknown propagation

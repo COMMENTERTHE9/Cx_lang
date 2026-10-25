@@ -1,0 +1,7 @@
+// The same for a return: a `[2: t8]` returned from a `[2: t64]` function.
+fnc: [2: t64] widen(v: [2: t8]) {
+    v
+}
+xs: [2: t8] = [1, 2]
+ys: [2: t64] = widen(xs)
+print(ys:[1])

@@ -1,0 +1,5 @@
+// The same for a struct field: a `[2: t8]` stored in a `[2: t64]` field.
+struct H { arr: [2: t64] }
+xs: [2: t8] = [1, 2]
+h: H = H { arr: xs }
+print(h.arr:[1])

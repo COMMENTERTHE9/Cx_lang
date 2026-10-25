@@ -1,0 +1,9 @@
+// An untyped array literal whose elements have different types (owner's
+// decision, 2026-10-24): `[a, b]` with a t8 `a` and a t64 `b` was typed by its
+// first element, a `[2: t8]`; the interpreter kept b = 300 and compiled code
+// stored 44. Now an error asking for the array's type.
+a: t8 = 5
+b: t64 = 300
+let ys
+ys = [a, b]
+print(ys:[1])
