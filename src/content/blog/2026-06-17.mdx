@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-06-17"
+date: 2026-06-17
+description: "If-expression lowering landed on submain, sharing merge machinery with when-expressions and converting 7 fixtures to PASS."
+---
+
+If-expression lowering is live on submain. This is the first real feature commit since the JIT memory-safety gate closed, and it came together cleaner than expected because it reuses the same branch-value merge path that when-expressions already use.
+
+## What landed
+
+The core of today's work is commit `a42f001` on submain, tracked as D2.1. The `lower.rs` stub that previously hit `unsupported!("If")` now handles full two-branch value-producing if-expressions.
+
+Rather than building a separate lowering path for if-expressions, the approach was to extract the per-arm body-value lowering out of `lower_when_expr` into a shared free function called `lower_branch_value()`. This function handles leading statements via the void path, treats a trailing `ExprStmt` as the branch value, and emits a `Jump` to a merge block with `ensure_type_match`. The when-expression closure becomes a thin wrapper delegating to the same function. Emitted IR is byte-identical for all 12 existing when-exercising fixtures, so this is a pure refactor on the when side.
+
+The new `lower_if_expr()` lowers the condition, emits `Branch(cond, then_block, else_block)`, and each branch produces a value via `lower_branch_value` into one merge block parameter. Else-if chains are nested `If` nodes in `else_body`, handled by recursion. The decision block is sealed first, following the existing seal-order rule.
+
+## The Numeric-placeholder bug
+
+An interesting side effect: the work surfaced a latent bug in `lower_when_expr`. Bare integer literals in branch tails were typing the expression as the unresolved `Numeric` placeholder, and `lower_type(Numeric)` errored. This only showed up because the D2.1 test fixture `t_return_if_when_in_range` contains both an if-expr and a when-expr with bare integer literal arms.
+
+The fix resolves `Numeric` to the target's default integer width (I64 on 64-bit), which is the same rule `lower_binary` already uses. Fixing it in both `lower_if_expr` and `lower_when_expr` simultaneously prevented a PARITY_FAIL that would have appeared if only the if-expr path had the fix. This kind of shared-path benefit is exactly why the extraction was worth doing.
+
+## Results
+
+Seven fixtures converted from SKIP to PASS: the 6 target if-expr fixtures plus `t59_when_value`, a clean side-effect of the Numeric fix in `lower_when_expr`. Parity moved from 192/94/0 to 199/87/0 across 286 fixtures on submain. Zero PARITY_FAIL.
+
+The benchmark `bench/bench_if_expr.cx` now runs on both backends, with the first JIT baseline recorded: interp median 817ms vs JIT median 19ms on 700k iterations.
+
+All gates green: cargo test 243/0, `--features jit` 418/0, matrix 286/0, parity 199/87/0, clippy 0 errors. The diff is +160/-63 lines in `lower.rs` plus minor bench updates.
+
+## The submain gap
+
+Submain is now 15 commits ahead of main, carrying the full CR#1-4 range-check fixes, D1.0 through D1.2a audit and refactors, Gate-1a/1b0/1b/2a/2b arithmetic and memory safety work, and now D2.1 if-expression lowering. All tested, zero regressions, but the merge to main keeps not happening.
+
+The commit explicitly defers two items: #026 unknown-condition lowering (unknown values SKIP at `lower_value` before reaching any if) and #044-B (unknown-arm path). These wait for a general unknown-value lowering step.
+
+## What's next
+
+DotAccess in compound forms is the last unchecked Phase 11 item and the natural next target now that if-expression lowering is done. Unknown-value lowering would unlock the remaining SKIP fixtures that involve unknown-valued conditions. Phase 8 Round 2 (str/strref layout) is still unchecked and would unblock `bench_str_concat` JIT and the read/input builtins.
+
+And at some point, that 15-commit submain gap needs to land on main. It has been predicted in the daily log for multiple consecutive days. Eventually it will happen.
