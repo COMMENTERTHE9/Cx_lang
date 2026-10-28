@@ -1,0 +1,16 @@
+// The top-level `helper` takes one argument, so `helper(n, 5)` in `after` is an
+// error. It was accepted: the nested two-argument `helper` in `api` had
+// replaced the top-level signature in the table every call is checked against.
+fnc: t64 helper(x: t64) {
+    x * 2
+}
+fnc: t64 api(n: t64) {
+    fnc: t64 helper(a: t64, b: t64) {
+        a + b
+    }
+    helper(n, 1)
+}
+fnc: t64 after(n: t64) {
+    helper(n, 5)
+}
+print(after(10))
