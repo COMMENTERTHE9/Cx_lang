@@ -1,0 +1,23 @@
+// Explicit returns retain copy-out and caller-owned aggregate return slots.
+fnc: t64 bump(n.copy: t64) {
+    n += 5
+    return 99
+    n += 1000
+    n
+}
+x: t64 = 10
+print(bump(x.copy))
+print(x)
+struct Pair { a: t64, b: t64 }
+fnc: Pair make(flag: bool) {
+    p: Pair = Pair { a: 3, b: 4 }
+    if flag { return p } else { return Pair { a: 5, b: 6 } }
+    p.a = 1000
+    p
+}
+a: Pair = make(true)
+b: Pair = make(false)
+print(a.a)
+print(a.b)
+print(b.a)
+print(b.b)

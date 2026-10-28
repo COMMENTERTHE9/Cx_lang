@@ -1,0 +1,3 @@
+// Reachability does not bypass semantic return-type checks.
+fnc: t64 bad() { return 7; true }
+print(bad())

@@ -162,22 +162,22 @@ by running the reproducer post-fix: clean output, exit 0, on both backends.
 
 ## 3. `t03`/`t160`/`t24` — explicit return + trailing expression
 
-**Status: OPEN, deferred** (found during the `t16`-cluster scoping audit;
-deferred there as open-ended, not yet sized).
+**Status: FIXED.** Lowering follows reachable continuations, as the interpreter
+does: statements after a terminated path are omitted, and the function's trailing
+expression is emitted only when the body can fall through. Semantic analysis
+still checks all source, including unreachable return-type mismatches.
 
-A function with **both** an explicit `return` statement and a separate,
-now-dead trailing expression statement after it triggers:
+A function with an explicit `return` and a now-dead trailing expression used to
+trigger:
 
 ```
 LoweringError::InternalInvariantViolation {
     detail: "function '{name}' has both explicit return terminator and trailing return expression"
 }
 ```
-at `src/ir/lower.rs:677-684`.
-
-Affects `t03_explicit_return.cx`, `t160_direct_call_explicit_return_exit.cx`,
-and (as a compound case, masking a second, separate bug — the `t16`
-implicit-return-type gap) `t24_full_system_regression.cx`.
+`t03_explicit_return.cx` and `t160_direct_call_explicit_return_exit.cx` now run
+natively. `t24_full_system_regression.cx` advances to its separate existing
+untyped Handle-return gap; this fix does not claim that whole fixture as supported.
 
 **Distinct from #2 above** — different error variant
 (`InternalInvariantViolation` vs. `UnresolvedSemanticArtifact`), different
@@ -185,11 +185,10 @@ trigger (requires an explicit `return` statement present in the same
 function; #2's reproducer has none) — confirmed by direct comparison of
 error text and mechanism, not by name-similarity.
 
-Not yet sized. The `t16`-cluster audit found the related implicit-return-type
-gap touches broad, shared function-signature infrastructure with unclear
-full extent, and recommended deferring the whole cluster rather than
-attempting a quick cleanup. This entry (`t03`/`t160`/`t24` specifically) was
-not separately re-scoped beyond that.
+Regression coverage includes all-branch returns, partial-return fallthrough,
+dead side effects after return/break/continue, copy-out and aggregate return
+slots, and semantic rejection of an ill-typed dead trailing value. The reachable
+return paths retain their existing `finish_return` behavior and ABI.
 
 ---
 

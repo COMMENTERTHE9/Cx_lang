@@ -1653,16 +1653,9 @@ fn lower_semantic_function(
         &[],
     )?;
 
-    if current.is_none() {
-        if function.ret_expr.is_some() {
-            return Err(LoweringError::InternalInvariantViolation {
-                detail: format!(
-                    "function '{}' has both explicit return terminator and trailing return expression",
-                    function.name
-                ),
-            });
-        }
-    } else if let Some(mut active) = current {
+    // A trailing expression is reachable only when the body can fall through.
+    // Explicit returns already finished copy-out and any aggregate return slot.
+    if let Some(mut active) = current {
         if let Some(ret_expr) = &function.ret_expr {
             let lowered = lower_expr(ret_expr, &mut ctx, &mut active)?;
             let expected =
@@ -1713,12 +1706,9 @@ where
     I: IntoIterator<Item = &'a SemanticStmt>,
 {
     for stmt in stmts {
-        let active = current.take().ok_or_else(|| LoweringError::InternalInvariantViolation {
-            detail: format!(
-                "statement appeared after terminator in function '{}'",
-                spec.name
-            ),
-        })?;
+        // Semantic analysis still checks dead source, but the interpreter stops
+        // this sequence at return/break/continue. There is no path left to emit.
+        let Some(active) = current.take() else { break; };
         current = lower_stmt(stmt, ctx, active, spec, loop_ctx)?;
     }
     Ok(current)
@@ -9387,6 +9377,30 @@ mod tests {
         let function = &module.functions[0];
         assert_eq!(function.blocks.len(), 3);
         assert!(function.blocks.iter().skip(1).all(|block| block.params.is_empty()));
+    }
+
+    #[test]
+    fn explicit_return_omits_dead_statements_and_trailing_value() {
+        let dead = BindingId(97);
+        let program = SemanticProgram {
+            stmts: vec![semantic_function(
+                "early_return",
+                vec![],
+                Some(SemanticType::I64),
+                vec![
+                    SemanticStmt::Return { expr: Some(int_expr(7, SemanticType::I64)), pos: 0 },
+                    typed_assign(dead, "dead", SemanticType::I64, int_expr(99, SemanticType::I64)),
+                ],
+                Some(binding_ref(dead, "dead", SemanticType::I64)),
+            )],
+            enums: vec![],
+        };
+        let module = lower_and_validate(&program);
+        let function = &module.functions[0];
+        assert_eq!(function.blocks.len(), 1);
+        assert_eq!(function.blocks[0].insts.len(), 1);
+        assert!(matches!(function.blocks[0].insts[0], IrInst::ConstInt { value: 7, .. }));
+        assert!(matches!(function.blocks[0].term, IrTerminator::Return { value: Some(_) }));
     }
 
     #[test]
