@@ -146,7 +146,7 @@ impl RunTime {
         value: Value,
         pos: usize,
     ) -> Result<(), RuntimeError> {
-        if !self.consts.is_empty() && self.consts.contains_key(name) {
+        if self.const_bindings.contains(&binding) {
             return Err(RuntimeError::BadAssignTarget { pos });
         }
         let value = self.resolve_assigned_value(value, pos)?;
@@ -162,12 +162,12 @@ impl RunTime {
     /// Cold-path write by name (string-interp targets, while-in arrays, method
     /// write-back). Resolves name -> BindingId via the per-frame index.
     pub fn set_var(&mut self, name: String, value: Value, pos: usize) -> Result<(), RuntimeError> {
-        if !self.consts.is_empty() && self.consts.contains_key(&name) {
-            return Err(RuntimeError::BadAssignTarget { pos });
-        }
         let value = self.resolve_assigned_value(value, pos)?;
         for i in (0..self.scopes.len()).rev() {
             if let Some(&binding) = self.scopes[i].by_name.get(&name) {
+                if self.const_bindings.contains(&binding) {
+                    return Err(RuntimeError::BadAssignTarget { pos });
+                }
                 return self.write_var_at(i, binding, &name, value, pos);
             }
         }

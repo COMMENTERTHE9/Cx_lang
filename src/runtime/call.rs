@@ -212,6 +212,9 @@ impl RunTime {
                     resolved.push((param.binding, param.name.clone(), val, None));
                 }
                 SemanticCallArg::Copy { binding, name } => {
+                    if self.const_bindings.contains(binding) {
+                        return Err(RuntimeError::BadAssignTarget { pos });
+                    }
                     let val = self.get_var_by_id(*binding, name, pos)?;
                     let owner = self.scopes.iter().rposition(|frame| frame.vars.contains_key(binding))
                         .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: name.clone() })?;

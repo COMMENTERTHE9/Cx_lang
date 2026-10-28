@@ -124,12 +124,8 @@ pub struct Analyzer {
     /// The enclosing function's `<T: Gene>` bounds while its body is being
     /// analyzed (0.3.4 slice 4) — set/restored by the FuncDef arm.
     current_type_bounds: Vec<(String, Vec<String>)>,
-    /// Names declared by a `const` (known-issues #12). Assignment to one — in
-    /// any form — is rejected at analysis time, so both backends refuse
-    /// identically before either runs. Keyed by name rather than `BindingId`
-    /// because `const` is top-level-only, so a const name is unambiguous for
-    /// the whole file, and the index/field assignment forms carry only the
-    /// base name of the target.
+    /// Immutable lexical bindings. A same-named parameter/local is a distinct
+    /// binding; spelling alone does not grant or remove write capability.
     const_bindings: std::collections::HashSet<BindingId>,
     /// Bindings introduced as a `for` loop counter (audit C2). Keyed by
     /// `BindingId`, NOT by name: a loop body may legally shadow the counter's

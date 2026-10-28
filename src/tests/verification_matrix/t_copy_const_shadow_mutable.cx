@@ -3,6 +3,7 @@
 fnc: t64 inc(x.copy: t64) { x += 1
 x }
 const g: t64 = 1
-fnc: t64 local(g: t64) { inc(g.copy) }
+fnc: t64 local(g: t64) { g += 1
+inc(g.copy) }
 print(local(5))
 print(g)

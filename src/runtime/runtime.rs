@@ -103,7 +103,7 @@ pub struct RunTime {
     pub(crate) scopes: Vec<ScopeFrame>,
     pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
-    pub consts: HashMap<String, Value>,
+    pub const_bindings: HashSet<BindingId>,
     /// Cx-level call depth (known-issues §20).
     ///
     /// The interpreter executes a Cx call by recursing through
@@ -153,7 +153,7 @@ impl RunTime {
             scopes: vec![ScopeFrame::new()],
             semantic_funcs: HashMap::new(),
             debug_scope: false,
-            consts: HashMap::new(),
+            const_bindings: HashSet::new(),
             call_depth: 0,
         }
     }
