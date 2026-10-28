@@ -36,6 +36,14 @@ struct VarInfo {
     /// library, `add(v, rhs)` inside `phen Add { fnc add(...) }` calls the
     /// library's top-level `add` (see `callee_name`).
     is_method: bool,
+    /// For a NESTED function — one declared anywhere but the top level — the
+    /// unique name it has in the program: `helper#7`, or `key$helper#7` in a
+    /// library. A nested function used to keep its bare name in the function
+    /// table and at run time, so it replaced a top-level function of the same
+    /// name: in the signature every later call was checked against, and, on the
+    /// interpreter, as the function itself once the enclosing one had run
+    /// (known_issues §44).
+    function_key: Option<String>,
 }
 
 /// A user-function call's checked arguments, its return type with type
@@ -265,6 +273,7 @@ impl Analyzer {
                 initialized,
                 is_function: false,
                 is_method: false,
+                function_key: None,
             },
         );
         Ok(binding)
@@ -296,7 +305,7 @@ impl Analyzer {
     fn not_a_variable(&self, name: &str, pos: usize) -> SemanticError {
         if self.method_registry.keys().any(|(_, method)| method == name) {
             sem_err!(pos, "'{}' is a method, not a variable — call it on a value, as v.{}(...)", name, name)
-        } else if self.funcs.contains_key(name) {
+        } else if self.is_function_name(name) {
             sem_err!(pos, "'{}' is a function, not a variable — call it as {}(...)", name, name)
         } else {
             sem_err!(pos, "use of undeclared variable '{}'", name)
@@ -343,8 +352,10 @@ impl Analyzer {
     /// function has in the merged program, `key$name` — it used to stay bare,
     /// so it named nothing at runtime and a library could not call its own
     /// functions at all, not even recursively (known_issues §31, §37). A
-    /// nested function keeps its bare name, so the innermost FUNCTION entry
-    /// for `name` decides; a parameter or local shadowing the name is not one.
+    /// nested function has a name of its own (`VarInfo::function_key`, §44)
+    /// and is resolved before this is asked; here the innermost FUNCTION
+    /// entry for `name` decides, and a parameter or local shadowing the name
+    /// is not one.
     fn callee_name(&self, name: &str) -> String {
         if let Some(key) = &self.own_module_key {
             if self.own_top_level_fns.contains(name) {
@@ -379,11 +390,32 @@ impl Analyzer {
         }
     }
 
+    /// The program name of the function a bare call to `name` means, when the
+    /// innermost function of that name in scope is a NESTED one — see
+    /// `VarInfo::function_key`. `None` for a top-level function (or none).
+    fn innermost_function_key(&self, name: &str) -> Option<String> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).filter(|info| info.is_function && !info.is_method))
+            .and_then(|info| info.function_key.clone())
+    }
+
+    /// Whether `name` names a function in scope: top-level, or nested (whose
+    /// table entry is under its own program name).
+    fn is_function_name(&self, name: &str) -> bool {
+        self.funcs.contains_key(name)
+            || self
+                .scopes
+                .iter()
+                .any(|scope| scope.get(name).is_some_and(|info| info.is_function && !info.is_method))
+    }
+
     /// For a lookup site with its own "not declared" wording: `fallback`,
     /// unless `name` is a function or method, where `not_a_variable` says what
     /// the name really is.
     fn unresolved(&self, name: &str, fallback: SemanticError) -> SemanticError {
-        if self.funcs.contains_key(name) || self.method_registry.keys().any(|(_, method)| method == name) {
+        if self.is_function_name(name) || self.method_registry.keys().any(|(_, method)| method == name) {
             self.not_a_variable(name, fallback.pos)
         } else {
             fallback
@@ -1173,8 +1205,10 @@ impl Analyzer {
                 let prev_bounds = std::mem::replace(&mut self.current_type_bounds, bounds.clone());
                 let result = self.analyze_function(name, type_params, params, ret_ty, body, ret_expr, *pos, is_test, false);
                 self.current_type_bounds = prev_bounds;
-                if result.is_ok() {
-                    if let Some(info) = self.funcs.get_mut(name) {
+                // By the name the function has in the program — a nested one's
+                // is its own (§44).
+                if let Ok(SemanticStmt::FuncDef(function)) = &result {
+                    if let Some(info) = self.funcs.get_mut(&function.name) {
                         info.type_bounds = bounds;
                     }
                 }
@@ -1602,9 +1636,22 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         }
         let func_id = self.fresh_function();
         self.declare(name, ret_ty.clone(), None, true, pos)?;
+        // A function declared anywhere but the top level is NESTED and gets a
+        // name of its own in the program (`VarInfo::function_key`).
+        let nested = !is_method && self.scopes.len() > 1;
+        let program_name = if nested {
+            let unique = format!("{name}#{}", func_id.0);
+            match &self.own_module_key {
+                Some(key) => format!("{key}${unique}"),
+                None => unique,
+            }
+        } else {
+            name.to_string()
+        };
         if let Some(entry) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
             entry.is_function = true;
             entry.is_method = is_method;
+            entry.function_key = nested.then(|| program_name.clone());
         }
 
         let placeholders = params
@@ -1619,7 +1666,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         // "expects 2 argument(s), got 1" (known_issues §41).
         if !is_method {
             self.funcs.insert(
-                name.to_string(),
+                program_name.clone(),
                 FunctionInfo {
                     id: func_id,
                     params: placeholders.clone(),
@@ -1713,7 +1760,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         }
 
         if !is_method {
-            if let Some(info) = self.funcs.get_mut(name) {
+            if let Some(info) = self.funcs.get_mut(&program_name) {
                 info.params = resolved_params.clone();
             }
         }
@@ -1753,7 +1800,8 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
 
         Ok(SemanticStmt::FuncDef(SemanticFunction {
             id: func_id,
-            name: name.to_string(),
+            // A nested function is registered and called by its own name (§44).
+            name: program_name,
             type_params: type_params.to_vec(),
             params: resolved_params,
             return_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
@@ -2933,13 +2981,17 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
-        let function = self.funcs.get(name).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
+        // The innermost function of this name in scope: a nested function by
+        // the name it has in the program (§44), else the top-level one.
+        let nested_key = self.innermost_function_key(name);
+        let table_key = nested_key.clone().unwrap_or_else(|| name.to_string());
+        let function = self.funcs.get(&table_key).cloned().ok_or_else(|| sem_err!(pos, "call to undefined function '{}'", name))?;
         let (semantic_args, ret_ty, call_type_args) =
             self.check_user_call(name, &function, args, pos, ret_hint.as_ref())?;
         Ok(SemanticExpr {
             ty: ret_ty,
             kind: SemanticExprKind::Call {
-                callee: self.callee_name(name),
+                callee: nested_key.unwrap_or_else(|| self.callee_name(name)),
                 function: function.id,
                 args: semantic_args,
                 type_args: call_type_args,
@@ -3672,6 +3724,14 @@ fn check_num_range(ty: &SemanticType, n: i128, pos: usize) -> Result<(), Semanti
         }
     }
     Ok(())
+}
+
+/// The name a function was written with, for messages: its program name
+/// without the module key a library's functions carry (`m@2$`) or the `#N` a
+/// nested function's carries (§44).
+pub(crate) fn source_function_name(program_name: &str) -> &str {
+    let bare = program_name.rsplit_once('$').map_or(program_name, |(_, name)| name);
+    bare.split_once('#').map_or(bare, |(name, _)| name)
 }
 
 /// The forms a declared type is delivered to — see `analyze_expr_with_elem_hint`.
@@ -6460,5 +6520,45 @@ print(result + result2)
             }
             other => panic!("expected a cast from T, got {other:?}"),
         }
+    }
+    // A nested function is a function of its own: it has a name of its own in
+    // the program, the calls inside its scope name it, and the top-level
+    // function of the same name keeps its signature (known_issues §44).
+    #[test]
+    fn a_nested_function_does_not_replace_a_top_level_one() {
+        let src = "fnc: t64 helper(n: t64) {\n    n + 1\n}\nfnc: t64 outer(n: t64) {\n    fnc: t64 helper(a: t64, b: t64) {\n        a * b\n    }\n    helper(n, 2)\n}\nprint(helper(5))\n";
+        let program = analyze_program(&crate::frontend::resolver::parse_source(src).expect("parses")).expect("analyses");
+        let outer = program
+            .stmts
+            .iter()
+            .find_map(|s| match s {
+                SemanticStmt::FuncDef(f) if f.name == "outer" => Some(f),
+                _ => None,
+            })
+            .expect("outer");
+        let nested = outer
+            .body
+            .iter()
+            .find_map(|s| match s {
+                SemanticStmt::FuncDef(f) => Some(f.name.clone()),
+                _ => None,
+            })
+            .expect("the nested function");
+        assert!(nested.starts_with("helper#"), "the nested function's own name: {nested}");
+        let callee = |e: &SemanticExpr| match &e.kind {
+            SemanticExprKind::Call { callee, .. } => Some(callee.clone()),
+            _ => None,
+        };
+        let inner_call = outer.ret_expr.as_ref().and_then(callee).or_else(|| {
+            outer.body.iter().rev().find_map(|s| match s {
+                SemanticStmt::ExprStmt { expr, .. } => callee(expr),
+                _ => None,
+            })
+        });
+        assert_eq!(inner_call.as_deref(), Some(nested.as_str()), "outer's call names its nested helper");
+        let msg = single_file_errors(
+            "fnc: t64 helper(x: t64) {\n    x\n}\nfnc: t64 api(n: t64) {\n    fnc: t64 helper(a: t64, b: t64) {\n        a + b\n    }\n    helper(n, 1)\n}\nfnc: t64 after(n: t64) {\n    helper(n, 5)\n}\n",
+        );
+        assert!(msg.contains("function 'helper' expects 1 argument(s), got 2"), "got: {msg}");
     }
 }

@@ -1,3 +1,7 @@
+// A nested function is scoped to its containing function and does not leak
+// (cx_syntax.md): `inner()` at the top level is "call to undefined function".
+// It ran before — printing 99 twice — because nested functions kept their bare
+// names and the interpreter registered them globally (known_issues §44).
 fnc: outer() {
     fnc: inner() {
         print(99)

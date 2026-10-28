@@ -3778,3 +3778,71 @@ t_generic_value_converted   before: interpreter 300 300 300 300 300 5, JIT refus
 ```
 
 A unit test pins the cast from `T`.
+
+## 44. A nested function replaced a top-level one of the same name
+
+*(Found 2026-10-24 by the review of §37; fixed by the commit that introduces
+this entry — `VarInfo::function_key`, `analyze_function`,
+`innermost_function_key` and `analyze_call` in `src/frontend/semantic.rs`.)*
+
+**Status: FIXED.**
+
+### What happened
+
+A function declared inside another kept its bare name — in the analyzer's one
+table of functions, which every call's arguments are checked against, and in
+the interpreter's, which it registers into when the definition runs. So a
+nested `helper` replaced a top-level `helper`:
+
+```
+fnc helper(n) { n + 1 }   fnc outer(n) { fnc helper(m) { m * 10 }  helper(n) }
+print(helper(5)); print(outer(5)); print(helper(5))
+                                        interpreter 6 50 50 — the third should be 6
+```
+
+and the signature check went wrong both ways: with a nested two-argument
+`helper`, a valid top-level `helper(5)` was "expects 2 argument(s), got 1",
+and an invalid `helper(n, 5)` elsewhere was accepted and ran. Multi-file too:
+a library's nested `helper` took over the entry's once the library had run.
+The JIT refuses nested functions, so this was the interpreter — the reference —
+alone.
+
+### The fix
+
+A function declared anywhere but the top level gets a name of its own in the
+program — `helper#7`, or `key$helper#7` in a library — recorded on its scope
+entry. A bare call means the innermost function of that name in scope: a nested
+one by its own name, else the top-level one, whose table entry is now never
+replaced. Calls before a nested definition, recursion inside it and the
+diagnostics for a function's name used as a variable all follow from that;
+messages name a function as it was written (`down`, not `down#2`).
+
+This is the scoping `cx_syntax.md` states — "Nested functions are scoped to
+their containing function and do not leak globally" — and it has two visible
+consequences beside the fix:
+
+- A function declared inside a block is not callable after the block, at the
+  top level as inside a function: `if c { fnc helper() ... }` then `helper()`
+  ran before, by the same leak, and is now "call to undefined function".
+  `t50_nested_func_no_leak` asserted the leak — it called a nested `inner`
+  from the top level and exited 0 — and now expects that error.
+- A nested function is visible from its definition onward, as it always was to
+  analysis: one that calls a sibling declared after it — or a function of a
+  top-level function's name declared later — gets the outer one. Nested
+  siblings are not mutually recursive.
+
+### Not changed
+
+The JIT still refuses nested functions.
+
+### Fixtures
+
+```
+t_nested_fn_own_name           before: semantic error ("expects 2 argument(s)")   now: interpreter 6 50 6 10 6 120, JIT SKIP
+t_nested_fn_signature_reject   before: interpreter 20, JIT refused                now: semantic error, both
+t_import_nested_vs_entry       before: interpreter 6 50 50                        now: 6 50 6, JIT SKIP
+t50_nested_func_no_leak        before: interpreter 99 99 — the leak                now: semantic error, both
+```
+
+A unit test pins the nested function's own name, the call to it, and the
+signature check of a later top-level call.
