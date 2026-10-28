@@ -70,8 +70,8 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 - JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
 These results cover the stored fixtures, not every accepted program. The
-reviewed restart work now passes **305 default tests**, **484 JIT tests**, and
-**646 interpreter fixtures**; parity is **587 PASS / 59 SKIP / 0 PARITY_FAIL**.
+reviewed restart work now passes **314 default tests**, **493 JIT tests**, and
+**650 interpreter fixtures**; parity is **602 PASS / 48 SKIP / 0 PARITY_FAIL**.
 It corrects printing, generic conversion, nested-function scoping and lexical
 `.copy` ownership, then adds native numeric and enum module constants/state.
 Numeric storage converted eight old refusals to passes; explicit returns
@@ -422,13 +422,17 @@ Build the JIT binary before the harness; a default build replaces it.
 These features **work in the interpreter** but are **not yet lowered to the JIT** (they can produce parity SKIP; see the briefing for other refusal reasons):
 
 - the `input` builtin
-- nested function definitions
+- nested functions that capture an outer function's local variables
 - `while-in` loops
-- reading or writing top-level variables or constants inside a function (top-level declarations and top-level uses do lower)
+- bool, string, Handle and composite module state (numeric and enum module state lower)
 - `t128` printing, and `Result` payloads wider than a machine word
 - `char`-typed values
-- `copy_into` parameter kind and its container representation (`.copy` and deprecated `.copy.free` now lower)
 - string interpolation of non-identifier expressions
+
+`copy_into` bundles, concrete implicit copy parameter shapes, capture-free nested
+functions and lexical blocks now lower. Aggregate value arguments retain their
+evaluation-time snapshots; method receivers retain their mutation behavior.
+See [copy lowering](docs/backend/copy_shapes.md) for current limits.
 
 Generic functions and generic structs **do** lower, by monomorphization — one
 specialized native function per distinct set of type arguments. One limit is

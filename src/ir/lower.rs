@@ -114,6 +114,7 @@ type BindingMap = HashMap<BindingId, LoweredValue>;
 #[derive(Clone)]
 struct FunctionSignature {
     param_types: Vec<IrType>,
+    receiver_params: Vec<bool>,
     param_semantic_types: Vec<SemanticType>,
     /// Per parameter: `Some(T)` when it is a `.copy` parameter whose caller
     /// slot holds a `T`, `None` otherwise. Filled by `copy_param_pointee`, the
@@ -464,6 +465,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                 param_types.push(IrType::Ptr); // hidden trailing return slot
             }
             table.insert(function.name.clone(), FunctionSignature {
+                receiver_params: function.params.iter().map(|p| p.is_receiver).collect(),
                 param_semantic_types: function.params.iter().map(|p| p.ty.clone().unwrap_or_else(|| copy_param_pointee(p, target))).collect(),
                 param_types,
                 copy_pointees,
@@ -543,6 +545,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                     // Methods cannot declare a copy kind (rejected at analysis
                     // time), so no parameter here is ever passed by address.
                     FunctionSignature {
+                        receiver_params: method_alias_params.get(i).into_iter().flatten().chain(method.params.iter()).map(|p| p.is_receiver).collect(),
                         param_semantic_types: method_alias_params.get(i).into_iter().flatten().chain(method.params.iter()).filter_map(|p| p.ty.clone()).collect(),
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
@@ -630,6 +633,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                     // Methods cannot declare a copy kind (rejected at analysis
                     // time), so no parameter here is ever passed by address.
                     FunctionSignature {
+                        receiver_params: method_receiver_params.get(i).into_iter().flatten().chain(method.params.iter()).map(|p| p.is_receiver).collect(),
                         param_semantic_types: method_receiver_params.get(i).into_iter().flatten().chain(method.params.iter()).filter_map(|p| p.ty.clone()).collect(),
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
@@ -1162,7 +1166,7 @@ fn ensure_enum_identity(context: &str, expected: &SemanticType, actual: &Semanti
     Ok(())
 }
 
-fn ensure_enum_expr(context: &str, expected: &SemanticType, expr: &SemanticExpr) -> Result<(), LoweringError> {
+pub(super) fn ensure_enum_expr(context: &str, expected: &SemanticType, expr: &SemanticExpr) -> Result<(), LoweringError> {
     match (expected, &expr.kind) {
         // Err is polymorphic and carries a string, not a value of the Ok type.
         (SemanticType::Result(_), SemanticExprKind::ResultErr { .. }) => Ok(()),
@@ -1297,7 +1301,10 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let owned = crate::ir::monomorphize::monomorphize(program).map_err(|e| {
         LoweringError::UnsupportedSemanticConstruct { construct: e.to_string() }
     })?;
-    let program = &owned;
+    let shaped = crate::ir::call_shapes::resolve(&owned).map_err(|construct| {
+        LoweringError::UnsupportedSemanticConstruct { construct }
+    })?;
+    let program = &shaped;
     let enum_variants: EnumVariantNames = program
         .enums
         .iter()
@@ -2282,7 +2289,12 @@ fn lower_stmt_inner(
         // Enum definitions carry no runtime data (the tag is the variant_id in
         // each value/pattern node, D2.2) — no IR, like StructDef below.
         SemanticStmt::EnumDef { .. } => Ok(Some(current)),
-SemanticStmt::Block { .. } => { unsupported!("Block") },
+        SemanticStmt::Block { stmts, .. } => {
+            let visible: HashSet<_> = current.bindings.keys().chain(ctx.binding_names.values()).copied().collect();
+            let mut result = lower_scoped_stmt_sequence(stmts, ctx, Some(current), spec, loop_ctx)?;
+            if let Some(block) = &mut result { block.bindings.retain(|binding, _| visible.contains(binding)); }
+            Ok(result)
+        }
         SemanticStmt::WhileIn { .. } => { unsupported!("WhileIn") },
         SemanticStmt::While { label, cond, body, .. } => {
     return match lower_while(label, cond, body, ctx, current, spec, loop_ctx)? {
@@ -3323,81 +3335,8 @@ fn lower_expr_inner(
                 });
             }
 
-            // Arguments are lowered left-to-right (args.iter() order), matching
-            // the interpreter's left-to-right argument evaluation in
-            // call_semantic_func.  See docs/backend/cx_eval_order.md.
-            let mut lowered_args = Vec::new();
-            // `.copy` arguments: the slot the caller allocated, and the binding
-            // to reload into once the call returns. The reload is the copy-OUT
-            // half, and doing it here rather than in the callee is what makes it
-            // fire on every exit path without instrumenting any of them.
-            let mut copy_reloads: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
-            for (i, arg) in args.iter().enumerate() {
-                match arg {
-                    SemanticCallArg::Expr(expr) => {
-                        let lowered = lower_expr(expr, ctx, active)?;
-                        ensure_type_match(
-                            &format!("argument {} of call to '{}'", i, callee),
-                            param_types[i].clone(),
-                            lowered.ty,
-                        )?;
-                        lowered_args.push(lowered.value);
-                    }
-                    // `.copy.free` is plain passing: hand over the value.
-                    SemanticCallArg::CopyFree { binding, name } => {
-                        let current = if ctx.module_bindings.contains_key(binding) {
-                            read_module_binding(*binding, ctx, active)?
-                        } else { active.bindings.get(binding).cloned().ok_or_else(|| {
-                            LoweringError::UnresolvedSemanticArtifact {
-                                artifact: format!("`.copy.free` argument '{}'", name),
-                            }
-                        })? };
-                        lowered_args.push(current.value);
-                    }
-                    SemanticCallArg::Copy { binding, name } => {
-                        // Defence in depth: semantic analysis requires the
-                        // argument's kind and the parameter's kind to agree, so
-                        // this cannot fire from source.
-                        let sem_ty = copy_pointees.get(i).cloned().flatten().ok_or_else(|| {
-                            LoweringError::UnsupportedSemanticConstruct {
-                                construct: format!(
-                                    "`.copy` argument '{}' to '{}', whose parameter is not `.copy`",
-                                    name, callee
-                                ),
-                            }
-                        })?;
-                        let current = if ctx.module_bindings.contains_key(binding) {
-                            read_module_binding(*binding, ctx, active)?
-                        } else { active.bindings.get(binding).cloned().ok_or_else(|| {
-                            LoweringError::UnresolvedSemanticArtifact {
-                                artifact: format!("`.copy` argument '{}'", name),
-                            }
-                        })? };
-                        let (size, align) = slot_size_align(&sem_ty, &ctx.struct_table)
-                            .ok_or_else(|| LoweringError::UnresolvedSemanticArtifact {
-                                artifact: format!("slot layout for `.copy` argument '{}'", name),
-                            })?;
-                        let slot = ctx.fresh_value();
-                        active.emit(IrInst::Alloca { dst: slot, size, align })?;
-                        // Copy IN: the caller's current value goes into the slot.
-                        match ret_slot_plan(&sem_ty, &ctx.struct_table) {
-                            Some((_, _, parts)) => {
-                                copy_parts(current.value, 0, slot, 0, &parts, ctx, active)?;
-                            }
-                            None => {
-                                active.emit(IrInst::Store { ptr: slot, value: current.value })?;
-                            }
-                        }
-                        lowered_args.push(slot);
-                        copy_reloads.push((*binding, slot, sem_ty));
-                    }
-                    _ => {
-                        return Err(LoweringError::UnsupportedSemanticConstruct {
-                            construct: format!("non-Expr call argument in call to '{}'", callee),
-                        });
-                    }
-                }
-            }
+            let (lowered, copy_reloads) = prepare_call_args(callee, args, &param_types, &copy_pointees, ctx, active)?;
+            let mut lowered_args = lowered;
 
             // Struct-returning callee: alloca the return slot in THIS (caller)
             // frame and pass its address as the hidden trailing arg. The
@@ -3431,33 +3370,7 @@ fn lower_expr_inner(
                 return_ty: Some(return_ty.clone()),
             })?;
 
-            // Copy OUT. The callee wrote its final parameter contents back into
-            // the slot before returning — on whichever path it took — so the
-            // caller reads the slot once, here, and rebinds. An aggregate's
-            // binding already names storage, so its reload is the copy the
-            // callee performed; a scalar's is a single Load.
-            for (binding, slot, sem_ty) in copy_reloads {
-                match ret_slot_plan(&sem_ty, &ctx.struct_table) {
-                    Some(_) => {
-                        active.bindings.insert(
-                            binding,
-                            LoweredValue { value: slot, ty: IrType::Ptr },
-                        );
-                    }
-                    None => {
-                        let ty = lower_type(&sem_ty)?;
-                        let reloaded = ctx.fresh_value();
-                        active.emit(IrInst::Load {
-                            dst: reloaded,
-                            ptr: slot,
-                            ty: ty.clone(),
-                        })?;
-                        let value = LoweredValue { value: reloaded, ty };
-                        if ctx.module_bindings.contains_key(&binding) { write_module_binding(binding, &value, &sem_ty, false, ctx, active)?; }
-                        else { active.bindings.insert(binding, value); }
-                    }
-                }
-            }
+            reload_call_copies(copy_reloads, ctx, active)?;
 
             Ok(LoweredValue {
                 value: dst,
@@ -3680,6 +3593,9 @@ fn lower_expr_inner(
                 }
 
                 let lowered_field = lower_expr(&field_expr.1, ctx, active)?;
+                if lowered_field.ty == IrType::TBool && *field_ir_ty == IrType::Bool {
+                    unsupported!("three-state bool aggregate storage needs a preserved unknown-state representation");
+                }
 
                 let field_ptr = if field_offset == 0 {
                     ptr
@@ -5942,6 +5858,9 @@ fn fill_aggregate_slot(
                     lower_type(elem_sem_ty)?
                 };
                 let lowered = lower_expr(elem_expr, ctx, active)?;
+                if lowered.ty == IrType::TBool && elem_ir_ty == IrType::Bool {
+                    unsupported!("three-state bool aggregate storage needs a preserved unknown-state representation");
+                }
                 let value = if lowered.ty != elem_ir_ty {
                     let narrowed = ctx.fresh_value();
                     active.emit(IrInst::Cast {
@@ -6094,6 +6013,9 @@ fn lower_array_lit(
         // The cast truncates to the element's low bytes (the correct value); the
         // read path sign-extends on load. A no-op when widths already match
         // (i64 elements, t64 arrays).
+        if lowered_elem.ty == IrType::TBool && elem_ir_ty == IrType::Bool {
+            unsupported!("three-state bool aggregate storage needs a preserved unknown-state representation");
+        }
         let store_value = if lowered_elem.ty != elem_ir_ty {
             let narrowed = ctx.fresh_value();
             active.emit(IrInst::Cast {
@@ -7585,6 +7507,134 @@ fn emit_assert_branch(
 /// a `LoweredValue` and void calls produce no value.  This helper lowers the
 /// arguments, performs the usual arity and type checks, and emits
 /// `IrInst::Call { dst: None, return_ty: None }` directly into `active`.
+type CopyReloads = Vec<(BindingId, ValueId, SemanticType)>;
+
+fn prepare_call_args(
+    callee: &str,
+    args: &[SemanticCallArg],
+    param_types: &[IrType],
+    copy_pointees: &[Option<SemanticType>],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<(Vec<ValueId>, CopyReloads), LoweringError> {
+    let mut lowered_args = Vec::new();
+    // `.copy` arguments: the slot the caller allocated, and the binding
+    // to reload into once the call returns. The reload is the copy-OUT
+    // half, and doing it here rather than in the callee is what makes it
+    // fire on every exit path without instrumenting any of them.
+    let mut copy_reloads: CopyReloads = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        match arg {
+            SemanticCallArg::Expr(expr) => {
+                let lowered = lower_expr(expr, ctx, active)?;
+                ensure_type_match(
+                    &format!("argument {} of call to '{}'", i, callee),
+                    param_types[i].clone(),
+                    lowered.ty,
+                )?;
+                let receiver = ctx.signature_table.get(callee).and_then(|s| s.receiver_params.get(i)).copied().unwrap_or(false);
+                let value = if receiver { lowered.value } else { copy_if_memory_resident(&expr.ty, expr, lowered.value, ctx, active)? };
+                lowered_args.push(value);
+            }
+            // `.copy.free` is plain passing: hand over the value.
+            SemanticCallArg::CopyFree { binding, name } => {
+                let current = if ctx.module_bindings.contains_key(binding) {
+                    read_module_binding(*binding, ctx, active)?
+                } else { active.bindings.get(binding).cloned().ok_or_else(|| {
+                    LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!("`.copy.free` argument '{}'", name),
+                    }
+                })? };
+                if current.ty == IrType::TBool && param_types[i] == IrType::Bool {
+                    unsupported!("three-state bool copy parameters need a preserved unknown-state representation");
+                }
+                ensure_type_match("copy.free argument", param_types[i].clone(), current.ty.clone())?;
+                let sem_ty = ctx.binding_decl_types.get(binding).cloned().unwrap_or(SemanticType::Unknown);
+                let source = SemanticExpr { ty: sem_ty.clone(), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
+                let value = copy_if_memory_resident(&sem_ty, &source, current.value, ctx, active)?;
+                lowered_args.push(value);
+            }
+            SemanticCallArg::Copy { binding, name } => {
+                // Defence in depth: semantic analysis requires the
+                // argument's kind and the parameter's kind to agree, so
+                // this cannot fire from source.
+                let sem_ty = copy_pointees.get(i).cloned().flatten().ok_or_else(|| {
+                    LoweringError::UnsupportedSemanticConstruct {
+                        construct: format!(
+                            "`.copy` argument '{}' to '{}', whose parameter is not `.copy`",
+                            name, callee
+                        ),
+                    }
+                })?;
+                let current = if ctx.module_bindings.contains_key(binding) {
+                    read_module_binding(*binding, ctx, active)?
+                } else { active.bindings.get(binding).cloned().ok_or_else(|| {
+                    LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!("`.copy` argument '{}'", name),
+                    }
+                })? };
+                let payload_ty = lower_type(&sem_ty)?;
+                if current.ty == IrType::TBool && payload_ty == IrType::Bool {
+                    unsupported!("three-state bool copy parameters need a preserved unknown-state representation");
+                }
+                ensure_type_match("copy argument", payload_ty, current.ty.clone())?;
+                let (size, align) = slot_size_align(&sem_ty, &ctx.struct_table)
+                    .ok_or_else(|| LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!("slot layout for `.copy` argument '{}'", name),
+                    })?;
+                let slot = ctx.fresh_value();
+                active.emit(IrInst::Alloca { dst: slot, size, align })?;
+                // Copy IN: the caller's current value goes into the slot.
+                match ret_slot_plan(&sem_ty, &ctx.struct_table) {
+                    Some((_, _, parts)) => {
+                        copy_parts(current.value, 0, slot, 0, &parts, ctx, active)?;
+                    }
+                    None => {
+                        active.emit(IrInst::Store { ptr: slot, value: current.value })?;
+                    }
+                }
+                lowered_args.push(slot);
+                copy_reloads.push((*binding, slot, sem_ty));
+            }
+            _ => {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!("non-Expr call argument in call to '{}'", callee),
+                });
+            }
+        }
+    }
+
+    Ok((lowered_args, copy_reloads))
+}
+
+fn reload_call_copies(copy_reloads: CopyReloads, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    for (binding, slot, sem_ty) in copy_reloads {
+        match ret_slot_plan(&sem_ty, &ctx.struct_table) {
+            Some(_) => {
+                active.bindings.insert(
+                    binding,
+                    LoweredValue { value: slot, ty: IrType::Ptr },
+                );
+            }
+            None => {
+                let ty = lower_type(&sem_ty)?;
+                let reloaded = ctx.fresh_value();
+                active.emit(IrInst::Load {
+                    dst: reloaded,
+                    ptr: slot,
+                    ty: ty.clone(),
+                })?;
+                let value = LoweredValue { value: reloaded, ty };
+                if ctx.module_bindings.contains_key(&binding) { write_module_binding(binding, &value, &sem_ty, false, ctx, active)?; }
+                else { active.bindings.insert(binding, value); }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+
 fn lower_void_call(
     callee: &str,
     args: &[SemanticCallArg],
@@ -7604,32 +7654,16 @@ fn lower_void_call(
         });
     }
 
-    let mut lowered_args = Vec::new();
-    for (i, arg) in args.iter().enumerate() {
-        match arg {
-            SemanticCallArg::Expr(expr) => {
-                let lowered = lower_expr(expr, ctx, active)?;
-                ensure_type_match(
-                    &format!("argument {} of call to '{}'", i, callee),
-                    param_types[i].clone(),
-                    lowered.ty,
-                )?;
-                lowered_args.push(lowered.value);
-            }
-            _ => {
-                return Err(LoweringError::UnsupportedSemanticConstruct {
-                    construct: format!("non-Expr call argument in call to '{}'", callee),
-                });
-            }
-        }
-    }
-
+    let copy_pointees = ctx.signature_table.get(callee).map(|s| s.copy_pointees.clone()).unwrap_or_default();
+    let (lowered_args, copy_reloads) = prepare_call_args(callee, args, param_types, &copy_pointees, ctx, active)?;
     active.emit(IrInst::Call {
         dst: None,
         callee: callee.to_string(),
         args: lowered_args,
         return_ty: None,
-    })
+    })?;
+    reload_call_copies(copy_reloads, ctx, active)
+
 }
 
 #[cfg(test)]

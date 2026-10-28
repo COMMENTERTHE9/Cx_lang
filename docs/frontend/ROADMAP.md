@@ -96,7 +96,11 @@ Return type after colon. Generic params before name. Void functions omit return 
 `Result<t64>` syntax. `Ok(val)` and `Err("msg")` variants. `?` operator propagates errors up the call chain. Unknown state is a separate concept — it does not merge with Result.
 
 **`copy_into` — survives as a distinct feature:**
-Structs and `copy_into` solve different problems. `copy_into` is about passing multiple named values with bleed-back mutation. It is not deprecated in favor of structs.
+Structs and `copy_into` solve different problems. `copy_into` passes an isolated
+bundle of named values; its local mutations do not write back to the caller's
+variables (the reference runtime and t12/t13 define this behavior). It is not
+deprecated in favor of structs. Native lowering now uses private concrete bundle
+layouts; see [copy shapes](../backend/copy_shapes.md).
 
 **`when` arm bodies — both single expressions and blocks supported:**
 ```cx

@@ -1,0 +1,16 @@
+struct Box { value: t64 }
+box_methods: impl (b: Box) {
+    fnc: t64 bump() {
+        b.value = 99
+        0
+    }
+}
+fnc: t64 first(box: Box, unused: t64) { box.value }
+fnc: t64 run() {
+    let box
+    box = Box { value: 10 }
+    print(first(box, box.bump()))
+    print(box.value)
+    0
+}
+print(run())

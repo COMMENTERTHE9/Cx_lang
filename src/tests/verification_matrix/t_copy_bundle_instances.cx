@@ -1,0 +1,17 @@
+fnc: show(t: copy_into(n)) {
+    print(t.n)
+}
+fnc: t64 run() {
+    n: t64 = 17
+    show(copy_into(n))
+    {
+        n: bool = true
+        show(copy_into(n))
+    }
+    {
+        n: str = "shape"
+        show(copy_into(n))
+    }
+    n
+}
+print(run())
