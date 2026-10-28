@@ -1,0 +1,6 @@
+// Converting a t128 to an f64: Cranelift has no such conversion, and compiled
+// code failed in code generation after dumping its IR. It is now refused
+// before that, cleanly (SKIP); the interpreter converts.
+x: t128 = 1000
+f: f64 = x
+print(f)
