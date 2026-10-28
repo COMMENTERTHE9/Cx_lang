@@ -1,0 +1,2 @@
+Reference runtime rejects the incompatible enum assignment. Native lowering
+currently refuses the specialized store; an IR unit test pins that exact refusal.

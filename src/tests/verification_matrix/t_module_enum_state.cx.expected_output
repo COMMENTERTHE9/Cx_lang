@@ -1,0 +1,16 @@
+Phase::Idle
+Phase::Idle
+Phase::Running
+Phase::Running
+Phase::Done
+Phase::Done
+Phase::Done
+Phase::Done
+7
+0
+Phase::Idle
+0
+Phase::Running
+Phase::Done
+Ok(Phase::Running)
+Err(stopped)

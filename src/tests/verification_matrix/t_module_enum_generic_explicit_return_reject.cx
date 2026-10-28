@@ -1,0 +1,9 @@
+// Specialization must retain enum identity at every typed boundary.
+enum Phase { Idle, Active }
+phase: Phase = Phase::Idle
+fnc: Phase current() { phase }
+n: t8 = 1
+fnc: Phase <T> pretend(value: T) { return value }
+fnc: t64 set_phase() { phase = pretend(n); 0 }
+print(set_phase())
+print(current())

@@ -1,0 +1,4 @@
+enum Phase { Idle, Active }
+print(current())
+phase: Phase = Phase::Idle
+fnc: Phase current() { phase }

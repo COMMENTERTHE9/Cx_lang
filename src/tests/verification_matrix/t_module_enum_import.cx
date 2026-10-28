@@ -1,0 +1,9 @@
+#![imports]
+lib: use "./t_module_enum_import_lib"
+enum EntryPhase { Running, Stopped }
+entry_phase: EntryPhase = EntryPhase::Running
+fnc: EntryPhase entry_current() { entry_phase }
+print(lib.current())
+print(lib.activate())
+print(lib.current())
+print(entry_current())

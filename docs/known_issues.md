@@ -3923,11 +3923,13 @@ its interpreter expectation already pins the correct target behavior.
 
 ## 47. Native functions could not access module bindings
 
-**Status: numeric scalar storage implemented through PR #469; remaining
-representations are explicitly unsupported.** Functions can read numeric
+**Status: numeric storage implemented through PR #469 and extended to enums;
+remaining representations are explicitly unsupported.** Functions can read numeric
 constants and read/write declared `t8`, `t16`, `t32`, `t64`, `t128` and `f64`
 module variables by BindingId. IR global declarations and `GlobalAddr` lower to
 anonymous Cranelift data objects, shared by functions without an ABI parameter.
+Tag-only enums now use their existing one-byte value plus a separate lifecycle
+byte. Their semantic identity is preserved at typed boundaries (see §48).
 
 A lifecycle byte distinguishes not-yet-declared, declared/uninitialized and
 initialized storage. Initializers run once in source order; read-before-value
@@ -3952,3 +3954,35 @@ rules or the locked ABI.
 Combined Windows gates: both builds, 294 default / 473 JIT tests, 612 interpreter
 fixtures, parity 559 PASS / 53 SKIP / 0 disagreements. Eight old SKIPs become
 native passes; replay of 632 old fixtures/examples found no regressions.
+
+## 48. Specialized enum values could cross typed boundaries as byte tags
+
+**Status: guarded in lowering; earlier shared diagnostics remain future work.**
+Generic compatibility checks accept type parameters before instantiation. A
+specialized numeric `t8`, or a different enum, could therefore have the same IR
+type as the promised enum. Enabling enum module state without further checks
+would store numeric 1 as a valid variant, or print a mismatched enum as blank.
+Focused independent review found and direct probes confirmed those failures
+before this packet was integrated.
+
+Signatures, return specifications and module bindings now retain semantic type
+metadata for enum checks. Assignments, call arguments, returns, casts, fields,
+array elements and Result constructors validate identity before relying on
+their erased representation. Copy argument checks read storage-type metadata
+separately from the conservative formatting summary. Statement/expression `when`
+bindings register their enum type when introduced. Polymorphic `Err` literals
+remain allowed without granting an arbitrary unknown payload an enum identity.
+
+Nine invalid generic fixtures cover direct numeric/cross-enum stores and
+laundering through call, return, copy, local, struct and array boundaries. Their
+reference runtime rejects the value; native lowering refuses the specialization
+before code generation. An IR unit pins each enum-identity refusal. These are
+new negative regressions, not supported cases converted to SKIPs.
+
+Positive fixtures cover same-enum generic calls/returns, inferred local copy,
+named-pattern copy in both `when` forms, typed Result copies after `Err`, imports,
+const protection, initialization failures, byte tags 128/255 and shared state.
+The prior valid boundary fixture also produces identical output on the old JIT.
+Fresh gates: both builds, 297 default / 476 JIT tests, 633 interpreter fixtures,
+parity 573 PASS / 60 SKIP / 0 disagreements. Replay of 651 prior fixtures/examples
+found no stdout or exit-status changes and no timeouts.

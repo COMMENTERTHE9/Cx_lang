@@ -1,0 +1,4 @@
+enum Phase { Idle, Active }
+const START: Phase = Phase::Idle
+fnc: Phase activate(p.copy: Phase) { p = Phase::Active; p }
+print(activate(START.copy))

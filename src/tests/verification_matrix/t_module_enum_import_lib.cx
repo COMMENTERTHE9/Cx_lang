@@ -1,0 +1,4 @@
+enum LibraryPhase { Waiting, Active }
+library_phase: LibraryPhase = LibraryPhase::Waiting
+pub fnc: LibraryPhase current() { library_phase }
+pub fnc: LibraryPhase activate() { library_phase = LibraryPhase::Active; library_phase }
