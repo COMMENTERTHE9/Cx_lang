@@ -1,0 +1,12 @@
+// Generic bodies are not rechecked per instantiation. A later string value
+// must not authorize interpreting an earlier aggregate pointer as a string.
+fnc: t32 <T> show(value: T) {
+    let x;
+    x = value
+    printn("{x}")
+    // This branch is not executed; whole-function metadata still visits it.
+    if false { x = "later" }
+    0
+}
+a: [2: t64] = [1, 2]
+print(show(a))

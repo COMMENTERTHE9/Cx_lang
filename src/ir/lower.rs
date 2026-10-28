@@ -804,7 +804,14 @@ struct LoweringCtx {
     /// generic struct is never in `struct_table` — so an access this map does
     /// not cover SKIPs cleanly instead of reading a wrong layout.
     struct_instance_keys: HashMap<BindingId, String>,
+    /// Enum names and binding types for printing. Pointer types must retain
+    /// their semantic identity: an aggregate is not a string descriptor.
+    enum_variants: EnumVariantNames,
+    binding_print_types: HashMap<BindingId, SemanticType>,
 }
+
+/// An enum's variants by tag: (tag, name), from the program's declarations.
+type EnumVariantNames = HashMap<String, Vec<(u32, String)>>;
 
 struct ActiveBlock {
     block: crate::ir::builder::IrBlockBuilder,
@@ -867,6 +874,7 @@ impl LoweringCtx {
         generic_structs: GenericStructTemplates,
         trace: bool,
         target: TargetConfig,
+        enum_variants: EnumVariantNames,
     ) -> Self {
         Self {
             builder: IrBuilder::new(),
@@ -880,6 +888,8 @@ impl LoweringCtx {
             struct_instance_keys: HashMap::new(),
             top_level_bindings: HashSet::new(),
             function_name: String::new(),
+            enum_variants,
+            binding_print_types: HashMap::new(),
         }
     }
 
@@ -1126,6 +1136,11 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         LoweringError::UnsupportedSemanticConstruct { construct: e.to_string() }
     })?;
     let program = &owned;
+    let enum_variants: EnumVariantNames = program
+        .enums
+        .iter()
+        .map(|e| (e.name.clone(), e.variants.iter().map(|v| (v.id.0, v.name.clone())).collect()))
+        .collect();
 
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
@@ -1163,7 +1178,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, trace, target)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, trace, target, &enum_variants)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
@@ -1213,7 +1228,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target, &enum_variants)?);
                 }
             }
             // 0.3.4 slice 5: phen methods emit exactly like impl methods —
@@ -1256,7 +1271,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target, &enum_variants)?);
                 }
             }
             other => top_level_stmts.push(other),
@@ -1276,7 +1291,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, trace, target)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, trace, target, &enum_variants)?);
     }
 
     // Two definitions of one function name — two modules each implementing a
@@ -1316,7 +1331,7 @@ fn positional_type_params(ty: &SemanticType, params: &[String]) -> SemanticType 
     }
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, trace: bool, target: TargetConfig) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, trace: bool, target: TargetConfig, enum_variants: &EnumVariantNames) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
@@ -1324,10 +1339,11 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         ret_slot: None,
         copy_writebacks: Vec::new(),
     };
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
     // D2.3d: flat name→binding map for print-time string interpolation.
     for &stmt in stmts {
         collect_binding_names_stmt(stmt, &mut ctx.binding_names);
+        collect_binding_print_types_stmt(stmt, &mut ctx.binding_print_types);
     }
     let entry = ctx.start_block(vec![], HashMap::new());
     let current = lower_stmt_sequence(
@@ -1349,6 +1365,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_semantic_function(
     function: &crate::frontend::semantic_types::SemanticFunction,
     signature_table: &HashMap<String, FunctionSignature>,
@@ -1357,6 +1374,7 @@ fn lower_semantic_function(
     top_level: &HashSet<BindingId>,
     trace: bool,
     target: TargetConfig,
+    enum_variants: &EnumVariantNames,
 ) -> Result<IrFunction, LoweringError> {
     let mut ir_params = Vec::with_capacity(function.params.len());
     let mut block_params = Vec::with_capacity(function.params.len());
@@ -1373,7 +1391,7 @@ fn lower_semantic_function(
         None => None,
     };
 
-    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target);
+    let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
     ctx.top_level_bindings = top_level.clone();
     ctx.function_name = function.name.clone();
     for param in &function.params {
@@ -1462,9 +1480,13 @@ fn lower_semantic_function(
     // D2.3d: flat name→binding map (function body + params) for interpolation.
     for stmt in &function.body {
         collect_binding_names_stmt(stmt, &mut ctx.binding_names);
+        collect_binding_print_types_stmt(stmt, &mut ctx.binding_print_types);
     }
     for param in &function.params {
         ctx.binding_names.insert(param.name.clone(), param.binding);
+        if let Some(ty) = &param.ty {
+            record_binding_print_type(&mut ctx.binding_print_types, param.binding, ty.clone());
+        }
     }
     let spec = FunctionLoweringSpec {
         name: function.name.clone(),
@@ -6127,84 +6149,195 @@ fn ensure_type_match(context: &str, expected: IrType, got: IrType) -> Result<(),
 // Unsupported types (e.g. Ptr, F64, StrRef) produce a structured
 // UnsupportedSemanticConstruct error so the caller gets a clear diagnostic.
 
-/// Route a print argument to the appropriate runtime intrinsic.
-///
-/// Returns the SSA value to pass and the callee name to invoke:
-///   - I64 passes through directly to `cx_printn`
-///   - I8/I16/I32 sign-extend to I64 via `IrInst::Cast` and call `cx_printn`
-///   - Bool/TBool pass through unmodified to `cx_print_bool` (formats true/false
-///     to match the interpreter's `print_value` Bool behavior; convergent stdout)
-///   - F64, I128, Ptr, Str, and composites are not yet supported — returns None,
-///     the caller emits a structured error.
-///
-/// This is the single edit point for adding more (callee, value) routing
-/// branches when post-0.1 work adds f64/string/composite print intrinsics.
-fn route_print_arg(
-    value: ValueId,
-    value_ty: IrType,
+/// Print `arg` by its type, ending the line when `newline`: an integer
+/// (widened to i64), a bool, an unknown bool as `?` (compiled code printed it
+/// `true`), an f64, a string, an enum as `Name::Variant`. Integers, bools and
+/// strings use the runtime's line-ending printers for `print` and its inline
+/// ones for `printn`; the rest print inline and add the newline. The block
+/// printing continues in is returned. The single edit point for routing a
+/// value to its printer.
+fn emit_print_value(
+    builtin_name: &str,
+    arg: &LoweredValue,
+    sem_ty: &SemanticType,
+    newline: bool,
     ctx: &mut LoweringCtx,
-    current: &mut ActiveBlock,
-) -> Result<Option<(ValueId, &'static str)>, LoweringError> {
-    match value_ty {
-        IrType::I64 => Ok(Some((value, "cx_printn"))),
+    mut current: ActiveBlock,
+) -> Result<ActiveBlock, LoweringError> {
+    let line = |current: &mut ActiveBlock| -> Result<(), LoweringError> {
+        if newline {
+            current.emit(IrInst::Call {
+                dst: None,
+                callee: "cx_print_newline".to_string(),
+                args: vec![],
+                return_ty: None,
+            })?;
+        }
+        Ok(())
+    };
+    if let SemanticType::Enum(name) = sem_ty {
+        let mut current = emit_enum_inline(arg.value, arg.ty.clone(), name, ctx, current)?;
+        line(&mut current)?;
+        return Ok(current);
+    }
+    if arg.ty == IrType::TBool {
+        let mut current = emit_tbool_inline(arg.value, ctx, current)?;
+        line(&mut current)?;
+        return Ok(current);
+    }
+    // Use the actual LOWERED type: a field read on a
+    // generic-struct instantiation types as an unresolved struct, while its
+    // lowered type came from the instantiated layout.
+    if arg.ty == IrType::F64 {
+        current.emit(IrInst::Call {
+            dst: None,
+            callee: "cx_print_f64_inline".to_string(),
+            args: vec![arg.value],
+            return_ty: None,
+        })?;
+        line(&mut current)?;
+        return Ok(current);
+    }
+    let pick = |ends: &'static str, inline: &'static str| if newline { ends } else { inline };
+    let (value, callee) = match arg.ty {
+        IrType::Ptr if *sem_ty == SemanticType::Str => (arg.value, pick("cx_print_str", "cx_print_str_inline")),
+        IrType::I64 => (arg.value, pick("cx_printn", "cx_printn_inline")),
         IrType::I8 | IrType::I16 | IrType::I32 => {
             let dst = ctx.fresh_value();
-            current.emit(IrInst::Cast {
-                dst,
-                from: value_ty.clone(),
-                to: IrType::I64,
-                value,
-            })?;
-            Ok(Some((dst, "cx_printn")))
+            current.emit(IrInst::Cast { dst, from: arg.ty.clone(), to: IrType::I64, value: arg.value })?;
+            (dst, pick("cx_printn", "cx_printn_inline"))
         }
-        IrType::Bool | IrType::TBool => Ok(Some((value, "cx_print_bool"))),
-        _ => Ok(None),
+        IrType::Bool => (arg.value, pick("cx_print_bool", "cx_print_bool_inline")),
+        _ => {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "{} argument must be a number, a bool, a string, an enum or a Result, got {:?} — I128 and composite types not yet supported",
+                    builtin_name, arg.ty
+                ),
+            })
+        }
+    };
+    current.emit(IrInst::Call { dst: None, callee: callee.to_string(), args: vec![value], return_ty: None })?;
+    Ok(current)
+}
+
+/// Print an enum value inline as the interpreter prints it — `Color::Green` —
+/// by branching on its tag. Compiled code printed the tag itself (`1`), in
+/// `print`, `printn` and string interpolation alike (known_issues, printing parity recovery).
+fn emit_enum_inline(
+    value: ValueId,
+    value_ty: IrType,
+    enum_name: &str,
+    ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+) -> Result<ActiveBlock, LoweringError> {
+    let variants = ctx.enum_variants.get(enum_name).cloned().ok_or_else(|| {
+        LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("printing enum '{enum_name}', whose variants lowering does not know"),
+        }
+    })?;
+    let incoming = current.bindings.clone();
+    let merge = ctx.start_block(vec![], incoming.clone());
+    let merge_id = merge.id();
+    let mut test = current;
+    for (tag, variant) in &variants {
+        let k = ctx.fresh_value();
+        test.emit(IrInst::ConstInt { dst: k, ty: value_ty.clone(), value: *tag as i128 })?;
+        let is = ctx.fresh_value();
+        test.emit(IrInst::Compare { dst: is, op: CompareOp::Eq, lhs: value, rhs: k })?;
+        let mut hit = ctx.start_block(vec![], incoming.clone());
+        let hit_id = hit.id();
+        let next = ctx.start_block(vec![], incoming.clone());
+        let next_id = next.id();
+        test.terminate(IrTerminator::Branch {
+            cond: is,
+            then_block: hit_id,
+            then_args: vec![],
+            else_block: next_id,
+            else_args: vec![],
+        })?;
+        ctx.seal_block(test)?;
+        emit_inline_str(&format!("{enum_name}::{variant}"), ctx, &mut hit)?;
+        hit.terminate(IrTerminator::Jump { target: merge_id, args: vec![] })?;
+        ctx.seal_block(hit)?;
+        test = next;
+    }
+    // No variant has the tag — unreachable for a value analysis typed as the enum.
+    test.terminate(IrTerminator::Jump { target: merge_id, args: vec![] })?;
+    ctx.seal_block(test)?;
+    Ok(merge)
+}
+
+/// Print a tri-state bool inline: `?` for the unknown value, as the
+/// interpreter prints it (compiled code printed `true`), else `true`/`false`.
+fn emit_tbool_inline(
+    value: ValueId,
+    ctx: &mut LoweringCtx,
+    mut current: ActiveBlock,
+) -> Result<ActiveBlock, LoweringError> {
+    let unknown_byte = ctx.fresh_value();
+    current.emit(IrInst::ConstInt { dst: unknown_byte, ty: IrType::I8, value: 2 })?;
+    let unknown = ctx.fresh_value();
+    current.emit(IrInst::Cast { dst: unknown, from: IrType::I8, to: IrType::TBool, value: unknown_byte })?;
+    let is_unknown = ctx.fresh_value();
+    current.emit(IrInst::Compare { dst: is_unknown, op: CompareOp::Eq, lhs: value, rhs: unknown })?;
+    let incoming = current.bindings.clone();
+    let mut unknown_block = ctx.start_block(vec![], incoming.clone());
+    let unknown_id = unknown_block.id();
+    let mut known_block = ctx.start_block(vec![], incoming.clone());
+    let known_id = known_block.id();
+    let merge = ctx.start_block(vec![], incoming);
+    let merge_id = merge.id();
+    current.terminate(IrTerminator::Branch {
+        cond: is_unknown,
+        then_block: unknown_id,
+        then_args: vec![],
+        else_block: known_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(current)?;
+    emit_inline_str("?", ctx, &mut unknown_block)?;
+    unknown_block.terminate(IrTerminator::Jump { target: merge_id, args: vec![] })?;
+    ctx.seal_block(unknown_block)?;
+    let known_bool = ctx.fresh_value();
+    known_block.emit(IrInst::Cast { dst: known_bool, from: IrType::TBool, to: IrType::Bool, value })?;
+    known_block.emit(IrInst::Call {
+        dst: None,
+        callee: "cx_print_bool_inline".to_string(),
+        args: vec![known_bool],
+        return_ty: None,
+    })?;
+    known_block.terminate(IrTerminator::Jump { target: merge_id, args: vec![] })?;
+    ctx.seal_block(known_block)?;
+    Ok(merge)
+}
+
+/// The one argument of `print` / `printn`.
+fn single_print_arg<'a>(builtin_name: &str, args: &'a [SemanticCallArg]) -> Result<&'a SemanticExpr, LoweringError> {
+    if args.len() != 1 {
+        return Err(LoweringError::InternalInvariantViolation {
+            detail: format!("{} expects 1 argument, got {}", builtin_name, args.len()),
+        });
+    }
+    match &args[0] {
+        SemanticCallArg::Expr(e) => Ok(e),
+        _ => Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("non-Expr argument to {}", builtin_name),
+        }),
     }
 }
 
-/// Lower `printn(n)` to `IrInst::Call { callee: "cx_printn", args: [i64_value] }`.
-///
-/// `printn` is a Cx builtin that prints an integer to stdout.  At the IR level
-/// it lowers to a call to the `cx_printn` runtime intrinsic, which is pre-declared
-/// in the JIT module as an imported C-ABI symbol.
-///
-/// Narrow integer widths (I8/I16/I32) and Bool/TBool are widened to I64 at the
-/// boundary via `widen_to_i64_for_print` (mirrors the semantic-phase narrowing
-/// idiom for typed sinks).  F64, I128, Ptr, Str, and composite types produce a
-/// structured error.
+/// Lower `printn(x)`: `print` without the newline — "inline print (no
+/// newline)", cx_syntax.md §5, as the interpreter does it. Compiled code used
+/// `print`'s line-ending integer printer, so `printn(5)` printed `5` and a
+/// newline, and it took only numbers and bools (known_issues, printing parity recovery).
 fn lower_printn_stmt(
     args: &[SemanticCallArg],
     ctx: &mut LoweringCtx,
-    mut current: ActiveBlock,
+    current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
-    if args.len() != 1 {
-        return Err(LoweringError::InternalInvariantViolation {
-            detail: format!("printn expects 1 argument, got {}", args.len()),
-        });
-    }
-    let arg_expr = match &args[0] {
-        SemanticCallArg::Expr(e) => e,
-        _ => {
-            return Err(LoweringError::UnsupportedSemanticConstruct {
-                construct: "non-Expr argument to printn".to_string(),
-            });
-        }
-    };
-    let arg = lower_expr(arg_expr, ctx, &mut current)?;
-    let (routed_value, callee) = route_print_arg(arg.value, arg.ty.clone(), ctx, &mut current)?
-        .ok_or_else(|| LoweringError::UnsupportedSemanticConstruct {
-            construct: format!(
-                "printn argument must be a numeric integer (I8/I16/I32/I64) or Bool, got {:?} — F64, I128, Str, and composite types not yet supported",
-                arg.ty
-            ),
-        })?;
-    current.emit(IrInst::Call {
-        dst: None,
-        callee: callee.to_string(),
-        args: vec![routed_value],
-        return_ty: None,
-    })?;
-    Ok(Some(current))
+    let arg_expr = single_print_arg("printn", args)?;
+    lower_print_value("printn", arg_expr, false, ctx, current)
 }
 
 /// Lower `exit(code)` / `exit()` to a call to the `cx_exit` host intrinsic
@@ -6330,6 +6463,51 @@ fn collect_binding_names_stmt(stmt: &SemanticStmt, map: &mut HashMap<String, Bin
     }
 }
 
+/// A whole-function summary must not give an earlier value the type of a
+/// later assignment. Conflicting types retain no pointer-formatting authority.
+fn record_binding_print_type(map: &mut HashMap<BindingId, SemanticType>, binding: BindingId, ty: SemanticType) {
+    map.entry(binding).and_modify(|old| {
+        if *old != ty {
+            *old = SemanticType::Unknown;
+        }
+    }).or_insert(ty);
+}
+
+/// Preserve binding types for interpolation: enum tags need their names, and
+/// aggregate pointers must never be passed to the string printer.
+fn collect_binding_print_types_stmt(stmt: &SemanticStmt, map: &mut HashMap<BindingId, SemanticType>) {
+    match stmt {
+        SemanticStmt::TypedAssign { binding, ty, .. }
+        | SemanticStmt::Decl { binding, ty: Some(ty), .. }
+        | SemanticStmt::ConstDecl { binding, ty, .. } => {
+            record_binding_print_type(map, *binding, ty.clone());
+        }
+        SemanticStmt::Assign { target: SemanticLValue::Binding { binding, .. }, expr, .. } => {
+            record_binding_print_type(map, *binding, expr.ty.clone());
+        }
+        SemanticStmt::For { body, .. }
+        | SemanticStmt::Block { stmts: body, .. }
+        | SemanticStmt::While { body, .. }
+        | SemanticStmt::Loop { body, .. }
+        | SemanticStmt::WhileIn { body, .. } => {
+            for s in body {
+                collect_binding_print_types_stmt(s, map);
+            }
+        }
+        SemanticStmt::IfElse { then_body, else_ifs, else_body, .. } => {
+            for s in then_body.iter().chain(else_ifs.iter().flat_map(|(_, b)| b)).chain(else_body.iter().flatten()) {
+                collect_binding_print_types_stmt(s, map);
+            }
+        }
+        SemanticStmt::When { arms, .. } => {
+            for s in arms.iter().flat_map(|arm| &arm.body) {
+                collect_binding_print_types_stmt(s, map);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// D2.3d: a `{...}` segment is a bare-variable reference iff its trimmed content
 /// is a non-empty identifier — mirrors runtime/print.rs `is_bare_identifier` (#038).
 fn is_bare_identifier(s: &str) -> bool {
@@ -6390,36 +6568,6 @@ fn parse_interpolation(s: &str) -> Option<Vec<InterpPiece>> {
     Some(pieces)
 }
 
-/// D2.3d: pick the no-newline inline print intrinsic for an interpolated value by
-/// its IR type, widening narrow ints to I64 (mirrors `route_print_arg`).
-fn interp_value_print(
-    val: &LoweredValue,
-    ctx: &mut LoweringCtx,
-    active: &mut ActiveBlock,
-) -> Result<(ValueId, &'static str), LoweringError> {
-    match val.ty {
-        IrType::I64 => Ok((val.value, "cx_printn_inline")),
-        IrType::I8 | IrType::I16 | IrType::I32 => {
-            let dst = ctx.fresh_value();
-            active.emit(IrInst::Cast {
-                dst,
-                from: val.ty.clone(),
-                to: IrType::I64,
-                value: val.value,
-            })?;
-            Ok((dst, "cx_printn_inline"))
-        }
-        IrType::Bool | IrType::TBool => Ok((val.value, "cx_print_bool_inline")),
-        IrType::F64 => Ok((val.value, "cx_print_f64_inline")),
-        // A Ptr in interpolation is a str descriptor (the only Ptr value a bare
-        // identifier resolves to in practice; composites aren't interpolated).
-        IrType::Ptr => Ok((val.value, "cx_print_str_inline")),
-        _ => Err(LoweringError::UnsupportedSemanticConstruct {
-            construct: format!("string interpolation of unsupported type {:?}", val.ty),
-        }),
-    }
-}
-
 /// D2.3d: lower `print("…{x}…")` as a print SEQUENCE — print-time interpolation,
 /// NO new string built (R6 untouched). Each literal chunk and each resolved `{x}`
 /// prints via a no-newline inline intrinsic; one `cx_print_newline` closes the
@@ -6436,6 +6584,7 @@ fn interp_value_print(
 /// use-before-decl interpolation bug belongs on THIS note, not a fresh mystery.
 fn lower_interpolated_print(
     s: &str,
+    newline: bool,
     ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
@@ -6467,22 +6616,22 @@ fn lower_interpolated_print(
                         construct: format!("string interpolation: `{}` not in scope at this print", name),
                     }
                 })?;
-                let (arg_val, callee) = interp_value_print(&val, ctx, &mut current)?;
-                current.emit(IrInst::Call {
-                    dst: None,
-                    callee: callee.to_string(),
-                    args: vec![arg_val],
-                    return_ty: None,
-                })?;
+                // IR Ptr represents strings AND aggregates. Only a binding
+                // known to be a string may reach the string host callback.
+                let ty = ctx.binding_print_types.get(&binding).cloned()
+                    .unwrap_or(SemanticType::Unknown);
+                current = emit_print_value("string interpolation", &val, &ty, false, ctx, current)?;
             }
         }
     }
-    current.emit(IrInst::Call {
-        dst: None,
-        callee: "cx_print_newline".to_string(),
-        args: vec![],
-        return_ty: None,
-    })?;
+    if newline {
+        current.emit(IrInst::Call {
+            dst: None,
+            callee: "cx_print_newline".to_string(),
+            args: vec![],
+            return_ty: None,
+        })?;
+    }
     Ok(Some(current))
 }
 
@@ -6833,6 +6982,7 @@ fn emit_ok_payload(
 fn lower_result_print(
     arg_expr: &SemanticExpr,
     ok_ty: &SemanticType,
+    newline: bool,
     ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
@@ -6862,9 +7012,15 @@ fn lower_result_print(
     let old = std::mem::replace(&mut current, merge);
     ctx.seal_block(old)?;
 
-    // Ok( payload )
+    // Ok( payload ) — an enum payload by its variant's name.
     emit_inline_str("Ok(", ctx, &mut ok_block)?;
-    emit_ok_payload(payload, ok_ty, ctx, &mut ok_block)?;
+    if let SemanticType::Enum(name) = ok_ty {
+        let tag = ctx.fresh_value();
+        ok_block.emit(IrInst::Cast { dst: tag, from: IrType::I64, to: IrType::I8, value: payload })?;
+        ok_block = emit_enum_inline(tag, IrType::I8, name, ctx, ok_block)?;
+    } else {
+        emit_ok_payload(payload, ok_ty, ctx, &mut ok_block)?;
+    }
     emit_inline_str(")", ctx, &mut ok_block)?;
     ok_block.terminate(IrTerminator::Jump { target: merge_id, args: vec![] })?;
     ctx.seal_block(ok_block)?;
@@ -6883,13 +7039,15 @@ fn lower_result_print(
     err_block.terminate(IrTerminator::Jump { target: merge_id, args: vec![] })?;
     ctx.seal_block(err_block)?;
 
-    // merge: one trailing newline.
-    current.emit(IrInst::Call {
-        dst: None,
-        callee: "cx_print_newline".to_string(),
-        args: vec![],
-        return_ty: None,
-    })?;
+    // merge: one trailing newline, for `print`.
+    if newline {
+        current.emit(IrInst::Call {
+            dst: None,
+            callee: "cx_print_newline".to_string(),
+            args: vec![],
+            return_ty: None,
+        })?;
+    }
     Ok(Some(current))
 }
 
@@ -6897,105 +7055,33 @@ fn lower_print_stmt(
     builtin_name: &str,
     args: &[SemanticCallArg],
     ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let arg_expr = single_print_arg(builtin_name, args)?;
+    lower_print_value(builtin_name, arg_expr, true, ctx, current)
+}
+
+/// `print`'s value, by type, then a newline when `newline` (`printn` is the
+/// same without it). A `Result` prints as a tag-branch sequence (D2.4a); a
+/// string literal with `{…}` as an interpolation sequence (D2.3d); anything
+/// else through `emit_print_value`.
+fn lower_print_value(
+    builtin_name: &str,
+    arg_expr: &SemanticExpr,
+    newline: bool,
+    ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
-    if args.len() != 1 {
-        return Err(LoweringError::InternalInvariantViolation {
-            detail: format!("{} expects 1 argument, got {}", builtin_name, args.len()),
-        });
-    }
-    let arg_expr = match &args[0] {
-        SemanticCallArg::Expr(e) => e,
-        _ => {
-            return Err(LoweringError::UnsupportedSemanticConstruct {
-                construct: format!("non-Expr argument to {}", builtin_name),
-            });
-        }
-    };
-    // D2.4a: print(Result) — unpack the packed-i128 and print a tag-branch
-    // sequence (`Ok(..)` / `Err(..)`), no new string built.
     if let SemanticType::Result(ok_ty) = &arg_expr.ty {
-        return lower_result_print(arg_expr, ok_ty, ctx, current);
+        return lower_result_print(arg_expr, ok_ty, newline, ctx, current);
     }
-    // D2.3d: print-time string interpolation — a str LITERAL containing `{…}`
-    // decomposes into a print sequence (literal chunks + resolved `{x}` values +
-    // one trailing newline), building NO new string (R6 untouched). A non-literal
-    // str arg can't hold `{…}` in a lowerable program (the construct would SKIP),
-    // so it falls through to the plain cx_print_str path below.
     if let SemanticExprKind::Value(SemanticValue::Str(s)) = &arg_expr.kind {
         if s.contains('{') {
-            return lower_interpolated_print(s, ctx, current);
+            return lower_interpolated_print(s, newline, ctx, current);
         }
     }
-    // D2.3d: bare f64 print (f64 wasn't routable before) — inline render via
-    // `x.to_string()` + one trailing newline, matching the interpreter's print.
-    if matches!(arg_expr.ty, SemanticType::F64) {
-        let arg = lower_expr(arg_expr, ctx, &mut current)?;
-        current.emit(IrInst::Call {
-            dst: None,
-            callee: "cx_print_f64_inline".to_string(),
-            args: vec![arg.value],
-            return_ty: None,
-        })?;
-        current.emit(IrInst::Call {
-            dst: None,
-            callee: "cx_print_newline".to_string(),
-            args: vec![],
-            return_ty: None,
-        })?;
-        return Ok(Some(current));
-    }
-    // D2.3b: string print — pass the descriptor Ptr to cx_print_str, which reads
-    // (byte ptr, len) from it and writes the bytes + newline (matching the
-    // interpreter's print/println for a string, byte-for-byte). Interpolation
-    // (`{…}`) literals already SKIP at the construct (tracker D2.3d).
-    if matches!(arg_expr.ty, SemanticType::Str) {
-        let arg = lower_expr(arg_expr, ctx, &mut current)?;
-        current.emit(IrInst::Call {
-            dst: None,
-            callee: "cx_print_str".to_string(),
-            args: vec![arg.value],
-            return_ty: None,
-        })?;
-        return Ok(Some(current));
-    }
     let arg = lower_expr(arg_expr, ctx, &mut current)?;
-    // The f64 branch above keys on the SEMANTIC type, which is imprecise for a
-    // field read on a generic-struct instantiation: the binding types as
-    // `Struct("Pair")` with the instantiation erased, so `v.x` on a `Vec2<f64>`
-    // arrives here as an unresolved struct rather than F64. The LOWERED type is
-    // right — it came from the instantiated layout — so route on that. Anything
-    // whose semantic type was already F64 took the earlier branch, so this
-    // changes no existing behaviour.
-    if arg.ty == IrType::F64 {
-        current.emit(IrInst::Call {
-            dst: None,
-            callee: "cx_print_f64_inline".to_string(),
-            args: vec![arg.value],
-            return_ty: None,
-        })?;
-        current.emit(IrInst::Call {
-            dst: None,
-            callee: "cx_print_newline".to_string(),
-            args: vec![],
-            return_ty: None,
-        })?;
-        return Ok(Some(current));
-    }
-    let (routed_value, callee) = route_print_arg(arg.value, arg.ty.clone(), ctx, &mut current)?
-        .ok_or_else(|| LoweringError::UnsupportedSemanticConstruct {
-            construct: format!(
-                "{} argument must be a numeric integer (I8/I16/I32/I64) or Bool, got {:?} — F64, I128, Str, and composite types not yet supported",
-                builtin_name, arg.ty
-            ),
-        })?;
-    current.emit(IrInst::Call {
-        dst: None,
-        callee: callee.to_string(),
-        args: vec![routed_value],
-        return_ty: None,
-    })?;
-    Ok(Some(current))
+    Ok(Some(emit_print_value(builtin_name, &arg, &arg_expr.ty, newline, ctx, current)?))
 }
 
 /// Lower `assert(cond)` as a void statement.
@@ -10697,8 +10783,11 @@ mod tests {
     }
 
     #[test]
-    fn printn_lowers_to_cx_printn_call() {
-        // printn(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
+    fn printn_lowers_to_the_inline_printer() {
+        // printn(42i64) must lower to the INLINE printer, which writes no
+        // newline — "inline print (no newline)", cx_syntax.md §5. This test
+        // used to pin `cx_printn`, `print`'s line-ending printer, which is what
+        // made compiled `printn(5)` end the line (known_issues, printing parity recovery).
         let program = SemanticProgram {
             stmts: vec![builtin_stmt(
                 "printn",
@@ -10712,25 +10801,28 @@ mod tests {
             .blocks
             .iter()
             .flat_map(|b| b.insts.iter())
-            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn"))
+            .filter(|inst| matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn_inline"))
             .collect();
-        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn call");
+        assert_eq!(cx_printn_calls.len(), 1, "expected exactly one cx_printn_inline call");
         match cx_printn_calls[0] {
-            IrInst::Call { dst, callee, args, return_ty } => {
-                assert!(dst.is_none(), "cx_printn is void — no destination");
-                assert_eq!(callee, "cx_printn");
-                assert_eq!(args.len(), 1, "cx_printn takes one argument");
-                assert!(return_ty.is_none(), "cx_printn returns void");
+            IrInst::Call { dst, args, return_ty, .. } => {
+                assert!(dst.is_none(), "cx_printn_inline is void — no destination");
+                assert_eq!(args.len(), 1, "cx_printn_inline takes one argument");
+                assert!(return_ty.is_none(), "cx_printn_inline returns void");
             }
             _ => panic!("expected Call instruction"),
         }
+        let ends_line = main_fn.blocks.iter().flat_map(|b| b.insts.iter()).any(|inst| {
+            matches!(inst, IrInst::Call { callee, .. } if callee == "cx_printn" || callee == "cx_print_newline")
+        });
+        assert!(!ends_line, "printn must not end the line");
     }
 
     #[test]
-    fn printn_with_f64_arg_returns_error() {
-        // printn with an F64 argument must return UnsupportedSemanticConstruct.
-        // Post-widening contract: integers and Bool succeed via route_print_arg;
-        // F64 is in the still-unsupported set (no cx_print_f64 intrinsic yet).
+    fn printn_of_an_f64_prints_it_inline() {
+        // printn takes every value print takes, without the newline. This test
+        // used to assert that an f64 was refused — there was no inline f64
+        // printer then; cx_print_f64_inline exists, and print uses it.
         let program = SemanticProgram {
             stmts: vec![builtin_stmt(
                 "printn",
@@ -10738,16 +10830,107 @@ mod tests {
             )],
             enums: vec![],
         };
-        let err = lower_program(&program).expect_err("lowering should fail for F64 printn arg");
-        assert!(
-            matches!(
-                &err,
-                LoweringError::UnsupportedSemanticConstruct { construct }
-                if construct.contains("F64")
-            ),
-            "expected UnsupportedSemanticConstruct mentioning F64, got: {:?}",
-            err
-        );
+        let module = lower_and_validate(&program);
+        let callees: Vec<&str> = module
+            .functions
+            .iter()
+            .flat_map(|f| f.blocks.iter())
+            .flat_map(|b| b.insts.iter())
+            .filter_map(|inst| match inst {
+                IrInst::Call { callee, .. } => Some(callee.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(callees.contains(&"cx_print_f64_inline"), "got {callees:?}");
+        assert!(!callees.contains(&"cx_print_newline"), "printn must not end the line: {callees:?}");
+    }
+
+    #[test]
+    fn aggregate_interpolation_is_refused_before_host_string_access() {
+        // Ptr also represents aggregates. Their first two fields/elements are
+        // not a string's (data pointer, length), even in inline interpolation.
+        for builtin in ["print", "println", "printn"] {
+            for ty in [
+                SemanticType::Struct("Pair".to_string()),
+                SemanticType::Array(2, Box::new(SemanticType::I64)),
+            ] {
+                let program = SemanticProgram {
+                    stmts: vec![
+                        SemanticStmt::StructDef {
+                            name: "Pair".to_string(), type_params: vec![],
+                            fields: vec![("x".to_string(), SemanticType::I64), ("y".to_string(), SemanticType::I64)],
+                            pos: 0,
+                        },
+                        semantic_function("show", vec![typed_param(BindingId(1), "value", ty)], None,
+                            vec![builtin_stmt(builtin, vec![SemanticCallArg::Expr(SemanticExpr {
+                                ty: SemanticType::Str,
+                                kind: SemanticExprKind::Value(SemanticValue::Str("{value}".to_string())),
+                            })])], None),
+                    ],
+                    enums: vec![],
+                };
+                let error = lower_program(&program).expect_err("aggregate interpolation needs a formatter");
+                assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+                    if construct.contains("string interpolation") && construct.contains("Ptr")), "{error:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn string_parameter_interpolation_passes_ir_validation() {
+        for builtin in ["print", "println", "printn"] {
+            let program = SemanticProgram {
+                stmts: vec![semantic_function("show", vec![typed_param(BindingId(1), "value", SemanticType::Str)], None,
+                    vec![builtin_stmt(builtin, vec![SemanticCallArg::Expr(SemanticExpr {
+                        ty: SemanticType::Str,
+                        kind: SemanticExprKind::Value(SemanticValue::Str("{value}".to_string())),
+                    })])], None)],
+                enums: vec![],
+            };
+            lower_and_validate(&program);
+        }
+    }
+
+    #[test]
+    fn later_string_assignment_does_not_authorize_aggregate_interpolation() {
+        let array_ty = SemanticType::Array(2, Box::new(SemanticType::I64));
+        let target = SemanticLValue::Binding { binding: BindingId(2), name: "x".to_string(), ty: SemanticType::Unknown };
+        let program = SemanticProgram {
+            stmts: vec![semantic_function("show", vec![typed_param(BindingId(1), "value", array_ty.clone())], None,
+                vec![
+                    SemanticStmt::Decl { binding: BindingId(2), name: "x".to_string(), ty: None, pos: 0 },
+                    SemanticStmt::Assign { target: target.clone(), expr: binding_ref(BindingId(1), "value", array_ty), pos_eq: 0 },
+                    builtin_stmt("printn", vec![SemanticCallArg::Expr(SemanticExpr {
+                        ty: SemanticType::Str,
+                        kind: SemanticExprKind::Value(SemanticValue::Str("{x}".to_string())),
+                    })]),
+                    SemanticStmt::Assign { target, expr: SemanticExpr {
+                        ty: SemanticType::Str,
+                        kind: SemanticExprKind::Value(SemanticValue::Str("later".to_string())),
+                    }, pos_eq: 0 },
+                ], None)],
+            enums: vec![],
+        };
+        let error = lower_program(&program).expect_err("a later string cannot relabel the aggregate");
+        assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+            if construct.contains("string interpolation") && construct.contains("Ptr")), "{error:?}");
+    }
+
+    #[test]
+    fn unknown_bool_printing_passes_ir_validation() {
+        for builtin in ["print", "println", "printn"] {
+            let program = SemanticProgram {
+                stmts: vec![
+                    typed_assign(BindingId(1), "b", SemanticType::Bool, SemanticExpr {
+                        ty: SemanticType::Unknown,
+                        kind: SemanticExprKind::Value(SemanticValue::Unknown),
+                    }),
+                    builtin_stmt(builtin, vec![SemanticCallArg::Expr(binding_ref(BindingId(1), "b", SemanticType::Bool))]),
+                ],
+                enums: vec![],
+            };
+            lower_and_validate(&program);
+        }
     }
 
     // assert and assert_eq are now lowerable (Phase 9 sub-packet 3) so they no

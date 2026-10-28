@@ -1,0 +1,8 @@
+// A later assignment's type must not choose the printer for an earlier SSA
+// value. Untyped numeric bindings can change width/type in the interpreter.
+let x;
+x = 1
+print("{x}")
+x = 2.5
+printn("{x}")
+print("")

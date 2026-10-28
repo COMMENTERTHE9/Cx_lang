@@ -1,0 +1,20 @@
+// `printn` prints without a newline (cx_syntax.md §5), for every kind of value
+// `print` takes. Compiled code ended the line after each integer — `printn(5)`
+// printed `5` and a newline — and refused strings and floats.
+x: t8 = -3
+b: bool = true
+f: f64 = 2.5
+printn(5)
+printn(x)
+printn(b)
+printn(f)
+printn("s")
+printn(" and {x}")
+print("")
+print(7)
+
+fnc: Result<t32> good() { return Ok(12) }
+fnc: Result<t32> bad() { return Err("bad") }
+printn(good())
+printn(bad())
+print("")

@@ -1,0 +1,34 @@
+// An enum value prints as `Name::Variant`, as the interpreter prints it, in
+// every print form. Compiled code printed its tag: `1` for `Color::Green`.
+enum Color { Red, Green, Blue }
+fnc: Color pick(b: bool) {
+    if b { Color::Blue } else { Color::Red }
+}
+fnc: t64 show(c: Color) {
+    print(c)
+    0
+}
+fnc: Result<Color> wrap() {
+    return Ok(Color::Blue)
+}
+c: Color = Color::Green
+print(c)
+println(c)
+printn(c)
+print(" after")
+print("color {c}")
+let d
+d = Color::Red
+print(d)
+print(pick(true))
+z: t64 = show(Color::Blue)
+print(wrap())
+
+// Field reads and a branch introduced by printing must preserve loop state.
+struct Holder { color: Color }
+h: Holder = Holder { color: Color::Red }
+print(h.color)
+for i in 0..2 {
+    printn(pick(i == 0))
+    print(i)
+}
