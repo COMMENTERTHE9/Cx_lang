@@ -1,0 +1,14 @@
+// A branch frame does not own the function-local .copy target. Write-back
+// must reach that original binding and then propagate through an outer .copy.
+fnc: t64 inc(x.copy: t64) { x += 1
+x }
+fnc: t64 run(p.copy: t64) {
+    if true {
+        n: t64 = inc(p.copy)
+        print(n)
+    }
+    p
+}
+x: t64 = 5
+print(run(x.copy))
+print(x)

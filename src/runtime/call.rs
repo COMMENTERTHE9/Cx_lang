@@ -201,9 +201,9 @@ impl RunTime {
         let sem_func = self.semantic_funcs.get(callee).cloned()
             .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: callee.to_string() })?;
 
-        let outer_scope_idx = self.scopes.len() - 1;
-        let mut resolved: Vec<(BindingId, String, Value, Option<String>)> = Vec::new();
-        // (param binding, inner param name, value, bleed_back outer name if .copy)
+        let mut resolved: Vec<(BindingId, String, Value, Option<CopyTarget>)> = Vec::new();
+        // Snapshot arguments before entering the callee. A .copy target may
+        // belong to an outer block or the module, not the immediate caller.
 
         for (param, arg) in sem_func.params.iter().zip(args.iter()) {
             match arg {
@@ -211,13 +211,18 @@ impl RunTime {
                     let val = self.eval_semantic_expr(e)?;
                     resolved.push((param.binding, param.name.clone(), val, None));
                 }
-                SemanticCallArg::Copy { name, .. } => {
-                    let val = self.get_var(name, pos)?;
-                    resolved.push((param.binding, param.name.clone(), val, Some(name.clone())));
+                SemanticCallArg::Copy { binding, name } => {
+                    if self.const_bindings.contains(binding) {
+                        return Err(RuntimeError::BadAssignTarget { pos });
+                    }
+                    let val = self.get_var_by_id(*binding, name, pos)?;
+                    let owner = self.scopes.iter().rposition(|frame| frame.vars.contains_key(binding))
+                        .ok_or_else(|| RuntimeError::UndefinedVar { pos, name: name.clone() })?;
+                    resolved.push((param.binding, param.name.clone(), val, Some((owner, *binding, name.clone()))));
                     // bleed_back registered below after push_function_scope
                 }
-                SemanticCallArg::CopyFree { name, .. } => {
-                    let val = self.get_var(name, pos)?;
+                SemanticCallArg::CopyFree { binding, name } => {
+                    let val = self.get_var_by_id(*binding, name, pos)?;
                     resolved.push((param.binding, param.name.clone(), val, None));
                     // no bleed_back — isolated copy
                 }
@@ -251,9 +256,9 @@ impl RunTime {
             for (pbinding, pname, val, bleed_outer) in resolved {
                 let ty = type_of_value(&val);
                 self.set_var_typed(pbinding, pname.clone(), ty, val, pos)?;
-                if let Some(outer_name) = bleed_outer {
+                if let Some(target) = bleed_outer {
                     if let Some(frame) = self.scopes.last_mut() {
-                        frame.bleed_back.insert(pname, (outer_scope_idx, outer_name));
+                        frame.bleed_back.insert(pbinding, target);
                     }
                 }
             }

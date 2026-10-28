@@ -29,8 +29,8 @@ shared semantic analysis, including `.copy` write-back.
 `.copy` still snapshots arguments in order into caller-owned slots. A later
 argument may change the module binding without changing the earlier snapshot;
 copy-out writes the returned parameter value to the original module binding.
-The interpreter's separate binding-owner correction is a prerequisite for these
-new paths, rather than redefining reference behavior around a lost write-back.
+The interpreter's separate binding-owner correction landed through PR #468 and
+is included here, preserving the specified write-back to the original binding.
 
 ## Representation
 

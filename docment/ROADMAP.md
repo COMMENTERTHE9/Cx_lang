@@ -9,7 +9,7 @@ This file is a concise synthesis of the project's roadmap state. Detailed
 
 ---
 
-## Immediate milestone — whole programs compile and agree
+## Reliability milestone — whole programs compile and agree
 
 The restart audit is in `report/restart_2026_10_28.md`. Fresh `submain`
 `9905505` gates on Windows: 280 default tests, 456 JIT tests, 585 interpreter
@@ -18,27 +18,29 @@ counts as a development baseline, not as historical release results.
 
 October work on `submain` strengthened imports, numeric and array typing,
 division/remainder safety, function/method naming, and branch-type refusal.
-It has not shipped in a tagged release. Generic value conversion landed
-through PR #462 after fresh local verification and independent review. Printing
-recovery is PR #466; nested-function identity/scoping landed through PR #467.
-Native nested-function lowering remains unsupported.
+It has not shipped in a tagged release. The reviewed packets are generic value
+conversion (PR #462), printing parity and interpolation safety (PR #466), nested
+function identity/scoping (PR #467), and lexical `.copy` ownership/capability
+(PR #468). Native nested-function lowering remains unsupported.
 
-The next milestone makes small multifile engine/tooling programs dependable:
+PR #469 adds numeric module constants and shared mutable state through IR
+storage, validation and Cranelift data objects. Reads and writes use BindingId;
+declaration/initialization guards preserve execution order. No hidden parameter
+changes the function ABI. Regression fixtures cover widths, once-only
+initializers, access before initialization and argument-time copy snapshots.
 
-1. Close silent backend disagreements first. The current task branch recovers
-   the isolated printing draft with enum/inline/unknown-bool regressions and
-   guards against treating an interpolated aggregate as a string descriptor.
-2. Verify and reconcile the existing generic-conversion and nested-function
-   work in separate changes. Preserve the interpreter's defined behavior.
-3. Add module-state representation, validation and native storage in small
-   changes. Functions must read/write the correct module's bindings and
-   constants while retaining initialization order and const immutability.
-4. Pin a small multifile tooling example in both backends, plus Windows/Linux
-   gates. Completion requires matching outputs, mutations, exit status and
-   expected failures, with explicit reasons for remaining unsupported cases.
+The pinned `examples/tooling_metrics.cx` workload combines imports, module state,
+a constant, independent entry state, arrays and fallible calls. Its useful output
+matches the interpreter. The restart report records the combined gate results,
+independent review findings and full old-corpus replay.
 
-`copy_into`/Container remains an open lowering gap; `.copy` already lowers.
-Finish the remaining supported-surface gaps after this reliability milestone.
+The next packet should separate module-variable namespaces in the interpreter
+before enabling duplicate variable spellings across modules in native code.
+Then extend shared storage to bool and composite values through existing
+representations and value-copy rules. Global interpolation still needs scoped
+binding identity; `copy_into`/Container remains an open lowering gap. Keep these
+as separate, reviewed changes with explicit unsupported cases.
+
 The version sequence below remains the established direction: stage standard
 library/runtime work, then Cranelift objects and linking, before LLVM and
 bootstrapping. Do not treat that broad 0.4 bucket as one implementation packet.

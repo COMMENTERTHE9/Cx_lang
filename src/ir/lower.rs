@@ -1129,11 +1129,11 @@ fn write_module_binding(binding: BindingId, value: &LoweredValue, initializing: 
     mark_module_state(&global, ptr, 2, ctx, active)
 }
 
-/// The refusal for a function body that touches top-level state.
+/// The refusal for top-level representations without shared-storage support.
 ///
 /// An honest SKIP rather than an internal-invariant message: nothing is wrong
-/// with the program or with lowering's bookkeeping — compiled code simply has
-/// no way to reach module-level state yet.
+/// with the program or with lowering's bookkeeping — numeric scalar captures
+/// have storage, but the requested representation does not yet.
 fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> LoweringError {
     LoweringError::UnsupportedSemanticConstruct {
         construct: format!(

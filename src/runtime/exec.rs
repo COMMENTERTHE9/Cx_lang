@@ -282,7 +282,7 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
             }
             SemanticStmt::ConstDecl { binding, name, ty, value, .. } => {
                 let val = self.eval_semantic_expr(value)?;
-                self.consts.insert(name.clone(), val.clone());
+                self.const_bindings.insert(*binding);
                 let ast_ty: Type = ty.clone().into();
                 self.set_var_typed(*binding, name.clone(), ast_ty, val, 0)?;
                 Ok(())

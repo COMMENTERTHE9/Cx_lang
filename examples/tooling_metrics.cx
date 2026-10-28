@@ -1,4 +1,4 @@
-// Mult-file tooling smoke workload: input samples, persistent module state,
+// Multifile tooling smoke workload: input samples, persistent module state,
 // a module constant, independent entry state, arrays and fallible calls.
 #![imports]
 metrics: use "./tooling_metrics_lib"
