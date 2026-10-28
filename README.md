@@ -81,7 +81,8 @@ v0.3.3; later compiler work is not a new release.
 
 A fixture is **SKIP** when the JIT refuses it as unsupported (exit 127), or an
 explicit exclusion applies. Lowering and code-generation failures also use that
-exit code, so SKIP does not prove that a refusal is intentional. **PARITY_FAIL**
+exit code. A retained legacy fallback also counts exit 0 with non-empty stderr
+as SKIP, so SKIP does not prove that a refusal is intentional. **PARITY_FAIL**
 means the observed behavior disagrees with the fixture expectation.
 
 ---
@@ -248,7 +249,7 @@ print("{f(2)}")                // runtime error: string interpolation supports
                                // variable first
 ```
 
-Note that this — and an interpolated name that isn't in scope — is checked at **runtime**, not at compile time, even though both are decidable from the string literal and the symbol table alone. The JIT does not lower interpolation at all, so these cases show up as parity SKIPs rather than as agreement. See `docs/known_issues.md` §16.
+Note that this — and an interpolated name that isn't in scope — is checked at **runtime**, not at compile time, even though both are decidable from the string literal and the symbol table alone. The JIT lowers bare-variable interpolation. Unsupported forms, such as non-identifier interpolation, can show up as parity SKIPs rather than as agreement. See `docs/known_issues.md` §16.
 
 ### Strings: concatenation and length
 

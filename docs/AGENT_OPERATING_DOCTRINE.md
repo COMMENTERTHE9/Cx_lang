@@ -92,7 +92,10 @@ Every task moves through six phases in order. Skipping phases causes either rewo
 - Success criteria
 - Build and test commands that will validate
 
-**Rule:** no implementation starts until design is locked. The dev lead states the design, the user confirms or corrects.
+**Rule:** lock the behavior, scope and checks before implementation. For ordinary
+engineering packets, the agent does this and proceeds under standing
+authorization. User confirmation is required only for genuine language-design
+decisions or conflicting specifications, and the protected actions listed above.
 
 ### Phase 3 — Predicted Fallout
 
@@ -168,10 +171,10 @@ The dev lead operates in one of five modes at any time. Modes are not blurred.
 | Mode | Purpose | Output |
 |------|---------|--------|
 | **Recon** | Gather context for a task | Read-only prompt to agent |
-| **Design** | Lock task scope and behavior | Design statement to user for approval |
+| **Design** | Lock task scope and behavior | Scope and checks; ask only about design decisions or specification conflicts |
 | **Implementation** | Direct the agent to make changes | One implementation prompt to agent |
 | **Validation** | Confirm task is complete | Read build/test results, report deviations only |
-| **Commit** | Ship the packet | Git commit + push prompt to agent |
+| **Commit** | Ship the packet | Verified commit, push and PR preparation under standing authorization |
 
 The dev lead announces mode shifts only when useful. Most tasks flow Recon → Design → Implementation → Validation → Commit without explicit narration.
 
@@ -195,7 +198,7 @@ The dev lead announces mode shifts only when useful. Most tasks flow Recon → D
 - Does not make changes outside the implementation prompt
 - Does not "clean up" unrelated code
 - Does not skip the build/test gate before reporting complete
-- Does not commit without explicit instruction
+- Does not commit outside the authorized direction or without passing the verification gates
 - Does not delete files without explanation
 - Does not silently handle errors — reports them first
 
@@ -219,15 +222,12 @@ The dev lead announces mode shifts only when useful. Most tasks flow Recon → D
 
 ## Default Rhythm
 
-For most tasks, the rhythm is:
-
-1. **Recon prompt** — one broad read-only prompt for the full task
-2. **Recon report** — agent returns everything needed to lock the design
-3. **Implementation prompt** — one prompt covering the whole task packet, including predicted fallout fixes
-4. **Validation report** — agent runs build/test, returns results
-5. **Commit prompt** — dev lead authorizes commit, agent reports hash
-
-That is **5 turns per task** instead of the 10–15 the old rhythm produced. Roughly 3x faster for the same safety, with the safety net intact.
+For most tasks, proceed through recon, scope/behavior definition, predicted
+fallout, implementation, validation, focused review and commit/PR preparation.
+Then continue the next useful packet in the milestone. Report meaningful
+findings and completed results without requiring a fresh prompt at each phase.
+Ask only when an actual design, ownership, protected-action or resource boundary
+prevents safe progress.
 
 ---
 
@@ -239,7 +239,8 @@ The dev lead may suspend doctrine in these cases:
 - **Exploratory research** — when the goal is "what does this code do?" rather than "change this code."
 - **User explicit override** — when the user (Zara) directs a different approach for a specific task.
 
-Suspension is announced. Doctrine resumes by default at the next task packet.
+Suspension is announced. The standing authorization above remains active across
+task packets until the owner changes it.
 
 ---
 
@@ -299,7 +300,7 @@ This is the only place narrative scorecards belong. Not after every commit. Not 
 
 ## Doctrine Updates
 
-This doctrine is version 1.0. Updates require:
+This doctrine is version 1.1. Updates require:
 
 - Explicit decision from Zara
 - Version bump
