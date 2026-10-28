@@ -1,0 +1,8 @@
+calls: t64 = 0
+fnc: t64 seed() { calls += 1
+42 }
+value: t64 = seed()
+fnc: t64 read_value() { value }
+print(read_value())
+print(read_value())
+print(calls)

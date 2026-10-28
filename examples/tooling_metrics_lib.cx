@@ -1,0 +1,9 @@
+// A small stateful metrics module. SCALE is immutable; total survives calls.
+const SCALE: t64 = 2
+total: t64 = 0
+pub fnc: Result<t64> add(value: t64) {
+    if value < 0 { return Err("negative sample") }
+    total += value
+    return Ok(total * SCALE)
+}
+pub fnc: t64 value() { total }

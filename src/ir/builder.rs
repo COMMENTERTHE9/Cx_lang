@@ -44,6 +44,7 @@ impl IrBuilder {
     pub fn module(&self, debug_name: impl Into<String>) -> IrModule {
         IrModule {
             debug_name: debug_name.into(),
+            globals: vec![],
             functions: Vec::new(),
         }
     }

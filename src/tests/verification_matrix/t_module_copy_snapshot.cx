@@ -1,0 +1,9 @@
+x: t64 = 10
+fnc: t64 peek() { x }
+fnc: t64 change() { x = 20
+0 }
+fnc: t64 copy_add(p.copy: t64, ignored: t64) { p += 1
+p }
+print(copy_add(x.copy, change()))
+print(x)
+print(peek())

@@ -1,0 +1,6 @@
+// Module storage must preserve both halves of a t128 value.
+wide: t128 = 18446744073709551619
+fnc: t64 step_wide() { wide += 1
+wide }
+print(step_wide())
+print(step_wide())

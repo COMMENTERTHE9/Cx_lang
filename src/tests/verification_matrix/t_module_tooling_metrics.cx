@@ -1,0 +1,11 @@
+// Mult-file tooling smoke workload: input samples, persistent module state,
+// a module constant, independent entry state, arrays and fallible calls.
+#![imports]
+metrics: use "../../../examples/tooling_metrics_lib"
+entry_total: t64 = 100
+fnc: t64 entry_value() { entry_total }
+samples: [2: t64] = [3, 5]
+for i in 0..2 { print(metrics.add(samples:[i])) }
+print(metrics.add(-1))
+print(metrics.value())
+print(entry_value())

@@ -6,6 +6,9 @@ use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
 pub fn print_module(module: &IrModule) -> String {
     let mut out = String::new();
     writeln!(out, "module {}", module.debug_name).unwrap();
+    for global in &module.globals {
+        writeln!(out, "global @g{} {} size {} align {}", global.id.0, global.name, global.size, global.align).unwrap();
+    }
     for (i, function) in module.functions.iter().enumerate() {
         if i > 0 {
             writeln!(out).unwrap();
@@ -55,6 +58,7 @@ fn print_block(block: &IrBlock) -> String {
 
 pub fn print_inst(inst: &IrInst) -> String {
     match inst {
+        IrInst::GlobalAddr { dst, global } => format!("{} = global_addr @g{}", print_value_id(*dst), global.0),
         IrInst::ConstInt { dst, ty, value } => {
             format!("{} = const {} {}", print_value_id(*dst), print_type(ty), value)
         }
@@ -243,6 +247,7 @@ mod tests {
     fn prints_simple_function() {
         let module = IrModule {
             debug_name: "test".into(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".into(),
                 params: vec![],
@@ -273,6 +278,7 @@ mod tests {
     fn prints_call_instruction() {
         let module = IrModule {
             debug_name: "test".into(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "caller".into(),
                 params: vec![],

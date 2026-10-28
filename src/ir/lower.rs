@@ -13,7 +13,7 @@ use crate::frontend::semantic_types::{
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
 use crate::ir::types::{
-    compute_array_layout, BlockId, BlockParam, IrBlock, IrFunction, IrModule,
+    compute_array_layout, BlockId, BlockParam, GlobalId, IrGlobal, IrBlock, IrFunction, IrModule,
     IrParam, IrType, StructLayout, ValueId,
 };
 
@@ -769,13 +769,23 @@ impl TargetConfig {
     }
 }
 
+#[derive(Clone)]
+struct ModuleBinding {
+    id: GlobalId,
+    name: String,
+    ty: IrType,
+}
+
+type ModuleBindings = HashMap<BindingId, ModuleBinding>;
+
 struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
-    /// Top-level bindings, set only while lowering a FUNCTION body (empty for
-    /// `main`, which holds them as its own SSA values). Any reference to one
-    /// from a function is refused — see `top_level_bindings`.
+    /// All top-level bindings, for refusing representations not yet supported
+    /// in shared storage. Numeric captures use `module_bindings`; uncaptured
+    /// top-level values keep their original main-local SSA path.
     top_level_bindings: HashSet<BindingId>,
+    module_bindings: ModuleBindings,
     /// The function being lowered, for diagnostics.
     function_name: String,
     signature_table: HashMap<String, FunctionSignature>,
@@ -887,6 +897,7 @@ impl LoweringCtx {
             generic_structs,
             struct_instance_keys: HashMap::new(),
             top_level_bindings: HashSet::new(),
+            module_bindings: HashMap::new(),
             function_name: String::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
@@ -983,25 +994,9 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
     lower_program_inner(program, false)
 }
 
-/// The bindings a program declares at top level — its module-level state.
-///
-/// Compiled function bodies cannot reach these yet. The IR has no module-level
-/// storage: top-level values live as SSA values inside `main` (see
-/// known_issues §12, where top-level `const` was lowered that way on purpose),
-/// so a function referencing one has nothing to load from or store to.
-///
-/// Exhaustive on purpose. A declaration kind missing from this match would be
-/// treated as a function-local, and an assignment to it inside a function would
-/// compile into a fresh local — the silent miscompile this set exists to stop.
-///
-/// One gap the statement kinds cannot close: a FUNCTION's own name is also a
-/// top-level binding (`analyze_function` declares it in the enclosing scope, and
-/// impl methods are analysed in the top-level scope too), but `SemanticFunction`
-/// does not carry that binding id, so it cannot be added here. A function body
-/// that assigns to another function's name therefore still compiles a stray
-/// local. That program is invalid — the interpreter rejects it — so this is the
-/// JIT accepting an invalid program rather than miscompiling a valid one; the fix
-/// belongs in semantic analysis (known_issues §31).
+/// Every declaration visible to a top-level function. Shared numeric storage
+/// handles supported representations; the remaining IDs retain an explicit
+/// refusal rather than accidentally becoming function-local SSA values.
 fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
     let mut set = HashSet::new();
     for stmt in &program.stmts {
@@ -1040,15 +1035,109 @@ fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
     set
 }
 
-/// The refusal for a function body that touches top-level state.
+/// Numeric scalar bindings have a stable storage representation. A byte after
+/// the value tracks the interpreter's lifecycle: absent (0), declared (1),
+/// initialized (2). Initializers still execute exactly once, in source order.
+fn module_storage_plan(program: &SemanticProgram) -> Result<(Vec<IrGlobal>, ModuleBindings), LoweringError> {
+    let mut globals = Vec::new();
+    let mut bindings = HashMap::new();
+    let mut names = HashSet::new();
+    for stmt in &program.stmts {
+        let name = match stmt {
+            SemanticStmt::Decl { name, .. } | SemanticStmt::TypedAssign { name, .. }
+            | SemanticStmt::ConstDecl { name, .. } => Some(name),
+            _ => None,
+        };
+        if let Some(name) = name {
+            if !names.insert(name) {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!("same-named module variables '{name}' — interpreter module namespaces are not separated yet"),
+                });
+            }
+        }
+    }
+    for stmt in &program.stmts {
+        let (binding, name, ty) = match stmt {
+            SemanticStmt::TypedAssign { binding, name, ty, .. }
+            | SemanticStmt::ConstDecl { binding, name, ty, .. }
+            | SemanticStmt::Decl { binding, name, ty: Some(ty), .. } => (binding, name, ty),
+            _ => continue,
+        };
+        if !matches!(ty, SemanticType::I8 | SemanticType::I16 | SemanticType::I32 | SemanticType::I64 | SemanticType::I128 | SemanticType::F64) {
+            continue;
+        }
+        let ty = lower_type(ty)?;
+        let id = GlobalId(u32::try_from(globals.len()).map_err(|_| LoweringError::UnsupportedSemanticConstruct { construct: "too many module bindings".into() })?);
+        globals.push(IrGlobal { id, name: name.clone(), size: ty.size_bytes() + 1, align: ty.align_bytes() });
+        bindings.insert(*binding, ModuleBinding { id, name: name.clone(), ty });
+    }
+    Ok((globals, bindings))
+}
+
+fn module_address(global: &ModuleBinding, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<ValueId, LoweringError> {
+    let ptr = ctx.fresh_value();
+    active.emit(IrInst::GlobalAddr { dst: ptr, global: global.id })?;
+    Ok(ptr)
+}
+
+fn module_state_ptr(global: &ModuleBinding, ptr: ValueId, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<ValueId, LoweringError> {
+    let state = ctx.fresh_value();
+    active.emit(IrInst::PtrOffset { dst: state, base: ptr, offset: global.ty.size_bytes() })?;
+    Ok(state)
+}
+
+fn require_module_state(global: &ModuleBinding, ptr: ValueId, value_required: bool, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    let state_ptr = module_state_ptr(global, ptr, ctx, active)?;
+    let state = ctx.fresh_value();
+    active.emit(IrInst::Load { dst: state, ty: IrType::I8, ptr: state_ptr })?;
+    let needed = ctx.fresh_value();
+    active.emit(IrInst::ConstInt { dst: needed, ty: IrType::I8, value: if value_required { 2 } else { 0 } })?;
+    let ready = ctx.fresh_value();
+    active.emit(IrInst::Compare { dst: ready, op: if value_required { CompareOp::Eq } else { CompareOp::Ne }, lhs: state, rhs: needed })?;
+    let cont = ctx.start_block(vec![], active.bindings.clone());
+    let mut trap = ctx.start_block(vec![], active.bindings.clone());
+    active.terminate(IrTerminator::Branch { cond: ready, then_block: cont.id(), then_args: vec![], else_block: trap.id(), else_args: vec![] })?;
+    let old = std::mem::replace(active, cont);
+    ctx.seal_block(old)?;
+    trap.terminate(IrTerminator::Trap)?;
+    ctx.seal_block(trap)?;
+    Ok(())
+}
+
+fn mark_module_state(global: &ModuleBinding, ptr: ValueId, state: i128, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    let state_ptr = module_state_ptr(global, ptr, ctx, active)?;
+    let value = ctx.fresh_value();
+    active.emit(IrInst::ConstInt { dst: value, ty: IrType::I8, value: state })?;
+    active.emit(IrInst::Store { ptr: state_ptr, value })
+}
+
+fn read_module_binding(binding: BindingId, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<LoweredValue, LoweringError> {
+    let global = ctx.module_bindings[&binding].clone();
+    let ptr = module_address(&global, ctx, active)?;
+    require_module_state(&global, ptr, true, ctx, active)?;
+    let value = ctx.fresh_value();
+    active.emit(IrInst::Load { dst: value, ty: global.ty.clone(), ptr })?;
+    Ok(LoweredValue { value, ty: global.ty })
+}
+
+fn write_module_binding(binding: BindingId, value: &LoweredValue, initializing: bool, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    let global = ctx.module_bindings[&binding].clone();
+    ensure_type_match(&format!("module binding '{}'", global.name), global.ty.clone(), value.ty.clone())?;
+    let ptr = module_address(&global, ctx, active)?;
+    if !initializing { require_module_state(&global, ptr, false, ctx, active)?; }
+    active.emit(IrInst::Store { ptr, value: value.value })?;
+    mark_module_state(&global, ptr, 2, ctx, active)
+}
+
+/// The refusal for top-level representations without shared-storage support.
 ///
 /// An honest SKIP rather than an internal-invariant message: nothing is wrong
-/// with the program or with lowering's bookkeeping — compiled code simply has
-/// no way to reach module-level state yet.
+/// with the program or with lowering's bookkeeping — numeric scalar captures
+/// have storage, but the requested representation does not yet.
 fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> LoweringError {
     LoweringError::UnsupportedSemanticConstruct {
         construct: format!(
-            "function '{function}' {access} top-level variable '{name}' — compiled code cannot reach top-level state yet"
+            "function '{function}' {access} top-level variable '{name}' — this top-level representation is not yet supported in shared storage"
         ),
     }
 }
@@ -1144,6 +1233,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
 
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
+        globals: vec![],
         functions: vec![],
     };
     let mut top_level_stmts = Vec::new();
@@ -1153,6 +1243,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let target = TargetConfig::host();
     let signature_table = build_signature_table(program, target);
     let top_level = top_level_bindings(program);
+    let (planned_globals, module_bindings) = module_storage_plan(program)?;
     let struct_table = build_struct_table(program);
     let generic_structs = build_generic_struct_templates(program);
 
@@ -1178,7 +1269,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, trace, target, &enum_variants)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, trace, target, &enum_variants)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
@@ -1228,7 +1319,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target, &enum_variants)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, trace, target, &enum_variants)?);
                 }
             }
             // 0.3.4 slice 5: phen methods emit exactly like impl methods —
@@ -1271,7 +1362,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, trace, target, &enum_variants)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, trace, target, &enum_variants)?);
                 }
             }
             other => top_level_stmts.push(other),
@@ -1283,6 +1374,15 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     // the synthetic main is empty and the program does nothing, exit 0, as on
     // the interpreter. Without it the JIT failed at link time ("no `main`
     // symbol found") and every library fixture was a SKIP.
+    // Functions reveal which bindings actually need shared storage. Other
+    // top-level values keep their existing SSA/copy paths unchanged.
+    let used_globals: HashSet<GlobalId> = module.functions.iter().flat_map(|f| &f.blocks)
+        .flat_map(|b| &b.insts).filter_map(|inst| match inst {
+            IrInst::GlobalAddr { global, .. } => Some(*global), _ => None,
+        }).collect();
+    let captured: ModuleBindings = module_bindings.into_iter().filter(|(_, g)| used_globals.contains(&g.id)).collect();
+    module.globals = planned_globals.into_iter().filter(|g| used_globals.contains(&g.id)).collect();
+
     if !top_level_stmts.is_empty() || !has_real_main {
         if has_real_main {
             return Err(LoweringError::UnsupportedSemanticConstruct {
@@ -1291,7 +1391,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, trace, target, &enum_variants)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, &captured, trace, target, &enum_variants)?);
     }
 
     // Two definitions of one function name — two modules each implementing a
@@ -1331,7 +1431,7 @@ fn positional_type_params(ty: &SemanticType, params: &[String]) -> SemanticType 
     }
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, trace: bool, target: TargetConfig, enum_variants: &EnumVariantNames) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, module_bindings: &ModuleBindings, trace: bool, target: TargetConfig, enum_variants: &EnumVariantNames) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
@@ -1340,6 +1440,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         copy_writebacks: Vec::new(),
     };
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
+    ctx.module_bindings = module_bindings.clone();
     // D2.3d: flat name→binding map for print-time string interpolation.
     for &stmt in stmts {
         collect_binding_names_stmt(stmt, &mut ctx.binding_names);
@@ -1372,6 +1473,7 @@ fn lower_semantic_function(
     struct_table: &HashMap<String, StructLayoutInfo>,
     generic_structs: &GenericStructTemplates,
     top_level: &HashSet<BindingId>,
+    module_bindings: &ModuleBindings,
     trace: bool,
     target: TargetConfig,
     enum_variants: &EnumVariantNames,
@@ -1392,6 +1494,7 @@ fn lower_semantic_function(
     };
 
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
+    ctx.module_bindings = module_bindings.clone();
     ctx.top_level_bindings = top_level.clone();
     ctx.function_name = function.name.clone();
     for param in &function.params {
@@ -1634,7 +1737,11 @@ fn lower_stmt(
         // nothing to emit. Coherence registration already happened in Pass 0.
         SemanticStmt::GeneDef { .. } => Ok(Some(current)),
         SemanticStmt::PhenDef { .. } => Ok(Some(current)),
-        SemanticStmt::Decl { ty, .. } => {
+        SemanticStmt::Decl { binding, ty, .. } => {
+            if let Some(global) = ctx.module_bindings.get(binding).cloned() {
+                let ptr = module_address(&global, ctx, &mut current)?;
+                mark_module_state(&global, ptr, 1, ctx, &mut current)?;
+            }
             if let Some(ty) = ty {
                 let _ = lower_type(ty)?;
             }
@@ -1648,6 +1755,10 @@ fn lower_stmt(
                     // insert below would have bound a fresh LOCAL under the
                     // global's id, so the program compiled, exited 0, and lost
                     // the write. Refuse instead.
+                    if ctx.module_bindings.contains_key(binding) {
+                        write_module_binding(*binding, &lowered, false, ctx, &mut current)?;
+                        return Ok(Some(current));
+                    }
                     if ctx.top_level_bindings.contains(binding) {
                         return Err(top_level_state_unsupported(&ctx.function_name, name, "assigns to"));
                     }
@@ -1754,6 +1865,10 @@ fn lower_stmt(
                 target_ty
             };
             let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
+            if ctx.module_bindings.contains_key(binding) {
+                write_module_binding(*binding, &LoweredValue { value: src_value, ty: bind_ty }, true, ctx, &mut current)?;
+                return Ok(Some(current));
+            }
             let dst = ctx.fresh_value();
             current.emit(IrInst::SsaBind {
                 dst,
@@ -1877,6 +1992,12 @@ fn lower_stmt(
         SemanticStmt::CompoundAssign { target, op, operand, .. } => {
     match target {
         SemanticLValue::Binding { binding, name, ty } => {
+            if ctx.module_bindings.contains_key(binding) {
+                let lhs = SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
+                let result = lower_binary(&lhs, *op, operand, ty, ctx, &mut current)?;
+                write_module_binding(*binding, &result, false, ctx, &mut current)?;
+                return Ok(Some(current));
+            }
             if ctx.top_level_bindings.contains(binding) {
                 return Err(top_level_state_unsupported(&ctx.function_name, name, "assigns to"));
             }
@@ -2122,7 +2243,8 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
         // (runtime/exec.rs's ConstDecl arm → `set_var_typed`). Lowering
         // therefore mirrors `TypedAssign`'s general path exactly — lower the
         // RHS, bind the SSA value to the const's binding — rather than
-        // introducing a module-level global the IR has no concept of.
+        // materializing a constant expression on every use. Captured numeric
+        // constants instead initialize module storage at this same point.
         //
         // Immutability needs no lowering-side enforcement: `const` is
         // top-level-only in the grammar, and assignment to one is already
@@ -2160,6 +2282,10 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
                 ensure_type_match("const declaration", target_ty.clone(), lowered.ty)?;
                 (lowered.value, target_ty)
             };
+            if ctx.module_bindings.contains_key(binding) {
+                write_module_binding(*binding, &LoweredValue { value: bind_value, ty: bind_ty }, true, ctx, &mut current)?;
+                return Ok(Some(current));
+            }
             let dst = ctx.fresh_value();
             current.emit(IrInst::SsaBind {
                 dst,
@@ -2819,6 +2945,7 @@ fn lower_expr(
     match &expr.kind {
         SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx, active),
         SemanticExprKind::VarRef { binding, name } => {
+            if ctx.module_bindings.contains_key(binding) { return read_module_binding(*binding, ctx, active); }
             if ctx.top_level_bindings.contains(binding) {
                 return Err(top_level_state_unsupported(&ctx.function_name, name, "reads"));
             }
@@ -3057,11 +3184,13 @@ fn lower_expr(
                     }
                     // `.copy.free` is plain passing: hand over the value.
                     SemanticCallArg::CopyFree { binding, name } => {
-                        let current = active.bindings.get(binding).cloned().ok_or_else(|| {
+                        let current = if ctx.module_bindings.contains_key(binding) {
+                            read_module_binding(*binding, ctx, active)?
+                        } else { active.bindings.get(binding).cloned().ok_or_else(|| {
                             LoweringError::UnresolvedSemanticArtifact {
                                 artifact: format!("`.copy.free` argument '{}'", name),
                             }
-                        })?;
+                        })? };
                         lowered_args.push(current.value);
                     }
                     SemanticCallArg::Copy { binding, name } => {
@@ -3076,11 +3205,13 @@ fn lower_expr(
                                 ),
                             }
                         })?;
-                        let current = active.bindings.get(binding).cloned().ok_or_else(|| {
+                        let current = if ctx.module_bindings.contains_key(binding) {
+                            read_module_binding(*binding, ctx, active)?
+                        } else { active.bindings.get(binding).cloned().ok_or_else(|| {
                             LoweringError::UnresolvedSemanticArtifact {
                                 artifact: format!("`.copy` argument '{}'", name),
                             }
-                        })?;
+                        })? };
                         let (size, align) = slot_size_align(&sem_ty, &ctx.struct_table)
                             .ok_or_else(|| LoweringError::UnresolvedSemanticArtifact {
                                 artifact: format!("slot layout for `.copy` argument '{}'", name),
@@ -3160,7 +3291,9 @@ fn lower_expr(
                             ptr: slot,
                             ty: ty.clone(),
                         })?;
-                        active.bindings.insert(binding, LoweredValue { value: reloaded, ty });
+                        let value = LoweredValue { value: reloaded, ty };
+                        if ctx.module_bindings.contains_key(&binding) { write_module_binding(binding, &value, false, ctx, active)?; }
+                        else { active.bindings.insert(binding, value); }
                     }
                 }
             }
@@ -6642,11 +6775,13 @@ fn lower_interpolated_print(
                         construct: format!("string interpolation: `{}` not resolvable at lowering", name),
                     }
                 })?;
-                let val = current.bindings.get(&binding).cloned().ok_or_else(|| {
+                let val = if ctx.module_bindings.contains_key(&binding) {
+                    read_module_binding(binding, ctx, &mut current)?
+                } else { current.bindings.get(&binding).cloned().ok_or_else(|| {
                     LoweringError::UnsupportedSemanticConstruct {
                         construct: format!("string interpolation: `{}` not in scope at this print", name),
                     }
-                })?;
+                })? };
                 // IR Ptr represents strings AND aggregates. Only a binding
                 // known to be a string may reach the string host callback.
                 let ty = ctx.binding_print_types.get(&binding).cloned()
@@ -12295,5 +12430,56 @@ mod tests {
             ),
             other => panic!("expected an unsupported-construct refusal, got {other:?}"),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod module_state_tests {
+    use super::*;
+    use crate::frontend::{resolver, semantic};
+
+    fn analyzed(src: &str) -> SemanticProgram {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "module_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        semantic::analyze_resolved_program(&resolved).expect("analysis succeeds")
+    }
+
+    fn from_source(src: &str) -> IrModule {
+        let semantic = analyzed(src);
+        let ir = lower_program(&semantic).expect("numeric module state lowers");
+        crate::ir::validate::validate_module(&ir).expect("module IR validates");
+        ir
+    }
+
+    #[test]
+    fn captured_constants_use_module_storage_without_changing_function_abi() {
+        let ir = from_source("const LIMIT: t64 = 7\nfnc: t64 get_limit() { LIMIT }\nprint(get_limit())\n");
+        assert_eq!(ir.globals.len(), 1);
+        assert_eq!((ir.globals[0].size, ir.globals[0].align), (9, 8));
+        let getter = ir.functions.iter().find(|f| f.name == "get_limit").unwrap();
+        assert!(getter.params.is_empty(), "module storage adds no hidden function parameter");
+        assert_eq!(getter.return_ty, Some(IrType::I64));
+        assert!(getter.blocks.iter().any(|b| b.term == IrTerminator::Trap), "read must retain a runtime initialization guard");
+    }
+
+    #[test]
+    fn uncaptured_top_level_values_keep_their_ssa_path() {
+        let ir = from_source("const LIMIT: t64 = 7\nprint(LIMIT)\n");
+        assert!(ir.globals.is_empty());
+        assert!(!ir.functions.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::GlobalAddr { .. })));
+    }
+
+    #[test]
+    fn duplicate_module_variable_names_remain_a_structured_refusal() {
+        let mut program = analyzed("x: t64 = 7\n");
+        let mut second = program.stmts[0].clone();
+        if let SemanticStmt::TypedAssign { binding, .. } = &mut second { *binding = BindingId(1000); }
+        program.stmts.push(second);
+        let error = lower_program(&program).expect_err("reference module namespaces do not support this yet");
+        assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+            if construct.contains("same-named module variables")), "{error:?}");
     }
 }

@@ -1,0 +1,5 @@
+let x: t64;
+fnc: t64 set_value() { x = 7
+1 }
+fnc: t64 read_value() { x }
+print(read_value())

@@ -3849,8 +3849,8 @@ signature check of a later top-level call.
 
 ## 45. Printing parity recovery — enum names, inline output and unknown bool
 
-**Status: implemented on `backend/printing-parity-recovery`; unmerged and
-untagged.** Restart baseline and gates: `report/restart_2026_10_28.md`.
+**Status: fixed on `submain` through PR #466; untagged.**
+Restart baseline and gates: `report/restart_2026_10_28.md`.
 The printing change was recovered alone from local draft `14f5328`, without
 its generic-conversion or nested-function ancestors.
 
@@ -3893,7 +3893,7 @@ currently rejected by semantic analysis on both backends before printing.
 
 ## 46. Copy write-back targeted the immediate frame rather than the lexical binding
 
-**Status: fixed on `codex/copy-argument-owner`, awaiting PR integration.**
+**Status: fixed on `submain` through PR #468; untagged.**
 A function passing a module variable to another function as `.copy` returned the
 updated parameter but left the module variable unchanged. The runtime recorded
 the immediate caller frame even when that frame did not own the target, and
@@ -3921,3 +3921,35 @@ Both builds and fresh local suites passed: 288 default / 464 JIT tests, 603
 interpreter fixtures, parity 541 PASS / 62 SKIP / 0 disagreements. The remaining
 SKIP for the new global-owner program ends with native module-state lowering;
 its interpreter expectation already pins the correct target behavior.
+
+## 47. Native functions could not access module bindings
+
+**Status: numeric scalar storage implemented through PR #469; remaining
+representations are explicitly unsupported.** Functions can read numeric
+constants and read/write declared `t8`, `t16`, `t32`, `t64`, `t128` and `f64`
+module variables by BindingId. IR global declarations and `GlobalAddr` lower to
+anonymous Cranelift data objects, shared by functions without an ABI parameter.
+
+A lifecycle byte distinguishes not-yet-declared, declared/uninitialized and
+initialized storage. Initializers run once in source order; read-before-value
+and write-before-declaration use the existing runtime trap channel. Copy
+arguments snapshot at evaluation time and write back to the original storage.
+Uncaptured top-level bindings retain their existing SSA/copy path.
+
+Nine fixtures cover initialization, declaration order, widths, floats and copy
+snapshots, including a multifile metrics example with arrays and Results.
+Nine IR/native/lowering unit tests cover validation, shared state, fresh
+executions, ABI preservation and internal-symbol collision safety. Independent
+review caught a user-symbol collision and an over-aligned Cranelift allocator
+hazard; anonymous data and bounded alignment address both.
+
+Bool, strings, handles, aggregates, untyped module captures and function-global
+interpolation remain gaps. Duplicate module-variable spellings are refused
+because the interpreter's declaration namespace still conflates them. See
+`docs/backend/module_state.md` for details, including the separate existing JIT
+allocation-reclamation limit. This packet does not change syntax, ownership
+rules or the locked ABI.
+
+Combined Windows gates: both builds, 294 default / 473 JIT tests, 612 interpreter
+fixtures, parity 559 PASS / 53 SKIP / 0 disagreements. Eight old SKIPs become
+native passes; replay of 632 old fixtures/examples found no regressions.

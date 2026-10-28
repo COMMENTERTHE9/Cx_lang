@@ -1,0 +1,21 @@
+a: t8 = 127
+b: t16 = 32767
+c: t32 = 2147483647
+d: t64 = 9223372036854775807
+f: f64 = 1.5
+fnc: t8 step_a() { a += 1
+a }
+fnc: t16 step_b() { b += 1
+b }
+fnc: t32 step_c() { c += 1
+c }
+fnc: t64 step_d() { d += 1
+d }
+fnc: f64 step_f() { f *= 2.0
+f }
+print(step_a())
+print(step_b())
+print(step_c())
+print(step_d())
+print(step_f())
+print(step_f())

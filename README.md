@@ -69,15 +69,20 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 - Interpreter fixture gate: **585/585 passed**
 - JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
-These results cover the stored fixtures, not every accepted program. Restart
-probes found silent printing disagreements outside that coverage. The printing
-recovery in this checkout passes **287 default tests**, **463 JIT tests**, and
-**598 interpreter fixtures** after integration with PRs #462 and #467; parity is
-**537 PASS / 61 SKIP / 0 PARITY_FAIL**.
-The two added SKIPs cover explicitly refused aggregate interpolation. See
-[the restart briefing](report/restart_2026_10_28.md) for its separate results,
-remaining limitations, and the next milestone. The latest tagged release remains
-v0.3.3; later compiler work is not a new release.
+These results cover the stored fixtures, not every accepted program. The
+reviewed restart work now passes **294 default tests**, **473 JIT tests**, and
+**612 interpreter fixtures**; parity is **559 PASS / 53 SKIP / 0 PARITY_FAIL**.
+It corrects printing, generic conversion, nested-function scoping and lexical
+`.copy` ownership, then adds native numeric module constants and mutable state.
+Eight previously unsupported programs now pass; replay of 632 existing fixtures
+and examples found no regressions. The two printing SKIPs explicitly refuse
+aggregate interpolation.
+
+Try `examples/tooling_metrics.cx` with the interpreter and `--backend=cranelift` for a
+multifile example using persistent state, constants, arrays and fallible calls.
+See [the restart briefing](report/restart_2026_10_28.md) and
+[module-state scope](docs/backend/module_state.md) for results and remaining
+limits. The latest tagged release remains v0.3.3; this is development work.
 
 A fixture is **SKIP** when the JIT refuses it as unsupported (exit 127), or an
 explicit exclusion applies. Lowering and code-generation failures also use that
