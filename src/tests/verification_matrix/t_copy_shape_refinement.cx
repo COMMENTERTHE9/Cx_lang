@@ -1,0 +1,14 @@
+fnc: t64 run() {
+    a: t8 = 1
+    b: t64 = 300
+    let x
+    x = a
+    x = b
+    fnc: t64 peek(h.copy) { h.val }
+    let h
+    h = Handle.new(42)
+    out: t64 = peek(h.copy)
+    print(out)
+    x
+}
+print(run())

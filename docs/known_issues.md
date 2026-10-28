@@ -4064,3 +4064,33 @@ Both builds passed; 305 default / 484 JIT tests, 646 interpreter fixtures,
 587 PASS / 59 SKIP / zero parity failures. Independent review rechecked both
 findings. Replay of 679 prior fixtures/examples on each backend found zero
 stdout/exit changes or timeouts. Standard JIT clippy passed with 111 warnings.
+
+## 51. Native copy bundles and capture-free nested declarations
+
+*(Fixed within the concrete-shape subset, 2026-10-28.)*
+
+`copy_into` now lowers to private inline value structs; local mutations retain
+the interpreter's isolation. Implicit `.copy` and deprecated `.copy.free`
+parameters receive concrete argument shapes before signatures and layouts are
+built. Declared ordinary parameters still define their own shapes, including
+polymorphic `Err`. Aggregate arguments preserve evaluation-time snapshots;
+receiver parameters preserve mutation. Both void and value calls use the same
+copy-in/copy-out path.
+
+Nested functions without outer-local captures are lifted by their unique
+semantic names, including declarations inside value-producing branches. Lexical
+blocks retain updates to outer bindings and restore names on exit. Captured
+outer locals remain unsupported. Shape-changing copy writes and unsupported
+refined operations are refused before their erased representation can authorize
+a mismatched load, store, cast or runtime callback. Unknown bool copy/aggregate
+storage remains an explicit gap rather than silently becoming true.
+
+Nine IR regression units and four fixtures cover refinement, bundle isolation,
+multiple call shapes, Handle copy parameters and argument snapshots. Focused
+independent review verified corrections for receiver snapshots, scalar and
+aggregate copy storage, explicit returns, refined operators, Result payloads,
+array elements and indices. Both builds passed: 314 default / 493 JIT tests,
+650 interpreter fixtures, 602 PASS / 48 SKIP / zero parity failures. Replay of
+682 prior fixtures/examples recovered 15 former SKIPs, kept all 612 previously
+supported native outputs/exits, and left 55 unsupported; no disagreements or
+timeouts. Standard JIT clippy passed with the existing 111 warnings.

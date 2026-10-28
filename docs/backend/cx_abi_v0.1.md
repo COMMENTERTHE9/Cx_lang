@@ -59,14 +59,15 @@ Parameter passing follows platform C ABI:
 - Linux x64: SystemV — first 6 integer args in RDI, RSI, RDX, RCX, R8, R9. First 8 float args in XMM0–XMM7.
 - Windows x64: fastcall — first 4 args in RCX, RDX, R8, R9 (integer) or XMM0–XMM3 (float).
 
-### Copy Param Bleed-Back — POST-0.1
+### Copy parameters
 
-Copy params (`.copy`, `.copy.free`, `copy_into`) are post-0.1 for the compiled backend. The interpreter handles them correctly via `bleed_back` HashMap in `ScopeFrame`.
-
-When copy param support lands in the compiled backend:
-- Use hidden out-pointer pattern — callee receives a pointer to caller's variable, writes modified value back through it on return.
-- Observable behavior must match interpreter exactly.
-- Tests t10–t13 cover copy param semantics and must pass identically through both interpreter and compiled paths.
+`.copy` uses a caller-allocated slot with copy-in and copy-out on every return.
+`.copy.free` passes an isolated value and remains deprecated. Untyped copy
+parameters are specialized by concrete argument shape before ABI planning.
+`copy_into` is an isolated bundle of named values using a private inline struct
+layout, with no write-back to the bundled caller variables. Tests t10–t13 now
+execute on both paths. See [copy shapes](copy_shapes.md) for the specialization,
+snapshot and safety rules. The external C calling convention is unchanged.
 
 ---
 
