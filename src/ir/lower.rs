@@ -114,6 +114,7 @@ type BindingMap = HashMap<BindingId, LoweredValue>;
 #[derive(Clone)]
 struct FunctionSignature {
     param_types: Vec<IrType>,
+    param_semantic_types: Vec<SemanticType>,
     /// Per parameter: `Some(T)` when it is a `.copy` parameter whose caller
     /// slot holds a `T`, `None` otherwise. Filled by `copy_param_pointee`, the
     /// same function the callee reads, so the caller's slot and the callee's
@@ -463,6 +464,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                 param_types.push(IrType::Ptr); // hidden trailing return slot
             }
             table.insert(function.name.clone(), FunctionSignature {
+                param_semantic_types: function.params.iter().map(|p| p.ty.clone().unwrap_or_else(|| copy_param_pointee(p, target))).collect(),
                 param_types,
                 copy_pointees,
                 return_ty,
@@ -541,6 +543,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                     // Methods cannot declare a copy kind (rejected at analysis
                     // time), so no parameter here is ever passed by address.
                     FunctionSignature {
+                        param_semantic_types: method_alias_params.get(i).into_iter().flatten().chain(method.params.iter()).filter_map(|p| p.ty.clone()).collect(),
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
                         return_ty,
@@ -627,6 +630,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                     // Methods cannot declare a copy kind (rejected at analysis
                     // time), so no parameter here is ever passed by address.
                     FunctionSignature {
+                        param_semantic_types: method_receiver_params.get(i).into_iter().flatten().chain(method.params.iter()).filter_map(|p| p.ty.clone()).collect(),
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
                         return_ty,
@@ -774,6 +778,7 @@ struct ModuleBinding {
     id: GlobalId,
     name: String,
     ty: IrType,
+    semantic_ty: SemanticType,
 }
 
 type ModuleBindings = HashMap<BindingId, ModuleBinding>;
@@ -782,7 +787,7 @@ struct LoweringCtx {
     builder: IrBuilder,
     finished_blocks: Vec<IrBlock>,
     /// All top-level bindings, for refusing representations not yet supported
-    /// in shared storage. Numeric captures use `module_bindings`; uncaptured
+    /// in shared storage. Numeric/enum captures use `module_bindings`; uncaptured
     /// top-level values keep their original main-local SSA path.
     top_level_bindings: HashSet<BindingId>,
     module_bindings: ModuleBindings,
@@ -818,6 +823,9 @@ struct LoweringCtx {
     /// their semantic identity: an aggregate is not a string descriptor.
     enum_variants: EnumVariantNames,
     binding_print_types: HashMap<BindingId, SemanticType>,
+    /// Declared/inferred storage types for nominal argument checks. Formatting
+    /// summaries may intentionally lose type information after an Err assignment.
+    binding_decl_types: HashMap<BindingId, SemanticType>,
 }
 
 /// An enum's variants by tag: (tag, name), from the program's declarations.
@@ -866,6 +874,7 @@ type CopyWriteback = (ValueId, BindingId, SemanticType);
 struct FunctionLoweringSpec {
     name: String,
     return_ty: Option<IrType>,
+    return_semantic_ty: Option<SemanticType>,
     allow_return_stmt: bool,
     /// Caller-allocated return-slot param (value id + struct name) when this
     /// function returns a struct. Every return site copies the result struct
@@ -901,6 +910,7 @@ impl LoweringCtx {
             function_name: String::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
+            binding_decl_types: HashMap::new(),
         }
     }
 
@@ -994,7 +1004,7 @@ pub fn lower_program(program: &SemanticProgram) -> Result<IrModule, LoweringErro
     lower_program_inner(program, false)
 }
 
-/// Every declaration visible to a top-level function. Shared numeric storage
+/// Every declaration visible to a top-level function. Shared scalar storage
 /// handles supported representations; the remaining IDs retain an explicit
 /// refusal rather than accidentally becoming function-local SSA values.
 fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
@@ -1035,7 +1045,7 @@ fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
     set
 }
 
-/// Numeric scalar bindings have a stable storage representation. A byte after
+/// Numeric and enum bindings have a stable scalar storage representation. A byte after
 /// the value tracks the interpreter's lifecycle: absent (0), declared (1),
 /// initialized (2). Initializers still execute exactly once, in source order.
 fn module_storage_plan(program: &SemanticProgram) -> Result<(Vec<IrGlobal>, ModuleBindings), LoweringError> {
@@ -1063,13 +1073,14 @@ fn module_storage_plan(program: &SemanticProgram) -> Result<(Vec<IrGlobal>, Modu
             | SemanticStmt::Decl { binding, name, ty: Some(ty), .. } => (binding, name, ty),
             _ => continue,
         };
-        if !matches!(ty, SemanticType::I8 | SemanticType::I16 | SemanticType::I32 | SemanticType::I64 | SemanticType::I128 | SemanticType::F64) {
+        if !matches!(ty, SemanticType::I8 | SemanticType::I16 | SemanticType::I32 | SemanticType::I64 | SemanticType::I128 | SemanticType::F64 | SemanticType::Enum(_)) {
             continue;
         }
+        let semantic_ty = ty.clone();
         let ty = lower_type(ty)?;
         let id = GlobalId(u32::try_from(globals.len()).map_err(|_| LoweringError::UnsupportedSemanticConstruct { construct: "too many module bindings".into() })?);
         globals.push(IrGlobal { id, name: name.clone(), size: ty.size_bytes() + 1, align: ty.align_bytes() });
-        bindings.insert(*binding, ModuleBinding { id, name: name.clone(), ty });
+        bindings.insert(*binding, ModuleBinding { id, name: name.clone(), ty, semantic_ty });
     }
     Ok((globals, bindings))
 }
@@ -1120,8 +1131,12 @@ fn read_module_binding(binding: BindingId, ctx: &mut LoweringCtx, active: &mut A
     Ok(LoweredValue { value, ty: global.ty })
 }
 
-fn write_module_binding(binding: BindingId, value: &LoweredValue, initializing: bool, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+fn write_module_binding(binding: BindingId, value: &LoweredValue, source_ty: &SemanticType, initializing: bool, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
     let global = ctx.module_bindings[&binding].clone();
+    // Generic assignment compatibility is permissive before specialization.
+    // Enum tags erase to I8, so representation equality cannot authorize a
+    // numeric value or a different enum type to enter this binding.
+    ensure_enum_identity(&format!("module assignment to '{}'", global.name), &global.semantic_ty, source_ty)?;
     ensure_type_match(&format!("module binding '{}'", global.name), global.ty.clone(), value.ty.clone())?;
     let ptr = module_address(&global, ctx, active)?;
     if !initializing { require_module_state(&global, ptr, false, ctx, active)?; }
@@ -1129,10 +1144,71 @@ fn write_module_binding(binding: BindingId, value: &LoweredValue, initializing: 
     mark_module_state(&global, ptr, 2, ctx, active)
 }
 
+/// Nominal enum identity must survive specialization and representation erasure.
+/// Check typed boundaries before I8 equality can authorize an incompatible value.
+fn ensure_enum_identity(context: &str, expected: &SemanticType, actual: &SemanticType) -> Result<(), LoweringError> {
+    let incompatible = || LoweringError::UnsupportedSemanticConstruct {
+        construct: format!("enum identity in {context}: expected {}, got {}",
+            crate::frontend::semantic::type_name(expected), crate::frontend::semantic::type_name(actual)),
+    };
+    match (expected, actual) {
+        (SemanticType::Enum(_), _) | (_, SemanticType::Enum(_)) if expected != actual && *expected != SemanticType::Unknown => {
+            return Err(incompatible());
+        }
+        (SemanticType::Array(_, want), SemanticType::Array(_, got)) => ensure_enum_identity(context, want, got)?,
+        (SemanticType::Result(want), SemanticType::Result(got)) => {
+            ensure_enum_identity(context, want, got)?;
+        }
+        (SemanticType::Array(_, want) | SemanticType::Result(want), _) if contains_enum(want) => return Err(incompatible()),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn ensure_enum_expr(context: &str, expected: &SemanticType, expr: &SemanticExpr) -> Result<(), LoweringError> {
+    match (expected, &expr.kind) {
+        // Err is polymorphic and carries a string, not a value of the Ok type.
+        (SemanticType::Result(_), SemanticExprKind::ResultErr { .. }) => Ok(()),
+        (SemanticType::Result(payload), SemanticExprKind::ResultOk { expr: value }) => ensure_enum_expr(context, payload, value),
+        (SemanticType::Array(_, element), SemanticExprKind::ArrayLit { elements }) => {
+            for value in elements { ensure_enum_expr(context, element, value)?; }
+            Ok(())
+        }
+        _ => ensure_enum_identity(context, expected, &expr.ty),
+    }
+}
+
+fn contains_enum(ty: &SemanticType) -> bool {
+    match ty {
+        SemanticType::Enum(_) => true,
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) => contains_enum(inner),
+        _ => false,
+    }
+}
+
+fn check_enum_call_args(callee: &str, args: &[SemanticCallArg], ctx: &LoweringCtx) -> Result<(), LoweringError> {
+    let Some(signature) = ctx.signature_table.get(callee) else { return Ok(()); };
+    for (arg, expected) in args.iter().zip(&signature.param_semantic_types) {
+        let actual = match arg {
+            SemanticCallArg::Expr(expr) => {
+                ensure_enum_expr(&format!("call to '{callee}'"), expected, expr)?;
+                continue;
+            }
+            SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => {
+                ctx.module_bindings.get(binding).map(|g| g.semantic_ty.clone())
+                    .or_else(|| ctx.binding_decl_types.get(binding).cloned()).unwrap_or(SemanticType::Unknown)
+            }
+            _ => SemanticType::Unknown,
+        };
+        ensure_enum_identity(&format!("call to '{callee}'"), expected, &actual)?;
+    }
+    Ok(())
+}
+
 /// The refusal for top-level representations without shared-storage support.
 ///
 /// An honest SKIP rather than an internal-invariant message: nothing is wrong
-/// with the program or with lowering's bookkeeping — numeric scalar captures
+/// with the program or with lowering's bookkeeping — numeric/enum captures
 /// have storage, but the requested representation does not yet.
 fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> LoweringError {
     LoweringError::UnsupportedSemanticConstruct {
@@ -1435,6 +1511,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
+        return_semantic_ty: None,
         allow_return_stmt: false,
         ret_slot: None,
         copy_writebacks: Vec::new(),
@@ -1587,6 +1664,7 @@ fn lower_semantic_function(
     }
     for param in &function.params {
         ctx.binding_names.insert(param.name.clone(), param.binding);
+        ctx.binding_decl_types.insert(param.binding, param.ty.clone().unwrap_or_else(|| copy_param_pointee(param, ctx.target)));
         if let Some(ty) = &param.ty {
             record_binding_print_type(&mut ctx.binding_print_types, param.binding, ty.clone());
         }
@@ -1594,6 +1672,7 @@ fn lower_semantic_function(
     let spec = FunctionLoweringSpec {
         name: function.name.clone(),
         return_ty: return_ty.clone(),
+        return_semantic_ty: function.return_ty.clone(),
         allow_return_stmt: true,
         ret_slot,
         copy_writebacks: copy_writebacks.clone(),
@@ -1657,6 +1736,9 @@ fn lower_semantic_function(
     // Explicit returns already finished copy-out and any aggregate return slot.
     if let Some(mut active) = current {
         if let Some(ret_expr) = &function.ret_expr {
+            if let Some(expected) = &spec.return_semantic_ty {
+                ensure_enum_expr("trailing return", expected, ret_expr)?;
+            }
             let lowered = lower_expr(ret_expr, &mut ctx, &mut active)?;
             let expected =
                 spec.return_ty
@@ -1728,6 +1810,7 @@ fn lower_stmt(
         SemanticStmt::GeneDef { .. } => Ok(Some(current)),
         SemanticStmt::PhenDef { .. } => Ok(Some(current)),
         SemanticStmt::Decl { binding, ty, .. } => {
+            if let Some(ty) = ty { ctx.binding_decl_types.insert(*binding, ty.clone()); }
             if let Some(global) = ctx.module_bindings.get(binding).cloned() {
                 let ptr = module_address(&global, ctx, &mut current)?;
                 mark_module_state(&global, ptr, 1, ctx, &mut current)?;
@@ -1738,6 +1821,16 @@ fn lower_stmt(
             Ok(Some(current))
         }
         SemanticStmt::Assign { target, expr, .. } => {
+            let expected = match target {
+                SemanticLValue::Binding { ty, .. } | SemanticLValue::DotAccess { ty, .. } => ty,
+                SemanticLValue::Index { elem_ty, .. } => elem_ty,
+            };
+            ensure_enum_expr("assignment", expected, expr)?;
+            if let SemanticLValue::Binding { binding, ty, .. } = target {
+                ctx.binding_decl_types.entry(*binding).or_insert_with(|| {
+                    if matches!(ty, SemanticType::Unknown | SemanticType::Numeric) { expr.ty.clone() } else { ty.clone() }
+                });
+            }
             let lowered = lower_expr(expr, ctx, &mut current)?;
             match target {
                 SemanticLValue::Binding { binding, name, ty } => {
@@ -1746,7 +1839,7 @@ fn lower_stmt(
                     // global's id, so the program compiled, exited 0, and lost
                     // the write. Refuse instead.
                     if ctx.module_bindings.contains_key(binding) {
-                        write_module_binding(*binding, &lowered, false, ctx, &mut current)?;
+                        write_module_binding(*binding, &lowered, &expr.ty, false, ctx, &mut current)?;
                         return Ok(Some(current));
                     }
                     if ctx.top_level_bindings.contains(binding) {
@@ -1813,6 +1906,8 @@ fn lower_stmt(
         SemanticStmt::TypedAssign {
             binding, ty, expr, ..
         } => {
+            ensure_enum_expr("typed assignment", ty, expr)?;
+            ctx.binding_decl_types.insert(*binding, ty.clone());
             // D2.x-A1: a bool-typed `?` constructs the three-state-bool unknown
             // wire value (TBool 2, #044), mirroring the interpreter's
             // assignment-site coercion `(Type::Bool, Value::Unknown) => TBool(2)`
@@ -1856,7 +1951,7 @@ fn lower_stmt(
             };
             let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
             if ctx.module_bindings.contains_key(binding) {
-                write_module_binding(*binding, &LoweredValue { value: src_value, ty: bind_ty }, true, ctx, &mut current)?;
+                write_module_binding(*binding, &LoweredValue { value: src_value, ty: bind_ty }, &expr.ty, true, ctx, &mut current)?;
                 return Ok(Some(current));
             }
             let dst = ctx.fresh_value();
@@ -1955,6 +2050,9 @@ fn lower_stmt(
             }
             match (&spec.return_ty, expr) {
                 (Some(expected), Some(expr)) => {
+                    if let Some(semantic_ty) = &spec.return_semantic_ty {
+                        ensure_enum_expr("explicit return", semantic_ty, expr)?;
+                    }
                     let lowered = lower_expr(expr, ctx, &mut current)?;
                     ensure_type_match("function return", expected.clone(), lowered.ty)?;
                     let ret_value = finish_return(spec, Some(lowered.value), ctx, &mut current)?;
@@ -1985,7 +2083,7 @@ fn lower_stmt(
             if ctx.module_bindings.contains_key(binding) {
                 let lhs = SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
                 let result = lower_binary(&lhs, *op, operand, ty, ctx, &mut current)?;
-                write_module_binding(*binding, &result, false, ctx, &mut current)?;
+                write_module_binding(*binding, &result, ty, false, ctx, &mut current)?;
                 return Ok(Some(current));
             }
             if ctx.top_level_bindings.contains(binding) {
@@ -2233,7 +2331,7 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
         // (runtime/exec.rs's ConstDecl arm → `set_var_typed`). Lowering
         // therefore mirrors `TypedAssign`'s general path exactly — lower the
         // RHS, bind the SSA value to the const's binding — rather than
-        // materializing a constant expression on every use. Captured numeric
+        // materializing a constant expression on every use. Captured scalar
         // constants instead initialize module storage at this same point.
         //
         // Immutability needs no lowering-side enforcement: `const` is
@@ -2247,6 +2345,8 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
         // with a Bool target. If that changes, this arm should gain the same
         // ConstInt(I8,2)+Cast construction rather than silently binding wrong.
         SemanticStmt::ConstDecl { binding, ty, value, .. } => {
+            ensure_enum_expr("const declaration", ty, value)?;
+            ctx.binding_decl_types.insert(*binding, ty.clone());
             let lowered = lower_expr(value, ctx, &mut current)?;
             let target_ty = lower_type(ty)?;
             let (bind_value, bind_ty) = if target_ty == IrType::Bool && lowered.ty == IrType::TBool {
@@ -2273,7 +2373,7 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
                 (lowered.value, target_ty)
             };
             if ctx.module_bindings.contains_key(binding) {
-                write_module_binding(*binding, &LoweredValue { value: bind_value, ty: bind_ty }, true, ctx, &mut current)?;
+                write_module_binding(*binding, &LoweredValue { value: bind_value, ty: bind_ty }, &value.ty, true, ctx, &mut current)?;
                 return Ok(Some(current));
             }
             let dst = ctx.fresh_value();
@@ -2932,6 +3032,9 @@ fn lower_expr(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    if let (SemanticType::Result(payload_ty), SemanticExprKind::ResultOk { expr: payload }) = (&expr.ty, &expr.kind) {
+        ensure_enum_expr("Ok payload", payload_ty, payload)?;
+    }
     match &expr.kind {
         SemanticExprKind::Value(value) => lower_value(value, &expr.ty, ctx, active),
         SemanticExprKind::VarRef { binding, name } => {
@@ -2970,6 +3073,7 @@ fn lower_expr(
             lower_binary(lhs, *op, rhs, &expr.ty, ctx, active)
         }
         SemanticExprKind::Cast { expr, from, to } => {
+            ensure_enum_identity("cast", to, from)?;
             let to_ty = lower_type(to)?;
             if *from == SemanticType::Numeric {
                 if ir_int_range(&to_ty).is_some() {
@@ -3116,6 +3220,7 @@ fn lower_expr(
                     ),
                 });
             }
+            check_enum_call_args(callee, args, ctx)?;
             let (param_types, copy_pointees, return_ty, ret_slot_ty) = {
                 let sig = ctx.signature_table.get(callee).ok_or_else(|| {
                     LoweringError::UnresolvedSemanticArtifact {
@@ -3282,7 +3387,7 @@ fn lower_expr(
                             ty: ty.clone(),
                         })?;
                         let value = LoweredValue { value: reloaded, ty };
-                        if ctx.module_bindings.contains_key(&binding) { write_module_binding(binding, &value, false, ctx, active)?; }
+                        if ctx.module_bindings.contains_key(&binding) { write_module_binding(binding, &value, &sem_ty, false, ctx, active)?; }
                         else { active.bindings.insert(binding, value); }
                     }
                 }
@@ -3500,6 +3605,7 @@ fn lower_expr(
                     .get(field_idx)
                     .map(|(_, t)| t.clone());
                 if let Some(sem_ty) = field_sem_ty {
+                    ensure_enum_expr("struct field", &sem_ty, &field_expr.1)?;
                     if let Some((_, _, parts)) = ret_slot_plan(&sem_ty, &ctx.struct_table) {
                         let src = lower_expr(&field_expr.1, ctx, active)?;
                         copy_parts(src.value, 0, ptr, field_offset, &parts, ctx, active)?;
@@ -4479,8 +4585,9 @@ fn lower_when_stmt(
         // BindingId, scoped to this arm's body block only (enums are
         // tag-only, so there is no separate value to compute).
         let mut body_incoming = incoming.clone();
-        if let SemanticWhenPattern::EnumVariant { binding: Some((id, _)), .. } = &arm.pattern {
+        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, _)), .. } = &arm.pattern {
             body_incoming.insert(*id, scrutinee_val.clone());
+            ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
         }
         let body_block = ctx.start_block(vec![], body_incoming.clone());
         let body_id = body_block.id();
@@ -4882,8 +4989,9 @@ fn lower_when_expr(
         // Same whole-scrutinee alias as the statement form — see the comment
         // in `lower_when_stmt`.
         let mut body_incoming = incoming.clone();
-        if let SemanticWhenPattern::EnumVariant { binding: Some((id, _)), .. } = &arm.pattern {
+        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, _)), .. } = &arm.pattern {
             body_incoming.insert(*id, scrutinee_val.clone());
+            ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
         }
         let body_block = ctx.start_block(vec![], body_incoming.clone());
         let body_id = body_block.id();
@@ -5035,6 +5143,7 @@ fn lower_branch_value(
         let inline_spec = FunctionLoweringSpec {
             name: "<branch>".to_string(),
             return_ty: None,
+            return_semantic_ty: None,
             allow_return_stmt: false,
             ret_slot: None,
             copy_writebacks: Vec::new(),
@@ -5399,6 +5508,9 @@ fn resolve_field_ptr(
         })?;
 
     let field_ir_ty = info.fields[field_idx].1.clone();
+    if let Some((_, actual)) = info.sem_fields.get(field_idx) {
+        ensure_enum_identity("field access", field_sem_ty, actual)?;
+    }
     let field_offset = info.layout.field_offsets[field_idx];
 
     // Verify that the semantic field type agrees with what the struct table
@@ -5719,6 +5831,7 @@ fn fill_aggregate_slot(
     })?;
 
     for (i, elem_expr) in elements.iter().enumerate() {
+        ensure_enum_expr("array element", elem_sem_ty, elem_expr)?;
         let offset = base_offset + i * stride;
         match (&elem_expr.kind, ret_slot_plan(elem_sem_ty, &ctx.struct_table)) {
             // A nested literal writes into this same block.
@@ -5869,6 +5982,7 @@ fn lower_array_lit(
 
     // 2. Store each element at its stride-aligned byte offset.
     for (i, elem_expr) in elements.iter().enumerate() {
+        ensure_enum_expr("array element", elem_sem_ty, elem_expr)?;
         let lowered_elem = lower_expr(elem_expr, ctx, active)?;
         let byte_offset = i * layout.stride;
 
@@ -7446,6 +7560,7 @@ fn lower_void_call(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<(), LoweringError> {
+    check_enum_call_args(callee, args, ctx)?;
     if args.len() != param_types.len() {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!(
@@ -12484,6 +12599,40 @@ mod module_state_tests {
         let ir = from_source("const LIMIT: t64 = 7\nprint(LIMIT)\n");
         assert!(ir.globals.is_empty());
         assert!(!ir.functions.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::GlobalAddr { .. })));
+    }
+
+    #[test]
+    fn captured_enums_use_the_existing_byte_tag_representation() {
+        let ir = from_source("enum Phase { Idle, Busy }\nphase: Phase = Phase::Idle\nfnc: Phase current() { phase }\nprint(current())\n");
+        assert_eq!(ir.globals.len(), 1);
+        assert_eq!((ir.globals[0].size, ir.globals[0].align), (2, 1));
+        let getter = ir.functions.iter().find(|f| f.name == "current").unwrap();
+        assert!(getter.params.is_empty());
+        assert_eq!(getter.return_ty, Some(IrType::I8));
+        assert!(getter.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { ty: IrType::I8, .. })));
+    }
+
+    #[test]
+    fn specialized_module_enum_stores_preserve_semantic_identity() {
+        for argument in ["n", "Other::Second"] {
+            let source = format!("enum Phase {{ Idle, Active }}\nenum Other {{ First, Second }}\nphase: Phase = Phase::Idle\nfnc: t64 <T> set_phase(value: T) {{ phase = value; 0 }}\nn: t8 = 1\nprint(set_phase({argument}))\n");
+            let error = lower_program(&analyzed(&source)).expect_err("same-byte representation does not make an enum assignment valid");
+            assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+                if construct.contains("enum identity") && construct.contains("expected Phase")), "{error:?}");
+        }
+        for source in [
+            include_str!("../tests/verification_matrix/t_module_enum_generic_return_reject.cx"),
+            include_str!("../tests/verification_matrix/t_module_enum_generic_explicit_return_reject.cx"),
+            include_str!("../tests/verification_matrix/t_module_enum_generic_call_reject.cx"),
+            include_str!("../tests/verification_matrix/t_module_enum_generic_copy_reject.cx"),
+            include_str!("../tests/verification_matrix/t_module_enum_generic_local_reject.cx"),
+            include_str!("../tests/verification_matrix/t_module_enum_generic_struct_reject.cx"),
+            include_str!("../tests/verification_matrix/t_module_enum_generic_array_reject.cx"),
+        ] {
+            let error = lower_program(&analyzed(source)).expect_err("typed boundaries cannot disguise an incompatible enum value");
+            assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+                if construct.contains("enum identity") && construct.contains("expected Phase")), "{error:?}");
+        }
     }
 
     #[test]

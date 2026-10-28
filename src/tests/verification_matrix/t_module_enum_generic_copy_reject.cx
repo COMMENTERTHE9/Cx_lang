@@ -1,0 +1,8 @@
+// Specialization must retain enum identity at every typed boundary.
+enum Phase { Idle, Active }
+phase: Phase = Phase::Idle
+fnc: Phase current() { phase }
+n: t8 = 1
+fnc: t64 <T> corrupt(value.copy: T) { local: t8 = 1; value = local; 0 }
+print(corrupt(phase.copy))
+print(current())

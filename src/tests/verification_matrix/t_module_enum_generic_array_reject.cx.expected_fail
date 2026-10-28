@@ -1,0 +1,2 @@
+The reference rejects the incompatible enum value; native specialization
+refuses it before code generation. An IR unit pins the enum-identity check.

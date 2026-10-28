@@ -1,9 +1,9 @@
-# Native numeric module state
+# Native scalar module state
 
 ## Behavior
 
-Functions can read and write declared numeric scalar bindings at module scope:
-`t8`, `t16`, `t32`, `t64`, `t128` and `f64`, including immutable numeric
+Functions can read and write these declared scalar bindings at module scope:
+`t8`, `t16`, `t32`, `t64`, `t128` and `f64`, plus tag-only enum values and
 constants. The interpreter remains the reference. Source syntax and function
 calling conventions are unchanged; no hidden module-context parameter is added.
 
@@ -11,6 +11,22 @@ A binding captured by a lowered function receives module storage. Other top-leve
 values keep their existing SSA path, preserving established local and aggregate
 copy behavior. Every load/store uses the resolved BindingId, including imported
 modules, and a native call observes earlier calls' writes.
+
+Enums retain their existing one-byte tag representation. A captured enum uses
+two bytes: the value tag followed by the separate lifecycle byte. Enum type and
+variant names still come from semantic metadata for printing, matching and
+function signatures. Values with tags 128 and 255 retain their bit patterns.
+Existing refusals for duplicate enum type names across modules and declarations
+with more than 256 variants remain in force.
+
+Typed boundaries also retain semantic enum identity. Generic checks are
+permissive before specialization, so an I8 number or a different enum can
+otherwise enter a binding, parameter, return value, field or element under an
+incorrect enum type. Lowering checks these boundaries before representation
+erasure and refuses incompatible specializations before code generation.
+Same-enum generic calls/returns and copy arguments remain supported. Source
+regressions and an IR unit pin each refusal until shared analysis can diagnose
+these invalid specializations earlier.
 
 Each value has a private lifecycle byte:
 
@@ -85,6 +101,9 @@ Err(negative sample)
 Additional fixtures cover declaration order (reads and writes), declared but
 uninitialized storage, first assignment from a function, once-only initializers,
 all ordinary signed widths and float updates, and argument-time copy snapshots.
+Enum regressions cover persistent mutation, constants, imported state, copy-in/
+copy-out snapshots, declared-first assignment, upper byte-tag values, lifecycle
+failures and rejection of const write-back.
 IR/native unit tests cover shared state, fresh executions, invalid layouts and
 references, ABI preservation, stable printing and user-symbol collision safety.
 Use both builds and test feature sets, the parity harness, and Linux CI for the

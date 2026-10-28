@@ -1,0 +1,5 @@
+enum Phase { Idle, Active }
+let phase: Phase;
+fnc: Phase activate() { phase = Phase::Active; phase }
+fnc: Phase current() { phase }
+print(current())

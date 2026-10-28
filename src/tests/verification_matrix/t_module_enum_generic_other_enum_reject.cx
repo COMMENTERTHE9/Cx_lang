@@ -1,0 +1,6 @@
+enum Phase { Idle, Active }
+enum Other { First, Second }
+phase: Phase = Phase::Idle
+fnc: t64 <T> set_phase(value: T) { phase = value; 0 }
+print(set_phase(Other::Second))
+print(phase)

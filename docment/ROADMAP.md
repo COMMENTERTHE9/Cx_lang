@@ -39,6 +39,12 @@ trailing values are omitted after terminated paths, with semantic checking,
 copy-out and return-slot behavior preserved. The untyped Handle-return and
 imported-generic lowering failures remain open.
 
+Enum module constants/state now share the existing byte-tag representation and
+storage lifecycle. Typed-boundary checks retain enum identity after generic
+specialization, including call/return, copy and aggregate-element paths; valid
+named-pattern and Result copies remain supported. Invalid specializations are
+explicit refusals, with exact-error unit tests rather than parity SKIPs alone.
+
 The next packet should separate module-variable namespaces in the interpreter
 before enabling duplicate variable spellings across modules in native code.
 Then extend shared storage to bool and composite values through existing

@@ -1,0 +1,20 @@
+// Existing valid typed boundaries must remain supported by nominal checks.
+enum Phase { Idle, Active }
+fnc: Phase park(p.copy: Phase) { p = Phase::Active; p }
+phase: Phase = Phase::Idle
+when phase {
+    Phase::Idle as captured => print(park(captured.copy)),
+    _ => print(0),
+}
+choice: Phase = when phase {
+    Phase::Idle as captured => park(captured.copy),
+    _ => Phase::Idle,
+}
+print(choice)
+print(phase)
+fnc: Result<Phase> keep(p.copy: Result<Phase>) { p }
+r: Result<Phase> = Ok(Phase::Idle)
+r = Err("stopped")
+print(keep(r.copy))
+fnc: Result<Phase> pass_result(value: Result<Phase>) { value }
+print(pass_result(Err("direct")))

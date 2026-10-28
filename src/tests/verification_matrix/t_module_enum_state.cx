@@ -1,0 +1,36 @@
+// Enum state uses the same shared binding and argument-time copy rules.
+enum Phase { Idle, Running, Done }
+const START: Phase = Phase::Idle
+phase: Phase = Phase::Idle
+fnc: Phase current() { phase }
+fnc: Phase start_state() { START }
+fnc: Phase advance() { phase = Phase::Running; phase }
+fnc: Phase park(p.copy: Phase) { p = Phase::Done; p }
+fnc: Phase snapshot(p.copy: Phase, later: Phase) { p }
+fnc: t64 <T> save(value: T) { phase = value; 0 }
+fnc: Phase <T> echo(value: T) { value }
+fnc: Result<Phase> phase_result(ok: bool) {
+    if ok { return Ok(phase) }
+    Err("stopped")
+}
+print(start_state())
+print(current())
+print(advance())
+print(current())
+print(park(phase.copy))
+print(current())
+print(snapshot(phase.copy, advance()))
+print(current())
+when current() {
+    Phase::Done => print(7),
+    _ => print(0),
+}
+print(save(Phase::Idle))
+print(current())
+print(save(echo(Phase::Running)))
+print(current())
+let local;
+local = Phase::Idle
+print(park(local.copy))
+print(phase_result(true))
+print(phase_result(false))

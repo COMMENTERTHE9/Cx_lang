@@ -70,13 +70,16 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 - JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
 These results cover the stored fixtures, not every accepted program. The
-reviewed restart work now passes **295 default tests**, **474 JIT tests**, and
-**615 interpreter fixtures**; parity is **564 PASS / 51 SKIP / 0 PARITY_FAIL**.
+reviewed restart work now passes **297 default tests**, **476 JIT tests**, and
+**633 interpreter fixtures**; parity is **573 PASS / 60 SKIP / 0 PARITY_FAIL**.
 It corrects printing, generic conversion, nested-function scoping and lexical
-`.copy` ownership, then adds native numeric module constants and mutable state.
-Eight previously unsupported programs now pass; replay of 632 existing fixtures
-and examples found no regressions. The two printing SKIPs explicitly refuse
-aggregate interpolation. Explicit returns now omit unreachable statements and
+`.copy` ownership, then adds native numeric and enum module constants/state.
+Numeric storage converted eight old refusals to passes; explicit returns
+converted two more. The enum follow-up replayed 651 prior fixtures/examples
+without stdout or exit-status changes. Nine added SKIPs are invalid generic enum
+specializations that the interpreter rejects and native lowering explicitly
+refuses; IR tests pin those checks. The two printing SKIPs explicitly refuse
+aggregate interpolation. Explicit returns omit unreachable statements and
 trailing expressions; live fallthrough, copy-out and aggregate returns retain
 their existing behavior.
 

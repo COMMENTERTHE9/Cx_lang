@@ -1,0 +1,6 @@
+enum Phase { Idle, Active }
+phase: Phase = Phase::Idle
+fnc: t64 <T> set_phase(value: T) { phase = value; 0 }
+n: t8 = 1
+print(set_phase(n))
+print(phase)
