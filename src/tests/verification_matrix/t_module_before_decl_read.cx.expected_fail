@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+# Module lifecycle guards preserve the reference failure through the JIT trap channel.

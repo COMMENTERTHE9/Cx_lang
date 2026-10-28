@@ -149,9 +149,26 @@ pub struct ValueId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
 
+/// Largest alignment in the locked x64 ABI (I128). Keep global allocation
+/// within the Cranelift allocator's page-safe alignment range.
+pub const MAX_GLOBAL_ALIGNMENT: usize = 16;
+
+/// Module-owned zero-initialized storage, shared by every compiled function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GlobalId(pub u32);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrGlobal {
+    pub id: GlobalId,
+    pub name: String,
+    pub size: usize,
+    pub align: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IrModule {
     pub debug_name: String,
+    pub globals: Vec<IrGlobal>,
     pub functions: Vec<IrFunction>,
 }
 
@@ -197,6 +214,7 @@ mod tests {
     fn ir_module_can_hold_one_function() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],

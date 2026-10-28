@@ -1,4 +1,4 @@
-use crate::ir::types::{BlockId, IrType, ValueId};
+use crate::ir::types::{BlockId, GlobalId, IrType, ValueId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
@@ -21,6 +21,8 @@ pub enum CompareOp {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum IrInst {
+    /// Address of module storage, never a pointer into a callee stack frame.
+    GlobalAddr { dst: ValueId, global: GlobalId },
     ConstInt {
         dst: ValueId,
         ty: IrType,

@@ -1,0 +1,5 @@
+let x: t64;
+fnc: t64 set_value() { x = 7
+x }
+print(set_value())
+print(x)

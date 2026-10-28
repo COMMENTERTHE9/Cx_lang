@@ -1,0 +1,4 @@
+print(set_value())
+x: t64 = 7
+fnc: t64 set_value() { x = 9
+1 }

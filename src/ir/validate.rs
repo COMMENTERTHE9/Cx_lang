@@ -5,6 +5,7 @@ use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IrValidationError {
+    InvalidGlobal { id: crate::ir::types::GlobalId, detail: String },
     EmptyFunctionName {
         function_index: usize,
     },
@@ -124,6 +125,29 @@ pub fn runtime_intrinsic_names() -> HashSet<String> {
 
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();
+
+    let mut globals = HashSet::new();
+    for global in &module.globals {
+        if !globals.insert(global.id) {
+            errors.push(IrValidationError::InvalidGlobal { id: global.id, detail: "duplicate global id".into() });
+        }
+        if global.name.is_empty() || global.size == 0 || global.size > u32::MAX as usize
+            || !global.align.is_power_of_two() || global.align > crate::ir::types::MAX_GLOBAL_ALIGNMENT
+        {
+            errors.push(IrValidationError::InvalidGlobal { id: global.id, detail: "invalid global name, size or alignment".into() });
+        }
+    }
+    for function in &module.functions {
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if let IrInst::GlobalAddr { global, .. } = inst {
+                    if !globals.contains(global) {
+                        errors.push(IrValidationError::InvalidGlobal { id: *global, detail: format!("undefined global in {} block {:?}", function.name, block.id) });
+                    }
+                }
+            }
+        }
+    }
 
     // Seed known runtime intrinsic signatures before scanning user-defined functions.
     let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
@@ -320,6 +344,7 @@ fn validate_inst(
     errors: &mut Vec<IrValidationError>,
 ) {
     match inst {
+        IrInst::GlobalAddr { dst, .. } => define_value(function, block, *dst, IrType::Ptr, "GlobalAddr destination", defined_values, errors),
         IrInst::ConstInt { dst, ty, .. } => {
             if !matches!(
                 ty,
@@ -924,6 +949,7 @@ mod tests {
     fn int_main(insts: Vec<IrInst>, term: IrTerminator) -> IrModule {
         IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -942,6 +968,7 @@ mod tests {
     fn validates_empty_module() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![],
         };
 
@@ -952,6 +979,7 @@ mod tests {
     fn rejects_duplicate_block_id() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1080,6 +1108,7 @@ mod tests {
     fn rejects_malformed_synthetic_main_shape() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1109,6 +1138,7 @@ mod tests {
     fn accepts_multi_block_synthetic_main_cfg() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1176,6 +1206,7 @@ mod tests {
     fn rejects_duplicate_block_param_value() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1211,6 +1242,7 @@ mod tests {
     fn rejects_branch_condition_with_non_bool_type() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1253,6 +1285,7 @@ mod tests {
     fn rejects_jump_arg_mismatch_for_block_params() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1297,6 +1330,7 @@ mod tests {
         // Models an assertion: branch on bool, pass → Return, fail → Trap.
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1342,6 +1376,7 @@ mod tests {
         // A function that unconditionally traps is structurally valid IR.
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "always_fails".to_string(),
                 params: vec![],
@@ -1394,6 +1429,7 @@ mod tests {
     fn validates_normal_function_with_params_and_return_value() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "add1".to_string(),
                 params: vec![IrParam {
@@ -1436,6 +1472,7 @@ mod tests {
     fn real_main_with_params_is_not_forced_into_synthetic_main_shape() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![IrParam {
@@ -1475,6 +1512,7 @@ mod tests {
     fn valid_for_loop_module() -> IrModule {
         IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1584,6 +1622,7 @@ mod tests {
     fn single_block_function(name: &str) -> IrModule {
         IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: name.to_string(),
                 params: vec![],
@@ -1731,6 +1770,7 @@ mod tests {
     fn rejects_void_function_param_type() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![IrParam { name: "x".to_string(), ty: IrType::Void }],
@@ -1752,6 +1792,7 @@ mod tests {
     fn rejects_void_function_return_ty() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1775,6 +1816,7 @@ mod tests {
         // continue to validate — the new guard only rejects Some(IrType::Void).
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1794,6 +1836,7 @@ mod tests {
     fn rejects_void_block_param_type() {
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1930,6 +1973,7 @@ mod tests {
         // has no IrFunction entry in the module — it is seeded by known_intrinsic_sigs.
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1958,6 +2002,7 @@ mod tests {
         // cx_printn expects I64; passing I32 must produce a type-mismatch error.
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1998,6 +2043,7 @@ mod tests {
         // a return_ty must be rejected.
         let module = IrModule {
             debug_name: "m".to_string(),
+            globals: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2029,5 +2075,54 @@ mod tests {
             "expected void-return shape error for cx_printn, got: {:?}",
             errors
         );
+    }
+}
+
+
+#[cfg(test)]
+mod module_global_tests {
+    use super::*;
+    use crate::ir::types::{GlobalId, IrGlobal};
+
+    fn module() -> IrModule {
+        IrModule {
+            debug_name: "globals".into(),
+            globals: vec![IrGlobal { id: GlobalId(7), name: "counter".into(), size: 8, align: 8 }],
+            functions: vec![IrFunction {
+                name: "read_global".into(), params: vec![], return_ty: Some(IrType::I64),
+                blocks: vec![IrBlock { id: BlockId(0), params: vec![],
+                    insts: vec![IrInst::GlobalAddr { dst: ValueId(0), global: GlobalId(7) },
+                        IrInst::Load { dst: ValueId(1), ty: IrType::I64, ptr: ValueId(0) }],
+                    term: IrTerminator::Return { value: Some(ValueId(1)) },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn validates_global_addresses_and_rejects_missing_or_duplicate_storage() {
+        let good = module();
+        assert_eq!(validate_module(&good), Ok(()));
+        let mut missing = module(); missing.globals.clear();
+        assert!(validate_module(&missing).unwrap_err().iter().any(|e| matches!(e, IrValidationError::InvalidGlobal { detail, .. } if detail.contains("undefined"))));
+        let mut duplicate = module(); duplicate.globals.push(duplicate.globals[0].clone());
+        assert!(validate_module(&duplicate).unwrap_err().iter().any(|e| matches!(e, IrValidationError::InvalidGlobal { detail, .. } if detail.contains("duplicate"))));
+    }
+
+    #[test]
+    fn rejects_invalid_global_layouts() {
+        for (size, align) in [(0, 8), (8, 0), (8, 3), (8, 32), (8, 8192)] {
+            let mut ir = module(); ir.globals[0].size = size; ir.globals[0].align = align;
+            assert!(validate_module(&ir).unwrap_err().iter().any(|e| matches!(e, IrValidationError::InvalidGlobal { .. })));
+        }
+    }
+
+    #[test]
+    fn global_ir_printing_is_stable_and_names_storage() {
+        let ir = module();
+        let printed = crate::ir::printer::print_module(&ir);
+        assert_eq!(printed, crate::ir::printer::print_module(&ir));
+        assert!(printed.contains("global @g7 counter size 8 align 8"));
+        assert!(printed.contains("global_addr @g7"));
     }
 }

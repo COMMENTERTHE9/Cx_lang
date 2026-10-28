@@ -1,0 +1,3 @@
+print(read_value())
+x: t64 = 7
+fnc: t64 read_value() { x }
