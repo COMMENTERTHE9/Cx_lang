@@ -1,0 +1,6 @@
+// .copy writes back and must honor the same immutability rules as assignment.
+fnc: t64 inc(x.copy: t64) { x += 1
+x }
+const g: t64 = 1
+fnc: t64 wrap() { inc(g.copy) }
+print(wrap())

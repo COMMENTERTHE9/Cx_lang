@@ -3889,3 +3889,35 @@ Remaining gaps include interpolation's flat name map (scope shadowing),
 non-identifier placeholders, erased generic-struct types, and unimplemented
 composite/large-payload formatters. The generic enum construction probe is
 currently rejected by semantic analysis on both backends before printing.
+
+
+## 46. Copy write-back targeted the immediate frame rather than the lexical binding
+
+**Status: fixed on `codex/copy-argument-owner`, awaiting PR integration.**
+A function passing a module variable to another function as `.copy` returned the
+updated parameter but left the module variable unchanged. The runtime recorded
+the immediate caller frame even when that frame did not own the target, and
+resolved copy arguments by name despite carrying their BindingId. A caller's
+same-named parameter could therefore supply the wrong value as well.
+
+Argument snapshots now resolve by BindingId; write-back retains the actual
+owning frame and binding identity. Recursion uses the nearest active owner.
+Scope teardown reads the parameter and writes the target by ID, while names
+remain for diagnostics. Existing evaluation order, `.copy.free` isolation and
+the compiled by-address ABI are unchanged.
+
+The corrected ownership also exposed a pre-existing capability hole: `.copy`
+was accepted for constants and readonly loop counters. The central copy-argument
+contract now applies assignment capability checks by lexical binding identity.
+A mutable parameter shadowing a global const remains writable; const status is
+not a globally reserved spelling. Isolated
+`.copy.free` remains accepted. Fixtures `t_copy_global_owner` and
+`t_copy_outer_block_owner` pin module, shadowing, branch-frame and chained
+write-back behavior; `t_copy_const_target_reject` and `t_copy_loop_target_reject`
+pin shared analysis-time rejection. A semantic unit test includes the allowed
+isolated-copy counterpart.
+
+Both builds and fresh local suites passed: 288 default / 464 JIT tests, 603
+interpreter fixtures, parity 541 PASS / 62 SKIP / 0 disagreements. The remaining
+SKIP for the new global-owner program ends with native module-state lowering;
+its interpreter expectation already pins the correct target behavior.
