@@ -78,7 +78,7 @@ Eight previously unsupported programs now pass; replay of 632 existing fixtures
 and examples found no regressions. The two printing SKIPs explicitly refuse
 aggregate interpolation.
 
-Try `examples/tooling_metrics.cx` with the interpreter and `--backend=jit` for a
+Try `examples/tooling_metrics.cx` with the interpreter and `--backend=cranelift` for a
 multifile example using persistent state, constants, arrays and fallible calls.
 See [the restart briefing](report/restart_2026_10_28.md) and
 [module-state scope](docs/backend/module_state.md) for results and remaining
