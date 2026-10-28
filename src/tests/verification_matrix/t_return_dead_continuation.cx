@@ -1,0 +1,32 @@
+// Returns end a path; a live fallthrough still evaluates its trailing value.
+hits: t64 = 0
+fnc: t64 tick() { hits += 1; hits }
+fnc: t64 direct() {
+    return 7
+    hits += 100
+    tick()
+}
+fnc: t64 both(flag: bool) {
+    if flag { return 11; hits += 100 } else { return 13; hits += 100 }
+    hits += 100
+    tick()
+}
+fnc: t64 partial(flag: bool) {
+    if flag { return 17 }
+    tick()
+}
+print(direct())
+print(both(true))
+print(both(false))
+print(partial(true))
+print(partial(false))
+print(hits)
+i: t64 = 0
+total: t64 = 0
+while (i < 3) {
+    i += 1
+    if i == 2 { continue; total += 100 }
+    total += i
+    if i == 3 { break; total += 100 }
+}
+print(total)

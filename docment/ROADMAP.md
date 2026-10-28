@@ -34,6 +34,11 @@ a constant, independent entry state, arrays and fallible calls. Its useful outpu
 matches the interpreter. The restart report records the combined gate results,
 independent review findings and full old-corpus replay.
 
+The explicit-return lowering failure is also corrected: dead statements and
+trailing values are omitted after terminated paths, with semantic checking,
+copy-out and return-slot behavior preserved. The untyped Handle-return and
+imported-generic lowering failures remain open.
+
 The next packet should separate module-variable namespaces in the interpreter
 before enabling duplicate variable spellings across modules in native code.
 Then extend shared storage to bool and composite values through existing

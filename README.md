@@ -70,13 +70,15 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 - JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
 These results cover the stored fixtures, not every accepted program. The
-reviewed restart work now passes **294 default tests**, **473 JIT tests**, and
-**612 interpreter fixtures**; parity is **559 PASS / 53 SKIP / 0 PARITY_FAIL**.
+reviewed restart work now passes **295 default tests**, **474 JIT tests**, and
+**615 interpreter fixtures**; parity is **564 PASS / 51 SKIP / 0 PARITY_FAIL**.
 It corrects printing, generic conversion, nested-function scoping and lexical
 `.copy` ownership, then adds native numeric module constants and mutable state.
 Eight previously unsupported programs now pass; replay of 632 existing fixtures
 and examples found no regressions. The two printing SKIPs explicitly refuse
-aggregate interpolation.
+aggregate interpolation. Explicit returns now omit unreachable statements and
+trailing expressions; live fallthrough, copy-out and aggregate returns retain
+their existing behavior.
 
 Try `examples/tooling_metrics.cx` with the interpreter and `--backend=cranelift` for a
 multifile example using persistent state, constants, arrays and fallible calls.
