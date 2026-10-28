@@ -1,0 +1,8 @@
+// A const forbids writes to its own BindingId, not to an unrelated parameter
+// with the same spelling. This valid .copy path must remain supported.
+fnc: t64 inc(x.copy: t64) { x += 1
+x }
+const g: t64 = 1
+fnc: t64 local(g: t64) { inc(g.copy) }
+print(local(5))
+print(g)

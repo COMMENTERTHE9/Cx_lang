@@ -3908,14 +3908,16 @@ the compiled by-address ABI are unchanged.
 
 The corrected ownership also exposed a pre-existing capability hole: `.copy`
 was accepted for constants and readonly loop counters. The central copy-argument
-contract now applies the existing assignment capability checks. Isolated
+contract now applies assignment capability checks by lexical binding identity.
+A mutable parameter shadowing a global const remains writable; const status is
+not a globally reserved spelling. Isolated
 `.copy.free` remains accepted. Fixtures `t_copy_global_owner` and
 `t_copy_outer_block_owner` pin module, shadowing, branch-frame and chained
 write-back behavior; `t_copy_const_target_reject` and `t_copy_loop_target_reject`
 pin shared analysis-time rejection. A semantic unit test includes the allowed
 isolated-copy counterpart.
 
-Both builds and fresh local suites passed: 288 default / 464 JIT tests, 602
-interpreter fixtures, parity 540 PASS / 62 SKIP / 0 disagreements. The remaining
+Both builds and fresh local suites passed: 288 default / 464 JIT tests, 603
+interpreter fixtures, parity 541 PASS / 62 SKIP / 0 disagreements. The remaining
 SKIP for the new global-owner program ends with native module-state lowering;
 its interpreter expectation already pins the correct target behavior.

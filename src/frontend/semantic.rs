@@ -130,7 +130,7 @@ pub struct Analyzer {
     /// because `const` is top-level-only, so a const name is unambiguous for
     /// the whole file, and the index/field assignment forms carry only the
     /// base name of the target.
-    const_names: std::collections::HashSet<String>,
+    const_bindings: std::collections::HashSet<BindingId>,
     /// Bindings introduced as a `for` loop counter (audit C2). Keyed by
     /// `BindingId`, NOT by name: a loop body may legally shadow the counter's
     /// name in a nested scope (`for i { if .. { i: t64 = 5; i = 6 } }` is valid
@@ -186,7 +186,7 @@ impl Analyzer {
             gene_defs: HashMap::new(),
             phen_keys: std::collections::HashSet::new(),
             current_type_bounds: vec![],
-            const_names: std::collections::HashSet::new(),
+            const_bindings: std::collections::HashSet::new(),
             readonly_bindings: std::collections::HashSet::new(),
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
@@ -564,7 +564,7 @@ impl Analyzer {
     /// before either runs — the same reason the width checks and the
     /// ordering-comparison allowlist live here rather than in a backend.
     fn reject_const_assignment(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
-        if self.const_names.contains(name) {
+        if self.lookup_var(name).is_some_and(|info| self.const_bindings.contains(&info.binding)) {
             return Err(sem_err!(
                 pos,
                 "cannot assign to '{}' — it is declared const",
@@ -705,7 +705,7 @@ impl Analyzer {
                 }
                 semantic_value = insert_cast_if_needed(semantic_value, &sem_ty);
                 let binding = self.declare(name, Some(ty.clone()), Some(sem_ty.clone()), true, *pos)?;
-                self.const_names.insert(name.clone());
+                self.const_bindings.insert(binding);
                 Ok(SemanticStmt::ConstDecl {
                     binding,
                     name: name.clone(),
@@ -6572,6 +6572,10 @@ print(result + result2)
         assert!(constant.contains("declared const"), "{constant}");
         let counter = single_file_errors(&format!("{prefix}for i in 0..2 {{ print(inc(i.copy)) }}\n"));
         assert!(counter.contains("read-only"), "{counter}");
+        // An unrelated same-named parameter is mutable; const is a property
+        // of the lexical binding, not a globally reserved variable name.
+        let shadow = format!("{prefix}const g: t64 = 1\nfnc: t64 local(g: t64) {{ inc(g.copy) }}\nprint(local(5))\nprint(g)\n");
+        analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
     }
