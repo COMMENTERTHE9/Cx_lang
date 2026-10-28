@@ -2888,12 +2888,43 @@ fn lower_expr(
             let lowered = lower_expr(expr, ctx, active)?;
             let from_ty = lower_type(from)?;
             ensure_type_match("cast source", from_ty.clone(), lowered.ty)?;
+            // A conversion of a generic `T` value (§43) whose instantiation is
+            // not a number — which analysis cannot see in the generic body —
+            // would convert a representation: a struct's or string's address,
+            // an enum's tag, a packed `Result`, a handle. Refuse it, by the
+            // instantiated SEMANTIC type: an enum, a `Result` and a handle lower
+            // to integer IR types and were converted as numbers.
+            if !matches!(
+                from,
+                SemanticType::I8
+                    | SemanticType::I16
+                    | SemanticType::I32
+                    | SemanticType::I64
+                    | SemanticType::I128
+                    | SemanticType::F64
+            ) {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: format!(
+                        "converting a {} to {} — a generic value of a type that is not a number, where a number is declared",
+                        crate::frontend::semantic::type_name(from),
+                        crate::frontend::semantic::type_name(to)
+                    ),
+                });
+            }
             // Cranelift has no f64 → i128 conversion (`fcvt_to_sint_sat` stops at
             // 64 bits, and saturating through i64 would be wrong past its range):
             // the backend used to PANIC on it. Refuse instead (known_issues §33).
             if from_ty == IrType::F64 && to_ty == IrType::I128 {
                 return Err(LoweringError::UnsupportedSemanticConstruct {
                     construct: "converting f64 to t128 — compiled code has no such conversion yet"
+                        .to_string(),
+                });
+            }
+            // Nor the other way: Cranelift has no i128 → f64 conversion, and the
+            // codegen failed after dumping the IR (exit 127, but not a refusal).
+            if from_ty == IrType::I128 && to_ty == IrType::F64 {
+                return Err(LoweringError::UnsupportedSemanticConstruct {
+                    construct: "converting t128 to f64 — compiled code has no such conversion yet"
                         .to_string(),
                 });
             }
@@ -11337,6 +11368,45 @@ mod tests {
             has_cast_i64_to_f64,
             "expected Cast(I64 → F64) for Numeric→F64 cast; integer fast path must not apply to float targets"
         );
+    }
+
+    #[test]
+    fn conversions_between_t128_and_f64_are_refused() {
+        // Cranelift has neither conversion: f64 → i128 panicked the backend
+        // (known_issues §33) and i128 → f64 failed in code generation after
+        // dumping the IR (§43). Lowering refuses both. The fixture
+        // t_t128_to_f64_refused cannot tell the refusal from that failure —
+        // both are a JIT SKIP — so this pins the refusal.
+        for (from, to, value) in [
+            (SemanticType::I128, SemanticType::F64, int_expr(1000, SemanticType::I128)),
+            (SemanticType::F64, SemanticType::I128, float_expr(2.5)),
+        ] {
+            let program = SemanticProgram {
+                stmts: vec![typed_assign(
+                    BindingId(1),
+                    "x",
+                    to.clone(),
+                    SemanticExpr {
+                        ty: to.clone(),
+                        kind: SemanticExprKind::Cast {
+                            expr: Box::new(value),
+                            from: from.clone(),
+                            to: to.clone(),
+                        },
+                    },
+                )],
+                enums: vec![],
+            };
+            let err = lower_program(&program).expect_err("the conversion must be refused");
+            assert!(
+                matches!(
+                    &err,
+                    LoweringError::UnsupportedSemanticConstruct { construct }
+                    if construct.contains("no such conversion")
+                ),
+                "{from:?} -> {to:?}: expected the refusal, got {err:?}"
+            );
+        }
     }
 
     fn logical_and_expr(lhs: SemanticExpr, rhs: SemanticExpr) -> SemanticExpr {

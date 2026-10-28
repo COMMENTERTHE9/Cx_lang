@@ -18,8 +18,9 @@ counts as a development baseline, not as historical release results.
 
 October work on `submain` strengthened imports, numeric and array typing,
 division/remainder safety, function/method naming, and branch-type refusal.
-It has not shipped in a tagged release. Generic value conversion is still
-unmerged PR #462; local nested-function and printing branches are drafts.
+It has not shipped in a tagged release. Generic value conversion landed
+through PR #462 after fresh local verification and independent review. Printing
+recovery is PR #466; the local nested-function draft is being reconciled next.
 
 The next milestone makes small multifile engine/tooling programs dependable:
 

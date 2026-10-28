@@ -196,7 +196,7 @@ not separately re-scoped beyond that.
 ## 4. `print(enum)` diverges between interpreter and JIT
 
 **Status: recovered on `backend/printing-parity-recovery`, not released.** See
-§43 for the implementation and regression coverage. The sizing notes below
+§45 for the implementation and regression coverage. The sizing notes below
 record the earlier state, before enum identity was retained for printing.
 
 Printing a bare enum-typed value produces different output on each backend:
@@ -3691,9 +3691,9 @@ types, which compiled code refuses (§40).
 ### Not changed
 
 - A generic function's `T` value stored into a declared-width slot —
-  `ys: [2: t8] = [x, 1]` with `x: T` — is converted by compiled code after
+  `ys: [2: t8] = [x, 1]` with `x: T` — was converted by compiled code after
   monomorphization but not by the interpreter, which runs the generic body;
-  the conversion analysis cannot insert for a `T` is the next fix.
+  fixed in §43.
 - Branch values of different types: §40.
 
 ### Fixtures
@@ -3719,8 +3719,68 @@ t_array_generic_infer         before: interpreter 9, JIT -2               now: i
 Unit tests pin the rejections' messages and the element type of each kind of
 untyped literal.
 
+## 43. A generic `T` value stored into a declared-width slot was converted by compiled code only
 
-## 43. Printing parity recovery — enum names, inline output and unknown bool
+*(Found 2026-10-24 by the second review of §39; fixed by the commit that
+introduces this entry — `insert_cast_if_needed` in `src/frontend/semantic.rs`
+and the `Cast` arm of `lower_expr` in `src/ir/lower.rs`.)*
+
+**Status: FIXED.**
+
+### What happened
+
+Analysis checks a generic function's body once, with `T` unknown, and inserted
+no conversion where a `T` value goes into a slot of a declared number type. The
+interpreter runs the generic body, so it kept the value as it came — a t64 300
+in a t8 binding, array element, struct field, return value or parameter.
+Compiled code, which sees the instantiated types after monomorphization,
+converted it (array elements, fields: 44) or refused the program:
+
+```
+fnc: t8 <T> narrow(x: T) { y: t8 = x  y }       narrow(300 as t64)
+                                                 interpreter 300 — from a t8 function   JIT refused
+fnc: f64 <T> tof(x: T) { y: f64 = x  y }        tof(300 as t64)
+                                                 interpreter: runtime type error        JIT refused
+```
+
+### The fix
+
+A `T` value going where a number of a declared width goes is converted like
+any number: analysis wraps it in a cast from `T`. The interpreter converts the
+runtime value (its numeric cast reads only the target type); monomorphization
+substitutes the cast's source type, and compiled code converts the
+instantiated value — or, when `T` is instantiated as something that is not a
+number (a struct, a string, an enum, a `Result`, a handle), refuses rather than
+convert its representation. The interpreter, as before, stops with a type error
+in a typed binding and passes the value through elsewhere.
+
+### Found by review, fixed before merge
+
+- The first version refused a non-number by its IR type, and an enum (I8), a
+  `Result` (I128) and a handle (I64) passed as numbers: `num(r)` with an `Err`
+  printed an address, an enum `C::Blue` became 2. It checks the instantiated
+  semantic type now.
+- A generic struct's field read inside a generic function is typed by the
+  function's same-named `T` (struct type arguments are not tracked — a
+  pre-existing gap); the cast then had the wrong source, and compiled code
+  refused `b.v` of a `Box<t64>` where it had run. Struct-field reads are not
+  converted, as before.
+
+### Not changed
+
+A generic body is still analysed once, not per instantiation: a `T` that is a
+struct where a t8 is declared is found at run time, not by analysis.
+
+### Fixtures
+
+```
+t_generic_value_converted   before: interpreter 300 300 300 300 300 5, JIT refused
+                            now: 44 44 44 44 44 5, both
+```
+
+A unit test pins the cast from `T`.
+
+## 45. Printing parity recovery — enum names, inline output and unknown bool
 
 **Status: implemented on `backend/printing-parity-recovery`; unmerged and
 untagged.** Restart baseline and gates: `report/restart_2026_10_28.md`.
