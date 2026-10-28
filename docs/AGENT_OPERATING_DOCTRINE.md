@@ -1,7 +1,38 @@
 # Agent Operating Doctrine
-**Version 1.0 — Cx Project**
+**Version 1.1 — Cx Project**
 **Author: Zara (CTO) + Dev Lead**
 **Status: Active**
+
+## Standing engineering authorization — 2026-10-28
+
+The project owner's restart instructions replace the prompt-by-prompt approval
+rhythm in version 1.0 below. This section controls where the older text conflicts.
+
+- Own routine investigation, debugging, implementation, refactoring, regression
+  tests, documentation, development tools, commits, pushes and PR preparation
+  within the established project direction. Keep logical changes reviewable.
+- After a verified packet, continue the next useful packet in the agreed
+  milestone. Do not stop merely to ask what to do next or request another
+  ordinary implementation/commit prompt.
+- Define scope and verification criteria before coding, then execute them.
+  Report meaningful findings, results and changes of direction. Use focused
+  independent review for consequential compiler changes.
+- Preserve established syntax, semantics, copy/memory behavior, ABI and
+  compatibility. Ask about genuine language-design decisions or conflicting
+  specifications, with a recommendation and trade-offs.
+- Preserve local and draft work, follow ownership boundaries, and use fresh
+  backend branches and PRs under CONTRIBUTING.md. Check for concurrent work
+  before touching shared frontend/runtime files.
+- Ask before destructive operations, additional spending, major scope changes
+  or irreversible release actions. Human approval for main and the prohibition
+  on auto-merge remain in force. Routine engineering is already authorized.
+- Keep the interpreter as the reference for defined behavior. Test actual
+  failures through the relevant compiler stages; never weaken expectations or
+  add exclusions to conceal regressions. Keep code, tests and status docs aligned.
+
+The six phases and task-packet discipline below remain useful engineering
+structure. Their requirements to wait for routine design, implementation and
+commit prompts are superseded by this standing authorization.
 
 ---
 
@@ -61,7 +92,10 @@ Every task moves through six phases in order. Skipping phases causes either rewo
 - Success criteria
 - Build and test commands that will validate
 
-**Rule:** no implementation starts until design is locked. The dev lead states the design, the user confirms or corrects.
+**Rule:** lock the behavior, scope and checks before implementation. For ordinary
+engineering packets, the agent does this and proceeds under standing
+authorization. User confirmation is required only for genuine language-design
+decisions or conflicting specifications, and the protected actions listed above.
 
 ### Phase 3 — Predicted Fallout
 
@@ -137,10 +171,10 @@ The dev lead operates in one of five modes at any time. Modes are not blurred.
 | Mode | Purpose | Output |
 |------|---------|--------|
 | **Recon** | Gather context for a task | Read-only prompt to agent |
-| **Design** | Lock task scope and behavior | Design statement to user for approval |
+| **Design** | Lock task scope and behavior | Scope and checks; ask only about design decisions or specification conflicts |
 | **Implementation** | Direct the agent to make changes | One implementation prompt to agent |
 | **Validation** | Confirm task is complete | Read build/test results, report deviations only |
-| **Commit** | Ship the packet | Git commit + push prompt to agent |
+| **Commit** | Ship the packet | Verified commit, push and PR preparation under standing authorization |
 
 The dev lead announces mode shifts only when useful. Most tasks flow Recon → Design → Implementation → Validation → Commit without explicit narration.
 
@@ -164,7 +198,7 @@ The dev lead announces mode shifts only when useful. Most tasks flow Recon → D
 - Does not make changes outside the implementation prompt
 - Does not "clean up" unrelated code
 - Does not skip the build/test gate before reporting complete
-- Does not commit without explicit instruction
+- Does not commit outside the authorized direction or without passing the verification gates
 - Does not delete files without explanation
 - Does not silently handle errors — reports them first
 
@@ -188,15 +222,12 @@ The dev lead announces mode shifts only when useful. Most tasks flow Recon → D
 
 ## Default Rhythm
 
-For most tasks, the rhythm is:
-
-1. **Recon prompt** — one broad read-only prompt for the full task
-2. **Recon report** — agent returns everything needed to lock the design
-3. **Implementation prompt** — one prompt covering the whole task packet, including predicted fallout fixes
-4. **Validation report** — agent runs build/test, returns results
-5. **Commit prompt** — dev lead authorizes commit, agent reports hash
-
-That is **5 turns per task** instead of the 10–15 the old rhythm produced. Roughly 3x faster for the same safety, with the safety net intact.
+For most tasks, proceed through recon, scope/behavior definition, predicted
+fallout, implementation, validation, focused review and commit/PR preparation.
+Then continue the next useful packet in the milestone. Report meaningful
+findings and completed results without requiring a fresh prompt at each phase.
+Ask only when an actual design, ownership, protected-action or resource boundary
+prevents safe progress.
 
 ---
 
@@ -208,7 +239,8 @@ The dev lead may suspend doctrine in these cases:
 - **Exploratory research** — when the goal is "what does this code do?" rather than "change this code."
 - **User explicit override** — when the user (Zara) directs a different approach for a specific task.
 
-Suspension is announced. Doctrine resumes by default at the next task packet.
+Suspension is announced. The standing authorization above remains active across
+task packets until the owner changes it.
 
 ---
 
@@ -268,7 +300,7 @@ This is the only place narrative scorecards belong. Not after every commit. Not 
 
 ## Doctrine Updates
 
-This doctrine is version 1.0. Updates require:
+This doctrine is version 1.1. Updates require:
 
 - Explicit decision from Zara
 - Version bump
@@ -276,6 +308,10 @@ This doctrine is version 1.0. Updates require:
 
 ### Changelog
 
+- **v1.1 (2026-10-28)** — Records the owner's explicit restart authorization
+  and follow-up correction: handle routine engineering continuously without
+  returning control after each packet; retain design, ownership and release
+  boundaries.
 - **v1.0** — Initial doctrine. Created after one full session of the old turn-by-turn rhythm proved too slow to sustain. Replaces ad-hoc workflow with task-packet model.
 
 ---

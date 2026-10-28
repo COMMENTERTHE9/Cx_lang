@@ -1,0 +1,7 @@
+// An aggregate pointer is not a string descriptor. The interpreter formats
+// arrays; the JIT must refuse this unsupported formatter before host access.
+// The lowering unit test pins the refusal, since parity SKIP alone cannot
+// distinguish a lowering refusal from a later code-generation failure.
+a: [2: t64] = [1, 2]
+printn("{a}")
+print("")

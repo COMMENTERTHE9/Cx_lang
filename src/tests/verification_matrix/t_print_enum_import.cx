@@ -1,0 +1,14 @@
+// Names must survive imports and generic specialization, without confusing
+// two distinct enum types whose variants have different program-wide tags.
+#![imports]
+col: use "./t_import_enum_colors_lib"
+
+enum Mode { Slow, Fast }
+fnc: T <T> identity(value: T) { value }
+
+let c;
+c = col.green()
+print(c)
+print("imported {c}")
+print(identity(c))
+print(Mode::Fast)

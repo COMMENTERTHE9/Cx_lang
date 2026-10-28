@@ -1,0 +1,8 @@
+// An unknown bool prints as `?`, as the interpreter prints it; compiled code
+// printed `true`.
+b: bool = ?
+print(b)
+printn(b)
+print(" then {b}")
+k: bool = false
+print(k)

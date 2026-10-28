@@ -1,11 +1,52 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-30
+Last updated: 2026-10-28
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
 - Frontend: `docs/frontend/ROADMAP.md` (v5.0, frozen at the 0.1 RC — historical)
 - Backend: `docs/backend/cx_backend_roadmap_v3_1.md` (v4.4, frozen at the 0.1 RC — historical)
+
+---
+
+## Immediate milestone — whole programs compile and agree
+
+The restart audit is in `report/restart_2026_10_28.md`. Fresh `submain`
+`9905505` gates on Windows: 280 default tests, 456 JIT tests, 585 interpreter
+fixtures; parity 528 PASS / 57 SKIP / 0 PARITY_FAIL. These supersede the old
+counts as a development baseline, not as historical release results.
+
+October work on `submain` strengthened imports, numeric and array typing,
+division/remainder safety, function/method naming, and branch-type refusal.
+It has not shipped in a tagged release. Generic value conversion landed
+through PR #462 after fresh local verification and independent review. Printing
+recovery is PR #466; nested-function identity/scoping landed through PR #467.
+Native nested-function lowering remains unsupported.
+
+The next milestone makes small multifile engine/tooling programs dependable:
+
+1. Close silent backend disagreements first. The current task branch recovers
+   the isolated printing draft with enum/inline/unknown-bool regressions and
+   guards against treating an interpolated aggregate as a string descriptor.
+2. Verify and reconcile the existing generic-conversion and nested-function
+   work in separate changes. Preserve the interpreter's defined behavior.
+3. Add module-state representation, validation and native storage in small
+   changes. Functions must read/write the correct module's bindings and
+   constants while retaining initialization order and const immutability.
+4. Pin a small multifile tooling example in both backends, plus Windows/Linux
+   gates. Completion requires matching outputs, mutations, exit status and
+   expected failures, with explicit reasons for remaining unsupported cases.
+
+`copy_into`/Container remains an open lowering gap; `.copy` already lowers.
+Finish the remaining supported-surface gaps after this reliability milestone.
+The version sequence below remains the established direction: stage standard
+library/runtime work, then Cranelift objects and linking, before LLVM and
+bootstrapping. Do not treat that broad 0.4 bucket as one implementation packet.
+Performance work needs measured baselines; releases need platform conformance,
+version/package consistency and human approval for `main` and release actions.
+
+The August lowering list below is a dated snapshot. Use the restart briefing
+and live gates for current coverage; draft branches are not landed fixes.
 
 ---
 

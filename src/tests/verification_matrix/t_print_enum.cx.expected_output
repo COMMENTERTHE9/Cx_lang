@@ -1,0 +1,11 @@
+Color::Green
+Color::Green
+Color::Green after
+color Color::Green
+Color::Red
+Color::Blue
+Color::Blue
+Ok(Color::Blue)
+Color::Red
+Color::Blue0
+Color::Red1

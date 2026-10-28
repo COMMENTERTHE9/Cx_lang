@@ -195,8 +195,8 @@ not separately re-scoped beyond that.
 
 ## 4. `print(enum)` diverges between interpreter and JIT
 
-**Status: OPEN — sized, not attempted.** Confirmed real sizing, not a
-dispatch-arm fix.
+**Status: recovered on `backend/printing-parity-recovery`, not released.** See
+§45 for implementation and regression coverage; the notes below describe the earlier state.
 
 Printing a bare enum-typed value produces different output on each backend:
 
@@ -3846,3 +3846,46 @@ t50_nested_func_no_leak        before: interpreter 99 99 — the leak           
 
 A unit test pins the nested function's own name, the call to it, and the
 signature check of a later top-level call.
+
+## 45. Printing parity recovery — enum names, inline output and unknown bool
+
+**Status: implemented on `backend/printing-parity-recovery`; unmerged and
+untagged.** Restart baseline and gates: `report/restart_2026_10_28.md`.
+The printing change was recovered alone from local draft `14f5328`, without
+its generic-conversion or nested-function ancestors.
+
+Fresh submain probes reproduced three disagreements outside the stored parity
+coverage: enums printed numeric tags, `printn` ended lines (and refused strings
+and floats), and unknown bool printed `true` rather than `?`. `lower_print_value`
+and `emit_print_value` now share the supported printer routes, enum names survive
+lowering through explicit tag branches, and unknown bool has its own branch.
+Results and interpolation retain inline formatting. Ordinary numeric, string and
+definite-bool `print` behavior is preserved. This closes the tested §4 paths,
+not all generic or interpolation limitations.
+
+Independent review found two additional hazards in the draft:
+
+- Interpolation treated every IR Ptr as a string descriptor, including structs
+  and arrays. Those formatters are unsupported and now receive a structured
+  lowering refusal before a host callback can read an invalid pointer.
+- A whole-function type summary used the last assignment's type for earlier
+  values. Conflicting types now retain no string-formatting authority, and the
+  float printer uses the actual lowered value type. Numeric rebinding still
+  prints correctly; a later string cannot authorize an earlier aggregate.
+
+The validator now knows the printing callback signatures. `printn` tests retain
+IR validation; unknown-bool's known branch casts to Bool before that callback.
+The callback names remain reserved under the existing runtime-intrinsic rule.
+
+Regression fixtures: `t_print_enum`, `t_print_enum_import`, `t_printn_inline`,
+`t_print_unknown_bool`, `t_print_rebinding_numeric`,
+`t_print_aggregate_interpolation`, and `t_print_interpolation_type_conflict`.
+The latter two pass on the interpreter and intentionally refuse unsupported
+aggregate interpolation in lowering. Unit tests assert that exact refusal,
+including struct/array parameters and the later-assignment bypass; a parity
+SKIP alone would not distinguish it from a code-generation failure.
+
+Remaining gaps include interpolation's flat name map (scope shadowing),
+non-identifier placeholders, erased generic-struct types, and unimplemented
+composite/large-payload formatters. The generic enum construction probe is
+currently rejected by semantic analysis on both backends before printing.

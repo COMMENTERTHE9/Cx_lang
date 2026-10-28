@@ -84,6 +84,23 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
             has_return: false,
         },
     );
+    // Printing uses the same host callbacks in ordinary and inline forms.
+    // Keep their signatures visible to validation as well as code generation.
+    for (name, param_types) in [
+        ("cx_printn_inline", vec![IrType::I64]),
+        ("cx_print_bool", vec![IrType::Bool]),
+        ("cx_print_bool_inline", vec![IrType::Bool]),
+        ("cx_print_f64_inline", vec![IrType::F64]),
+        ("cx_print_str", vec![IrType::Ptr]),
+        ("cx_print_str_inline", vec![IrType::Ptr]),
+        ("cx_print_newline", vec![]),
+    ] {
+        sigs.insert(name.to_string(), ValidatorFunctionSig {
+            param_count: param_types.len(),
+            param_types,
+            has_return: false,
+        });
+    }
     // cx_exit(code: I32) -> ! — the `exit(code)` builtin (known-issues #11).
     // Never returns (process::exit on the host side), so has_return is false.
     sigs.insert(

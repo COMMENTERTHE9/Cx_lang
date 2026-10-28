@@ -6,7 +6,7 @@ The goal of Cx is to give engine-facing code predictable memory behavior, explic
 
 **Status: 0.3.3 — released 2026-08-16.** Last tagged release: **v0.3.3**.
 
-This README describes the current `submain` branch. The reference interpreter is the source of truth for language semantics; every code sample below was compiled and run against it.
+This README describes the current `submain` branch. The reference interpreter is the source of truth for language semantics. See the dated verification results below for what has been checked in the current development tree.
 
 Cx is not production-ready. It is a working compiler foundation under active development.
 
@@ -33,18 +33,17 @@ It is designed around explicit memory behavior, stable handles, arena-oriented a
 
 ## The Pipeline
 
-Source code moves through a full compiler pipeline:
+Source code is parsed, imports are resolved, and semantic analysis produces the
+program shared by the two execution paths:
 
 ```text
-source code
-→ lexer/parser
-→ AST
-→ semantic analysis
-→ IR
-→ interpreter
-→ Cranelift JIT
-→ parity verification
+source → lexer/parser → AST → import resolution → semantic program
+                                               ├─ reference interpreter
+                                               └─ monomorphization → IR lowering → Cranelift JIT
 ```
+
+The `validate` backend lowers and validates IR. The differential harness checks
+native execution against the reference fixture expectations.
 
 The **interpreter** is the reference semantics backend — it defines what Cx programs mean.
 
@@ -62,15 +61,29 @@ cargo run -- --backend=validate examples/fibonacci.cx
 
 ## Current Verification Status
 
-As of `v0.3.3`:
+Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 
-- **250 unit tests passing** (`cargo test`)
-- **426 unit tests passing** with the JIT enabled (`cargo test --features jit`)
-- **420 verification fixtures**
-- **JIT parity: 380 PASS / 40 SKIP / 0 PARITY_FAIL** across all 420 fixtures
-- **zero Clippy errors**
+- `cargo build` and `cargo build --features jit`: passed
+- `cargo test`: **280 passed / 0 failed**
+- `cargo test --features jit`: **456 passed / 0 failed**
+- Interpreter fixture gate: **585/585 passed**
+- JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
-A fixture is **SKIP** when it exercises a language feature the JIT does not lower to native code yet (the interpreter still runs it). **PARITY_FAIL** means the interpreter and JIT disagree on observable behavior — that number must stay zero.
+These results cover the stored fixtures, not every accepted program. Restart
+probes found silent printing disagreements outside that coverage. The printing
+recovery in this checkout passes **287 default tests**, **463 JIT tests**, and
+**598 interpreter fixtures** after integration with PRs #462 and #467; parity is
+**537 PASS / 61 SKIP / 0 PARITY_FAIL**.
+The two added SKIPs cover explicitly refused aggregate interpolation. See
+[the restart briefing](report/restart_2026_10_28.md) for its separate results,
+remaining limitations, and the next milestone. The latest tagged release remains
+v0.3.3; later compiler work is not a new release.
+
+A fixture is **SKIP** when the JIT refuses it as unsupported (exit 127), or an
+explicit exclusion applies. Lowering and code-generation failures also use that
+exit code. A retained legacy fallback also counts exit 0 with non-empty stderr
+as SKIP, so SKIP does not prove that a refusal is intentional. **PARITY_FAIL**
+means the observed behavior disagrees with the fixture expectation.
 
 ---
 
@@ -236,7 +249,7 @@ print("{f(2)}")                // runtime error: string interpolation supports
                                // variable first
 ```
 
-Note that this — and an interpolated name that isn't in scope — is checked at **runtime**, not at compile time, even though both are decidable from the string literal and the symbol table alone. The JIT does not lower interpolation at all, so these cases show up as parity SKIPs rather than as agreement. See `docs/known_issues.md` §16.
+Note that this — and an interpolated name that isn't in scope — is checked at **runtime**, not at compile time, even though both are decidable from the string literal and the symbol table alone. The JIT lowers bare-variable interpolation. Unsupported forms, such as non-identifier interpolation, can show up as parity SKIPs rather than as agreement. See `docs/known_issues.md` §16.
 
 ### Strings: concatenation and length
 
@@ -304,13 +317,8 @@ print(c.x)                     // 11
 print(c.y)                     // 22
 ```
 
-One restriction for now: the left operand of a gene-dispatched operator must be a **named variable**. Method receivers are name-based throughout the runtime, so a chained expression has nowhere to bind — it is an explicit error, not a silent fallback:
-
-```cx
-d = (a + b) + c                // error: operator '+' on 'Vec2' dispatches to gene
-                               // 'Add' — this currently requires a named variable
-                               // as the left operand
-```
+Expression receivers for gene-dispatched operators now work on `submain`,
+including chained expressions. This was implemented after the 0.3.3 release.
 
 A phen must implement every signature its gene declares; two phens binding the same gene to the same type is a compile error, checked across the whole module graph. `T: GeneName` bounds a generic on "any type with a phen for that gene", and `T: GeneA + GeneB` requires both.
 
@@ -380,31 +388,25 @@ All currently JIT-lowered fixtures match interpreter behavior (0 PARITY_FAIL). A
 
 ### JIT Parity Baseline
 
-As of `v0.3.3`:
-
-| Status | Count |
-|--------|-------|
-| PASS | 380 |
-| SKIP | 40 |
-| PARITY_FAIL | 0 |
-| **Total fixtures** | **420** |
-
-(Authoritative totals from the parity harness. Run `cargo test --features jit jit_parity_by_feature -- --nocapture` for the live per-category breakdown.)
+The fresh `submain` baseline is **528 PASS / 57 SKIP / 0 PARITY_FAIL** across
+**585 fixtures** (2026-10-28, Windows x64/MSVC). Run
+`cargo build --features jit` followed by
+`cargo test --features jit jit_parity_by_feature -- --nocapture` for live totals.
+Build the JIT binary before the harness; a default build replaces it.
 
 ---
 
 ## Not Yet Lowered / Future Work
 
-These features **work in the interpreter** but are **not yet lowered to the JIT** (they show up as parity SKIP — 40 of 420 fixtures):
+These features **work in the interpreter** but are **not yet lowered to the JIT** (they can produce parity SKIP; see the briefing for other refusal reasons):
 
 - the `input` builtin
 - nested function definitions
 - `while-in` loops
-- a `const` referenced inside a function body (top-level `const` declarations
-  and their use in top-level code do lower)
+- reading or writing top-level variables or constants inside a function (top-level declarations and top-level uses do lower)
 - `t128` printing, and `Result` payloads wider than a machine word
 - `char`-typed values
-- `.copy` / `.copy.free` / `copy_into` parameter kinds
+- `copy_into` parameter kind and its container representation (`.copy` and deprecated `.copy.free` now lower)
 - string interpolation of non-identifier expressions
 
 Generic functions and generic structs **do** lower, by monomorphization — one
