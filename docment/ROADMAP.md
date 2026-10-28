@@ -52,11 +52,12 @@ can forward declared proofs. Struct-field parameters have separate identities
 so they cannot borrow an enclosing function's same-named bound. Concrete generic
 struct field inference remains incomplete; it is not inferred from that name.
 
-The next packet should separate module-variable namespaces in the interpreter
-before enabling duplicate variable spellings across modules in native code.
-Then extend shared storage to bool and composite values through existing
-representations and value-copy rules. Global interpolation still needs scoped
-binding identity; `copy_into`/Container remains an open lowering gap. Keep these
+Module-variable namespaces are now separate, including cold runtime lookups;
+native interpolation uses lexical binding identity and scoped names. Void
+functions can finish with an ordinary void call through the existing return path.
+Next extend shared storage to bool and composite values through existing
+representations and value-copy rules. `copy_into`/Container remains an open
+lowering gap. Keep these
 as separate, reviewed changes with explicit unsupported cases.
 
 The version sequence below remains the established direction: stage standard

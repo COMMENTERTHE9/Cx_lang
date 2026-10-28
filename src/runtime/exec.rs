@@ -15,6 +15,10 @@ impl RunTime {
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
             SemanticStmt::Noop => Ok(()),
+            SemanticStmt::ModuleNames { names } => {
+                self.lexical_names = Some(names.clone());
+                Ok(())
+            }
             // Gene declarations are contracts — nothing to execute. Coherence
             // and conformance were checked at analysis time (Pass 0/slice 2).
             SemanticStmt::GeneDef { .. } => Ok(()),

@@ -1689,6 +1689,10 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             );
         }
 
+        let lexical_names = std::sync::Arc::new(self.scopes.iter()
+            .flat_map(|scope| scope.iter().filter(|(_, info)| !info.is_function)
+                .map(|(name, info)| (name.clone(), info.binding)))
+            .collect());
         self.push_scope();
         let prev_ret_ty = self.current_ret_ty.clone();
         let prev_type_params = self.current_type_params.clone();
@@ -1812,6 +1816,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             id: func_id,
             // A nested function is registered and called by its own name (§44).
             name: program_name,
+            lexical_names,
             type_params: type_params.to_vec(),
             params: resolved_params,
             return_ty: ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params)),
@@ -5474,6 +5479,7 @@ pub fn analyze_resolved_program(
             if let SemanticType::Struct(sname) = recv_ty {
                 let func_id = analyzer.fresh_function();
                 let stub = SemanticFunction {
+                    lexical_names: Default::default(),
                     id: func_id,
                     name: mname.clone(),
                     type_params: vec![],
@@ -5557,6 +5563,13 @@ pub fn analyze_resolved_program(
             module_exports.insert(module_id, (module_key.clone(), export_table));
         }
 
+        // Module initializers execute together, but their cold name lookups
+        // (templates, containers, methods) retain the declaring namespace.
+        if resolved.files.len() > 1 {
+            let names = analyzer.scopes[0].iter().filter(|(_, info)| !info.is_function)
+                .map(|(name, info)| (name.clone(), info.binding)).collect();
+            merged_stmts.push(SemanticStmt::ModuleNames { names: std::sync::Arc::new(names) });
+        }
         // Accumulate results
         if is_entry {
             merged_stmts.extend(file_stmts);

@@ -24,7 +24,8 @@ impl RunTime {
         }
     }
 
-    pub fn push_function_scope(&mut self) {
+    pub fn push_function_scope(&mut self, names: std::sync::Arc<std::collections::HashMap<String, BindingId>>) {
+        self.name_frames.push((self.scopes.len(), self.lexical_names.replace(names)));
         self.scopes.push(ScopeFrame::new());
         if self.debug_scope {
             diagnostics::print_scope_event(&ScopeEvent::Open(format!(
@@ -63,6 +64,9 @@ impl RunTime {
             (bleed_values, debug_info)
         };
 
+        if self.name_frames.last().is_some_and(|(index, _)| *index + 1 == self.scopes.len()) {
+            self.lexical_names = self.name_frames.pop().unwrap().1;
+        }
         self.scopes.pop();
 
         for (outer_idx, outer_binding, val) in bleed_values {
@@ -88,9 +92,10 @@ impl RunTime {
         ty: Option<Type>,
         pos: usize,
     ) -> Result<(), RuntimeError> {
+        let local = self.scopes.len() > 1;
         let frame = self.scopes.last_mut().unwrap();
 
-        if frame.contains_name(&name) {
+        if frame.vars.contains_key(&binding) || (local && frame.contains_name(&name)) {
             return Err(RuntimeError::AlreadyDeclared { pos, name });
         }
 
@@ -163,13 +168,11 @@ impl RunTime {
     /// write-back). Resolves name -> BindingId via the per-frame index.
     pub fn set_var(&mut self, name: String, value: Value, pos: usize) -> Result<(), RuntimeError> {
         let value = self.resolve_assigned_value(value, pos)?;
-        for i in (0..self.scopes.len()).rev() {
-            if let Some(&binding) = self.scopes[i].by_name.get(&name) {
+        if let Some((i, binding)) = self.resolve_name(&name) {
                 if self.const_bindings.contains(&binding) {
                     return Err(RuntimeError::BadAssignTarget { pos });
                 }
                 return self.write_var_at(i, binding, &name, value, pos);
-            }
         }
         let was_seen = self.scopes.last().unwrap().seen.contains(&name);
         Err(diagnostics::unresolved_var_error(pos, name, was_seen))
@@ -195,8 +198,9 @@ impl RunTime {
         }
 
         {
+            let local = self.scopes.len() > 1;
             let frame = self.scopes.last_mut().unwrap();
-            if frame.contains_name(&name) {
+            if frame.vars.contains_key(&binding) || (local && frame.contains_name(&name)) {
                 return Err(RuntimeError::AlreadyDeclared { pos, name });
             }
 
@@ -225,8 +229,8 @@ impl RunTime {
         pos: usize,
     ) -> Result<(), RuntimeError> {
         let logged = value.clone();
-        for frame in self.scopes.iter_mut().rev() {
-            if let Some(entry) = frame.get_by_name_mut(container) {
+        if let Some((owner, binding)) = self.resolve_name(container) {
+            if let Some(entry) = self.scopes[owner].vars.get_mut(&binding) {
                 match &mut entry.val {
                     Some(Value::Container(map)) => {
                         map.insert(field.to_string(), value);
@@ -288,8 +292,8 @@ impl RunTime {
         if path.is_empty() {
             return Err(RuntimeError::BadAssignTarget { pos });
         }
-        for frame in self.scopes.iter_mut().rev() {
-            if let Some(entry) = frame.get_by_name_mut(arr_name) {
+        if let Some((owner, binding)) = self.resolve_name(arr_name) {
+            if let Some(entry) = self.scopes[owner].vars.get_mut(&binding) {
                 let Some(mut cur) = entry.val.as_mut() else {
                     return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
                 };
@@ -333,8 +337,8 @@ impl RunTime {
     }
 
     pub fn get_field(&self, container: &str, field: &str, pos: usize) -> Result<Value, RuntimeError> {
-        for frame in self.scopes.iter().rev() {
-            if let Some(entry) = frame.get_by_name(container) {
+        if let Some((owner, binding)) = self.resolve_name(container) {
+            if let Some(entry) = self.scopes[owner].vars.get(&binding) {
                 match &entry.val {
                     Some(Value::Struct(_, map)) | Some(Value::Container(map)) => {
                         return map.get(field).cloned().ok_or_else(|| {
@@ -352,8 +356,8 @@ impl RunTime {
     /// resolution, `.copy` args). Resolves name -> BindingId via the per-frame
     /// index, then reads.
     pub fn get_var(&self, name: &str, pos: usize) -> Result<Value, RuntimeError> {
-        for frame in self.scopes.iter().rev() {
-            if let Some(entry) = frame.get_by_name(name) {
+        if let Some((owner, binding)) = self.resolve_name(name) {
+            if let Some(entry) = self.scopes[owner].vars.get(&binding) {
                 if let Some(value) = &entry.val {
                     return Ok(value.clone());
                 }
@@ -366,6 +370,34 @@ impl RunTime {
         let owned = name.to_string();
         let was_seen = self.scopes.last().unwrap().seen.contains(&owned);
         Err(diagnostics::unresolved_var_error(pos, owned, was_seen))
+    }
+
+    pub(crate) fn resolve_name(&self, name: &str) -> Option<(usize, BindingId)> {
+        let start = if self.lexical_names.is_some() {
+            self.name_frames.last().map(|(index, _)| *index).unwrap_or(1)
+        } else { 0 };
+        for index in (start..self.scopes.len()).rev() {
+            if let Some(binding) = self.scopes[index].by_name.get(name) {
+                return Some((index, *binding));
+            }
+        }
+        let binding = *self.lexical_names.as_ref()?.get(name)?;
+        self.scopes.iter().rposition(|frame| frame.vars.contains_key(&binding))
+            .map(|index| (index, binding))
+    }
+
+    /// String parameters expand after arguments are evaluated, before the
+    /// function body. Retain the caller's lexical names during that binding
+    /// phase; already-bound parameters still shadow them in the new frame.
+    pub(crate) fn snapshot_names(&self) -> std::sync::Arc<std::collections::HashMap<String, BindingId>> {
+        let mut names = self.lexical_names.as_ref().map(|n| n.as_ref().clone()).unwrap_or_default();
+        let start = if self.lexical_names.is_some() {
+            self.name_frames.last().map(|(index, _)| *index).unwrap_or(1)
+        } else { 0 };
+        for frame in &self.scopes[start..] {
+            names.extend(frame.by_name.iter().map(|(name, binding)| (name.clone(), *binding)));
+        }
+        std::sync::Arc::new(names)
     }
 
     /// Hot-path read by BindingId (VarRef, CompoundAssign read). `name` is used
@@ -385,5 +417,67 @@ impl RunTime {
         }
         let was_seen = self.scopes.last().unwrap().seen.contains(name);
         Err(diagnostics::unresolved_var_error(pos, name.to_string(), was_seen))
+    }
+}
+
+#[cfg(test)]
+mod lexical_name_tests {
+    use super::*;
+    use std::{collections::HashMap, sync::Arc};
+
+    fn source_answer(source: &str) -> String {
+        use crate::frontend::{resolver, semantic};
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "lexical_test.cx".into(),
+            program: resolver::parse_source(source).unwrap_or_else(|error| panic!("{error}: {source}")), imports: vec![] };
+        let program = semantic::analyze_resolved_program(&resolver::ResolvedProgram {
+            entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id],
+        }).expect("analyzes");
+        let mut rt = RunTime::new();
+        crate::run_with_interpreter_setup(&mut rt, &program);
+        for stmt in &program.stmts { rt.run_semantic_stmt(stmt).expect("executes"); }
+        match rt.get_var("answer", 0).unwrap() {
+            Value::Str(offset, len) => rt.resolve_str(offset, len).to_owned(),
+            other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn string_argument_binding_preserves_caller_names_and_parameter_order() {
+        assert_eq!(source_answer("fnc: str echo(s: str) { s }\nfnc: str run() { x: t64 = 7; echo(\"{x}\") }\nanswer: str = run()\n"), "7");
+        assert_eq!(source_answer("fnc: str echo(x: t64, s: str) { s }\nfnc: str run() { x: t64 = 7; echo(8, \"{x}\") }\nanswer: str = run()\n"), "8");
+        assert_eq!(source_answer("count: t64 = 7\nfnc: t64 bump() { count = 9; 0 }\nfnc: str echo(s: str, unused: t64) { s }\nanswer: str = echo(\"{count}\", bump())\n"), "9");
+        assert_eq!(source_answer("struct Box { value: t64 }\nbox_methods: impl (b: Box) { fnc: str echo(s: str) { s } }\nfnc: str run() { x: t64 = 7; b: Box = Box { value: 0 }; b.echo(\"{x}\") }\nanswer: str = run()\n"), "7");
+    }
+
+    #[test]
+    fn cold_names_use_definition_scope_and_restore_the_callers_scope() {
+        let mut rt = RunTime::new();
+        rt.set_var_typed(BindingId(1), "count".into(), Type::T64, Value::Num(10), 0).unwrap();
+        rt.set_var_typed(BindingId(2), "count".into(), Type::T64, Value::Num(100), 0).unwrap();
+        let left = Arc::new(HashMap::from([("count".into(), BindingId(1))]));
+        let right = Arc::new(HashMap::from([("count".into(), BindingId(2))]));
+        rt.lexical_names = Some(right.clone());
+        rt.push_function_scope(right);
+        rt.set_var_typed(BindingId(3), "count".into(), Type::T64, Value::Num(9000), 0).unwrap();
+        rt.push_function_scope(left);
+        assert_eq!(rt.get_var("count", 0).unwrap(), Value::Num(10));
+        rt.set_var("count".into(), Value::Num(11), 0).unwrap();
+        rt.pop_scope();
+        assert_eq!(rt.get_var("count", 0).unwrap(), Value::Num(9000));
+        rt.pop_scope();
+        assert_eq!(rt.get_var("count", 0).unwrap(), Value::Num(100));
+        assert_eq!(rt.get_var_by_id(BindingId(1), "count", 0).unwrap(), Value::Num(11));
+    }
+
+    #[test]
+    fn absent_lexical_name_cannot_leak_from_a_caller_or_other_module() {
+        let mut rt = RunTime::new();
+        rt.set_var_typed(BindingId(1), "secret".into(), Type::T64, Value::Num(42), 0).unwrap();
+        rt.push_function_scope(Arc::new(HashMap::new()));
+        assert!(rt.get_var("secret", 0).is_err());
+        rt.pop_scope();
+        // Identical IDs still reject a repeated declaration in one frame.
+        assert!(rt.declare(BindingId(1), "secret".into(), None, 0).is_err());
     }
 }

@@ -1,0 +1,10 @@
+#![imports]
+left: use "./t_module_namespace_left"
+count: t64 = 100
+print("right init {count}")
+pub fnc: report() {
+    print("right before {count}")
+    left.report()
+    print("right after {count}")
+}
+pub fnc: t64 bump() { count += 2; count }

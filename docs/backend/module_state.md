@@ -78,10 +78,17 @@ parameters/returns retain their established behavior. Bare-global-name string
 interpolation inside functions is not newly enabled; its name/scope resolution
 needs a separate semantic representation.
 
-Same-named top-level variables from different modules remain refused. Their IDs
-are distinct, but the interpreter still shares a by-name declaration index and
-rejects the second name. Executing them only in native code would create a new
-backend disagreement, so namespace correction must precede enabling that case.
+Top-level variables from different modules may share a spelling. Storage and
+ordinary reads/writes use distinct BindingIds; cold runtime lookups use the
+module's or function's lexical name environment. A library's `count` cannot
+resolve to an entry-file variable or caller parameter named `count`. Function
+and method exits restore the caller's environment, including error paths.
+
+Native print interpolation uses the current lexical scope and captured module
+bindings. Branch/loop/pattern names do not leak after their scope ends. String
+argument templates retain their established binding timing: after evaluating
+arguments, preceding parameters can shadow the caller's visible names; the
+callee's body then uses its own definition-site environment.
 
 ## Verification
 
