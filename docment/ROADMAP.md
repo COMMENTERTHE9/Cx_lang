@@ -36,14 +36,21 @@ independent review findings and full old-corpus replay.
 
 The explicit-return lowering failure is also corrected: dead statements and
 trailing values are omitted after terminated paths, with semantic checking,
-copy-out and return-slot behavior preserved. The untyped Handle-return and
-imported-generic lowering failures remain open.
+copy-out and return-slot behavior preserved. The untyped Handle-return failure
+remains open.
 
 Enum module constants/state now share the existing byte-tag representation and
 storage lifecycle. Typed-boundary checks retain enum identity after generic
 specialization, including call/return, copy and aggregate-element paths; valid
 named-pattern and Result copies remain supported. Invalid specializations are
 explicit refusals, with exact-error unit tests rather than parity SKIPs alone.
+
+Imported generic calls now retain their template identity and ordered inferred
+arguments, allowing existing specialization to handle aliases, library relays,
+recursion and aggregate returns. Exports also retain gene bounds; generic callers
+can forward declared proofs. Struct-field parameters have separate identities
+so they cannot borrow an enclosing function's same-named bound. Concrete generic
+struct field inference remains incomplete; it is not inferred from that name.
 
 The next packet should separate module-variable namespaces in the interpreter
 before enabling duplicate variable spellings across modules in native code.

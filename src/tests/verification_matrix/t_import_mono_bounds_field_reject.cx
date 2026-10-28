@@ -1,0 +1,15 @@
+// Box's T cannot borrow an unrelated enclosing function's T: ImportMark.
+#![imports]
+lib: use "./t_import_mono_bounds_lib"
+struct Marked { value: t64 }
+phen ImportMark (m: Marked) { fnc: t64 mark() { m.value * 2 } }
+struct Plain { pad: t64, value: t64 }
+struct Box<T> { v: T }
+fnc: t64 <T: ImportMark> forward(item: T) {
+    let box;
+    box = Box<Plain> { v: Plain { pad: 100, value: 9 } }
+    let alias;
+    alias = box.v
+    lib.measure(alias)
+}
+print(forward(Marked { value: 7 }))

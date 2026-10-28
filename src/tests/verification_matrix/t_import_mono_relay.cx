@@ -1,0 +1,3 @@
+#![imports]
+core: use "./t_import_mono_core"
+pub fnc: T <T> relay(value: T) { core.id(value) }

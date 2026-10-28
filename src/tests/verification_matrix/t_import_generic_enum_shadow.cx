@@ -1,6 +1,5 @@
 // The same shadowing inside a LIBRARY: its generic `ident<T>` keeps `T` a type
-// parameter although the library imports an `enum T`. The JIT does not compile
-// calls to imported generic functions yet (SKIP).
+// parameter although the library imports an `enum T`, including on the JIT.
 #![imports]
 g: use "./t_import_enum_t_generic_lib"
 
