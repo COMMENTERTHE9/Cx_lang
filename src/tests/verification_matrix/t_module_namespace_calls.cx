@@ -1,0 +1,28 @@
+#![imports]
+left: use "./t_module_namespace_left"
+again: use "./t_module_namespace_left"
+right: use "./t_module_namespace_right"
+count: t64 = 1000
+fnc: run(count: t64) {
+    left.report()
+    right.report()
+    print("caller {count}")
+    print(left.bump())
+    print(again.bump())
+    print(right.bump())
+    left.report()
+    right.report()
+}
+run(9000)
+print("entry {count}")
+fnc: scopes() {
+    value: t64 = 1
+    if true {
+        value: t64 = 2
+        print("inner {value}")
+    }
+    print("outer {value}")
+    for value in 3..5 { print("loop {value}") }
+    print("restored {value}")
+}
+scopes()

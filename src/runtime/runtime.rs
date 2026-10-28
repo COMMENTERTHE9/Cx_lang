@@ -72,17 +72,6 @@ impl ScopeFrame {
         }
     }
 
-    /// Resolve a variable entry in this frame by name (cold path).
-    pub(crate) fn get_by_name(&self, name: &str) -> Option<&VarEntry> {
-        self.by_name.get(name).and_then(|b| self.vars.get(b))
-    }
-
-    /// Mutable resolve by name (cold path).
-    pub(crate) fn get_by_name_mut(&mut self, name: &str) -> Option<&mut VarEntry> {
-        let binding = *self.by_name.get(name)?;
-        self.vars.get_mut(&binding)
-    }
-
     /// Whether a name is declared in this frame.
     pub(crate) fn contains_name(&self, name: &str) -> bool {
         self.by_name.contains_key(name)
@@ -104,6 +93,8 @@ pub struct RunTime {
     pub semantic_funcs: HashMap<String, Arc<SemanticFunction>>,
     pub debug_scope: bool,
     pub const_bindings: HashSet<BindingId>,
+    pub(crate) lexical_names: Option<Arc<HashMap<String, BindingId>>>,
+    pub(crate) name_frames: Vec<(usize, Option<Arc<HashMap<String, BindingId>>>)>,
     /// Cx-level call depth (known-issues §20).
     ///
     /// The interpreter executes a Cx call by recursing through
@@ -154,6 +145,8 @@ impl RunTime {
             semantic_funcs: HashMap::new(),
             debug_scope: false,
             const_bindings: HashSet::new(),
+            lexical_names: None,
+            name_frames: vec![],
             call_depth: 0,
         }
     }

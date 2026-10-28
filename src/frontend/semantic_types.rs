@@ -364,6 +364,9 @@ pub struct SemanticEnum {
 pub struct SemanticFunction {
     pub id: FunctionId,
     pub name: String,
+    /// Names visible outside the function's parameter/local frames, resolved
+    /// where it is declared. Cold runtime paths must not search caller names.
+    pub lexical_names: std::sync::Arc<HashMap<String, BindingId>>,
     pub type_params: Vec<String>,
     pub params: Vec<SemanticParam>,
     pub return_ty: Option<SemanticType>,
@@ -386,6 +389,9 @@ pub struct SemanticWhileInChain {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticStmt {
     Noop,
+    /// The lexical module environment for subsequent top-level execution.
+    /// Native code uses binding IDs directly; this carries no executable ABI.
+    ModuleNames { names: std::sync::Arc<HashMap<String, BindingId>> },
     EnumDef {
         enum_id: EnumId,
         name: String,

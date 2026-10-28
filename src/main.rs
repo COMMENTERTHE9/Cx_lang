@@ -336,6 +336,11 @@ fn run() {
 fn run_with_interpreter_setup(rt: &mut RunTime, program: &SemanticProgram) {
     use frontend::semantic_types::{BindingId, SemanticStmt, SemanticType};
 
+    rt.lexical_names = Some(Arc::new(program.stmts.iter().filter_map(|stmt| match stmt {
+        SemanticStmt::Decl { binding, name, .. } | SemanticStmt::TypedAssign { binding, name, .. }
+        | SemanticStmt::ConstDecl { binding, name, .. } => Some((name.clone(), *binding)),
+        _ => None,
+    }).collect()));
     for stmt in &program.stmts {
         match stmt {
             SemanticStmt::StructDef { name, fields, .. } => {

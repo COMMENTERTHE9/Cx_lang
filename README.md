@@ -70,8 +70,8 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 - JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
 These results cover the stored fixtures, not every accepted program. The
-reviewed restart work now passes **302 default tests**, **481 JIT tests**, and
-**643 interpreter fixtures**; parity is **584 PASS / 59 SKIP / 0 PARITY_FAIL**.
+reviewed restart work now passes **305 default tests**, **484 JIT tests**, and
+**646 interpreter fixtures**; parity is **587 PASS / 59 SKIP / 0 PARITY_FAIL**.
 It corrects printing, generic conversion, nested-function scoping and lexical
 `.copy` ownership, then adds native numeric and enum module constants/state.
 Numeric storage converted eight old refusals to passes; explicit returns
@@ -88,6 +88,11 @@ gene bounds retained and checked across modules. The two old generic-import
 refusals now pass; replay of 669 prior fixtures/examples found no other stdout
 or exit-status changes. Generic struct field parameters cannot borrow an
 enclosing function's bound; concrete field-instance inference remains limited.
+
+Module variables now have separate namespaces across libraries and the entry
+file. Runtime name lookups and native interpolation follow lexical scope,
+including caller shadowing and scope exit. Replay of 679 previous programs on
+both backends found no output or exit changes.
 
 Try `examples/tooling_metrics.cx` with the interpreter and `--backend=cranelift` for a
 multifile example using persistent state, constants, arrays and fallible calls.

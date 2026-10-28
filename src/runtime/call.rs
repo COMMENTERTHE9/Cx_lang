@@ -250,7 +250,10 @@ impl RunTime {
                 function: crate::frontend::semantic::source_function_name(callee).to_string(),
             });
         }
-        self.push_function_scope();
+        let binding_names = if resolved.iter().any(|(_, _, value, _)| matches!(value, Value::Str(..))) {
+            self.snapshot_names()
+        } else { sem_func.lexical_names.clone() };
+        self.push_function_scope(binding_names);
 
         let result = (|| -> Result<Value, RuntimeError> {
             for (pbinding, pname, val, bleed_outer) in resolved {
@@ -262,6 +265,7 @@ impl RunTime {
                     }
                 }
             }
+            self.lexical_names = Some(sem_func.lexical_names.clone());
             for stmt in &sem_func.body {
                 match self.run_semantic_stmt(stmt) {
                     Ok(_) => {}
@@ -373,7 +377,10 @@ impl RunTime {
                 function: format!("{}.{}", instance, method),
             });
         }
-        self.push_function_scope();
+        let binding_names = if resolved_params.iter().any(|(_, _, value)| matches!(value, Value::Str(..))) {
+            self.snapshot_names()
+        } else { sem_func.lexical_names.clone() };
+        self.push_function_scope(binding_names);
 
         let result = (|| -> Result<Value, RuntimeError> {
             // Bind all aliases into scope
@@ -387,6 +394,7 @@ impl RunTime {
                 self.set_var_typed(pbinding, pname, ty, val, pos)?;
             }
 
+            self.lexical_names = Some(sem_func.lexical_names.clone());
             // Run semantic body
             for stmt in &sem_func.body {
                 match self.run_semantic_stmt(stmt) {

@@ -797,10 +797,8 @@ struct LoweringCtx {
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
     target: TargetConfig,
-    /// D2.3d flat name→binding map for print-time string interpolation: every
-    /// `Decl`/`TypedAssign`/`For`/`ConstDecl` name in the current function (+ its
-    /// params), last-wins. See `lower_interpolated_print` for the FILED
-    /// scope-limitation note.
+    /// Current lexical names for interpolation, seeded by the declaration's
+    /// outer environment and updated/restored at source scope boundaries.
     binding_names: HashMap<String, BindingId>,
     /// Declared shape of each generic struct, for laying out an instantiation
     /// the first time one is constructed.
@@ -1020,7 +1018,7 @@ fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
             // function: they are definitions, uses, or bodies whose own
             // declarations are scoped inside them. (FuncDef and ImplBlock do
             // bind their names — see the gap noted above.)
-            SemanticStmt::Noop
+            SemanticStmt::Noop | SemanticStmt::ModuleNames { .. }
             | SemanticStmt::EnumDef { .. }
             | SemanticStmt::GeneDef { .. }
             | SemanticStmt::PhenDef { .. }
@@ -1051,7 +1049,7 @@ fn top_level_bindings(program: &SemanticProgram) -> HashSet<BindingId> {
 fn module_storage_plan(program: &SemanticProgram) -> Result<(Vec<IrGlobal>, ModuleBindings), LoweringError> {
     let mut globals = Vec::new();
     let mut bindings = HashMap::new();
-    let mut names = HashSet::new();
+    let mut names = HashMap::<&str, usize>::new();
     for stmt in &program.stmts {
         let name = match stmt {
             SemanticStmt::Decl { name, .. } | SemanticStmt::TypedAssign { name, .. }
@@ -1059,11 +1057,7 @@ fn module_storage_plan(program: &SemanticProgram) -> Result<(Vec<IrGlobal>, Modu
             _ => None,
         };
         if let Some(name) = name {
-            if !names.insert(name) {
-                return Err(LoweringError::UnsupportedSemanticConstruct {
-                    construct: format!("same-named module variables '{name}' — interpreter module namespaces are not separated yet"),
-                });
-            }
+            *names.entry(name.as_str()).or_default() += 1;
         }
     }
     for stmt in &program.stmts {
@@ -1079,7 +1073,10 @@ fn module_storage_plan(program: &SemanticProgram) -> Result<(Vec<IrGlobal>, Modu
         let semantic_ty = ty.clone();
         let ty = lower_type(ty)?;
         let id = GlobalId(u32::try_from(globals.len()).map_err(|_| LoweringError::UnsupportedSemanticConstruct { construct: "too many module bindings".into() })?);
-        globals.push(IrGlobal { id, name: name.clone(), size: ty.size_bytes() + 1, align: ty.align_bytes() });
+        let storage_name = if names.get(name.as_str()).copied().unwrap_or(0) > 1 {
+            format!("{}@{}", name, binding.0)
+        } else { name.clone() };
+        globals.push(IrGlobal { id, name: storage_name, size: ty.size_bytes() + 1, align: ty.align_bytes() });
         bindings.insert(*binding, ModuleBinding { id, name: name.clone(), ty, semantic_ty });
     }
     Ok((globals, bindings))
@@ -1385,6 +1382,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                     let mut full_params = alias_params;
                     full_params.extend(method.params.iter().cloned());
                     let reconstructed = crate::frontend::semantic_types::SemanticFunction {
+                        lexical_names: method.lexical_names.clone(),
                         id: method.id,
                         name: mangled,
                         type_params: method.type_params.clone(),
@@ -1428,6 +1426,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                     let mut full_params = recv_params;
                     full_params.extend(method.params.iter().cloned());
                     let reconstructed = crate::frontend::semantic_types::SemanticFunction {
+                        lexical_names: method.lexical_names.clone(),
                         id: method.id,
                         name: mangled,
                         type_params: method.type_params.clone(),
@@ -1518,9 +1517,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
     };
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
     ctx.module_bindings = module_bindings.clone();
-    // D2.3d: flat name→binding map for print-time string interpolation.
     for &stmt in stmts {
-        collect_binding_names_stmt(stmt, &mut ctx.binding_names);
         collect_binding_print_types_stmt(stmt, &mut ctx.binding_print_types);
     }
     let entry = ctx.start_block(vec![], HashMap::new());
@@ -1657,9 +1654,11 @@ fn lower_semantic_function(
         None
     };
 
-    // D2.3d: flat name→binding map (function body + params) for interpolation.
+    ctx.binding_names = function.lexical_names.as_ref().clone();
+    for (binding, global) in &ctx.module_bindings {
+        ctx.binding_print_types.insert(*binding, global.semantic_ty.clone());
+    }
     for stmt in &function.body {
-        collect_binding_names_stmt(stmt, &mut ctx.binding_names);
         collect_binding_print_types_stmt(stmt, &mut ctx.binding_print_types);
     }
     for param in &function.params {
@@ -1736,6 +1735,13 @@ fn lower_semantic_function(
     // Explicit returns already finished copy-out and any aggregate return slot.
     if let Some(mut active) = current {
         if let Some(ret_expr) = &function.ret_expr {
+            if ret_expr.ty == SemanticType::Void && spec.return_ty.is_none() {
+                let tail = SemanticStmt::ExprStmt { expr: ret_expr.clone(), pos: function.pos };
+                if let Some(mut active) = lower_stmt(&tail, &mut ctx, active, &spec, &[])? {
+                    let _ = finish_return(&spec, None, &mut ctx, &mut active)?;
+                    finalize_active_block(&mut ctx, active, IrTerminator::Return { value: None })?;
+                }
+            } else {
             if let Some(expected) = &spec.return_semantic_ty {
                 ensure_enum_expr("trailing return", expected, ret_expr)?;
             }
@@ -1756,6 +1762,7 @@ fn lower_semantic_function(
                 active,
                 IrTerminator::Return { value: ret_value },
             )?;
+            }
         } else if spec.return_ty.is_some() {
             return Err(LoweringError::InternalInvariantViolation {
                 detail: format!(
@@ -1799,12 +1806,57 @@ where
 fn lower_stmt(
     stmt: &SemanticStmt,
     ctx: &mut LoweringCtx,
+    current: ActiveBlock,
+    spec: &FunctionLoweringSpec,
+    loop_ctx: &[LoopContext],
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let scoped = matches!(stmt, SemanticStmt::Block { .. } | SemanticStmt::IfElse { .. }
+        | SemanticStmt::For { .. } | SemanticStmt::While { .. } | SemanticStmt::Loop { .. }
+        | SemanticStmt::WhileIn { .. } | SemanticStmt::When { .. });
+    let names = scoped.then(|| ctx.binding_names.clone());
+    match stmt {
+        SemanticStmt::Decl { binding, name, .. } => { ctx.binding_names.insert(name.clone(), *binding); }
+        _ => {}
+    }
+    let result = lower_stmt_inner(stmt, ctx, current, spec, loop_ctx);
+    if result.is_ok() {
+        match stmt {
+            SemanticStmt::TypedAssign { binding, name, .. } | SemanticStmt::ConstDecl { binding, name, .. } => {
+                ctx.binding_names.insert(name.clone(), *binding);
+            }
+            _ => {}
+        }
+    }
+    if let Some(names) = names { ctx.binding_names = names; }
+    result
+}
+
+fn lower_scoped_stmt_sequence<'a>(
+    stmts: impl IntoIterator<Item = &'a SemanticStmt>,
+    ctx: &mut LoweringCtx,
+    current: Option<ActiveBlock>,
+    spec: &FunctionLoweringSpec,
+    loop_ctx: &[LoopContext],
+) -> Result<Option<ActiveBlock>, LoweringError> {
+    let names = ctx.binding_names.clone();
+    let result = lower_stmt_sequence(stmts, ctx, current, spec, loop_ctx);
+    ctx.binding_names = names;
+    result
+}
+
+fn lower_stmt_inner(
+    stmt: &SemanticStmt,
+    ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
     spec: &FunctionLoweringSpec,
     loop_ctx: &[LoopContext],
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     match stmt {
         SemanticStmt::Noop => Ok(Some(current)),
+        SemanticStmt::ModuleNames { names } => {
+            ctx.binding_names = names.as_ref().clone();
+            Ok(Some(current))
+        }
         // 0.3.4 slice 1: gene/phen declarations are inert at lowering too —
         // nothing to emit. Coherence registration already happened in Pass 0.
         SemanticStmt::GeneDef { .. } => Ok(Some(current)),
@@ -2238,8 +2290,8 @@ SemanticStmt::Block { .. } => { unsupported!("Block") },
         None => Ok(None),
     };
 },
-        SemanticStmt::For { label, binding, start, end, inclusive, body, .. } => {
-    return match lower_for(label, *binding, start, end, *inclusive, body, ctx, current, spec, loop_ctx)? {
+        SemanticStmt::For { label, binding, var, start, end, inclusive, body, .. } => {
+    return match lower_for(label, *binding, var, start, end, *inclusive, body, ctx, current, spec, loop_ctx)? {
         Some(new_active) => Ok(Some(new_active)),
         None => Ok(None),
     };
@@ -2455,7 +2507,7 @@ fn lower_if_chain(
         ctx.seal_block(decision_block)?;
 
         let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
+        if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
             fallthroughs.push(active);
         }
         fallthroughs.extend(lower_if_chain(
@@ -2484,11 +2536,11 @@ fn lower_if_chain(
         ctx.seal_block(decision_block)?;
 
         let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
+        if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
             fallthroughs.push(active);
         }
         let else_result = if let Some(else_body) = else_body {
-            lower_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec, loop_ctx)?
+            lower_scoped_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec, loop_ctx)?
         } else {
             Some(else_active)
         };
@@ -2691,7 +2743,7 @@ fn lower_while(
     };
     let mut loop_stack = outer_loop_ctx.to_vec();
     loop_stack.push(loop_context);
-    let body_result = lower_stmt_sequence(
+    let body_result = lower_scoped_stmt_sequence(
         body.iter(),
         ctx,
         Some(body_block),
@@ -2801,7 +2853,7 @@ fn lower_loop(
     let mut loop_stack = outer_loop_ctx.to_vec();
     loop_stack.push(loop_context);
 
-    let body_result = lower_stmt_sequence(
+    let body_result = lower_scoped_stmt_sequence(
         body.iter(),
         ctx,
         Some(body_block),
@@ -2828,6 +2880,7 @@ fn lower_loop(
 fn lower_for(
     label: &Option<String>,
     binding: BindingId,
+    var: &str,
     start: &SemanticExpr,
     end: &SemanticExpr,
     inclusive: bool,
@@ -2965,7 +3018,8 @@ fn lower_for(
     let mut loop_stack = outer_loop_ctx.to_vec();
     loop_stack.push(loop_context);
 
-    let body_result = lower_stmt_sequence(
+    ctx.binding_names.insert(var.to_string(), binding);
+    let body_result = lower_scoped_stmt_sequence(
         body.iter(),
         ctx,
         Some(body_block),
@@ -3028,6 +3082,18 @@ fn try_fold_len(
 }
 
 fn lower_expr(
+    expr: &SemanticExpr,
+    ctx: &mut LoweringCtx,
+    current: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    let names = matches!(expr.kind, SemanticExprKind::If { .. } | SemanticExprKind::When { .. })
+        .then(|| ctx.binding_names.clone());
+    let result = lower_expr_inner(expr, ctx, current);
+    if let Some(names) = names { ctx.binding_names = names; }
+    result
+}
+
+fn lower_expr_inner(
     expr: &SemanticExpr,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
@@ -4578,6 +4644,7 @@ fn lower_when_stmt(
     let scrutinee_val = lower_expr(scrutinee, ctx, &mut current)?;
 
     let mut fallthroughs: Vec<ActiveBlock> = Vec::new();
+    let outer_names = ctx.binding_names.clone();
 
     for arm in arms.iter() {
         // A whole-scrutinee `as v` binding is a pure SSA-level alias: the
@@ -4585,8 +4652,11 @@ fn lower_when_stmt(
         // BindingId, scoped to this arm's body block only (enums are
         // tag-only, so there is no separate value to compute).
         let mut body_incoming = incoming.clone();
-        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, _)), .. } = &arm.pattern {
+        ctx.binding_names = outer_names.clone();
+        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
             body_incoming.insert(*id, scrutinee_val.clone());
+            ctx.binding_names.insert(name.clone(), *id);
+            ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
             ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
         }
         let body_block = ctx.start_block(vec![], body_incoming.clone());
@@ -4601,7 +4671,7 @@ fn lower_when_stmt(
                             args: vec![],
                         })?;
                         ctx.seal_block(current)?;
-                        if let Some(active) = lower_stmt_sequence(
+                        if let Some(active) = lower_scoped_stmt_sequence(
                             arm.body.iter(),
                             ctx,
                             Some(body_block),
@@ -4647,7 +4717,7 @@ fn lower_when_stmt(
                         })?;
                         ctx.seal_block(guard_block)?;
 
-                        if let Some(active) = lower_stmt_sequence(
+                        if let Some(active) = lower_scoped_stmt_sequence(
                             arm.body.iter(),
                             ctx,
                             Some(body_block),
@@ -4679,7 +4749,7 @@ fn lower_when_stmt(
                             current,
                             ctx,
                         )?;
-                        if let Some(active) = lower_stmt_sequence(
+                        if let Some(active) = lower_scoped_stmt_sequence(
                             arm.body.iter(),
                             ctx,
                             Some(body_block),
@@ -4723,7 +4793,7 @@ fn lower_when_stmt(
                         })?;
                         ctx.seal_block(guard_block)?;
 
-                        if let Some(active) = lower_stmt_sequence(
+                        if let Some(active) = lower_scoped_stmt_sequence(
                             arm.body.iter(),
                             ctx,
                             Some(body_block),
@@ -4985,12 +5055,16 @@ fn lower_when_expr(
             lower_branch_value(&arm.body, result_ty, &result_ir_ty, merge_id, body_active, ctx)
         };
 
+    let outer_names = ctx.binding_names.clone();
     for arm in arms.iter() {
+        ctx.binding_names = outer_names.clone();
         // Same whole-scrutinee alias as the statement form — see the comment
         // in `lower_when_stmt`.
         let mut body_incoming = incoming.clone();
-        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, _)), .. } = &arm.pattern {
+        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
             body_incoming.insert(*id, scrutinee_val.clone());
+            ctx.binding_names.insert(name.clone(), *id);
+            ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
             ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
         }
         let body_block = ctx.start_block(vec![], body_incoming.clone());
@@ -5124,6 +5198,20 @@ fn lower_when_expr(
 /// expression (a leading stmt that never returns control), no merge edge is
 /// added — that branch simply contributes nothing to the merge.
 fn lower_branch_value(
+    body: &[SemanticStmt],
+    result_ty: &SemanticType,
+    result_ir_ty: &IrType,
+    merge_id: crate::ir::types::BlockId,
+    body_active: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<(), LoweringError> {
+    let names = ctx.binding_names.clone();
+    let result = lower_branch_value_inner(body, result_ty, result_ir_ty, merge_id, body_active, ctx);
+    ctx.binding_names = names;
+    result
+}
+
+fn lower_branch_value_inner(
     body: &[SemanticStmt],
     result_ty: &SemanticType,
     result_ir_ty: &IrType,
@@ -6682,55 +6770,6 @@ fn lower_exit_stmt(
 /// integer widths (I8/I16/I32) and Bool/TBool are widened to I64 at the boundary
 /// via `widen_to_i64_for_print`.  F64, I128, Ptr, Str, and composite types
 /// produce a structured error.
-/// D2.3d: collect one statement's binding NAME → BindingId pairs (recursing into
-/// nested bodies) into the flat interpolation map. Last-wins for repeats.
-fn collect_binding_names_stmt(stmt: &SemanticStmt, map: &mut HashMap<String, BindingId>) {
-    match stmt {
-        SemanticStmt::Decl { binding, name, .. }
-        | SemanticStmt::TypedAssign { binding, name, .. }
-        | SemanticStmt::ConstDecl { binding, name, .. } => {
-            map.insert(name.clone(), *binding);
-        }
-        SemanticStmt::For { binding, var, body, .. } => {
-            map.insert(var.clone(), *binding);
-            for s in body {
-                collect_binding_names_stmt(s, map);
-            }
-        }
-        SemanticStmt::Block { stmts, .. }
-        | SemanticStmt::While { body: stmts, .. }
-        | SemanticStmt::Loop { body: stmts, .. }
-        | SemanticStmt::WhileIn { body: stmts, .. } => {
-            for s in stmts {
-                collect_binding_names_stmt(s, map);
-            }
-        }
-        SemanticStmt::IfElse { then_body, else_ifs, else_body, .. } => {
-            for s in then_body {
-                collect_binding_names_stmt(s, map);
-            }
-            for (_, b) in else_ifs {
-                for s in b {
-                    collect_binding_names_stmt(s, map);
-                }
-            }
-            if let Some(b) = else_body {
-                for s in b {
-                    collect_binding_names_stmt(s, map);
-                }
-            }
-        }
-        SemanticStmt::When { arms, .. } => {
-            for arm in arms {
-                for s in &arm.body {
-                    collect_binding_names_stmt(s, map);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 /// A whole-function summary must not give an earlier value the type of a
 /// later assignment. Conflicting types retain no pointer-formatting authority.
 fn record_binding_print_type(map: &mut HashMap<BindingId, SemanticType>, binding: BindingId, ty: SemanticType) {
@@ -6841,15 +6880,8 @@ fn parse_interpolation(s: &str) -> Option<Vec<InterpPiece>> {
 /// prints via a no-newline inline intrinsic; one `cx_print_newline` closes the
 /// line (matching the interpreter's single-newline `print`).
 ///
-/// FILED LIMITATION (D2.3d flat map): `{x}` resolves via the function-wide
-/// `binding_names` map (last-wins). This DIVERGES from the interpreter's
-/// scope-correct resolution on two corners — (1) a shadowed name interpolated
-/// after the inner block exits (resolves the inner binding; the interpreter sees
-/// the outer), and (2) use-before-declaration (the interpreter errors #038; the
-/// map resolves a later declaration). No fixture exercises these; it is the
-/// accepted tradeoff tied to the OPEN interpolation-scoping question (a future
-/// scope-threaded map or semantic pre-resolution closes it). A shadowing /
-/// use-before-decl interpolation bug belongs on THIS note, not a fresh mystery.
+/// Names resolve in the current source scope, including the function's lexical
+/// module globals; lifecycle guards apply to captured module reads as usual.
 fn lower_interpolated_print(
     s: &str,
     newline: bool,
@@ -7725,6 +7757,7 @@ mod tests {
         ret_expr: Option<SemanticExpr>,
     ) -> SemanticStmt {
         SemanticStmt::FuncDef(SemanticFunction {
+            lexical_names: Default::default(),
             id: FunctionId(0),
             name: name.to_string(),
             type_params: vec![],
@@ -10557,6 +10590,7 @@ mod tests {
         };
         // Build a minimal program: fn do_nothing() -> void {}
         let func = SemanticFunction {
+            lexical_names: Default::default(),
             id: FunctionId(0),
             name: "do_nothing".to_string(),
             type_params: vec![],
@@ -12666,13 +12700,16 @@ mod module_state_tests {
     }
 
     #[test]
-    fn duplicate_module_variable_names_remain_a_structured_refusal() {
+    fn distinct_module_bindings_can_share_a_display_name() {
         let mut program = analyzed("x: t64 = 7\n");
         let mut second = program.stmts[0].clone();
         if let SemanticStmt::TypedAssign { binding, .. } = &mut second { *binding = BindingId(1000); }
         program.stmts.push(second);
-        let error = lower_program(&program).expect_err("reference module namespaces do not support this yet");
-        assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
-            if construct.contains("same-named module variables")), "{error:?}");
+        let (globals, bindings) = module_storage_plan(&program).expect("distinct identities have separate storage");
+        assert_eq!(globals.len(), 2);
+        assert_ne!(globals[0].name, globals[1].name);
+        assert_eq!(bindings.len(), 2);
+        let ir = lower_program(&program).expect("same spelling does not merge bindings");
+        crate::ir::validate::validate_module(&ir).expect("global names remain unique");
     }
 }

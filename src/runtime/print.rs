@@ -35,9 +35,7 @@ impl RunTime {
                     let trimmed = var_name.trim();
                     let is_identifier = is_bare_identifier(trimmed);
                     let val = if is_identifier {
-                        self.scopes.iter().rev()
-                            .find_map(|frame| frame.get_by_name(trimmed))
-                            .and_then(|entry| entry.val.clone())
+                        self.get_var(trimmed, pos).ok()
                     } else {
                         None
                     };

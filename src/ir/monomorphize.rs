@@ -326,7 +326,7 @@ fn rw_function(f: &mut SemanticFunction, r: &mut Rewriter) {
 
 fn rw_stmt(s: &mut SemanticStmt, r: &mut Rewriter) {
     match s {
-        SemanticStmt::Noop => {}
+        SemanticStmt::Noop | SemanticStmt::ModuleNames { .. } => {}
         SemanticStmt::EnumDef { .. } => {}
         SemanticStmt::GeneDef { .. } => {}
         SemanticStmt::PhenDef { receiver_type, methods, method_receiver_params, .. } => {

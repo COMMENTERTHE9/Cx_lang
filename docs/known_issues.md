@@ -3883,7 +3883,8 @@ aggregate interpolation in lowering. Unit tests assert that exact refusal,
 including struct/array parameters and the later-assignment bypass; a parity
 SKIP alone would not distinguish it from a code-generation failure.
 
-Remaining gaps include interpolation's flat name map (scope shadowing),
+Interpolation's flat name map and module namespace capture are fixed by §50.
+Remaining gaps include
 non-identifier placeholders, erased generic-struct types, and unimplemented
 composite/large-payload formatters. The generic enum construction probe is
 currently rejected by semantic analysis on both backends before printing.
@@ -4032,3 +4033,34 @@ generic-import SKIPs now execute with the reference output.
 Fresh gates: both builds, 302 default / 481 JIT tests, 643 interpreter fixtures,
 parity 584 PASS / 59 SKIP / 0 disagreements. Replay of 669 prior fixtures/examples
 found exactly those two recoveries, no other stdout/exit changes and no timeouts.
+
+## 50. Module variable names collided; cold lookups could capture caller names
+
+*(Fixed 2026-10-28.)*
+
+Module bindings already had unique IDs, but runtime declaration checks and cold
+name lookups still shared their spelling. Two libraries declaring `count`
+collided, and interpolation/container/method paths could see a caller's unrelated
+variable. Functions now retain definition-site outer binding identities; module
+initializers carry their lexical environment. Cold lookups inspect the current
+function's local scopes, then those resolved outer identities. Context is restored
+on function/method exit. Native globals keep distinct labels for duplicate source
+spellings. Same-scope redeclarations still reject during semantic analysis.
+
+Native interpolation names are registered at declaration execution and restored
+across branches, loops and patterns, rather than collected in a flat function-wide
+map. Typed initializers are lowered before introducing their new name. Captured
+scalar module values use their lifecycle guards and semantic print type.
+
+Review caught string arguments being bound after installing the callee's name
+context. Binding now retains the caller's visible names, already-bound parameter
+precedence and expansion after argument evaluation, then installs the callee's
+environment before the body. Source-driven runtime tests cover functions,
+methods, caller locals, parameter shadowing and a later argument's mutation.
+Namespace fixtures also uncovered a missing void-tail path: a final void call
+now lowers as a statement before ordinary return/copy-out.
+
+Both builds passed; 305 default / 484 JIT tests, 646 interpreter fixtures,
+587 PASS / 59 SKIP / zero parity failures. Independent review rechecked both
+findings. Replay of 679 prior fixtures/examples on each backend found zero
+stdout/exit changes or timeouts. Standard JIT clippy passed with 111 warnings.
