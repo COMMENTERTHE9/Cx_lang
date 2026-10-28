@@ -1,0 +1,2 @@
+// Same name and concrete argument type as the other library and entry.
+pub fnc: t64 <T> id(value: T) { 200 }

@@ -1,0 +1,3 @@
+#![imports]
+lib: use "./t_import_mono_bounds_lib"
+fnc: T <T: ImportMark> relay(value: T) { lib.checked(value) }

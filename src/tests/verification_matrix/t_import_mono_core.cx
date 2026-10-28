@@ -1,0 +1,9 @@
+pub fnc: T <T> id(value: T) { value }
+pub fnc: t8 <T> narrow(value: T) { value }
+pub fnc: A <A, B> first(a: A, b: B) { a }
+pub fnc: T <T> replace(target.copy: T, value: T) { target = value; target }
+pub fnc: t64 <T> depth(value: T, left: t64) {
+    if left == 0 { return 0 }
+    depth(value, left - 1) + 1
+}
+pub fnc: <T> show(value: T) { print(value) }

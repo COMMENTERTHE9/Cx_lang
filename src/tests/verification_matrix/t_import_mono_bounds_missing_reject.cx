@@ -1,0 +1,6 @@
+#![imports]
+lib: use "./t_import_mono_bounds_lib"
+struct Unmarked { value: t64 }
+item: Unmarked = Unmarked { value: 7 }
+result: Unmarked = lib.checked(item)
+print(result.value)

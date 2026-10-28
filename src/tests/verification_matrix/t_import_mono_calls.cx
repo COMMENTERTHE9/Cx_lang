@@ -1,0 +1,34 @@
+#![imports]
+a: use "./t_import_mono_core"
+again: use "./t_import_mono_core"
+relay: use "./t_import_mono_relay"
+other: use "./t_import_mono_other"
+fnc: t64 <T> id(value: T) { 100 }
+n: t8 = 7
+print(a.id(n))
+print(again.id(n))
+print(other.id(n))
+print(id(n))
+print(a.first(n, "second"))
+print(a.id(true))
+print(a.id(1.5))
+print(relay.relay("hello"))
+xs: [2: t8] = [3, 5]
+ys: [2: t8] = relay.relay(xs)
+ys:[0] = 9
+print(xs:[0])
+print(ys:[0])
+struct Pair { x: t32, y: t32 }
+p: Pair = Pair { x: 11, y: 13 }
+q: Pair = relay.relay(p)
+q.x = 22
+print(p.x)
+print(q.x)
+enum Mode { Idle, Active }
+mode: Mode = Mode::Idle
+print(a.replace(mode.copy, Mode::Active))
+print(mode)
+print(a.depth(n, 4))
+a.show(42)
+wide: t64 = 300
+print(a.narrow(wide))

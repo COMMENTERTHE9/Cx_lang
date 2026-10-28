@@ -623,7 +623,20 @@ impl Analyzer {
                 let field_ty = declared
                     .and_then(|fields| fields.iter().find(|(fname, _)| fname == field))
                     .map(|(_, ftype)| {
-                        semantic_type_from_decl(ftype.clone(), &self.current_type_params)
+                        // The field's T belongs to the struct, not to an
+                        // enclosing function with a same-named T. Instance
+                        // arguments are not retained in SemanticType::Struct;
+                        // keep that unresolved binder distinct, including when
+                        // the read is assigned to a local and forwarded later.
+                        // Otherwise Box<Plain>.v can borrow the caller's
+                        // T: Mark proof and dispatch Plain as another struct.
+                        let params = self.struct_type_params.get(struct_name)
+                            .map(Vec::as_slice).unwrap_or(&[]);
+                        let scoped = params.iter().map(|param| (
+                            param.clone(),
+                            SemanticType::TypeParam(format!("{}::{}", struct_name, param)),
+                        )).collect();
+                        substitute_type_params(semantic_type_from_decl(ftype.clone(), params), &scoped)
                     });
                 match field_ty {
                     Some(ty) => Ok((struct_name.clone(), ty)),
@@ -1572,14 +1585,15 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 // binding_type's default rather than a fact (an untyped
                 // `s.copy` parameter can hold a string, and `s += "b"`
                 // appends), and a struct name this module does not declare —
-                // in practice a generic struct's field, which keeps its
-                // declared `T` even when read through a `Box<t32>`.
+                // in practice a generic struct's field, whose own unresolved
+                // parameter is now scoped as `Box::T`.
                 let untyped_binding = matches!(sem_target, SemanticLValue::Binding { .. })
                     && self
                         .lookup_var(&base)
                         .is_some_and(|info| info.declared.is_none() && info.inferred.is_none());
                 let checked_ty = match &target_ty {
                     _ if untyped_binding => SemanticType::Unknown,
+                    SemanticType::TypeParam(name) if name.contains("::") => SemanticType::Unknown,
                     SemanticType::Struct(name) if !self.structs.contains_key(name) => SemanticType::Unknown,
                     ty => ty.clone(),
                 };
@@ -2441,28 +2455,21 @@ Expr::Unary(op, inner, pos) => {
                             params: func.params.clone(),
                             ret_ty: func.return_ty.clone(),
                             type_params: func.type_params.clone(),
-                            // The export table does not carry gene bounds, so a
-                            // bounded generic called across a module boundary
-                            // is not bound-checked. That was already true; it is
-                            // recorded in known_issues §32 rather than widened
-                            // into this change.
-                            type_bounds: Vec::new(),
+                            type_bounds: export_table.function_bounds.get(&func.id).cloned().unwrap_or_default(),
                         };
                         let display = format!("{}.{}", instance, method);
-                        let (semantic_args, ret_ty, _) =
+                        let (semantic_args, ret_ty, type_args) =
                             self.check_user_call(&display, &info, args, *pos, ret_hint.as_ref())?;
-                        // Unchanged from before: an imported call carries no
-                        // function id and no type arguments, so it is never
-                        // monomorphized — cross-module generics are a separate
-                        // gap (§32).
+                        // The same identity and ordered substitution as a local
+                        // call let monomorphization find the merged template.
                         let mangled = format!("{}${}", module_key, method);
                         return Ok(SemanticExpr {
                             ty: ret_ty,
                             kind: SemanticExprKind::Call {
                                 callee: mangled,
-                                function: FunctionId(u32::MAX),
+                                function: info.id,
                                 args: semantic_args,
-                                type_args: Vec::new(),
+                                type_args,
                             },
                         });
                     } else {
@@ -3135,11 +3142,23 @@ Expr::Unary(op, inner, pos) => {
         for (tp_name, bound_genes) in &function.type_bounds {
             if let Some(concrete) = type_param_map.get(tp_name) {
                 for gene in bound_genes {
-                    if !self.phen_keys.contains(&(gene.clone(), concrete.clone())) {
+                    let satisfies = if let SemanticType::TypeParam(caller_param) = concrete {
+                        // A generic caller forwards its declared proof; it has
+                        // no concrete phen until its own specialization.
+                        self.current_type_bounds.iter().any(|(name, genes)| name == caller_param && genes.contains(gene))
+                    } else {
+                        self.phen_keys.contains(&(gene.clone(), concrete.clone()))
+                    };
+                    if !satisfies {
+                        let reason = if let SemanticType::TypeParam(caller_param) = concrete {
+                            format!("type parameter '{}' has no declared '{}' bound", caller_param, gene)
+                        } else {
+                            format!("no phen of gene '{}' for '{}'", gene, type_name(concrete))
+                        };
                         return Err(sem_err!(
                             pos,
-                            "type '{}' does not satisfy bound '{}: {}' in call to '{}' — no phen of gene '{}' for '{}'",
-                            type_name(concrete), tp_name, gene, name, gene, type_name(concrete)
+                            "type '{}' does not satisfy bound '{}: {}' in call to '{}' — {}",
+                            type_name(concrete), tp_name, gene, name, reason
                         ));
                     }
                 }
@@ -4980,11 +4999,9 @@ fn insert_cast_if_needed(expr: SemanticExpr, target: &SemanticType) -> SemanticE
     // reads only the target) and the instantiated one in compiled code
     // (monomorphize substitutes its `from`).
     //
-    // Not a generic STRUCT's field read: inside a generic function its `T` is
-    // taken for the function's same-named `T` (struct type arguments are not
-    // tracked), so the cast's source would be instantiated wrong — compiled
-    // code refused `b.v` of a `Box<t64>` read as the function's t8. Such a read
-    // stays unconverted, as before.
+    // A generic STRUCT's field still carries its own unresolved parameter:
+    // struct instance arguments are not tracked here. Such a read stays
+    // unconverted until its concrete storage layout is known in lowering.
     if matches!(expr.ty, SemanticType::TypeParam(_))
         && is_numeric(target)
         && *target != SemanticType::Numeric
@@ -5519,6 +5536,9 @@ pub fn analyze_resolved_program(
                         matches!(s, Stmt::FuncDef { name, is_pub: true, .. } if name == &sem_func.name)
                     });
                     if is_pub {
+                        if let Some(info) = analyzer.funcs.get(&sem_func.name) {
+                            export_table.function_bounds.insert(sem_func.id, info.type_bounds.clone());
+                        }
                         export_table.functions.insert(sem_func.name.clone(), sem_func.clone());
                     }
                 }
@@ -5768,6 +5788,77 @@ print(result + result2)
     fn imported_call_with_correct_arguments_is_accepted() {
         let result = analyze_with_library(ADD_LIB, "print(math.add(10, 20))\n");
         assert!(result.is_ok(), "rejected a correct imported call: {:?}", result.err());
+    }
+
+    #[test]
+    fn imported_generic_calls_retain_identity_and_ordered_type_arguments() {
+        let program = analyze_with_library(
+            "pub fnc: A <A, B> first(a: A, b: B) { a }\n",
+            "n: t8 = 7\nprint(math.first(n, \"x\"))\n",
+        ).expect("imported generic analyzes");
+        let template = program.stmts.iter().find_map(|stmt| match stmt {
+            SemanticStmt::FuncDef(f) if f.name.ends_with("$first") => Some(f), _ => None,
+        }).expect("merged template");
+        let imported = program.stmts.iter().find_map(|stmt| match stmt {
+            SemanticStmt::ExprStmt { expr: SemanticExpr { kind: SemanticExprKind::Call { args, .. }, .. }, .. } => {
+                match args.first() { Some(SemanticCallArg::Expr(expr)) => Some(expr), _ => None }
+            }
+            _ => None,
+        }).expect("print argument");
+        match &imported.kind {
+            SemanticExprKind::Call { function, type_args, .. } => {
+                assert_eq!(*function, template.id);
+                assert_eq!(type_args, &vec![SemanticType::I8, SemanticType::Str]);
+            }
+            other => panic!("expected imported call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn imported_generic_call_preserves_a_symbolic_enclosing_parameter() {
+        let program = analyze_with_library(
+            "pub fnc: T <T> id(value: T) { value }\n",
+            "fnc: U <U> wrap(value: U) { math.id(value) }\nprint(wrap(5))\n",
+        ).expect("symbolic imported call analyzes");
+        let wrapper = program.stmts.iter().find_map(|stmt| match stmt {
+            SemanticStmt::FuncDef(f) if f.name == "wrap" => Some(f), _ => None,
+        }).unwrap();
+        match &wrapper.ret_expr.as_ref().unwrap().kind {
+            SemanticExprKind::Call { function, type_args, .. } => {
+                assert_ne!(*function, FunctionId(u32::MAX));
+                assert_eq!(type_args, &vec![SemanticType::TypeParam("U".into())]);
+            }
+            other => panic!("expected imported call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn imported_gene_bounds_are_checked_and_can_be_forwarded() {
+        let library = "gene ImportMark { fnc mark() -> t64 }\ngene ImportNamed { fnc label() -> str }\npub fnc: T <T: ImportMark + ImportNamed> checked(value: T) { value }\n";
+        let error = analyze_with_library(library, "print(math.checked(1))\n").expect_err("missing phens must reject");
+        assert!(error.iter().any(|e| e.msg.contains("does not satisfy bound") && e.msg.contains("math.checked")));
+        let forward = "fnc: U <U: ImportMark + ImportNamed> forward(value: U) { math.checked(value) }\n";
+        analyze_with_library(library, forward).expect("declared bounds prove a symbolic call");
+        let weak = "fnc: U <U: ImportMark> forward(value: U) { math.checked(value) }\n";
+        let error = analyze_with_library(library, weak).expect_err("missing forwarded bound must reject");
+        assert!(error.iter().any(|e| e.msg.contains("ImportNamed")));
+    }
+
+    #[test]
+    fn imported_gene_bounds_cannot_be_borrowed_by_a_struct_field() {
+        let library = "gene ImportMark { fnc mark() -> t64 }\npub fnc: t64 <T: ImportMark> measure(value: T) { value.mark() }\n";
+        // Direct and aliased reads, including an element of an array field,
+        // must retain the struct's binder rather than the caller's proof.
+        for (field_ty, value, read) in [
+            ("T", "Plain { pad: 100, value: 9 }", "box.v"),
+            ("[1: T]", "[Plain { pad: 100, value: 9 }]", "box.v:[0]"),
+        ] {
+            for call in [format!("math.measure({read})"), format!("let alias; alias = {read}\nmath.measure(alias)")] {
+                let entry = format!("struct Marked {{ value: t64 }}\nphen ImportMark (m: Marked) {{ fnc: t64 mark() {{ m.value * 2 }} }}\nstruct Plain {{ pad: t64, value: t64 }}\nstruct Box<T> {{ v: {field_ty} }}\nfnc: t64 <T: ImportMark> forward(item: T) {{\nlet box; box = Box<Plain> {{ v: {value} }}\n{call}\n}}\nprint(forward(Marked {{ value: 7 }}))\n");
+                let errors = analyze_with_library(library, &entry).expect_err("struct field has no caller proof");
+                assert!(errors.iter().any(|e| e.msg.contains("Box::T") && e.msg.contains("no declared 'ImportMark' bound")), "got: {errors:?}");
+            }
+        }
     }
 
     /// Prelude self-validation (0.3.4 slice 6): the shipped prelude must

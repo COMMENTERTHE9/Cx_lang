@@ -1,0 +1,6 @@
+// The interpreter passes the non-number through a generic numeric return;
+// native specialization must refuse its representation as a number.
+#![imports]
+lib: use "./t_import_mono_core"
+enum Mode { Idle, Active }
+print(lib.narrow(Mode::Active))

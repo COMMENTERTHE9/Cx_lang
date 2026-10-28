@@ -542,6 +542,9 @@ pub struct SemanticProgram {
 #[allow(dead_code)] // consts + enums populated by export machinery for upcoming importer expansion
 pub struct ExportTable {
     pub functions: HashMap<String, SemanticFunction>,
+    /// Gene bounds belong to a function's checking contract, not its executable
+    /// body. Retain them by stable id when exporting the semantic function.
+    pub function_bounds: HashMap<FunctionId, Vec<(String, Vec<String>)>>,
     pub structs: HashMap<String, Vec<(String, SemanticType)>>,
     pub consts: HashMap<String, (SemanticType, SemanticExpr)>,
     pub enums: HashMap<String, SemanticEnum>,
@@ -551,6 +554,7 @@ impl ExportTable {
     pub fn new() -> Self {
         ExportTable {
             functions: HashMap::new(),
+            function_bounds: HashMap::new(),
             structs: HashMap::new(),
             consts: HashMap::new(),
             enums: HashMap::new(),

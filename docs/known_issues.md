@@ -2674,11 +2674,10 @@ A second review, of those fixes, found three more:
 
 ### Still not handled across a module boundary
 
-- **Generic functions are not monomorphized** when called through an import: the
-  call carries no function id and no type arguments, so the JIT refuses it (SKIP).
-  Arguments are checked against the inferred type parameters and the result type
-  is substituted.
-- **Gene bounds are not checked**: the export table does not carry them.
+- **Generic call specialization and gene-bound exports were missing** here.
+  Fixed by §49: imported calls retain the template ID and inferred type arguments,
+  and exports retain their declared gene bounds. The two generic-import fixtures
+  listed below now pass on the JIT as well as the interpreter.
 - **Enum variants of another module's enum** (`Color::Green` written in a module
   that imports `colors`) get no resolved tag: the interpreter accepts them, the
   JIT refuses. Values obtained through the declaring module (`col.green()`) work
@@ -3986,3 +3985,50 @@ The prior valid boundary fixture also produces identical output on the old JIT.
 Fresh gates: both builds, 297 default / 476 JIT tests, 633 interpreter fixtures,
 parity 573 PASS / 60 SKIP / 0 disagreements. Replay of 651 prior fixtures/examples
 found no stdout or exit-status changes and no timeouts.
+
+## 49. Imported generic calls discarded specialization identity and bounds
+
+*(Fixed 2026-10-28; follow-up to §32.)*
+
+An imported `lib.id(value)` was checked using its inferred type parameters, but
+the semantic call retained neither the function ID nor those arguments. Native
+lowering consequently refused the unresolved generic template. Imported calls
+now retain the same stable ID and ordered type arguments as local calls. The
+existing monomorphizer composes symbolic arguments through generic callers,
+deduplicates demands and preserves each merged library template's name. No
+specialization algorithm or function ABI changed.
+
+Export tables also retain public functions' gene bounds by ID. Calls require
+every declared bound, including across imports. A generic caller can forward a
+proof declared for its own parameter; a missing concrete phen or missing symbolic
+bound produces a semantic diagnostic.
+
+Review found a binder capture in field typing: a field declared `Box<T>.v` was
+resolved against an enclosing function's same-named `T`. Allowing symbolic proof
+forwarding then let `Box<Plain>.v` borrow `T: ImportMark` and dispatch using an
+unrelated struct's layout. A native probe printed 200 where the interpreter
+rejected the missing method. Field declarations now resolve in their struct's
+parameter scope, with unresolved identities such as `Box::T` kept separate from
+function parameters through aliases and array indexing. Those fields cannot
+borrow a caller's gene proof. Existing compound-field assignment checks still
+defer unresolved types to runtime and concrete layout checks.
+
+Concrete generic struct instance arguments remain absent from
+`SemanticType::Struct`; calls requiring that field-inference information can
+still be refused. The correction does not infer a field's type from a coincident
+parameter name. Existing numeric/enum conversion refusals also remain in force:
+the interpreter passes an enum through a generic numeric return, while native
+lowering explicitly refuses the enum's representation as a number.
+
+Fixtures cover aliases of the same library, same-named functions in different
+libraries and the entry, multi-parameter inference, nested library forwarding,
+recursion, void calls, numeric narrowing, scalar/string/enum/aggregate results,
+value-copy isolation and `.copy` write-back. Bound regressions cover concrete
+phens, multiple bounds, symbolic forwarding, missing proofs and field capture.
+Semantic units pin IDs, ordered arguments and proof errors; an IR unit pins the
+imported enum conversion's exact structured refusal. The two pre-existing
+generic-import SKIPs now execute with the reference output.
+
+Fresh gates: both builds, 302 default / 481 JIT tests, 643 interpreter fixtures,
+parity 584 PASS / 59 SKIP / 0 disagreements. Replay of 669 prior fixtures/examples
+found exactly those two recoveries, no other stdout/exit changes and no timeouts.

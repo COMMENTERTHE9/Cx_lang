@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A generic struct field does not inherit the enclosing function's gene proof.

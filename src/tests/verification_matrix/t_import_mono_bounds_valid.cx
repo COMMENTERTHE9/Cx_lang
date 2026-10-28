@@ -1,0 +1,14 @@
+#![imports]
+lib: use "./t_import_mono_bounds_lib"
+struct Marked { value: t64 }
+phen ImportMark (m: Marked) { fnc: t64 mark() { m.value * 2 } }
+phen ImportNamed (m: Marked) { fnc: str label() { "marked" } }
+fnc: T <T: ImportMark + ImportNamed> relay(value: T) { lib.checked(value) }
+item: Marked = Marked { value: 7 }
+checked: Marked = lib.checked(item)
+forwarded: Marked = lib.forward(item)
+relayed: Marked = relay(item)
+print(checked.value)
+print(forwarded.value)
+print(relayed.value)
+print(lib.measure(item))

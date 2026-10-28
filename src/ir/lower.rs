@@ -12564,6 +12564,36 @@ mod tests {
 
 
 #[cfg(test)]
+mod imported_generic_tests {
+    use super::*;
+    use crate::frontend::{resolver, semantic};
+
+    #[test]
+    fn imported_specialization_refuses_enum_numeric_conversion() {
+        let lib = resolver::ModuleId(0);
+        let entry = resolver::ModuleId(1);
+        let files = HashMap::from([
+            (lib, resolver::ResolvedFile {
+                id: lib, path: "lib.cx".into(), imports: vec![],
+                program: resolver::parse_source(include_str!("../tests/verification_matrix/t_import_mono_core.cx")).unwrap(),
+            }),
+            (entry, resolver::ResolvedFile {
+                id: entry, path: "entry.cx".into(), imports: vec![],
+                program: resolver::parse_source(include_str!("../tests/verification_matrix/t_import_mono_enum_conversion.cx")).unwrap(),
+            }),
+        ]);
+        let resolved = resolver::ResolvedProgram {
+            entry, files, topo_order: vec![lib, entry],
+            edges: vec![resolver::ImportEdge { importer: entry, importee: lib, alias: "lib".into(), pos: 0 }],
+        };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("imported call analyzes");
+        let error = lower_program(&analyzed).expect_err("enum representation is not a number");
+        assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+            if construct.contains("enum identity in cast: expected t8, got Mode")), "{error:?}");
+    }
+}
+
+#[cfg(test)]
 mod module_state_tests {
     use super::*;
     use crate::frontend::{resolver, semantic};

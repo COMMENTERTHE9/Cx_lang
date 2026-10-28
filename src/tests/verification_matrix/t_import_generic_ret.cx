@@ -2,7 +2,7 @@
 // call does. The imported path used to return the raw `T`, so valid programs
 // were rejected: `m.id(2) + m.id(3)` with "arithmetic requires numeric
 // operands, got T and T", and `q.x` with "'T' is an unbounded type parameter".
-// The JIT does not compile calls to imported generic functions yet (SKIP).
+// The call retains its template id and inferred type arguments for the JIT.
 #![imports]
 m: use "./t_import_generic_ret_lib"
 

@@ -1,0 +1,5 @@
+gene ImportMark { fnc mark() -> t64 }
+gene ImportNamed { fnc label() -> str }
+pub fnc: T <T: ImportMark + ImportNamed> checked(value: T) { value }
+pub fnc: t64 <T: ImportMark> measure(value: T) { value.mark() }
+pub fnc: T <T: ImportMark + ImportNamed> forward(value: T) { checked(value) }
