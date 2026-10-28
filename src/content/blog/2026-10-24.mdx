@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-10-24"
+date: 2026-10-24
+description: "Three PRs merged ending a 54-day quiet streak, fixing silent JIT miscompilation in top-level state, imported-call checking, and function-name scoping."
+---
+
+After 54 days without a development commit, work resumed with a different focus than expected. Instead of pushing forward on new lowering features, the session pivoted to closing JIT correctness holes. Three PRs merged to submain, fifteen non-merge commits landed, and 51 new test files were added. A fourth thread of work on float division-by-zero safety sits on a branch, not yet merged.
+
+The theme across all of it: the JIT must refuse what it cannot do correctly rather than silently miscompile.
+
+## Top-level state: refuse, don't fake it
+
+The JIT had a silent miscompile where a function body assigning to a module-level variable would compile a fresh local under the global's id, exit 0, and lose the write entirely. The fix in PR #449 collects all top-level bindings at program entry via `top_level_bindings()` in `lower.rs` and refuses any function-body access to them with a clear error: "compiled code cannot reach top-level state yet."
+
+This is an honest SKIP, not a simulation. Module-level storage would need a new IR concept that doesn't exist yet, so the correct behavior is to refuse the program and tell you why. The same PR also made binding, function, and enum ids unique across modules in `resolver.rs` and `semantic.rs`. The id reuse was a prerequisite for the guard to work correctly across multi-module programs.
+
+Six new test fixtures pin the refusal for writes, compounds, resets, counters, aggregates, and const reads from functions.
+
+## Imported-call checking
+
+Imported function calls had been analysed in isolation: no arity check, no type check, no range narrowing, no `.copy` contract enforcement. A call into another module with the wrong number of arguments, an out-of-range literal, or a type mismatch would either silently wrap, fail at runtime inside the callee, or get refused by the JIT with a confusing "expected I32, got I64."
+
+PR #450 extracts the shared checking logic into `check_user_call()` and routes both local and imported calls through it. Any future improvement to call checking automatically applies to cross-module calls too.
+
+The PR also bundled several supporting fixes:
+
+- Type annotations can now name enums from directly imported modules.
+- Type parameters shadow enum names; `.copy` params are normalized.
+- Float narrowing from f64 to t8/t16 saturates instead of panicking.
+- f64 to t128 casts are refused since Cranelift has no conversion path.
+- Same-named enums from two modules are refused because tag-based dispatch would silently mismatch.
+
+Ten new test files cover imported-call rejection, fixed-shape arguments, generic returns, and enum edge cases.
+
+## Function names are not variables
+
+Before this fix, `print(f)` where `f` is a function name passed semantic analysis as an initialized variable of the function's return type, then diverged. The interpreter rejected it at runtime ("variable 'f' has not been declared") while the JIT compiled and ran it, producing a wrong value silently.
+
+PR #451 adds an `is_function` flag to `VarInfo` and makes `lookup_var` skip function entries entirely, matching the interpreter's separate-namespace semantics. A second commit extends the refusal to field-container access like `f.x` and `f.x += 1`. Error messages now name the mistake: "'f' is a function, not a variable -- call it as f(...)". Twelve new test files.
+
+## Float division-by-zero safety (in progress)
+
+Three commits on a new `backend/float-div-by-zero` branch extend the JIT's division guard to float types and compound assignments. The division-by-zero error message now names the actual operator (`/` or `%`) instead of always saying `/`. Float division and every compound `/=` `%=` path through bindings, fields, and array elements now route through a new `emit_user_arith()` function that guards against zero. Previously compound assignments emitted a raw `Binary` instruction that skipped the guard, so `x /= 0` on any integer or float hit a hardware fault instead of a clean trap.
+
+The branch also refuses t128 division and remainder at the `emit_user_arith` level since Cranelift's x64 backend panics on `srem.i128`. Sixteen new test files. This branch hasn't merged yet but is the natural next PR.
+
+## Direction
+
+The strategy shift is notable. Rather than continuing toward the 0.4 lowering blockers (`.copy_into`, nested functions, `while-in`), the focus moved to making the existing lowered subset sound. The correctness holes closed today would have caused silent miscompilation in any program exercising them. Refusing what the JIT cannot handle correctly is a prerequisite for trusting what it can.
+
+Submain is now 25 non-merge commits ahead of main, up from 13 yesterday. The verification matrix on main still holds at 414 PASS / 0 FAIL, with the new tests living on submain. The float division branch is ready to land, and the soundness sweep likely has more to go before new feature work resumes.
