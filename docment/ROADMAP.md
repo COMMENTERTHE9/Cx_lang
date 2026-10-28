@@ -66,7 +66,7 @@ feature sets.
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
 
-**Post-0.3.3 lowering-blocker sprint (on submain, PRs #462–#474):**
+**Post-0.3.3 lowering-blocker sprint (on submain, 10 PRs: #462, #466–#474):**
 
 Landed between 2026-10-24 and 2026-10-28. Substantive progress against the
 0.4 remaining lowering blockers:
@@ -97,9 +97,12 @@ Landed between 2026-10-24 and 2026-10-28. Substantive progress against the
 - **Generic value conversion** — semantic-level cast when generic `T` enters a
   declared number-type slot. (PR #462)
 
-**Still open in the 0.4 blocker list:** `while-in`, `char`, outer-local capture
-conversion, bool/string/handle module state, bare-global-name string
-interpolation in functions.
+**Still open in the 0.4 blocker list (partial — items below were not addressed
+by this sprint):** `while-in`, `char`, function-body `const`, outer-local
+capture conversion, bool/string/handle module state, bare-global-name string
+interpolation in functions. Array returns from methods and expression receivers
+for operator dispatch were addressed in earlier work on submain but are not
+re-listed here.
 
 ---
 
@@ -234,7 +237,7 @@ on nested Handles. Needs its own scoping audit before scheduling.
 
 ## Working Notes
 
-**2026-10-28:** 14 development commits, 9 PRs (#462, #466–#474) merged to submain. Largest single-day lowering-blocker push since 0.3.3. Module state (numeric + enum), copy argument shapes, nested function scoping, imported generic specialization, return tail cleanup, and printing parity all landed. Matrix 414/414. Submain significantly ahead of main; no main merge yet.
+**2026-10-28:** 14 development commits, 10 PRs (#462, #466–#474) merged to submain. Largest single-day lowering-blocker push since 0.3.3. Module state (numeric + enum), copy argument shapes, nested function scoping, imported generic specialization, return tail cleanup, and printing parity all landed. Matrix 414/414. Submain significantly ahead of main; no main merge yet.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
