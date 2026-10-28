@@ -1,7 +1,38 @@
 # Agent Operating Doctrine
-**Version 1.0 — Cx Project**
+**Version 1.1 — Cx Project**
 **Author: Zara (CTO) + Dev Lead**
 **Status: Active**
+
+## Standing engineering authorization — 2026-10-28
+
+The project owner's restart instructions replace the prompt-by-prompt approval
+rhythm in version 1.0 below. This section controls where the older text conflicts.
+
+- Own routine investigation, debugging, implementation, refactoring, regression
+  tests, documentation, development tools, commits, pushes and PR preparation
+  within the established project direction. Keep logical changes reviewable.
+- After a verified packet, continue the next useful packet in the agreed
+  milestone. Do not stop merely to ask what to do next or request another
+  ordinary implementation/commit prompt.
+- Define scope and verification criteria before coding, then execute them.
+  Report meaningful findings, results and changes of direction. Use focused
+  independent review for consequential compiler changes.
+- Preserve established syntax, semantics, copy/memory behavior, ABI and
+  compatibility. Ask about genuine language-design decisions or conflicting
+  specifications, with a recommendation and trade-offs.
+- Preserve local and draft work, follow ownership boundaries, and use fresh
+  backend branches and PRs under CONTRIBUTING.md. Check for concurrent work
+  before touching shared frontend/runtime files.
+- Ask before destructive operations, additional spending, major scope changes
+  or irreversible release actions. Human approval for main and the prohibition
+  on auto-merge remain in force. Routine engineering is already authorized.
+- Keep the interpreter as the reference for defined behavior. Test actual
+  failures through the relevant compiler stages; never weaken expectations or
+  add exclusions to conceal regressions. Keep code, tests and status docs aligned.
+
+The six phases and task-packet discipline below remain useful engineering
+structure. Their requirements to wait for routine design, implementation and
+commit prompts are superseded by this standing authorization.
 
 ---
 
@@ -276,6 +307,10 @@ This doctrine is version 1.0. Updates require:
 
 ### Changelog
 
+- **v1.1 (2026-10-28)** — Records the owner's explicit restart authorization
+  and follow-up correction: handle routine engineering continuously without
+  returning control after each packet; retain design, ownership and release
+  boundaries.
 - **v1.0** — Initial doctrine. Created after one full session of the old turn-by-turn rhythm proved too slow to sustain. Replaces ad-hoc workflow with task-packet model.
 
 ---
