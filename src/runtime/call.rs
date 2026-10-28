@@ -241,7 +241,8 @@ impl RunTime {
             self.call_depth -= 1;
             return Err(RuntimeError::CallDepthExceeded {
                 pos,
-                function: callee.to_string(),
+                // As written, not the program name (`m@2$down#9`).
+                function: crate::frontend::semantic::source_function_name(callee).to_string(),
             });
         }
         self.push_function_scope();

@@ -71,9 +71,9 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 
 These results cover the stored fixtures, not every accepted program. Restart
 probes found silent printing disagreements outside that coverage. The printing
-recovery in this checkout passes **286 default tests**, **462 JIT tests**, and
-**594 interpreter fixtures** after integration with PR #462; parity is
-**535 PASS / 59 SKIP / 0 PARITY_FAIL**.
+recovery in this checkout passes **287 default tests**, **463 JIT tests**, and
+**598 interpreter fixtures** after integration with PRs #462 and #467; parity is
+**537 PASS / 61 SKIP / 0 PARITY_FAIL**.
 The two added SKIPs cover explicitly refused aggregate interpolation. See
 [the restart briefing](report/restart_2026_10_28.md) for its separate results,
 remaining limitations, and the next milestone. The latest tagged release remains

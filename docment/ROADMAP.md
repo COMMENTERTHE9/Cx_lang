@@ -20,7 +20,8 @@ October work on `submain` strengthened imports, numeric and array typing,
 division/remainder safety, function/method naming, and branch-type refusal.
 It has not shipped in a tagged release. Generic value conversion landed
 through PR #462 after fresh local verification and independent review. Printing
-recovery is PR #466; the local nested-function draft is being reconciled next.
+recovery is PR #466; nested-function identity/scoping landed through PR #467.
+Native nested-function lowering remains unsupported.
 
 The next milestone makes small multifile engine/tooling programs dependable:
 

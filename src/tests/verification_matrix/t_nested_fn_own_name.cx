@@ -1,0 +1,32 @@
+// A nested function is a function of its own: it neither replaces a top-level
+// function of its name nor lends that function its signature. Nested functions
+// kept their bare names, so on the interpreter `outer`'s nested `helper`
+// replaced the top-level one once `outer` had run — 6 50 50, not 6 50 6 — and
+// the argument check of every later `helper(...)` used the nested signature.
+fnc: t64 helper(n: t64) {
+    n + 1
+}
+fnc: t64 outer(n: t64) {
+    fnc: t64 helper(m: t64) {
+        m * 10
+    }
+    helper(n)
+}
+fnc: t64 twice(n: t64) {
+    fnc: t64 helper(a: t64, b: t64) {
+        a * b
+    }
+    helper(n, 2)
+}
+fnc: t64 fact_of(n: t64) {
+    fnc: t64 fact(k: t64) {
+        if k <= 1 { 1 } else { k * fact(k - 1) }
+    }
+    fact(n)
+}
+print(helper(5))
+print(outer(5))
+print(helper(5))
+print(twice(5))
+print(helper(5))
+print(fact_of(5))

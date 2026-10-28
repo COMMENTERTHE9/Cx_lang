@@ -1,0 +1,7 @@
+// Library with a nested `helper`, for t_import_nested_vs_entry.
+pub fnc: t32 api(n: t32) {
+    fnc: t32 helper(x: t32) {
+        x * 10
+    }
+    helper(n)
+}

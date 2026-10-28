@@ -1,0 +1,14 @@
+// A library's nested `helper` and the entry's top-level `helper` are two
+// functions. The nested one kept its bare name at run time, so once the
+// library's `api` had run, the interpreter called it for the entry's own
+// `helper(5)`: 6 50 50, not 6 50 6.
+#![imports]
+m: use "./t_import_nested_vs_entry_lib"
+
+fnc: t32 helper(x: t32) {
+    x + 1
+}
+
+print(helper(5))
+print(m.api(5))
+print(helper(5))
