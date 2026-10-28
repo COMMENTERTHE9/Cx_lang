@@ -1,0 +1,11 @@
+// The .copy argument names its lexical binding, even through another function
+// whose caller happens to have a same-named parameter.
+g: t64 = 1
+fnc: t64 inc(x.copy: t64) { x += 1
+x }
+fnc: t64 wrap() { inc(g.copy) }
+fnc: t64 shadow(g: t64) { wrap() }
+print(wrap())
+print(g)
+print(shadow(100))
+print(g)

@@ -4241,6 +4241,10 @@ impl Analyzer {
                         ));
                     }
                     if matches!(arg, CallArg::Copy(_)) {
+                        // A .copy argument is a write capability as well as a
+                        // read. Apply the same immutable-target checks as assignment.
+                        self.reject_const_assignment(name, pos)?;
+                        self.reject_loop_var_assignment(name, pos)?;
                         if copied.contains(&name.as_str()) {
                             return Err(sem_err!(
                                 pos,
@@ -6561,4 +6565,15 @@ print(result + result2)
         );
         assert!(msg.contains("function 'helper' expects 1 argument(s), got 2"), "got: {msg}");
     }
+    #[test]
+    fn copy_writeback_requires_a_writable_target() {
+        let prefix = "fnc: t64 inc(x.copy: t64) { x += 1\nx }\n";
+        let constant = single_file_errors(&format!("{prefix}const g: t64 = 1\nfnc: t64 wrap() {{ inc(g.copy) }}\nprint(wrap())\n"));
+        assert!(constant.contains("declared const"), "{constant}");
+        let counter = single_file_errors(&format!("{prefix}for i in 0..2 {{ print(inc(i.copy)) }}\n"));
+        assert!(counter.contains("read-only"), "{counter}");
+        let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
+        analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
 }

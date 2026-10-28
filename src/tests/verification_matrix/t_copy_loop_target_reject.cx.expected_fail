@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+# Rejected during shared semantic analysis before backend dispatch.

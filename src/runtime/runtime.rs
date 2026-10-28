@@ -46,6 +46,9 @@ pub type BuildIdHasher = std::hash::BuildHasherDefault<IdHasher>;
 /// Per-frame variable storage keyed by `BindingId` (identity-hashed).
 pub type VarMap = HashMap<BindingId, VarEntry, BuildIdHasher>;
 
+/// A .copy target's owning frame, lexical binding, and display name.
+pub type CopyTarget = (usize, BindingId, String);
+
 pub struct ScopeFrame {
     /// Variable storage keyed by `BindingId` — the hot lookup path.
     pub vars: VarMap,
@@ -54,9 +57,9 @@ pub struct ScopeFrame {
     /// The hot path (VarRef / Assign / CompoundAssign / For var / params) goes
     /// straight through `vars` by BindingId and never touches this.
     pub by_name: HashMap<String, BindingId>,
-    pub bleed_back: HashMap<String, (usize, String)>,
+    pub bleed_back: HashMap<BindingId, CopyTarget>,
     pub seen: HashSet<String>,
-    // inner param name -> (outer scope index, outer var name)
+    // parameter BindingId -> actual caller binding owner and identity
 }
 
 impl ScopeFrame {

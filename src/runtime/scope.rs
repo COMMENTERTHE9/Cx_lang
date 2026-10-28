@@ -42,32 +42,18 @@ impl RunTime {
 
         let (bleed_values, debug_info) = {
             let frame = self.scopes.last().unwrap();
-            let bleeds: Vec<(String, usize, String)> = frame
-                .bleed_back
-                .iter()
-                .map(|(param_name, (outer_idx, outer_name))| {
-                    (param_name.clone(), *outer_idx, outer_name.clone())
-                })
-                .collect();
-
-            let bleed_values: Vec<(usize, String, Value)> = bleeds
-                .iter()
-                .filter_map(|(param_name, outer_idx, outer_name)| {
-                    frame.get_by_name(param_name)
-                        .and_then(|entry| entry.val.clone())
-                        .map(|val| (*outer_idx, outer_name.clone(), val))
-                })
-                .collect();
+            let bleed_values: Vec<(usize, BindingId, Value)> = frame.bleed_back.iter()
+                .filter_map(|(parameter, (owner, binding, _))| {
+                    frame.vars.get(parameter).and_then(|entry| entry.val.clone())
+                        .map(|value| (*owner, *binding, value))
+                }).collect();
 
             let debug_info = if self.debug_scope {
-                let bleed_events: Vec<(String, Value)> = bleeds
-                    .iter()
-                    .filter_map(|(param_name, _, outer_name)| {
-                        frame.get_by_name(param_name)
-                            .and_then(|entry| entry.val.clone())
-                            .map(|val| (outer_name.clone(), val))
-                    })
-                    .collect();
+                let bleed_events: Vec<(String, Value)> = frame.bleed_back.iter()
+                    .filter_map(|(parameter, (_, _, name))| {
+                        frame.vars.get(parameter).and_then(|entry| entry.val.clone())
+                            .map(|value| (name.clone(), value))
+                    }).collect();
                 let close_label = format!("scope#{}", self.scopes.len() - 1);
                 Some((bleed_events, close_label))
             } else {
@@ -79,9 +65,9 @@ impl RunTime {
 
         self.scopes.pop();
 
-        for (outer_idx, outer_name, val) in bleed_values {
+        for (outer_idx, outer_binding, val) in bleed_values {
             if let Some(outer_frame) = self.scopes.get_mut(outer_idx) {
-                if let Some(entry) = outer_frame.get_by_name_mut(&outer_name) {
+                if let Some(entry) = outer_frame.vars.get_mut(&outer_binding) {
                     entry.val = Some(val);
                 }
             }
