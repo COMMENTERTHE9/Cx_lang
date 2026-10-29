@@ -1,0 +1,52 @@
+---
+title: "Cx Dev Log — 2026-06-16"
+date: 2026-06-16
+description: "A quiet day with no developer commits, but the completed JIT memory-safety gate on submain still awaits its 14-commit merge to main."
+---
+
+## The Quiet After the Gate
+
+No developer-authored commits landed on any branch yesterday. After a sustained push that closed the JIT memory-safety gate on June 15, the repo went still. That gate completion is the most significant milestone since v0.1.0, but the work sits on `submain`, 14 commits ahead of `main`, with no merge in sight.
+
+This is one of those days where the interesting story is what hasn't happened yet.
+
+## Where Things Stand
+
+The `submain` branch carries the entire post-v0.2.0 hardening arc: CR#1-4 (range-check fixes), D1.0 through D1.2a (JIT divergence audit and refactors), and Gate-1a through Gate-2b (arithmetic and memory safety). All known crash classes are now guarded:
+
+- Division and modulo by zero
+- `INT_MIN / -1` overflow
+- Trap host-exit
+- Negative-store overrun
+- Array out-of-bounds
+
+Zero `.jit_known_unsound` markers remain. The matrix on `submain` reports 286 fixtures passing with 0 failures and 192/94/0 parity. That body of work has been stable for over 24 hours with no regressions.
+
+Meanwhile, `main` sits at 230/0 with 3 stale unsound markers that `submain` already resolved.
+
+## The Integration Gap
+
+The 14-commit gap between `submain` and `main` has been the top predicted next step for several days running. The work is tested, stable, and represents the strongest merge-readiness signal the project has seen in months. Yet the merge hasn't happened. There's no technical blocker here, just a pending action.
+
+Compounding the gap: 10 daily-log PRs (June 6 through June 15) sit open and unmerged. Each carries roadmap updates that conflict with main's `ROADMAP.md`, which was last updated on May 18. The longer these accumulate, the more painful the serial rebasing or manual conflict resolution becomes when someone finally works through the queue. None have been merged since May 27.
+
+## Roadmap Catch-Up
+
+Because the daily-log PRs remain stuck, main's roadmap had drifted out of sync with reality. The roadmap on main was updated to reflect the actual state of work documented across the submain commits and daily-log branches:
+
+- CR#1-4, D1.0, D1.1/D1.1b, D1.2a, Gate-1a/1b0/1b, Gate-2a/2b all checked off under post-release hardening
+- Phase 15 parity numbers updated to 192/94/0 across 286 fixtures
+- A "JIT memory-safety gate complete" summary line added
+
+None of these items were newly completed on June 16. The roadmap update just captures what landed on submain over the preceding ten days but never made it into main's tracking because the PRs carrying those updates were never merged.
+
+## What's Next
+
+The same priorities from yesterday hold, since none materialized:
+
+1. **Merge submain to main.** 14 stable, tested commits with zero unsound markers. This is the clearest action item and has been for days.
+2. **Clear the daily-log PR backlog.** 10 open PRs with stacking conflicts. Each day without action makes this worse.
+3. **Resume Phase 11 work.** With the safety gate closed, `when` block lowering and `DotAccess` in compound forms can move forward.
+4. **Phase 8 Round 2.** The `str`/`strref` layout work remains unchecked.
+
+The JIT safety story is done on `submain`. The project is waiting on integration, not implementation. Until that merge lands, all the hardening work exists only on a branch that no release will ship from.
