@@ -108,8 +108,9 @@ identity, length-folding interaction). See `docs/backend/runtime_values.md`.
 
 **Still open in the 0.4 blocker list (partial):** `while-in`, `char`,
 function-body `const`, outer-local capture conversion, bool/handle module state,
-bare-global-name string interpolation in functions. String module state is
-partially addressed by the runtime value identity work above.
+bare-global-name string interpolation in functions. String runtime identity
+and Result ownership are partially addressed by the value identity work above;
+module-scope string storage is not yet implemented.
 
 ---
 
@@ -137,10 +138,12 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — array returns from methods, expression
-  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
-  parameter kinds, nested function definitions, `while-in`, function-body
-  `const`, `t128` printing, `char`, and non-identifier string interpolation.
+  **Remaining lowering blockers (main/tagged baseline)** — array returns from
+  methods, expression receivers for operator dispatch, unresolved copy shapes
+  (`.copy.free` deprecation, `copy_into` aggregate layouts), outer-local
+  capture conversion for nested functions, `while-in`, function-body `const`,
+  `t128` printing, `char`, and non-identifier string interpolation. Known copy
+  shapes and capture-free nested functions landed on submain (PRs #474, #467).
   Array returns and expression receivers were briefly carried as a prospective
   0.3.4; they belong here, and inventing a version slot to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
