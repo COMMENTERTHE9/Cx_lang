@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Distinct nonempty arena slices compare unequal inside Results.

@@ -1,0 +1,6 @@
+fnc: Result<t64> make() { return Err("same") }
+let first
+first = make()
+let second
+second = make()
+assert_eq(first, second)

@@ -1,0 +1,9 @@
+fnc: Result<str> copy_string(value.copy: str) { return Ok(value) }
+s: str = "same"
+let copied
+copied = copy_string(s.copy)
+let rebound
+rebound = Ok(s)
+assert_eq(copied, rebound)
+assert_eq(s, "same")
+print("copy-identity-ok")

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+The interpolation source literal allocates; output formatting does not.

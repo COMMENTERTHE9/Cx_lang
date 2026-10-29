@@ -1,0 +1,6 @@
+let before
+before = Ok("")
+assert_eq(len("padding"), 7)
+let after
+after = Ok("")
+assert_eq(before, after)

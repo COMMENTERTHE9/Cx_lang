@@ -4094,3 +4094,24 @@ array elements and indices. Both builds passed: 314 default / 493 JIT tests,
 682 prior fixtures/examples recovered 15 former SKIPs, kept all 612 previously
 supported native outputs/exits, and left 55 unsupported; no disagreements or
 timeouts. Standard JIT clippy passed with the existing 111 warnings.
+
+## 52. Runtime string identity and Result payload lifetime
+
+Native literals reused one descriptor across calls, while the reference arena
+allocates on each literal evaluation and named string binding. Result equality
+therefore disagreed for repeated Ok/Err string factories. Execution-owned
+descriptors now retain arena slice identity, including zero-length allocations;
+ordinary string equality still compares content. Length folding evaluates its
+operand and output formatting fragments do not allocate language strings.
+
+Result payload consumers check semantic kinds before interpreting packed words.
+Completed SSA checks preserve polymorphic Err through branch values, binding
+merges and loop backedges; unclassified i128 values never prove Err. Numeric
+Result aliases keep the packed word, including narrowing and float annotations.
+
+Aggregate Result construction snapshots into aligned execution-owned storage,
+and successful `?` creates a local snapshot. Equality compares aggregate contents,
+including embedded string identity, rather than payload addresses. Early Err
+returns perform `.copy` writeback. Field assignments evaluate the RHS once.
+See [runtime value details](backend/runtime_values.md). Compile-time literal
+storage still has the older R6 lifetime and requires relocatable data for AOT.

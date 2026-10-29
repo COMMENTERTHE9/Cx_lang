@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Binding a string parameter allocates a new arena slice.
