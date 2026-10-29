@@ -1,0 +1,7 @@
+fnc: Result<str> wrap(value: str) { return Ok(value) }
+s: str = "same"
+let direct
+direct = Ok(s)
+let bound
+bound = wrap(s)
+assert_eq(direct, bound)

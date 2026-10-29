@@ -1,0 +1,9 @@
+small: Result<t8> = Ok(7)
+wide: Result<t64> = small
+float_alias: Result<f64> = small
+assert_eq(small, wide)
+assert_eq(small, float_alias)
+large: Result<t64> = Ok(300)
+narrow: Result<t8> = large
+print(narrow)
+print(float_alias)

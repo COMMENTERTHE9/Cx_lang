@@ -1,0 +1,22 @@
+// Result equality preserves arena slice identity; ordinary str equality uses
+// content. Value copies retain identity, including across a forwarding call.
+fnc: Result<str> forward(value: Result<str>) { return value }
+let value
+value = Ok("same")
+let alias
+alias = forward(value)
+assert_eq(value, alias)
+assert_eq("same", "same")
+let empty1
+empty1 = Ok("")
+print(Ok(7))
+let empty2
+empty2 = Ok("")
+assert_eq(empty1, empty2)
+let error
+error = Err("bad")
+number: Result<t64> = error
+print(number)
+text: Result<str> = error
+assert_eq(number, text)
+print("identity-ok")

@@ -366,6 +366,85 @@ extern "C" fn cx_print_newline() {
     let _ = io::stdout().lock().write_all(b"\n");
 }
 
+/// Keep the two-word descriptor ABI and record arena identity separately.
+/// Each evaluation or named string binding gets its own descriptor/range;
+/// ordinary value copies preserve the descriptor.
+#[derive(Default)]
+struct NativeStrings {
+    // Published descriptor addresses must survive growth of this owner list.
+    #[allow(clippy::vec_box)]
+    descriptors: Vec<Box<[i64; 2]>>,
+    identities: std::collections::HashMap<usize, (usize, usize)>,
+    next_offset: usize,
+    values: Vec<OwnedNativeValue>,
+}
+
+struct OwnedNativeValue { ptr: std::ptr::NonNull<u8>, layout: std::alloc::Layout }
+impl Drop for OwnedNativeValue {
+    fn drop(&mut self) { unsafe { std::alloc::dealloc(self.ptr.as_ptr(), self.layout); } }
+}
+
+thread_local! {
+    static STRINGS: std::cell::RefCell<NativeStrings> = std::cell::RefCell::new(NativeStrings::default());
+}
+
+struct NativeStringScope(Option<NativeStrings>);
+impl NativeStringScope {
+    fn enter() -> Self { Self(Some(STRINGS.with(|strings| strings.replace(NativeStrings::default())))) }
+}
+impl Drop for NativeStringScope {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take() { STRINGS.with(|strings| { strings.replace(previous); }); }
+    }
+}
+
+#[cfg(feature = "jit")]
+extern "C" fn cx_str_copy(source: *const i64) -> *const i64 {
+    // Source descriptors have the established {ptr,len} layout. The compiler's
+    // immutable literal bytes outlive this execution.
+    let descriptor = unsafe { std::ptr::read_unaligned(source.cast::<[i64; 2]>()) };
+    if descriptor[1] < 0 { cx_trap(); }
+    STRINGS.with(|strings| {
+        let mut strings = strings.borrow_mut();
+        let len = descriptor[1] as usize;
+        let offset = strings.next_offset;
+        strings.next_offset = offset.checked_add(len).unwrap_or_else(|| cx_trap());
+        let owned = Box::new(descriptor);
+        let ptr = owned.as_ptr();
+        strings.identities.insert(ptr as usize, (offset, len));
+        strings.descriptors.push(owned);
+        ptr
+    })
+}
+
+#[cfg(feature = "jit")]
+extern "C" fn cx_str_identity_eq(left: *const i64, right: *const i64) -> i8 {
+    STRINGS.with(|strings| {
+        let strings = strings.borrow();
+        match (strings.identities.get(&(left as usize)), strings.identities.get(&(right as usize))) {
+            (Some(left), Some(right)) => i8::from(left == right),
+            // Foreign ABI descriptors have no arena offset; compare their
+            // descriptor identity without reading beyond the two-word prefix.
+            (None, None) => i8::from(left == right),
+            _ => 0,
+        }
+    })
+}
+
+/// Snapshot an inline aggregate into execution-owned storage. Packed Results
+/// may outlive their constructor's native stack frame; their payload may not
+/// borrow that frame or alias a mutable source aggregate.
+#[cfg(feature = "jit")]
+extern "C" fn cx_value_copy(source: *const u8, size: i64, align: i64) -> *const u8 {
+    if size <= 0 || align <= 0 { cx_trap(); }
+    let layout = std::alloc::Layout::from_size_align(size as usize, align as usize).unwrap_or_else(|_| cx_trap());
+    let ptr = std::ptr::NonNull::new(unsafe { std::alloc::alloc(layout) }).unwrap_or_else(|| std::alloc::handle_alloc_error(layout));
+    unsafe { std::ptr::copy_nonoverlapping(source, ptr.as_ptr(), size as usize); }
+    let result = ptr.as_ptr();
+    STRINGS.with(|s| s.borrow_mut().values.push(OwnedNativeValue { ptr, layout }));
+    result
+}
+
 /// D2.5a: the Handle registry, reachable from JIT-compiled code via the
 /// `cx_handle_new` host callback below. Unlike every prior host callback
 /// (`cx_print_str`, `cx_str_eq`, ...), this one needs MUTABLE state that
@@ -747,6 +826,8 @@ impl HostBoundary {
         use cranelift_module::{FuncId, Linkage, Module};
         use std::collections::HashMap;
 
+        let _strings = NativeStringScope::enter();
+
         // Build the native ISA.
         let mut flag_builder = settings::builder();
         flag_builder
@@ -789,6 +870,9 @@ impl HostBoundary {
         jit_builder.symbol("cx_print_bool_inline", cx_print_bool_inline as *const u8);
         jit_builder.symbol("cx_print_f64_inline", cx_print_f64_inline as *const u8);
         jit_builder.symbol("cx_print_newline", cx_print_newline as *const u8);
+        jit_builder.symbol("cx_str_copy", cx_str_copy as *const u8);
+        jit_builder.symbol("cx_str_identity_eq", cx_str_identity_eq as *const u8);
+        jit_builder.symbol("cx_value_copy", cx_value_copy as *const u8);
         jit_builder.symbol(JIT_F64_REM_SYMBOL, host_fmod as *const u8);
         jit_builder.symbol(JIT_TRAP_SYMBOL, cx_trap as *const u8);
         jit_builder.symbol(JIT_EXIT_SYMBOL, cx_exit as *const u8);
@@ -884,6 +968,19 @@ impl HostBoundary {
                     detail: e.to_string(),
                 })?;
             func_id_map.insert("cx_str_eq".to_string(), id);
+        }
+
+        {
+            use cranelift_codegen::ir::{types, AbiParam};
+            let call_conv = module.target_config().default_call_conv;
+            for (name, arity, result) in [("cx_str_copy", 1, types::I64), ("cx_str_identity_eq", 2, types::I8), ("cx_value_copy", 3, types::I64)] {
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                for _ in 0..arity { sig.params.push(AbiParam::new(types::I64)); }
+                sig.returns.push(AbiParam::new(result));
+                let id = module.declare_function(name, Linkage::Import, &sig)
+                    .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+                func_id_map.insert(name.to_string(), id);
+            }
         }
 
         // D2.3d no-newline inline print intrinsics for string interpolation.
@@ -1831,6 +1928,69 @@ fn compile_ir_function(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn string_identity_tracks_arena_slices_and_keeps_descriptor_abi() {
+        let _scope = NativeStringScope::enter();
+        let bytes = b"hello";
+        let raw = [bytes.as_ptr() as i64, bytes.len() as i64];
+        let empty = [bytes.as_ptr() as i64, 0];
+        let first_empty = cx_str_copy(empty.as_ptr());
+        let second_empty = cx_str_copy(empty.as_ptr());
+        assert_ne!(first_empty, second_empty);
+        assert_eq!(cx_str_identity_eq(first_empty, second_empty), 1);
+        let first = cx_str_copy(raw.as_ptr());
+        let second = cx_str_copy(first);
+        assert_eq!(unsafe { std::ptr::read_unaligned(first.cast::<[i64; 2]>()) }, raw);
+        assert_eq!(cx_str_identity_eq(first, first), 1);
+        assert_eq!(cx_str_identity_eq(first, second), 0);
+        let later_empty = cx_str_copy(empty.as_ptr());
+        assert_eq!(cx_str_identity_eq(first_empty, later_empty), 0);
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn string_scope_frees_descriptors_and_restores_nested_execution() {
+        let outer = NativeStringScope::enter();
+        let bytes = b"x";
+        let raw = [bytes.as_ptr() as i64, 1];
+        let saved = cx_str_copy(raw.as_ptr());
+        {
+            let _inner = NativeStringScope::enter();
+            STRINGS.with(|s| assert!(s.borrow().descriptors.is_empty()));
+            let _ = cx_str_copy(raw.as_ptr());
+            let _ = cx_str_copy(raw.as_ptr());
+            STRINGS.with(|s| assert_eq!(s.borrow().descriptors.len(), 2));
+        }
+        STRINGS.with(|s| {
+            let s = s.borrow();
+            assert_eq!(s.descriptors.len(), 1);
+            assert_eq!(s.next_offset, 1);
+            assert_eq!(s.identities.get(&(saved as usize)), Some(&(0, 1)));
+        });
+        drop(outer);
+        let _fresh = NativeStringScope::enter();
+        STRINGS.with(|s| assert!(s.borrow().descriptors.is_empty()));
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn result_aggregate_storage_owns_aligned_snapshots_until_execution_ends() {
+        let _scope = NativeStringScope::enter();
+        let mut source: [i128; 2] = [123, 456];
+        let snapshot = cx_value_copy(source.as_ptr().cast(), 32, 16);
+        source[0] = 999;
+        assert_eq!((snapshot as usize) % 16, 0);
+        assert_eq!(unsafe { std::ptr::read(snapshot.cast::<[i128; 2]>()) }, [123, 456]);
+        STRINGS.with(|s| assert_eq!(s.borrow().values.len(), 1));
+        {
+            let _nested = NativeStringScope::enter();
+            STRINGS.with(|s| assert!(s.borrow().values.is_empty()));
+        }
+        STRINGS.with(|s| assert_eq!(s.borrow().values.len(), 1));
+        assert_eq!(source[0], 999);
+    }
 
     /// Build a throwaway `IrModule` whose only content is the call edges: each
     /// entry is `(function name, callees)`. Blocks and instructions beyond the

@@ -1,0 +1,7 @@
+let before
+before = Ok("")
+x: t64 = 3
+print("{x}")
+let after
+after = Ok("")
+assert_eq(before, after)

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Length folding must preserve its operand's string allocation.

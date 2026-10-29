@@ -70,8 +70,8 @@ Fresh Windows x64/MSVC baseline on **2026-10-28**, `submain` **9905505**:
 - JIT parity: **528 PASS / 57 SKIP / 0 PARITY_FAIL**
 
 These results cover the stored fixtures, not every accepted program. The
-reviewed restart work now passes **314 default tests**, **493 JIT tests**, and
-**650 interpreter fixtures**; parity is **602 PASS / 48 SKIP / 0 PARITY_FAIL**.
+reviewed restart work now passes **316 default tests**, **498 JIT tests**, and
+**663 interpreter fixtures**; parity is **615 PASS / 48 SKIP / 0 PARITY_FAIL**.
 It corrects printing, generic conversion, nested-function scoping and lexical
 `.copy` ownership, then adds native numeric and enum module constants/state.
 Numeric storage converted eight old refusals to passes; explicit returns
@@ -93,6 +93,12 @@ Module variables now have separate namespaces across libraries and the entry
 file. Runtime name lookups and native interpolation follow lexical scope,
 including caller shadowing and scope exit. Replay of 679 previous programs on
 both backends found no output or exit changes.
+
+Runtime string descriptors now preserve allocation identity inside Results.
+Aggregate Results own their snapshots, recursive equality reads their contents,
+and early Err returns perform copy-out. The replay of 686 previous programs
+retained every supported output and exit. See [runtime values](docs/backend/runtime_values.md)
+for ownership rules and the remaining literal-data and payload limitations.
 
 Try `examples/tooling_metrics.cx` with the interpreter and `--backend=cranelift` for a
 multifile example using persistent state, constants, arrays and fallible calls.

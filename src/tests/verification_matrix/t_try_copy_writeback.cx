@@ -1,0 +1,11 @@
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> run(value.copy: t64) {
+    value += 1
+    let unwrapped
+    unwrapped = fail()?
+    return Ok(unwrapped)
+}
+number: t64 = 1
+print(run(number.copy))
+assert_eq(number, 2)
+print(number)

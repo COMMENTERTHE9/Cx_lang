@@ -1,0 +1,6 @@
+fnc: Result<str> make() { return Ok("same") }
+let first
+first = make()
+let second
+second = make()
+assert_eq(first, second)
