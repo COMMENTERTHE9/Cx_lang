@@ -143,7 +143,8 @@ remaining blockers folded into 0.4.
   (`.copy.free` deprecation, `copy_into` aggregate layouts), outer-local
   capture conversion for nested functions, `while-in`, function-body `const`,
   `t128` printing, `char`, and non-identifier string interpolation. Known copy
-  shapes and capture-free nested functions landed on submain (PRs #474, #467).
+  shapes and nested-function scoping landed on submain (PRs #474, #467);
+  nested-function lowering and outer-local capture conversion remain open.
   Array returns and expression receivers were briefly carried as a prospective
   0.3.4; they belong here, and inventing a version slot to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
@@ -249,7 +250,7 @@ on nested Handles. Needs its own scoping audit before scheduling.
 
 **2026-10-30:** Quiet day — no compiler development commits. Matrix 414/414 unchanged. PRs #475 (daily-log-2026-10-28), #476 (runtime-string-identity → submain), and #477 (daily-log-2026-10-29) all remain open. The daily-log PR backlog is growing; roadmap updates from recent sprints are not reaching main.
 
-**2026-10-29:** Native runtime value identity committed on `codex/runtime-string-identity` (`2a68658`). Arena-based string identity, aggregate Result snapshot isolation, 16 new test files (8 pass, 5 expected-fail, 3 edge cases). Branch-local, not yet merged. Matrix on main: 414/414.
+**2026-10-29:** Native runtime value identity committed on `codex/runtime-string-identity` (`2a68658`). Arena-based string identity, aggregate Result snapshot isolation, 13 new test fixtures (8 pass, 5 expected-fail). Branch-local, not yet merged. Matrix on main: 414/414.
 
 **2026-10-28:** 14 development commits, 10 PRs (#462, #466–#474) merged to submain. Largest single-day lowering-blocker push since 0.3.3. Module state (numeric + enum), copy argument shapes, nested function scoping, imported generic specialization, return tail cleanup, and printing parity all landed. Matrix 414/414. Submain significantly ahead of main; no main merge yet.
 
