@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-06-15"
+date: 2026-06-15
+description: "The JIT memory-safety gate is complete: zero unsound markers remain after landing store-width narrowing and array bounds checking on submain."
+---
+
+The JIT memory-safety gate is done. Two commits landed on submain today, closing the last three `.jit_known_unsound` markers. Every known JIT crash class is now guarded, and submain sits at 286 fixtures with zero failures.
+
+This has been the goal since the gate arc started: make the JIT refuse to silently produce wrong behavior for any known crash category. Today that happened.
+
+## Store-width narrowing (Gate-2a)
+
+The "negative-store segfault" turned out to be a codegen-correctness bug hiding in plain sight. `IrInst::Store` carries no width, so Cranelift stores at the value's native type. Integer literals lower as i64, which means an i64 store into a sub-64-bit slot (t8, t16, t32) overruns by up to 7 bytes.
+
+The reason this went undetected: the overrun corrupted adjacent stack, but for most layouts the corruption was benign. Struct-array fields with t8/t16 elements happened to overrun into critical stack regions, producing a 0xC0000005 on teardown after printing correct stdout. Standalone arrays and struct scalar fields overran harmlessly by luck of layout.
+
+The fix narrows the value to the destination width before the Store at both construction sites: `lower_array_lit` and StructInstance. The `_field_ty` variable sitting unused in the struct loop was the hint that something was missing. The cast is a no-op when widths already match, and a third-site audit confirmed the `a:[k]=v` and `a:[k]+=v` paths already emit correct casts from earlier D1.1b work.
+
+Five new fixtures pin the corners that were previously silent. Parity moved from 182/98/0 to 188/97/0.
+
+## Array bounds checking (Gate-2b)
+
+The last three unsound markers were genuine out-of-bounds accesses: `a:[5]` on a 3-element array. The interpreter raises `IndexOutOfBounds` cleanly. The JIT had no bounds check at all. Reads returned garbage, writes corrupted memory and crashed.
+
+A new `emit_bounds_check` helper runs at both runtime-index sites (`resolve_array_element_ptr` for writes/compound-assign, `lower_index` for reads) before the PtrAdd that computes the element address. Out-of-bounds routes to the Trap terminator via `cx_trap` (exit 126).
+
+Two nested checks handle signedness: `idx < 0` then `idx >= count`. The IR has no unsigned compare op, so the standard single-compare trick (`(unsigned)idx >= count`) is not available yet. The two-compare approach is correct and measured at roughly 5% overhead on access-dominated loops (two compares and two predictably-not-taken branches per array access), measured via within-session A/B on a 40M-read loop.
+
+All three `jit_known_unsound` markers are removed. Parity moved to 192/94/0 across 286 fixtures.
+
+## Gate closure
+
+The full crash-class inventory is now guarded on submain:
+
+- div/mod-by-zero (Gate-1b)
+- INT_MIN/-1 overflow (Gate-1a)
+- Trap host-exit (Gate-1b0)
+- negative-store overrun (Gate-2a)
+- array out-of-bounds (Gate-2b)
+
+Zero unsound markers remain. This is the strongest merge-readiness signal since the v0.1.0 release.
+
+## The integration gap
+
+Submain is now 14 commits ahead of main: CR#1-4, D1.0-D1.2a, and the full Gate-1/Gate-2 arc. That is 143 files changed, 1558 insertions, 1170 deletions. Submain runs 286 matrix fixtures with 0 failures and 192/94/0 parity. Main still has 230 tests and 3 stale unsound markers.
+
+This is a substantial body of tested, stable work sitting unintegrated. The gate arc's completion removes the last technical reason to hold it.
+
+## What comes next
+
+The merge to main is increasingly overdue. With the gate complete, the path is also clear for feature work: `when` block lowering and DotAccess in compound forms are the remaining Phase 11 items, and Phase 8 Round 2 (str/strref layout) is still unchecked. On the optimization side, adding an unsigned compare op to the IR would let the bounds check collapse to a single comparison, halving the branch cost.
