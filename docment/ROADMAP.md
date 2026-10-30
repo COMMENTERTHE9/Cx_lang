@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-10-30
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -66,6 +66,52 @@ feature sets.
 the interpreter. Generational safety and double-drop non-aliasing empirically
 proven on both backends (interpreter and Cranelift JIT).
 
+**Post-0.3.3 lowering-blocker sprint (on submain, 10 PRs: #462, #466–#474):**
+
+Landed between 2026-10-24 and 2026-10-28. Substantive progress against the
+0.4 remaining lowering blockers:
+
+- **Numeric module state** — JIT-compiled functions share `t8`–`t128` and `f64`
+  module-scope variables via `IrModule.globals`. Lifecycle byte guards prevent
+  reads before initialization. (PR #469, `4358ab4`)
+- **Enum module state** — enum values participate in module state with nominal
+  type checks. Lowering checks enum type/variant boundaries before
+  representation erasure. (PR #471, `604ee6c`)
+- **Module variable namespaces** — separated module variable namespaces; runtime
+  name lookup is now scope-aware. (PR #473, `121e567`)
+- **Copy argument shapes** — new `src/ir/call_shapes.rs` (1,155 lines) resolves
+  implicit copy parameter shapes after monomorphization and before ABI planning.
+  `.copy` retains caller-slot snapshots; `copy_into` gets private struct layouts.
+  (PR #474, `4741f21`)
+- **Copy binding ownership** — write-back targets resolved by `BindingId` and
+  capability. Const writes enforced by resolved binding identity. (PR #468,
+  `d00ae73`/`c788b0b`)
+- **Nested function scoping** — nested function identities kept within lexical
+  scope. Outer-local capture conversion remains a gap. (PR #467, `56f5a7f`)
+- **JIT printing parity** — reference printing matched, interpolation pointer
+  guards added. (PR #466, `f13ebf9`)
+- **Return tail lowering** — dead code after return/break no longer emitted.
+  (PR #470, `7183d1c`)
+- **Imported generic specialization** — specialization across module boundaries
+  with bound contract preservation. (PR #472, `31ea433`)
+- **Generic value conversion** — semantic-level cast when generic `T` enters a
+  declared number-type slot. (PR #462)
+
+**Native runtime value identity (on `codex/runtime-string-identity`, branch-local):**
+
+Committed `2a68658`, 2026-10-28. Arena-based string identity tracking in the
+Cranelift JIT backend. Each string evaluation or named binding gets its own
+arena identity. Result equality uses arena identity for embedded strings.
+Aggregate Ok payloads get snapshot-isolated copies. 8 new passing tests, 5
+expected-fail tests documenting known gaps (factory identity, parameter binding
+identity, length-folding interaction). See `docs/backend/runtime_values.md`.
+
+**Still open in the 0.4 blocker list (partial):** `while-in`, `char`,
+function-body `const`, outer-local capture conversion, bool/handle module state,
+bare-global-name string interpolation in functions. String runtime identity
+and Result ownership are partially addressed by the value identity work above;
+module-scope string storage is not yet implemented.
+
 ---
 
 The sequence below reflects the project's current stated direction. It was first
@@ -92,10 +138,13 @@ remaining blockers folded into 0.4.
   **design gate** in parallel — see below. The design gate touches no code, so
   it runs alongside 0.4's implementation work rather than queuing behind it.
 
-  **Remaining lowering blockers** — array returns from methods, expression
-  receivers for operator dispatch, `.copy` / `.copy.free` / `copy_into`
-  parameter kinds, nested function definitions, `while-in`, function-body
-  `const`, `t128` printing, `char`, and non-identifier string interpolation.
+  **Remaining lowering blockers (main/tagged baseline)** — array returns from
+  methods, expression receivers for operator dispatch, unresolved copy shapes
+  (`.copy.free` deprecation, `copy_into` aggregate layouts), outer-local
+  capture conversion for nested functions, `while-in`, function-body `const`,
+  `t128` printing, `char`, and non-identifier string interpolation. Known copy
+  shapes and nested-function scoping landed on submain (PRs #474, #467);
+  nested-function lowering and outer-local capture conversion remain open.
   Array returns and expression receivers were briefly carried as a prospective
   0.3.4; they belong here, and inventing a version slot to hold them would
   recreate the phantom-slot problem the roadmap reconciliation cleaned up. If a
@@ -198,6 +247,12 @@ on nested Handles. Needs its own scoping audit before scheduling.
 ---
 
 ## Working Notes
+
+**2026-10-30:** Quiet day — no compiler development commits. Matrix 414/414 unchanged. PRs #475 (daily-log-2026-10-28), #476 (runtime-string-identity → submain), and #477 (daily-log-2026-10-29) all remain open. The daily-log PR backlog is growing; roadmap updates from recent sprints are not reaching main.
+
+**2026-10-29:** Native runtime value identity committed on `codex/runtime-string-identity` (`2a68658`). Arena-based string identity, aggregate Result snapshot isolation, 13 new test fixtures (8 pass, 5 expected-fail). Branch-local, not yet merged. Matrix on main: 414/414.
+
+**2026-10-28:** 14 development commits, 10 PRs (#462, #466–#474) merged to submain. Largest single-day lowering-blocker push since 0.3.3. Module state (numeric + enum), copy argument shapes, nested function scoping, imported generic specialization, return tail cleanup, and printing parity all landed. Matrix 414/414. Submain significantly ahead of main; no main merge yet.
 
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
