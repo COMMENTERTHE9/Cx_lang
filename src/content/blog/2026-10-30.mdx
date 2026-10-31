@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-10-30"
+date: 2026-10-30
+description: "A rest day after the largest lowering-blocker sprint since the 0.3.3 tag, with three open PRs queued and runtime string identity work pending review."
+---
+
+No compiler development commits landed today. After Oct 28's 14-commit, 9-PR lowering-blocker sprint, the biggest single day of compiler work since the 0.3.3 tag, the project took a breather. The verification matrix holds steady at 414 PASS / 0 FAIL on main.
+
+## Where things stand
+
+The Oct 28 sprint landed copy argument shapes, module variable namespaces, imported generic specialization, enum module state, return tail lowering, nested function scoping, and JIT printing parity. All of that work lives on submain. Main itself hasn't moved.
+
+Three PRs sit open right now:
+
+- **PR #476** (`codex/runtime-string-identity` to `submain`) is the most substantive pending work. It adds arena-based string identity tracking and Result ownership semantics to the Cranelift JIT backend, with 8 new passing tests and 5 expected-fail tests that document known gaps in factory function identity, parameter binding identity, and length-folding interaction. This opened Oct 29 and is still waiting on review.
+
+- **PR #477** and **PR #475** are daily-log documentation PRs carrying roadmap updates. They include the post-0.3.3 section documenting the lowering-blocker sprint results and updated status on remaining 0.4 blockers. Neither has merged, so the roadmap on main still reads "Last updated: 2026-08-16."
+
+## The growing PR backlog
+
+The daily-log PR backlog keeps stacking up against main without merging. Each one carries incremental roadmap updates that reflect actual compiler progress, but since they haven't landed, the roadmap on main is over two months stale. This isn't blocking development, but it means anyone reading main's ROADMAP.md sees a picture that predates the entire lowering-blocker sprint.
+
+The larger concern is the submain-to-main gap. After Oct 28's massive batch of work, the delta between submain and main is substantial. The longer that gap stays open, the harder eventual integration becomes.
+
+## What's next
+
+The immediate queue hasn't changed from yesterday's predictions:
+
+1. **Merge PR #476** to get runtime string identity onto submain. The work is committed and the PR is open.
+2. **Address the expected-fail gaps** in string identity: factory function identity, parameter binding identity, length-folding interaction.
+3. **Bool and Handle module state** are the next logical targets after numeric, enum, and string module state landed in the sprint.
+4. **`while-in` lowering** remains untouched and is still on the 0.4 blocker list. The `stokowski/CX-233` branch has prior work.
+5. **Merge submain to main** at some point. The gap is large and growing.
+
+Nothing here is surprising. The project is in a natural pause between the lowering-blocker sprint and the next push. The real question is whether the string identity PR lands soon and whether the submain-to-main merge happens before the gap gets unwieldy.
