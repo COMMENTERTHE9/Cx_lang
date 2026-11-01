@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-06-14"
+date: 2026-06-14
+description: "Four commits closed the entire Gate-1 arithmetic crash class in the JIT backend, covering INT_MIN/-1 overflow, division-by-zero, modulo-by-zero, and a broken Trap host-exit path."
+---
+
+The three-day quiet streak broke today with a focused burst of JIT safety work. Four commits landed on submain in about 90 minutes, closing the entire Gate-1 arithmetic crash class. Parity moved from 171/101/0 to 182/98/0: eleven new convergent fixtures, three crash-class markers removed, zero regressions.
+
+## Gate-1: closing the division crash class
+
+The Gate-1 arc targets every way a division or modulo instruction can crash the JIT through hardware traps. Before today, raw Cranelift `sdiv` and `srem` could produce `SIGILL` on division by zero and `STATUS_STACK_OVERFLOW` on `INT_MIN / -1` overflow. Both paths were invisible in normal testing because no fixtures exercised the failure cases.
+
+The fix landed in a deliberate sequence. Each commit builds on the previous one and carries its own acceptance tests.
+
+**INT_MIN/-1 guard (Gate-1a)** came first. `INT_MIN / -1` at any signed width (e.g. `-128 / -1` at `t8`) overflows in hardware because the positive result cannot be represented. The new `emit_guarded_idiv` helper in `lower.rs` emits a multi-block branch: check `dividend == MIN`, then check `divisor == -1`, and if both hold, produce `MIN` directly without executing the faulting divide. The per-width `MIN` constant comes from the D1.1 int-facts table. Modulo is untouched here because `srem` already handles `INT_MIN % -1` correctly (result is always 0). This moved parity from 171 to 175 PASS.
+
+**Trap host-exit (Gate-1b0)** fixed a quietly broken primitive. `IrTerminator::Trap` was supposed to provide a clean exit path, but the JIT invoked `main` via raw `transmute + call` with no exception handler. Cranelift's `trap` (`ud2`) caused a stack overflow instead of the documented clean exit. Every failing `assert`/`assert_eq` and non-exhaustive `when` would have crashed this way. The fix introduces `cx_trap()`, a new `extern "C"` host function imported through the same mechanism as `cx_printn`. It prints to stderr and calls `process::exit(126)`. Exit code 126 is now documented as `JIT_RUNTIME_FAILURE`, distinct from 127 (`SKIP`), so the parity harness never misclassifies a runtime trap as a codegen skip.
+
+**Division and modulo by zero guard (Gate-1b)** was the final commit, closing the crash class. `emit_guarded_idiv` is now extended into the single source for all guarded division: an outer zero-check gate (`Eq(divisor, 0)` branching to `cx_trap`) wraps the existing INT_MIN/-1 inner guard for `div`, and the actual `sdiv`/`srem`. The zero check is deliberately the outer gate so a zero divisor traps before any overflow logic runs. Four new width fixtures (div-zero and mod-zero at `t8` and `t64`) brought parity to 182/98/0.
+
+## Unified when-pattern emission (D1.2a)
+
+Alongside the safety work, the first code-touching step of the D1.2 audit arc landed. `lower_when_stmt` and `lower_when_expr` had independently duplicated the same pattern-to-compare logic: literal to `Eq`, range to `Ge+Le/Lt`, unknown to `ConstInt(2)+Cast+Eq`, enum to unsupported. A new `emit_when_arm_match` helper folds the comparison CFG into one call site. Each caller keeps its own mechanism (stmt fallthrough collection vs. expr block-param merge). Emitted IR is byte-identical to the previous version, verified via `--backend=validate` dump-and-diff. Net result: -49 lines, parity unchanged at 171/101/0 (this landed before the Gate-1 commits).
+
+## Design choices worth noting
+
+The division guard architecture avoids `select` instructions, which would still execute the faulting instruction on some platforms. Branch-around is the safer choice. Float division and non-division ops are excluded at the call site via an `int_width().is_some()` gate, so their IR paths are unchanged.
+
+The commit ordering was deliberate. The Trap host-exit primitive was built and tested before the division guards that depend on it. The INT_MIN/-1 guard was built independently of the broken Trap path so it could be verified in isolation. Each commit includes its own acceptance test, regression verification, and A/B performance measurement. The A/B perf numbers for Gate-1a (166ms vs 174ms) have overlapping bands, confirming the guards add no measurable overhead.
+
+## Current state
+
+Submain is now 12 commits ahead of main (the 8 from the CR#1-4 / D1.0-D1.1 arc plus today's 4). That gap represents 132 files changed, 1379 insertions, 1167 deletions. All of it is fully tested: 280/0 on the matrix, 182/98/0 on parity, 243/0 on cargo test, 418/0 with `--features jit`, 111/0 on clippy. Main is unchanged at 230/0.
+
+## What is next
+
+The `cx_trap` primitive was explicitly documented as the foundation for Gate-2 (array bounds checking). The D1.0 pinned divergences likely include bounds-check cases that will need it. The broader D1.2 audit may have more unification targets beyond the `when` pattern work. And the submain-to-main merge is overdue at 12 commits, though the full test suite passing on submain makes that a straightforward operation when it happens.
