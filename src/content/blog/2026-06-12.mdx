@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-06-12"
+date: 2026-06-12
+description: "A quiet day after the D1 audit arc, with the roadmap updated to reflect submain state and eight commits still waiting for integration to main."
+---
+
+No commits landed on any branch in the last 24 hours. The last real development activity was the D1 audit arc on June 10, which dropped four commits on submain covering JIT divergence pinning, a performance baseline, the array index element type fix, and integer-width facts extraction. Submain sits at 272 fixtures, zero failures. Main is unchanged at 230/0.
+
+This is a gap day, and it is worth documenting honestly rather than pretending otherwise.
+
+## Where things stand
+
+Submain is 8 commits ahead of main. Those 8 commits break into two distinct arcs:
+
+- **CR#1-4 (June 6-9):** Range-check unification sweep across the frontend and runtime. Four commits that systematically consolidated scattered bounds-checking logic.
+- **D1 arc (June 10):** Four commits that pinned JIT crash-class divergences, established wall-time benchmarks, fixed array index element types, and extracted integer-width facts into a single-source-of-truth module.
+
+Together they touch 118 files with 921 insertions and 975 deletions. The submain matrix runs clean at 272/0 with 171 parity PASS, 101 SKIP, and 0 PARITY_FAIL. This is a substantial, well-tested body of work that has not been merged.
+
+## Roadmap sync
+
+The main roadmap (`docment/ROADMAP.md`) was stale since May 18. Today it was updated to reflect the verified submain state:
+
+- Post-release hardening section now includes CR#1-4, D1.1b (array index fix), and D1.1 (integer-width facts extraction).
+- Phase 12 notes the D1.0 divergence pinning and its 5 JIT crash-class fixtures.
+- Phase 15 parity numbers updated to 171/101/0 across 272 fixtures on submain.
+- Working notes entries added for June 10 (D1 arc summary) and June 12 (gap status).
+
+No new tasks were added or completed. This was purely about making the roadmap reflect reality.
+
+## Predictions that didn't materialize
+
+The June 10 log predicted four likely next moves: continue the D1 arc, merge submain to main, clear the daily-log PR backlog, and resume backend work. None of those happened on June 11 or 12. Zero for four.
+
+That is fine. The D1 session on June 10 was a focused burst, and a natural pause after that kind of concentrated work is normal. The important thing is that the gap is acknowledged and the state is documented, not papered over.
+
+## What's next
+
+The highest-leverage move remains merging submain to main. The 8-commit gap is growing stale and the work is tested. CR#1-4 and D1.0 through D1.1 form a cohesive set that would bring main from 230 to 272 fixtures.
+
+After that, the D1 arc has a natural continuation point: D1.2, targeting JIT memory-safety gating for the `.jit_known_unsound` fixtures. The "extract duplicated judgments" pattern from D1.1 likely has more targets beyond integer-width facts.
+
+The daily-log PR backlog (branches from June 5 through 10, none merged) is also accumulating and will need attention. Backend Phase 11 and Phase 8 Round 2 remain the next feature frontier but have been deferred for three days running.
+
+Sometimes the most useful log entry is one that says "nothing happened, here is exactly where we are." That is today.
