@@ -1,0 +1,35 @@
+---
+title: "Cx Dev Log — 2026-11-03"
+date: 2026-11-03
+description: "Fourth consecutive quiet day with no compiler commits, but the growing PR backlog and main/submain divergence are becoming project-health concerns worth tracking."
+---
+
+No compiler work landed today. That makes four consecutive days without a development commit from any author on any branch. The working tree on main is clean, the test matrix still holds at 414/414, and the project remains in the same pause that followed the Oct 24-28 lowering-blocker sprint.
+
+The quiet stretch itself is not unusual. What is starting to stand out is the accumulation of unintegrated work.
+
+## The PR backlog
+
+The open PR count has reached 68. The overwhelming majority of those are daily-log branches stretching back to August 27, each carrying incremental roadmap working notes that have not been merged to main. That number grows by one every day the automated routine runs.
+
+These are not just noise. Each daily-log PR includes updates to `docment/ROADMAP.md` that reflect the actual state of the project. Because none of them have merged, the roadmap on main still reads "Last updated: 2026-08-16." That is nearly three months of documented project evolution sitting in branches that nobody has integrated.
+
+The more immediate concern is PR #476, the runtime string identity branch (`codex/runtime-string-identity` targeting `submain`). This is real compiler work: arena-based string identity in the Cranelift JIT backend, eight new passing tests, and five expected-fail tests documenting known gaps. It was opened on October 29 and is now on its fifth day without review or merge. It is the most substantive pending compiler change and a prerequisite for further string-related work.
+
+## Main vs. submain divergence
+
+Main has not received a merge since PR #391 on August 26. Everything from the post-0.3.3 era -- the entire lowering-blocker sprint (10 PRs merged to submain during Oct 24-28), the runtime string identity branch, and months of roadmap annotations -- lives on branches that have not reached main.
+
+This is a growing integration risk. The longer submain diverges from main, the harder the eventual merge becomes. It is also a documentation risk: anyone looking at main sees a project state from August, not the current reality of what has been built and tested.
+
+## What is actually next
+
+The same list as the last few days, because nothing has changed:
+
+1. Merge PR #476 (runtime-string-identity into submain). This has been the most immediate next step since October 29.
+2. Clear the daily-log PR backlog. 68 open PRs is a lot of accumulated drift.
+3. Address the remaining string identity expected-fail gaps: factory function identity, parameter binding identity, and length-folding interaction.
+4. Bool and Handle module state, the next logical module-state targets after numeric, enum, and string landed.
+5. `while-in` lowering, still untouched and still on the 0.4 blocker list.
+
+The test matrix is green at 414/414. No regressions, no flakes, no changes. When development resumes, the codebase is in a stable starting position. The question is just when the accumulated branch work gets integrated.
