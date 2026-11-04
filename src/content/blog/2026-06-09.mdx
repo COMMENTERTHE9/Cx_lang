@@ -1,0 +1,44 @@
+---
+title: "Cx Dev Log — 2026-06-09"
+date: 2026-06-09
+description: "CR#4 landed on submain, completing the four-commit range-check sweep by catching out-of-range literals in if/when branch tails and deleting the old AST-level width checker entirely."
+---
+
+The range-check sweep is done. CR#4 landed on submain today, closing the last identified gap in the #028/#037 literal width-check series. `check_semantic_num_fits` now descends into if/when branch tails, and the old `check_literal_fits` function is deleted. Submain stands at 261 tests, 0 failures. Main holds at 230/0, unchanged.
+
+## What CR#4 actually fixes
+
+The bug: out-of-range integer literals inside `if` or `when` expression branches were accepted silently and wrapped at runtime. A concrete example: `x: t8 = if c { 300 } else { 5 }` compiled without complaint and produced 44 at runtime (300 wrapped into 8-bit signed). The compiler had range checks for direct assignments and struct fields, but expression-position branches slipped through because the checker never walked into branch tails.
+
+The fix adds a `check_branch_tail_fits` helper that recurses through nested if/when structures, feeding each tail expression into `check_semantic_num_fits`. That function already handled the actual width arithmetic. The new code just makes sure it sees every literal, regardless of how many levels of branching wrap it.
+
+Nine new verification matrix fixtures pin the behavior across seven reject sites (declarations, struct fields, field assignments, array elements, call arguments, returns) plus a nested-negative case and an in-range pass guard. Gate results: cargo test 243/0, JIT parity 164 PASS / 97 SKIP / 0 PARITY_FAIL, run_matrix 261/0.
+
+## Unifying the width-check path
+
+The more interesting part of CR#4 is architectural. Before this commit, literal width checking existed at two abstraction levels: `check_literal_fits` operated on AST `Expr` nodes, and `check_semantic_num_fits` operated on `SemanticExpr` nodes. Structurally identical logic, duplicated across abstraction layers.
+
+CR#4 deleted `check_literal_fits` entirely. Both remaining call sites (typed declaration and struct-field literal) migrated to the semantic-level check. Every width-check path now routes through a single function. That means future work on this surface only has to happen in one place.
+
+The commit message documents equivalence verification: structurally identical parallel match arms, behavior confirmed by pinning bare, negated, boundary, over-range, and type-mismatch inputs before switching, with no divergence. The old function is gone, not just deprecated.
+
+## The CR#1-4 tracker
+
+The four commits form a cohesive set that closes every known literal range-check gap:
+
+- CR#1: generic type args (b8e92fb)
+- CR#2: array elements in struct fields and call args (7337b61)
+- CR#3: return values (79a1bbd)
+- CR#4: if/when branch tails + delete `check_literal_fits` (cbba042)
+
+Each commit added one `analyze_expr_with_elem_hint` or `analyze_returned_expr` helper, converging toward fewer analyzed entry points. Submain is now 4 commits ahead of main with a clean 261/0 matrix. The series is a straightforward merge candidate.
+
+One gap remains explicitly deferred: computed expressions like `a + b` producing out-of-range values at compile time. That depends on cast syntax, which is tracked separately in the design queue. The range-check sweep only covers literals, and that scope is now complete.
+
+## What's next
+
+The immediate priority is merging CR#1-4 from submain to main. Four clean commits, all tested, zero parity failures. After that, there is a backlog of ten-plus daily-log PRs sitting open against main (#289 onward), each carrying roadmap updates and project history.
+
+On the backend side, Phase 11 DotAccess in compound forms is the last unchecked item. Phase 8 Round 2 (str/strref layout, Handle<T>, TBool calling convention) is the next major frontier. And there is still the Cranelift negative-element struct array segfault surfaced by CR#2, marked `.jit_known_unsound` and still open.
+
+Yesterday's predictions went 1 for 4: CR#4 landed, but the submain merge, daily-log PR backlog, and backend work all stayed on the shelf. That is the usual pattern when a focused technical task has strong momentum. The sweep is done now, so tomorrow's odds of actually merging should be better.
