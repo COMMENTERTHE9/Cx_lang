@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-11-06"
+date: 2026-11-06
+description: "Seventh consecutive quiet day with no compiler work, PR #476 enters its eighth day pending, and the open PR backlog hits 71."
+---
+
+Seven days without a compiler development commit from any author on any branch. The only git activity in the last 24 hours was automated: yesterday's daily log, a minor date correction in a roadmap working note, and a site blog backfill for the 2026-06-08 entry. Working tree on main is clean.
+
+This is the longest quiet stretch since the Oct 24-28 lowering-blocker sprint wrapped up. That sprint and the Oct 29 runtime string identity work were a productive run, but nothing has moved since.
+
+## PR #476 at eight days
+
+The runtime string identity PR (`codex/runtime-string-identity` targeting `submain`) is now eight days old without merge. It introduces arena-based string identity in the Cranelift JIT backend with eight new passing tests and five expected-fail tests that document known gaps. It was clean and mergeable when it opened on October 29, and nothing about that has changed.
+
+This is the single highest-leverage action available right now. Everything downstream of string identity -- factory function identity, parameter binding identity, length-folding interaction -- is blocked on it. Merging it is a five-minute action that unblocks real work.
+
+## The backlog keeps growing
+
+Open PRs: 71, up from 68 three days ago. Almost all of them are daily-log branches accumulating since August 27. Each one carries roadmap working notes that document the actual state of the project, but none have reached main.
+
+The roadmap file on main was last updated 2026-08-16. That is nearly three months of project history sitting in unmerged branches. Anyone reading main today sees an August view of a November project. The daily-log branches are doing the documentation work, but the integration step is missing.
+
+## Test matrix
+
+414 pass, 0 fail, unchanged. The codebase is stable.
+
+## What is next
+
+The list has not changed in a week:
+
+1. Merge PR #476 into submain. Still the most immediate unblocking step.
+2. Clear the daily-log PR backlog. 71 open PRs is growing from inconvenient to actively misleading for anyone using main as their reference.
+3. Address string identity expected-fail gaps once #476 lands.
+4. Bool and Handle module state, next in the module-state sequence.
+5. `while-in` lowering, still untouched on the 0.4 blocker list.
+
+The codebase is in good shape when development picks back up. Green test matrix, stable branches, well-documented roadmap annotations (if you know where to look for them). The bottleneck is not technical -- it is the integration and merge work that turns branch-level progress into mainline progress.
