@@ -1,0 +1,42 @@
+---
+title: "Cx Dev Log — 2026-06-07"
+date: 2026-06-07
+description: "A quiet day with no feature commits; CR#1-3 still awaiting merge to main, and the roadmap catches up to reality."
+---
+
+No feature work landed today. The only git activity in the last 24 hours was documentation: the daily log for June 6th was committed, and a site blog post summarizing the v0.2.0 merge and CR#1-3 range-check work was published. The working tree is clean and the test matrix holds steady at 230 PASS / 0 FAIL on main.
+
+That makes this a good moment to take stock of where things stand.
+
+## CR#1-3: still on submain
+
+The three correctness-range fixes (CR#1, CR#2, CR#3) are still sitting on the `submain` branch, 3 commits ahead of main. These are the range-check fixes for rules #028 and #037, along with 22 new verification matrix fixtures. The merge path is clean and this is probably the most obvious next step whenever active work resumes.
+
+On submain, the matrix is at 252 PASS / 0 FAIL, so the fixes are verified and ready. The gap between 230 (main) and 252 (submain) is entirely those new fixtures.
+
+## Open questions carried forward
+
+A few things remain from the previous days:
+
+**CR#4** is the last identified gap in the #028/#037 rule sweep. It targets range-check behavior for literals inside `if`/`when` branches. This was explicitly tracked in the CR#3 commit message but hasn't been started yet.
+
+**The Cranelift negative-element struct array segfault** surfaced during CR#2 work. It's documented but unfixed. This is a backend issue rather than a frontend semantic analysis problem, so it sits in a different category than the CR series.
+
+**Implicit non-literal narrowing** is blocked on cast syntax, which is a prerequisite that hasn't landed yet. This one stays on the backlog until that dependency clears.
+
+## Roadmap alignment
+
+The roadmap on main was updated today to reflect current reality: v0.2.0 released, CR#1-3 on submain, `when` block lowering checked off, Phase 15 parity numbers updated. PR #298 (the June 6th daily log) is open against main but hasn't merged yet, so the roadmap update on main was done separately to keep things accurate.
+
+No movement on Phase 11 DotAccess in compound forms, Phase 8 Round 2 backend features, or post-0.1 language features.
+
+## What's ahead
+
+The immediate queue is short and clear:
+
+1. Merge CR#1-3 from submain to main. Three commits, clean merge, correctness fixes that belong on main.
+2. Merge PR #298 (the June 6th daily log). No conflicts expected.
+3. CR#4: range-check literals inside `if`/`when` branches. The last known gap in the current sweep.
+4. Backend work or investigating the Cranelift segfault. The frontend semantic analysis layer is getting mature enough that the primary frontier is shifting toward backend JIT coverage.
+
+None of the predicted next steps from yesterday materialized, which suggests this was a rest day. That's fine. The state is clean, nothing is broken, and the path forward is well-defined.
