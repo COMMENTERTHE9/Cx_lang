@@ -1,0 +1,43 @@
+---
+title: "Cx Dev Log — 2026-06-05"
+date: 2026-06-05
+description: "v0.2.0 gets its release stamp, a first-user audit surfaces real friction, and the default build path goes warning-free."
+---
+
+The README on submain now says v0.2.0 is released. The git tag hasn't been pushed yet and submain hasn't merged to main, so the release is declared but not fully enacted. That said, today was mostly about quality gates rather than new features, and the work that landed tells a clear story about where Cx stands heading into the merge.
+
+## Zero-warning default builds
+
+Tracker #042 closed today with a small but pointed fix. The default `cargo build` (no `--features jit`) was emitting two warnings: an unused `IrType` import in `cranelift/mod.rs` and dead-code warnings for `ArrayLayout::total_size` and `alignment` in `ir/types.rs`.
+
+The fix was straightforward. The `IrType` import got gated behind `#[cfg(feature = "jit")]` since it's only used by `ir_type_to_cranelift`. The two `ArrayLayout` fields picked up `#[allow(dead_code)]` annotations matching the existing `element_size` annotation, since both fields are read by the Cranelift backend and unit tests but not by the interpreter build path. A stale comment in `validate.rs` was also corrected. Three files, +15/-5.
+
+The fix itself is minor, but the signal matters: Cx now has a zero-warning policy on the default build path. For a project that's trying to be approachable to first-time users, a clean `cargo build` is table stakes.
+
+## The first-user audit
+
+This is the more interesting piece. Commit `229e6fc` added a 177-line structured audit report answering a specific question: can someone who has never seen Cx clone the repo, build it, and write a working program following only the README, in under 30 minutes?
+
+The audit walked through prerequisites, clone, build, running examples, and writing original code. It found real friction:
+
+- **F7**: The README claimed zero warnings, but the default build emitted two. (Fixed today by #042.)
+- **F8**: The README described v0.1.0 stats while HEAD was well into v0.2 development. (Partially addressed by the v0.2.0 release stamp.)
+- **F9**: The canonical `hello.cx` example uses string interpolation, but the README's own deferred-features list says interpolation isn't in the release yet. Documentation and reality are out of sync.
+
+This kind of audit is worth calling out because it's a different quality signal than test counts. Cx has 243 unit tests (418 with JIT), 230 fixtures at 140 PASS / 90 SKIP / 0 PARITY_FAIL, and zero Clippy errors. Those numbers are solid. But they don't answer whether a human can actually pick this up and use it. The audit does, and its findings fed directly into today's other work.
+
+## The v0.2.0 release stamp
+
+The README status line changed from "0.2, in development (unreleased)" to "0.2.0 -- released 2026-06-05". The verification status header updated from referencing a specific commit hash to referencing v0.2.0. The last tagged release reference moved from v0.1.0 to v0.2.0.
+
+But the v0.2.0 git tag doesn't exist yet (`git tag -l` still only shows v0.1.0), and submain hasn't been merged to main. So this is a declaration of intent with the actual release mechanics still pending. Submain is 35 non-merge commits ahead of main with 157 changed files (+4138/-2928), covering everything from string concatenation and `len` builtin to if-as-expression, enum signatures, TBool safety, runtime refactoring, and diagnostic improvements. That's the entire v0.2 feature sprint sitting in a branch.
+
+## Daily-log backlog cleared through May
+
+On the main branch side, 12 daily-log PRs (#265, #274-286) were merged in a single batch, clearing documentation from May 16 through May 27. Eight more daily-log branches (May 28 through June 4) remain unmerged. The test matrix on main holds at 182 PASS / 0 FAIL.
+
+## What's next
+
+The most overdue action is tagging v0.2.0 and merging submain to main. This has been the top prediction for four consecutive days now, and the release stamp makes it harder to justify further delay. The remaining daily-log branches need merging too.
+
+The first-user audit still has open findings. F8 is partially addressed but the deferred-features list may still be stale. F9 -- the `hello.cx` example using undocumented string interpolation -- needs either a documentation update or an example change before the onboarding story is clean. These aren't blockers for the tag, but they're the kind of thing that erodes the first impression the audit was designed to protect.
