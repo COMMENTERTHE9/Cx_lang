@@ -1,0 +1,41 @@
+---
+title: "Cx Dev Log — 2026-06-04"
+date: 2026-06-04
+description: "String concatenation and the len builtin landed on submain, both type-strict and byte-oriented by design."
+---
+
+Two new language features shipped to `submain` today: the `+` operator for string concatenation and `len` as a builtin for strings and arrays. Both went end-to-end through semantic analysis, runtime dispatch, builtins registry, error handling, and verification fixtures.
+
+## String concatenation with `+`
+
+String concat works exactly how you'd expect at the surface. `"hello " + "world"` produces `"hello world"`, chaining works, empty strings are handled, and `+=` compound assignment does the right thing.
+
+The interesting part is what happens underneath and what the language refuses to do.
+
+At the semantic layer, Cx rejects mixed-type concatenation at compile time. `str + t32` is an error, and the error message itself points you toward string interpolation (`"v{n}"`) instead. This is a deliberate design choice: Cx won't silently coerce integers to strings in operator context. If you want to embed a number in a string, you spell it out with interpolation. That keeps the `+` operator's behavior predictable and avoids the class of bugs where `"count: " + 3` silently produces something you didn't expect.
+
+At the runtime level, both operands get resolved from the string arena, joined, and the result is interned as a fresh arena slice. This required changing `apply_op`'s signature from `&self` to `&mut self` because `alloc_str` needs mutable access to the arena. That ripples through all callers in `eval.rs` and `exec.rs`. It also means the string arena grows with each concatenation. That's a known property of the current interpreter -- the arena grows monotonically -- and it will matter more as string-heavy programs get longer-lived. For now, it's the correct trade-off for the interpreter phase.
+
+Seven new verification fixtures nail down the behavior: basic concat, chaining, empty-string edges, `+=`, and two expected-fail cases for mixed-type rejection in both operand orderings.
+
+## `len` builtin for strings and arrays
+
+`len(x)` returns the byte length of a string or the element count of an array, typed as `t64`.
+
+The implementation spans three files. `builtins.rs` adds a `Len` variant to `BuiltinKind` with `Arity::Exact(1)` and `BuiltinRet::Int`. `semantic.rs` type-checks the argument, accepting `str` and arrays while rejecting anything else with a clear error. `runtime/call.rs` dispatches on `BuiltinKind::Len`, extracting `Value::Str(_, len)` for strings or `Value::Array(elems).len()` for arrays.
+
+The key design decision: `len` returns byte count, not character count. `len("é")` returns 2, not 1. This is tested explicitly and documented in the README. It aligns with Cx's positioning as a systems language where byte-level control is the default. A future `char_count` or grapheme-level API would be separate if it ever lands. The test fixture `t_len_bytes.cx` pins this contract down so it can't drift.
+
+Five fixtures cover: string length, array length, empty string/array, the multibyte UTF-8 case, and wrong-type rejection.
+
+## Documentation catch-up
+
+Two README commits landed alongside the feature work. One documents string concatenation and `len` with code examples showing basic concat, byte-length semantics, and the mixed-type error. The other documents yesterday's `if`-as-expression feature, showing `if c { a } else { b }` in assignment position. The built-ins list and verification status numbers (230 fixtures / 140 PASS / 90 SKIP) were updated to match.
+
+## The growing submain divergence
+
+Submain is now 31 non-merge commits ahead of main, touching 142 files with +3942/-2051 lines. That's the widest divergence in the project's history and it spans tracker items #001 through #047. The batch is internally gated at 230 fixtures with 0 parity failures, and main's matrix still holds at 182/182. But the merge has been the predicted next step for three consecutive days and hasn't happened yet. The longer it waits, the higher the integration risk, even with clean test gates.
+
+## What's next
+
+The merge from submain to main is overdue and likely the next significant event. Beyond that, the tracker sprint could continue with more frontend/runtime features before merging. Candidates include multi-statement value blocks or additional string operations. On the backend side, Phase 8 Round 2's str/strref layout work becomes more relevant now that string concatenation and `len` exist at the interpreter level and will eventually need JIT support.
