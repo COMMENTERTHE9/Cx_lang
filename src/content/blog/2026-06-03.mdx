@@ -1,0 +1,45 @@
+---
+title: "Cx Dev Log — 2026-06-03"
+date: 2026-06-03
+description: "if-as-expression lands as the first new language feature in the tracker sprint, alongside a TBool wire-value matching fix and a full README re-sync."
+---
+
+Today was the biggest single day of the tracker sprint so far. Three commits landed on submain: a genuine language feature (`if` as an expression), a semantic correctness fix for TBool wire values in `when` patterns, and a 401-line README overhaul that re-syncs documentation to the actual 0.2 compiler state.
+
+## `if` as an expression
+
+Everything in the tracker sprint up to this point has been diagnostics, refactoring, and correctness work. This is the first new language feature.
+
+`if c { a } else { b }` now works as a value. You can use it in assignment, return, implicit-return, and nested expression positions (`1 + if ...`, `f(if ...)`). The implementation adds `if_expr` to the parser with a mandatory final `else` in expression position, while the existing statement-form `Stmt::IfElse` is unchanged and else stays optional there. `else if` chains desugar into nested `Expr::If` nodes.
+
+The design decision was deliberate: Strategy A, meaning a real `Expr::If` AST variant, desugared chains, and no branch-type unification. That last part is explicitly deferred to 0.3, where it lines up with multi-statement value blocks in `when` as a coherent follow-up. For now, the result type comes from the then-branch.
+
+A trailing `if`/`else` becomes the implicit-return value only when every branch ends in a trailing expression, which keeps `return`/EarlyReturn working in classify-style patterns. There is a single `unsupported!` line in `src/ir/lower.rs` that makes the JIT cleanly skip if-expression fixtures rather than crash. 245 insertions across 21 files (7 source, 14 test fixtures), with 11 new verification matrix fixtures covering assignment, nested, return, missing-else error, unknown-condition error, and a statement-form no-else regression guard.
+
+## TBool wire-value matching fix
+
+This one fixed a silent wrong-result bug. A typed `b: bool = ?` stores the canonical wire value `TBool(2)`, but the `when` matcher was only comparing against `Value::Unknown`. That meant the `unknown` arm could never fire for typed booleans.
+
+The fix makes bool literal patterns in `run_semantic_when` match both `Value::Bool(...)` / `Value::Unknown(_)` and their `TBool(0|1|2)` wire equivalents. It is a 33-line change in `src/runtime/exec.rs` with four new test fixtures: typed unknown, arithmetic unknown (`&&` of two unknowns), untyped regression guard, and typed definite over-match guard.
+
+This is the second fix (after the `if`-condition fix in #026) for the same root pattern: `Value::Unknown` and `TBool(2)` are two equivalent unknown representations, and every site that inspects unknowns must handle both. The commit explicitly frames this as a "JIT forward constraint" that the backend will need to replicate when it gains TBool lowering. At this point, the dual-representation is effectively a language invariant.
+
+## README re-sync
+
+The README got a 401-line overhaul. The first code sample was fixed to use actual Cx syntax instead of `let`. Enums are now documented (declaration, `::` variants, function signatures). `when`-as-expression with `_` exhaustiveness, `?` as unknown literal, and string interpolation are all documented as shipped.
+
+The most meaningful change is the "Deferred" section being reframed into two honest buckets: what works in the interpreter but is not yet JIT-lowered versus what is genuinely unimplemented anywhere. This is a real project-direction signal. The interpreter is substantially further along than the JIT, and the docs now acknowledge that gap explicitly instead of lumping everything into a single "later" bucket.
+
+Two new runnable examples landed alongside: `examples/enums.cx` and `examples/when_match.cx`.
+
+## Submain divergence
+
+Submain is now 27 non-merge commits ahead of main, touching 119 files with +3773/-2051 lines. This is the widest divergence in the project's history. Commit gates report 219/0 matrix and 137/82/0 parity, which is clean, but this batch has not been integration-tested against main independently.
+
+Main holds steady at 182/182 matrix. No merge activity happened today, and the integration pressure keeps building. At this size, the submain-to-main merge is the highest-impact next step.
+
+## What is next
+
+The if-expression feature opens follow-up work: branch-type unification for both `if` and `when` (tagged as a 0.3 item), and multi-statement value blocks. Whether those land before or after the submain merge is an open question.
+
+On the backend side, Phase 11 items remain: method call lowering, `when` block lowering, and DotAccess in compound forms. Those are the nearest unchecked roadmap items and the logical next targets once the submain batch integrates.
