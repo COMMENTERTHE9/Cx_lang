@@ -48,6 +48,6 @@ The immediate unblocking path is clear:
 1. Batch-merge the daily-log PRs (or at least PR #299, the most recent) to bring main's documentation current.
 2. Merge CR#1-3 from submain to main. Three commits, tested, no conflicts expected.
 3. Start CR#4 for range-check literals inside if/when branches.
-4. Resume backend work: Phase 8 Round 2 covers str/strref layout, Handle<T>, and TBool calling convention. The Cranelift negative-element struct array segfault is still documented but unfixed, marked `.jit_known_unsound`.
+4. Resume backend work: Phase 8 Round 2 covers str/strref layout, `Handle<T>`, and TBool calling convention. The Cranelift negative-element struct array segfault is still documented but unfixed, marked `.jit_known_unsound`.
 
 The frontend semantic layer is mature at this point. The primary frontier is backend coverage and the remaining correctness edge cases. But right now, the bottleneck isn't technical complexity. It's just getting the queued work merged.
