@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-06-02"
+date: 2026-06-02
+description: "The compiler now catches unknown used as a value and points to the ? literal, closing tracker #039 and continuing the error-quality sprint."
+---
+
+If you write `b: bool = unknown` in Cx today, the compiler tells you exactly what you meant: "`unknown` is a pattern keyword, not a value -- use `?` for the unknown literal." Two weeks ago it would have blown up at the `:` token with a 20-token "expected" dump that never mentioned `?`. That is the kind of diagnostic improvement that saves a new user ten minutes of confusion, and it is what landed today.
+
+## The fix
+
+Tracker item #039 targeted `unknown` used in value position. In Cx, `unknown` is a pattern keyword (you use it in `when` blocks), while `?` is the literal for an unknown value. The distinction matters, but if you are new to the language or coming from something where `unknown` works in both positions, the old error gave you nothing to work with.
+
+The fix adds a `KeywordUnknown` alternative to the primary expression parser. When the parser sees `unknown` where a value expression is expected, it emits a targeted error at that exact span instead of falling through to the statement parser and cascading. The recovery path produces `AstValue::Unknown` so the diagnostic points at the offending token rather than somewhere downstream. The error still correctly fails the parse, so nothing unsound leaks through.
+
+Two new test fixtures cover the behavior: `t_unknown_as_value.cx` and `t_unknown_as_value.cx.expected_fail`. The change touches 18 lines in `src/frontend/parser.rs`. Commit gates on submain report 243 unit tests passing and a 208/0 matrix, so the fix does not disturb the existing `?` literal path or `unknown`-in-when-pattern handling (those live in separate parser branches).
+
+## Pattern: name the right syntax in the error
+
+This commit follows the same design pattern established over the prior two days of the tracker sprint. When a programmer reaches for syntax that is intuitively plausible but wrong in Cx, the compiler names the correct syntax directly. Tracker #038 did this for string interpolation errors. Tracker #013 did it for `let ... = expr` used as a directive. Now #039 does it for `unknown` vs `?`.
+
+The philosophy is straightforward: a generic parse failure that lists twenty possible tokens teaches the programmer nothing. A message that says "you wrote X, you want Y" resolves the issue in one read. These are small commits individually, but the cumulative effect on the first-run experience is significant.
+
+## Tracker sprint status
+
+Today's commit brings the three-day tracker sprint total to 14 closed items (#001 through #039, though not all numbers in that range were open). The sprint has covered runtime refactoring, diagnostic improvements, semantic checks, performance work, enum signatures, TBool safety, and string interpolation hardening. The pace slowed from the prior two days, which each closed several items, but the work continues.
+
+## Submain divergence keeps growing
+
+Submain is now 24 non-merge commits ahead of main, the widest divergence since the project started daily logging. That is 94 files changed, 3166 insertions, 1895 deletions. The matrix on main holds at 182/182 while submain's commit gates report 208/0, meaning 26 test fixtures exist on submain that main has never seen.
+
+No merge attempt has been made. The work on submain is internally gated, but the gap is large enough that an independent verification pass before integration would be prudent. The longer this sits, the more cognitive overhead the eventual merge carries.
+
+## What is next
+
+The merge of submain to main remains the most impactful pending step. Beyond that, the tracker sprint likely has more items queued given the pace of the last few days. Phase 11 sub-items (method call lowering, `when` block lowering, DotAccess in compound forms) are the nearest unchecked backend work on the roadmap.
+
+Main matrix: 182 PASS / 0 FAIL. Submain gates: 208/0 per commit `cc7812a`.
