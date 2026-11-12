@@ -1,0 +1,51 @@
+---
+title: "Cx Dev Log — 2026-06-01"
+date: 2026-06-01
+description: "Four more tracker items closed on submain, tightening TBool safety, fixing enum annotations in function signatures, and hardening string interpolation."
+---
+
+The tracker sprint continues. Yesterday closed 9 items; today adds 4 more, all on `submain`. The theme across all four is the same: things that were silently wrong now error. Submain is at 23 non-merge commits ahead of main, matrix holding at 207/0.
+
+## Non-exhaustive `when` is now a compile error
+
+A `when` block without a catch-all `_` arm now fails at analysis time. The error message is direct: "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases."
+
+The rule has one deliberate exemption. A TBool `when` covering `true`, `false`, and `unknown` counts as exhaustive without needing `_`. This preserves the canonical Cx three-state idiom. Enum-group and super-group patterns already lower to `Catchall`, so those pass too. For everything else (bare enum variants, numeric ranges, string matches), you need the `_`.
+
+Full static enum exhaustiveness checking is deferred to 0.3. For now, the compiler can tell you "this `when` is obviously incomplete" but won't prove that your four Direction variants cover all cases. That's a reasonable scope boundary.
+
+## `if` on unknown is a runtime error
+
+This one closes a real design hole. Previously, an `if` whose condition evaluated to `TBool(2)` (unknown) silently took the else branch. The old code had a `_ => false` fall-through in the condition check. That collapsed the third state that TBool exists to express, which defeats the purpose of having a three-valued boolean type at all.
+
+Now it returns a `RuntimeError::UnknownCondition` with a message that directs the programmer to `when`: "if condition is unknown; an unknown TBool can't choose a branch, use when to handle true, false, and unknown explicitly."
+
+The check is at runtime, not semantic analysis, because unknown-ness can arise from runtime-only expressions like `a && ?`. This aligns with the JIT, which already rejected unknown-typed conditions at lowering.
+
+Together with the non-exhaustive `when` check, these two changes make TBool's unknown state a first-class concern. Programs must handle it explicitly. It won't silently degrade to false anymore.
+
+## Enums in function signatures actually work now
+
+This was a latent bug since enums were introduced. The parser emits all bare-name type annotations as `Type::Struct(name)`. So when you wrote a function taking an enum parameter, the type checker saw `Type::Struct(Light)` from the annotation and `SemanticType::Enum(Light)` from the inferred value. It produced the confusing error "expected Light, got enum Light" where both names looked identical.
+
+The fix adds an enum-normalization pre-pass in `semantic.rs` that rewrites `Type::Struct(name)` to `Type::Enum(name)` for every declared enum, recursing through all nested statement bodies (function bodies, impl blocks, loops, if/when arms). The parser stays untouched, which keeps the grammar clean.
+
+A cosmetic fix drops the internal `enum ` prefix from user-facing type names, so all named types render consistently. Three new fixtures test the fix: `t_enum_param`, `t_enum_return`, and `t_enum_state_machine`. That last one is a pattern that literally could not be written in Cx before this commit.
+
+Cross-module imported enum annotations remain `Struct` for now. That's a 0.3 follow-up.
+
+## String interpolation errors on unresolvable expressions
+
+A `{...}` segment in an interpolated string that didn't resolve to a bound variable was silently re-emitted as literal text. A typo like `{toatl}` would appear verbatim in output. A non-variable expression like `{fib(i)}` would too. Silent wrong output, no error.
+
+`expand_interpolation` now returns `Result` and errors with `RuntimeError::BadInterpolation`. The error message distinguishes two failure modes: undefined name ("no variable `toatl` in scope") vs. non-variable expression ("supports bare variables only; compute `{fib(i)}` into a variable first"). Both print sites in `call.rs` propagate the Result.
+
+One known limitation: the diagnostic reports line 1, not the actual print call's line. Call-position threading is tracked separately.
+
+## What's next
+
+Submain is now at 23 non-merge commits, 92 files changed, 3145 insertions, 1894 deletions. That's well past a typical release-sized batch. The work is coherent and continuously gated, but the divergence pressure is building. A merge to main has been predicted for two days running and hasn't happened yet.
+
+The tracker sprint momentum is strong at 13 items in two days. Based on today's patterns, likely next candidates include call-position threading (referenced in the interpolation fix as a separate cross-cutting item) and more Phase 11 sub-items like method call lowering and `when` block lowering.
+
+Before any merge attempt, running the full matrix independently on submain (rather than trusting commit-message reports of 207/0) would be worth doing.
