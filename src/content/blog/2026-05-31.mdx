@@ -1,0 +1,60 @@
+---
+title: "Cx Dev Log — 2026-05-31"
+date: 2026-05-31
+description: "Nine tracker items closed in a single day: integer overflow caught at compile time, the runtime split into focused modules, and the vestigial arena deleted."
+---
+
+The biggest single-day sprint so far on the Cx compiler landed nine commits on `submain`, all closing tracked issues. The work falls into two clear buckets: catching errors earlier in the pipeline, and restructuring the runtime so it stops being a 1700-line monolith.
+
+## Compile-time integer overflow
+
+The most impactful change is that integer literals are now range-checked during type-checking, not at runtime. If you write:
+
+```
+x: t8 = 999
+```
+
+the compiler rejects it before execution with a clear overflow error. This covers typed assignments, return expressions, struct field assignments, and array elements. A follow-up commit extends the same check to unary-negated literals, so `-200` assigned to a `t8` (range -128..127) gets caught at the same stage.
+
+On the lexer side, literals that overflow `i128` itself now produce a specific "integer literal out of range for i128" message instead of the unhelpful "unrecognized token" that previously appeared.
+
+Together these three commits (#028, #037, #016) mean that every integer-related overflow a developer can write is now caught before the program runs, with a message that says what actually went wrong.
+
+## Runtime split
+
+The `runtime.rs` file had grown to 1725 lines with scope management, operator evaluation, expression evaluation, statement execution, function dispatch, and output formatting all mixed together. It was split into six focused submodules:
+
+- `scope.rs` (385 lines) -- scope management, variable lookup
+- `ops.rs` (249 lines) -- binary and comparison operators
+- `eval.rs` (151 lines) -- expression evaluation
+- `exec.rs` (532 lines) -- statement execution
+- `call.rs` (370 lines) -- function and builtin dispatch
+- `print.rs` (61 lines) -- output formatting
+
+The core `runtime.rs` now holds only type definitions and initialization. This doesn't change any language behavior, but it makes working on the interpreter far less painful.
+
+As part of this restructure, the vestigial `Arena` struct and its 64 KB chunk allocation were removed entirely. The arena was a leftover from an older memory model that had been superseded by `BindingId`-indexed variables. It was dead code carrying dead weight.
+
+## Better error messages
+
+Five of the nine commits directly improve diagnostics:
+
+**`let ... = expr` directive error.** Cx doesn't use `let x = value` syntax. Previously, writing it produced a raw chumsky parse error that was hard to interpret. Now the parser detects the pattern and says: "`let` declares an uninitialized binding and cannot have an initializer -- to declare with a value use `x: T = value` (without `let`)". This is the kind of error message that teaches the language.
+
+**Real source positions for composite literals.** `StructInstance` and `ArrayLit` AST nodes now carry source positions. Struct literal errors (unknown fields, missing fields, type mismatches) report against the actual struct literal position rather than position 0. Four new expected-fail test fixtures cover these paths.
+
+**Array element mismatch names the declared type.** When a typed array like `[3: t8]` has a mismatched element, the error now names the declared element type rather than inferring from element[0]. The analyzer threads the declared type through an `expected_array_elem` field to the `ArrayLit` analysis arm.
+
+## The `exit` builtin fix
+
+A small but necessary one-liner: `exit` was added to the reserved-name list in `builtins.rs`, preventing the IR validator from rejecting programs that call `exit()`. Without this, valid programs using `exit()` would fail validation.
+
+## Submain divergence
+
+All of this work sits on `submain`, which is now 19 non-merge commits ahead of `main` with 77 files changed. The test matrix on `submain` has grown to 198 fixtures (16 new) versus 182 on `main`, and everything passes. The work is additive and well-tested, but the gap is the largest it has been. The longer the merge waits, the more integration risk accumulates, even though the changes are coherent.
+
+## What's next
+
+The merge from `submain` to `main` is overdue. At 19 commits and 77 changed files, this is a release-sized batch. The test coverage is solid and the changes are additive, so the risk is manageable, but it should happen soon.
+
+Beyond the merge, the tracker sprint momentum suggests more diagnostic and semantic work is coming. The builtin registry and error-quality infrastructure built over the past week create a foundation for tackling the remaining Phase 9 (print intrinsics) and Phase 11 items like method call lowering and `when` block lowering.
