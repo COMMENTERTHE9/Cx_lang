@@ -1,0 +1,37 @@
+---
+title: "Cx Dev Log — 2026-05-29"
+date: 2026-05-29
+description: "Lazy arena allocation eliminates 64 KB per-call overhead, plus CLI flags, friendlier parse errors, and Windows CRLF fixes for the test harness."
+---
+
+The biggest win today is a one-line architectural change with outsized impact: `Arena::new()` no longer eagerly allocates and zero-fills a 64 KB chunk on every function call. After four quiet days, development picked back up with four commits on `submain` closing tracker items #010, #014, #015, and #030.
+
+## Lazy arena allocation (tracker #010)
+
+This was the single biggest runtime bottleneck flagged by the Pillar 1 profiling work. Every function call previously paid a fixed 64 KB allocation cost up front, whether or not the function ever touched the arena. For call-heavy workloads (recursion, small utility functions doing pure arithmetic), the profiling data showed this dominated instruction counts by roughly 90%.
+
+The fix is minimal in code but meaningful in semantics. `Arena::new()` now creates an empty `Vec<Chunk>`, deferring the first real allocation to the first `alloc()` call. `reset()` was updated to handle the empty-chunks case. Function scopes that never use heap locals now pay zero allocation cost. This changes the fundamental contract from "always allocate" to "allocate on demand," which is exactly the zero-cost abstraction pattern Cx aims for in its runtime model.
+
+## CLI gets --help and --version (tracker #015)
+
+Cx now responds to `-h`/`--help` and `-V`/`--version` before it looks for a source file argument. `--help` prints usage with backend options, debug phases, and test mode. `--version` pulls from Cargo metadata. Small thing, but it means `cx --help` no longer errors out asking for a filename.
+
+This commit also included some integration work: `exit(0)`/`exit(N)` handling in `--test` mode was wired up so the test runner catches `RuntimeError::Exit` instead of letting `exit()` kill the process. And the `ImplBlock` setup was updated to carry per-method alias `BindingId`s, tying into the BindingId-indexed variable system from tracker #009.
+
+## Friendlier parse errors (tracker #014)
+
+A `Display` impl was added for the `Token` enum, covering roughly 95 match arms. Keywords now render as their source text (`let`, `fnc`, `when`), literals as categories (`"string literal"`, `"integer literal"`), and operators as their symbols (`+`, `==`, `..=`). The error formatter was switched from `Debug` to `Display`, so instead of seeing `Identifier("x")` in an error message, you get `unexpected identifier, expected ;`.
+
+This is the kind of one-time investment that pays off on every future parse error. It moves the compiler from "technically correct output" toward "actually usable output," and it signals a shift in what development time is being spent on. The language fundamentals are stable enough that UX polish is now a reasonable use of time.
+
+## Windows CRLF fix for the test matrix (tracker #030)
+
+A `.gitattributes` file now forces `eol=lf` on all test fixtures and shell scripts. `run_matrix.sh` strips `\r` from both expected and actual output. The commit also added `.expected_exit` sidecar files, so test fixtures can now assert a specific exit code and optionally verify stdout alongside it. This unblocks exit-code-related fixtures and brings the verification matrix closer to covering the full runtime surface without special-casing.
+
+## State of things
+
+All four commits are on `submain`, which is now 10 non-merge commits ahead of `main`. The merge to main still has not happened. This is the fifth consecutive daily log noting the pending merge. No conflicts are expected (submain merged main on May 24), and the accumulated work spans performance, correctness, CLI polish, and build improvements. The matrix holds at 182 pass, 0 fail.
+
+## What's next
+
+The submain-to-main merge remains the highest-leverage available action. Beyond that, JIT bounds checking (tracker #003) is the natural follow-up from the Pillar 1 performance work and would close the `jit_known_unsound` gap. Remaining print intrinsics (`print`/`println`/`printn`/`read`/`input`) are still listed as pending runtime gaps.
