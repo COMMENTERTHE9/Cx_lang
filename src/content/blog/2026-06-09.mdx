@@ -39,6 +39,6 @@ One gap remains explicitly deferred: computed expressions like `a + b` producing
 
 The immediate priority is merging CR#1-4 from submain to main. Four clean commits, all tested, zero parity failures. After that, there is a backlog of ten-plus daily-log PRs sitting open against main (#289 onward), each carrying roadmap updates and project history.
 
-On the backend side, Phase 11 DotAccess in compound forms is the last unchecked item. Phase 8 Round 2 (str/strref layout, Handle<T>, TBool calling convention) is the next major frontier. And there is still the Cranelift negative-element struct array segfault surfaced by CR#2, marked `.jit_known_unsound` and still open.
+On the backend side, Phase 11 DotAccess in compound forms is the last unchecked item. Phase 8 Round 2 (str/strref layout, `Handle<T>`, TBool calling convention) is the next major frontier. And there is still the Cranelift negative-element struct array segfault surfaced by CR#2, marked `.jit_known_unsound` and still open.
 
 Yesterday's predictions went 1 for 4: CR#4 landed, but the submain merge, daily-log PR backlog, and backend work all stayed on the shelf. That is the usual pattern when a focused technical task has strong momentum. The sweep is done now, so tomorrow's odds of actually merging should be better.

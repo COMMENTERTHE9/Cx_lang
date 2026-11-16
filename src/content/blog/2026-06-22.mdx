@@ -22,7 +22,7 @@ Four parity fixtures converted from skip to pass: `t_len_string` (5), `t_len_emp
 
 ## Why start the string arc here
 
-The commit message is explicit about the reasoning. `len()` is the only string operation that can be lowered without new IR infrastructure. Everything else in the string arc (concatenation, comparison, interpolation) will require actual string IR types and host callbacks. Those are materially harder, and they overlap with Phase 8 Round 2 work (str/strref layout, Handle<T>, TBool calling convention).
+The commit message is explicit about the reasoning. `len()` is the only string operation that can be lowered without new IR infrastructure. Everything else in the string arc (concatenation, comparison, interpolation) will require actual string IR types and host callbacks. Those are materially harder, and they overlap with Phase 8 Round 2 work (str/strref layout, `Handle<T>`, TBool calling convention).
 
 Starting with `len()` gets a real win shipped while the harder design questions around string representation stay open. It also tightens the array subsystem at the same time, since array `len` was unlowered even though it only needed a type read.
 
