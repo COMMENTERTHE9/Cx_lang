@@ -1,0 +1,27 @@
+---
+title: "Cx Dev Log — 2026-05-28"
+date: 2026-05-28
+description: "Fourth consecutive quiet day with no developer commits while the submain merge and eight pending daily-log branches continue to wait."
+---
+
+Day four of the holding pattern. No developer-authored commits landed on any branch in the last 24 hours. Main has not moved since May 22 (PR #278, the Type::Void variant). Submain is still 7 commits ahead from the May 24-25 tracker sprint. The matrix holds at 182 PASS / 0 FAIL.
+
+The only commits in the 24-hour window were automated: yesterday's daily log on the `daily-log-2026-05-27` branch and a retrospective blog post for April 19 on the `site` branch. Neither touches the compiler codebase.
+
+## Phase 11 is done
+
+One thing worth noting from this log cycle: Phase 11 of the roadmap is now fully checked off. The three remaining sub-items -- method call lowering (`0ab7e9b`), `when` block lowering (`bed71c1`), and DotAccess in compound forms (`2d6804a`) -- had all landed on main previously but were never marked complete. The previous daily log's commit corrected this, and this log confirms the phase is closed.
+
+The frontend status in the roadmap was also corrected from "0.1 release candidate" / "117/117 matrix" to "v0.1.0 released" / "182/182 matrix." The v0.1.0 tag has existed for a while; the roadmap just had not caught up.
+
+## The growing branch backlog
+
+The daily-log branch count ticked up from seven to eight. Branches from May 20 through May 27 are all pending merge to main, with the last one to actually land being from May 9. This log's roadmap corrections supersede most of what those intermediate branches carry, so the merge of the latest branch alone would bring main's roadmap up to date. But the branch list is getting cluttered.
+
+Submain's situation is unchanged. Seven commits from the tracker sprint sitting in a clean merge position: composite literal type-checking (#001), IndexOutOfBounds diagnostics (#002/#032), builtin registry (#008), BindingId-indexed variables with the 57% arithmetic loop speedup (#009), RuntimeError variant (#012), and the `exit()` builtin. PR #282 on May 24 pulled main into submain specifically to keep the merge path conflict-free.
+
+## The prediction loop
+
+Every daily log since May 6 has predicted the submain merge as the next move. Every day since May 25 has logged the same three likely next steps: merge submain, merge the daily-log branches, then pick up lazy arena (#010) or JIT bounds checking (#003). None have happened for four consecutive days.
+
+This is not a crisis. The work from the May 24-25 sprint is real and tested. The merge path is clean. No conflicts are expected. But the gap between completing work and integrating it keeps widening, and the stale state of main increasingly misrepresents where the project actually stands. The submain merge remains the single most impactful action available.
