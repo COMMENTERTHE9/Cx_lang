@@ -1,0 +1,13 @@
+Ok(1)
+Err(no)
+Ok(2)
+Err(kept)
+Ok(7)
+Ok(7)
+second
+Err(y)
+Ok(42)
+Err(stop)
+Ok(text)
+Ok(text)
+Ok(text)

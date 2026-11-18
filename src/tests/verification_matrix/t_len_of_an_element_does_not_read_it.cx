@@ -1,0 +1,27 @@
+// `len` of an element evaluates the index and checks it, and does not read
+// the element: its length is already known. So it works inside a function for
+// a top-level array, which compiled code cannot read from there.
+grid: [2:[3:t64]] = [[1, 2, 3], [4, 5, 6]]
+const TABLE: [2:[4:t64]] = [[1, 2, 3, 4], [5, 6, 7, 8]]
+fnc: t64 width() { return len(grid:[0]) }
+fnc: t64 table_width() { return len(TABLE:[1]) }
+fnc: t64 total_width() {
+    n: t64 = 0
+    r: t64 = 0
+    while (r < 2) {
+        n = n + len(grid:[r])
+        r += 1
+    }
+    return n
+}
+struct Probe { k: t64 }
+p: impl (s: Probe) {
+    fnc: t64 row_len() { return len(grid:[s.k]) }
+}
+fnc: t64 pair_len() { return len([grid:[0], grid:[1]]) }
+print(width())
+print(table_width())
+print(total_width())
+q: Probe = Probe { k: 1 }
+print(q.row_len())
+print(pair_len())

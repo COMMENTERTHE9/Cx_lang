@@ -1,0 +1,55 @@
+// A Result that reaches its use by way of a loop, a conditional reassignment,
+// a `.copy` call made twice, or a generic function is used as what its type
+// says it is. Compiled code tracks what a Result's payload holds; where it
+// cannot follow a value, it goes by the declared type instead of giving up.
+fnc: Result<t64> across_loop(p: Result<t64>, n: t64) {
+    i: t64 = 0
+    while (i < n) { i = i + 1 }
+    return p
+}
+print(across_loop(Ok(1), 3))
+print(across_loop(Err("no"), 3))
+
+fnc: Result<t64> maybe_replaced(p: Result<t64>, c: bool) {
+    if c { p = Ok(2) }
+    return p
+}
+print(maybe_replaced(Ok(1), true))
+print(maybe_replaced(Err("kept"), false))
+
+// The same variable passed as `.copy` twice.
+fnc: Result<t64> cp(r.copy: Result<t64>) { return r }
+v: Result<t64> = Ok(7)
+print(cp(v.copy))
+print(cp(v.copy))
+
+// A generic function whose type argument is a Result that names no payload.
+fnc: T <T> second(a: T, b: T) {
+    print("second")
+    return b
+}
+r: Result<t64> = second(Err("x"), Err("y"))
+print(r)
+
+// `?` on a parameter inside a loop.
+fnc: Result<t64> twice(r: Result<t64>) {
+    i: t64 = 0
+    total: t64 = 0
+    while (i < 2) {
+        total += r?
+        i += 1
+    }
+    return Ok(total)
+}
+print(twice(Ok(21)))
+print(twice(Err("stop")))
+
+// A string Result, printed inside a loop after a `.copy` call.
+fnc: Result<str> cps(r.copy: Result<str>) { return r }
+s: Result<str> = Ok("text")
+k: t64 = 0
+while (k < 2) {
+    print(cps(s.copy))
+    k += 1
+}
+print(s)

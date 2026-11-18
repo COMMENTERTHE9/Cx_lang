@@ -1,0 +1,5 @@
+// `-r` on a Result is an error, not a number.
+a: Result<t64> = Ok(1)
+print("before")
+print(-a)
+print("unreachable")
