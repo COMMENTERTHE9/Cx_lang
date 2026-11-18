@@ -1,0 +1,6 @@
+Ship { zeta: 1, alpha: 2, mid: 3, beta: 4, omega: 5 }
+Ship { zeta: 10, alpha: 20, mid: 30, beta: 40, omega: 50 }
+Outer { tail: 9, inner: Inner { second: 2, first: 1 }, head: 7 }
+Pair { right: 8, left: 6 }
+[Inner { second: 4, first: 3 }, Inner { second: 6, first: 5 }]
+Ok(Inner { second: 12, first: 11 })

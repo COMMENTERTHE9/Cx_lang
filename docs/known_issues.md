@@ -4334,7 +4334,7 @@ The payload is a struct pointer and the print path reads it as a string
 descriptor. PR #476 turns this into a clean refusal.
 
 **d. The interpreter prints a struct's fields in a different order on different
-runs.** Six runs of one three-field program gave four orderings
+runs.** *(FIXED — §61.)* Six runs of one three-field program gave four orderings
 (`P { x: 1, y: 2, z: 3 }`, `P { z: 3, x: 1, y: 2 }`, …). The fields are held in
 a hash map. Compiled code refuses to print a struct, so there is no parity
 failure, but a reference that is not reproducible cannot be matched by any
@@ -4552,4 +4552,40 @@ owner needs a decision: either a `Result` with an aggregate payload becomes a
 value stored in memory (tag plus payload inline, copied on bind, pass and
 return, like every other aggregate), which changes its calling convention, or
 the language gets an ownership rule for heap values. Neither is a lowering fix.
+
+## 61. A struct printed its fields in a different order on different runs
+
+*(Fixes §56d. Fixed 2026-11-18 by the commit that introduces this entry. The
+rule is a proposal the owner asked for; it is implemented here so it can be
+judged on real output, and it is one function to change.)*
+
+The interpreter holds a struct value's fields in a hash map and printed them in
+the map's iteration order, which Rust randomises per process. Eight runs of
+`t_print_struct_field_order` on the unfixed build gave eight different outputs.
+Anything that embeds a struct's text inherited it: an array of structs, a
+`Result` holding one, an interpolated string, the message of a failed
+`assert_eq`.
+
+**The rule: fields print in declaration order.** It is the order the language
+already commits to for a struct's layout — "declaration order, no reordering"
+(`docs/backend/cx_abi_v0.1.md`) — so a struct has one field order, not one for
+memory and another for text. The order fields are written in a literal does not
+matter. The alternatives were sorting by name, which is stable but invents an
+order the language uses nowhere else, and literal order, which would make two
+equal values print differently.
+
+**Scope of the defect.** It made the reference non-reproducible for these
+programs, so no fixture could pin them and no backend could be compared against
+them. It did not make any program compute a wrong value, and compiled code does
+not print structs at all, so it does not affect M1.1.
+
+**Not changed.** A `copy_into` bundle (`Container`) still prints through the
+hash map's debug form. It has the same defect and no declaration to take an
+order from; the natural rule is the order the names are listed in
+`copy_into(...)`, which the value does not carry today.
+
+Fixture: `t_print_struct_field_order` — five fields with non-alphabetical names,
+a literal written in a different order, a nested struct, a generic struct, an
+array of structs and a `Result` holding one. A compiled-code SKIP, because
+compiled code refuses to print a struct.
 

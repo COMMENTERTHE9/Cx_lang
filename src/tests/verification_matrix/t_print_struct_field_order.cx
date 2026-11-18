@@ -1,0 +1,34 @@
+// A struct prints its fields in declaration order, on every run.
+//
+// The interpreter used to print them in the order its internal map happened to
+// iterate, which changes from one run to the next: six runs of a three-field
+// program gave four different lines. Five fields here, so an order that is
+// right by chance is 1 in 120; the names are deliberately not alphabetical, so
+// "sorted by name" is distinguishable from "as declared".
+//
+// Compiled code does not print structs yet and refuses this program, so the
+// fixture is a compiled-code SKIP. It pins the reference.
+struct Ship { zeta: t64, alpha: t64, mid: t64, beta: t64, omega: t64 }
+struct Inner { second: t64, first: t64 }
+struct Outer { tail: t64, inner: Inner, head: t64 }
+struct Pair<T> { right: T, left: T }
+
+s: Ship = Ship { zeta: 1, alpha: 2, mid: 3, beta: 4, omega: 5 }
+print(s)
+
+// Field order in the literal does not matter; the declaration decides.
+t: Ship = Ship { omega: 50, beta: 40, mid: 30, alpha: 20, zeta: 10 }
+print(t)
+
+o: Outer = Outer { tail: 9, inner: Inner { second: 2, first: 1 }, head: 7 }
+print(o)
+
+let p
+p = Pair<t64> { right: 8, left: 6 }
+print(p)
+
+row: [2: Inner] = [Inner { second: 4, first: 3 }, Inner { second: 6, first: 5 }]
+print(row)
+
+r: Result<Inner> = Ok(Inner { second: 12, first: 11 })
+print(r)
