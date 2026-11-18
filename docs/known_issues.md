@@ -4965,8 +4965,10 @@ print((when 2 { 1 => p, _ => p }) < (p + p.grow()))
                                              // (d)'s first fix made it true / false
 ```
 
-The first two were regressions from §58 that (d) did not reach; the third was
-new with (d)'s first fix. The copy is now taken for any left operand that is
+The first two were regressions from §58 that (d) did not reach — the build
+with §58 and without §65 already gives 102 for both, so the message of the
+commit that fixes them, which blames the receiver change of §65, has the wrong
+cause. The third was new with (d)'s first fix. The copy is now taken for any left operand that is
 not already a fresh value, whenever the right operand contains a call — not
 "whenever the right operand can change the left", which cannot always be read
 off the expression. `a + b` on two names still copies nothing. On the review's
