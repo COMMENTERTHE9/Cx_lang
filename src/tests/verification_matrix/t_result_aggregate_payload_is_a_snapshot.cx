@@ -1,0 +1,39 @@
+// A Result takes a SNAPSHOT of an aggregate payload: changing the source
+// afterwards does not change the Result, and neither does changing a value
+// unwrapped from it. Compiled code used to store a pointer to the source, so
+// the Result followed the source (`Ok(50)` where the interpreter has `Ok(1)`),
+// and pointed into a dead frame once the constructing function returned. It
+// refuses the shape until it has storage that lasts as long as the Result;
+// this fixture is a compiled-code SKIP and pins what the answer must be when
+// that storage exists.
+struct P { x: t64, y: t64 }
+
+fnc: Result<t64> first_x(q: Result<P>) {
+    let v;
+    v = q?
+    return Ok(v.x)
+}
+
+fnc: Result<[2: t64]> pair(a: t64, b: t64) {
+    row: [2: t64] = [a, b]
+    let made
+    made = Ok(row)
+    row:[0] = 999
+    return made
+}
+
+fnc: Result<t64> sum(a: t64, b: t64) {
+    let got
+    got = pair(a, b)?
+    got:[1] = got:[1] + 1
+    let again
+    again = pair(a, b)?
+    return Ok(got:[0] + got:[1] + again:[1])
+}
+
+p: P = P { x: 1, y: 2 }
+r: Result<P> = Ok(p)
+p.x = 50
+print(first_x(r))
+print(p.x)
+print(sum(3, 4))

@@ -4321,7 +4321,8 @@ agrees with it today only because it also skips write-back on an early `Err`;
 PR #476 corrects the compiled side, which turns this into an output difference.
 The fix belongs in the interpreter.
 
-**c. Printing a `Result` that holds a struct crashes compiled code.**
+**c. Printing a `Result` that holds a struct crashes compiled code.** *(FIXED
+by refusal — §60, which found the crash was one of three symptoms.)*
 
 ```cx
 struct P { x: t64, y: t64 }
@@ -4498,4 +4499,57 @@ and prints six wrong values on the JIT.
 
 A guard that itself uses `?` leaked the same way. It is fixed by the same
 change but has no compiled-code fixture: a `Result<bool>` is refused there.
+
+## 60. A `Result` holding a struct or array had no owner for its payload in compiled code
+
+*(Fixes §56c. Found 2026-11-18 while fixing it; closed by refusal in the commit
+that introduces this entry. The feature itself is deferred — see the end.)*
+
+A `Result` is a packed (tag, word) pair in compiled code. For a number the word
+is the value; for a string it is the address of a descriptor that lives as long
+as the program. For a struct or an array the word was the address of the
+aggregate — and nothing owned that storage. Three symptoms, one cause:
+
+**It aliased its source.** Both backends exit 0.
+
+```cx
+p: P = P { x: 1, y: 2 }
+r: Result<P> = Ok(p)
+p.x = 50
+print(first_x(r))        // interpreter Ok(1), JIT Ok(50)
+```
+
+**It pointed into a dead frame.** `return Ok([a, b])` returned the address of an
+array in the frame that was returning. The caller read it back correctly only
+while nothing had reused that stack memory. `t_literal_hint_ok_payload` passed
+parity this way.
+
+**Printing it crashed.** `print` read the struct as a string descriptor:
+segfault for a local value, abort when it came back from a call (§56c).
+
+The interpreter snapshots the payload, so it is right in all three.
+
+**Closed by refusal.** Compiled code now refuses a `Result` whose payload is a
+struct or an array where it would have to construct one, unwrap one with `?`,
+or print one (exit 127, a message naming the payload type). Numbers, strings
+and `Err` are unaffected.
+
+**One fixture moved from PASS to SKIP: `t_literal_hint_ok_payload`.** Its files
+and its expected output are unchanged; the interpreter still passes it. Compiled
+code used to produce the right numbers for it by reading an array out of a frame
+that had already returned. That is the behaviour being removed, so this is
+recorded here rather than left as a silent change in the counts.
+
+Two fixtures are added as compiled-code SKIPs with interpreter expectations:
+`t_result_struct_payload_print` — any exit other than "not supported" fails
+parity, so the crash cannot return unnoticed — and
+`t_result_aggregate_payload_is_a_snapshot`, which pins what the answer must be
+once the feature exists. Two unit tests pin the refusal and its control.
+
+**Deferred, not designed here.** PR #476 gave these payloads an owner by
+copying each one to the heap and never freeing it, which is unbounded. A bounded
+owner needs a decision: either a `Result` with an aggregate payload becomes a
+value stored in memory (tag plus payload inline, copied on bind, pass and
+return, like every other aggregate), which changes its calling convention, or
+the language gets an ownership rule for heap values. Neither is a lowering fix.
 

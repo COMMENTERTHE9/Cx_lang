@@ -5407,6 +5407,7 @@ fn lower_try(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    refuse_aggregate_result_payload("`?` on a Result", result_ty)?;
     // Word-payload fence (R7): unwrapping a NESTED Result (T is itself a Result,
     // so lower_type(T) == I128) exceeds the word payload — stays SKIP, exactly as
     // the D2.4a construct does. Scalar/str `?` is the target.
@@ -7176,13 +7177,57 @@ fn result_pack(
 /// D2.4a: lower `Ok(x)` (tag 0) / `Err("...")` (tag 1) — lower the payload, widen
 /// to the i64 word, pack. Err's str payload is the static D2.3 descriptor Ptr, so
 /// nothing runtime-allocated escapes (R7-clean).
+/// Whether `ty` is a struct or an array — a value that lives in memory and is
+/// reached through a pointer in compiled code.
+fn is_aggregate_payload(ty: &SemanticType) -> bool {
+    matches!(ty, SemanticType::Struct(_) | SemanticType::Array(_, _))
+}
+
+/// Refuse a `Result` whose payload is a struct or an array.
+///
+/// A `Result` is a packed (tag, word) pair, and the word for an aggregate would
+/// be a POINTER to it. Nothing owns storage for that pointee:
+///
+/// - it pointed at the source, so the Result changed when the source did
+///   (`r = Ok(p); p.x = 50` — interpreter `Ok(1)`, compiled code `Ok(50)`);
+/// - returned from a function it pointed into a frame that no longer existed;
+/// - printing it read the struct as a string descriptor and crashed.
+///
+/// The interpreter snapshots the payload, so it is right in all three. Giving
+/// compiled code an owner for the snapshot is a storage-model decision, not a
+/// lowering fix, so the shape is refused until that is made
+/// (`docs/known_issues.md` §60).
+fn refuse_aggregate_result_payload(context: &str, ty: &SemanticType) -> Result<(), LoweringError> {
+    if is_aggregate_payload(ty) {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "{context}: a Result whose payload is a struct or array ({}) — compiled code has no storage for the payload that lasts as long as the Result",
+                crate::frontend::semantic::type_name(ty)
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn lower_result_construct(
     tag: i128,
     payload_expr: &SemanticExpr,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    refuse_aggregate_result_payload("Result construction", &payload_expr.ty)?;
     let payload = lower_expr(payload_expr, ctx, active)?;
+    // A payload that lowers to a pointer must be a string descriptor. Anything
+    // else that reaches here as a pointer — a generic struct whose semantic
+    // type was not the aggregate it is — is the same unowned pointee.
+    if payload.ty == IrType::Ptr && !matches!(payload_expr.ty, SemanticType::Str | SemanticType::StrRef) {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "Result construction: a Result whose payload is a struct or array ({}) — compiled code has no storage for the payload that lasts as long as the Result",
+                crate::frontend::semantic::type_name(&payload_expr.ty)
+            ),
+        });
+    }
     let payload_i64 = widen_payload_to_i64(&payload, ctx, active)?;
     result_pack(tag, payload_i64, ctx, active)
 }
@@ -7239,6 +7284,7 @@ fn emit_ok_payload(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<(), LoweringError> {
+    refuse_aggregate_result_payload("print of a Result", ok_ty)?;
     match lower_type(ok_ty)? {
         IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
             active.emit(IrInst::Call {
@@ -7248,7 +7294,10 @@ fn emit_ok_payload(
                 return_ty: None,
             })?;
         }
-        IrType::Ptr => {
+        // Only a string is printed through its descriptor. A struct or array
+        // payload also lowers to a pointer, and used to take this arm: the
+        // print read the aggregate as a descriptor and crashed (§60).
+        IrType::Ptr if matches!(ok_ty, SemanticType::Str | SemanticType::StrRef) => {
             let p = ctx.fresh_value();
             active.emit(IrInst::Cast { dst: p, from: IrType::I64, to: IrType::Ptr, value: payload })?;
             active.emit(IrInst::Call {
@@ -12846,6 +12895,15 @@ mod divergence_shape_tests {
         lower_program(&analyzed).expect("lowers")
     }
 
+    fn lowering_error(src: &str) -> LoweringError {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape");
+        lower_program(&analyzed).expect_err("compiled code must refuse this shape")
+    }
+
     fn function<'a>(ir: &'a IrModule, name: &str) -> &'a IrFunction {
         ir.functions.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no function '{name}'"))
     }
@@ -12938,6 +12996,35 @@ mod divergence_shape_tests {
             .filter(|b| matches!(&b.term, IrTerminator::Jump { target, .. } if *target == header.id))
             .count();
         assert!(backedges >= 2, "entry and backedge both reach the guarded header, found {backedges}");
+    }
+
+    /// §60: a Result whose payload is a struct or an array is refused wherever
+    /// compiled code would have to create, unwrap or print one. Its payload word
+    /// would be a pointer nothing owns.
+    #[test]
+    fn a_result_with_an_aggregate_payload_is_refused() {
+        for (what, src) in [
+            ("construct a struct payload", "struct P { x: t64 }\nr: Result<P> = Ok(P { x: 1 })\nprint(1)\n"),
+            ("construct an array payload", "fnc: Result<[2: t64]> mk() { return Ok([1, 2]) }\nprint(1)\n"),
+            ("unwrap a struct payload", "struct P { x: t64 }\nfnc: Result<t64> f(q: Result<P>) {\n    let v;\n    v = q?\n    return Ok(v.x)\n}\nprint(1)\n"),
+        ] {
+            let error = lowering_error(src);
+            assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+                if construct.contains("a Result whose payload is a struct or array")), "{what}: {error:?}");
+        }
+    }
+
+    /// §60, the control: number, string and error payloads are a word that
+    /// needs no owner, and lower as before.
+    #[test]
+    fn a_result_with_a_word_payload_still_lowers() {
+        let ir = lowered(
+            "fnc: Result<t64> n() { return Ok(7) }\n\
+             fnc: Result<str> s() { return Ok(\"x\") }\n\
+             fnc: Result<t64> e() { return Err(\"bad\") }\n\
+             print(n())\nprint(s())\nprint(e())\n",
+        );
+        for name in ["n", "s", "e"] { function(&ir, name); }
     }
 
     /// §57a: a `while` condition that is not a bool is refused, as `if` already
