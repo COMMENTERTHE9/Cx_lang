@@ -274,7 +274,13 @@ impl RunTime {
                 }
             }
             if let Some(expr) = &sem_func.ret_expr {
-                self.eval_semantic_expr(expr)
+                // `?` on an Err inside the trailing expression returns from
+                // THIS function, as it does inside a statement above. Letting
+                // the signal out of here returns from the caller as well.
+                match self.eval_semantic_expr(expr) {
+                    Err(RuntimeError::EarlyReturn(v)) => Ok(v),
+                    other => other,
+                }
             } else {
                 Ok(Value::Num(0))
             }
@@ -404,9 +410,14 @@ impl RunTime {
                 }
             }
 
-            // Evaluate return expression
+            // Evaluate return expression. `?` on an Err inside it returns
+            // from this method, as it does inside a statement above — and as
+            // an ordinary return, so the receiver's changes are written back.
             if let Some(expr) = &sem_func.ret_expr {
-                self.eval_semantic_expr(expr)
+                match self.eval_semantic_expr(expr) {
+                    Err(RuntimeError::EarlyReturn(v)) => Ok(v),
+                    other => other,
+                }
             } else {
                 Ok(Value::Num(0))
             }

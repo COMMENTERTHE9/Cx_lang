@@ -4589,3 +4589,49 @@ a literal written in a different order, a nested struct, a generic struct, an
 array of structs and a `Result` holding one. A compiled-code SKIP, because
 compiled code refuses to print a struct.
 
+
+## 64. `?` in a function's trailing expression returned from the caller as well
+
+*(Found 2026-11-18 by the independent review of §58–§61. Interpreter only; it
+was there before those fixes and is inside what §59 claimed to have closed.
+Fixed by the commit that introduces this entry. §62 and §63 are on
+`backend/result-content-equality`.)*
+
+```cx
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> mid() { Ok(fail()? + 1) }
+
+fnc: t64 top() {
+    let r
+    r = mid()
+    print(5)
+    return 7
+}
+print(top())      // interpreter: Err(bad)        JIT: 5 7        (both exit 0)
+```
+
+`?` on an `Err` leaves its function through an early-return signal. The
+interpreter turned that signal into the function's result inside the loop over
+the body's statements, and evaluated the trailing expression after the loop,
+where nothing caught it. The signal went on to the caller's statement loop, so
+`top` returned `Err(bad)` from the middle of an assignment. At the top level
+there is no caller to catch it:
+
+```cx
+print(mid())      // "unhandled control flow signal -- this is likely a compiler bug", exit 1
+```
+
+In a method the receiver's changes were dropped as well, because the write-back
+ran only for a result that looked like an ordinary return.
+
+The trailing expression of a function and of a method now ends the call exactly
+as a statement does. Compiled code was already right.
+
+`Ok(f()? + 1)` as a last line is the ordinary way to write this, more so than
+the `when`-arm shape §59 fixed.
+
+Fixtures: `t_try_in_trailing_expression` (a function, a `.copy` parameter
+through two levels, a method that changed its receiver first, and the top
+level) and `t_try_in_when_guard`. The second is the compiled-code fixture §59
+said could not be written: a guard `1 if fail()? > 0 => ..` compiles, since the
+guard's `?` yields a number.

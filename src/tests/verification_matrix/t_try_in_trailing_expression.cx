@@ -1,0 +1,45 @@
+// `?` on an Err inside a function's trailing expression returns from that
+// function — not from its caller as well — and leaves it the way a return
+// does: `.copy` parameters are written back, and a method's changes to its
+// receiver are kept.
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> good() { return Ok(4) }
+
+fnc: Result<t64> mid() { Ok(fail()? + 1) }
+fnc: Result<t64> fine() { Ok(good()? + 1) }
+fnc: Result<t64> counted(v.copy: t64) {
+    v = v + 1
+    Ok(fail()? + v)
+}
+fnc: Result<t64> outer(v.copy: t64) {
+    v = v + 10
+    Ok(counted(v.copy)? + 1)
+}
+
+struct Acc { n: t64 }
+m: impl (a: Acc) {
+    fnc: Result<t64> tail() {
+        a.n += 1
+        Ok(fail()? + 1)
+    }
+}
+
+fnc: t64 top() {
+    let r
+    r = mid()
+    print(r)
+    print(fine())
+    c: t64 = 1
+    print(counted(c.copy))
+    print(c)
+    print(outer(c.copy))
+    print(c)
+    x: Acc = Acc { n: 0 }
+    print(x.tail())
+    print(x.n)
+    return 7
+}
+
+print(top())
+print(mid())
+print(3)
