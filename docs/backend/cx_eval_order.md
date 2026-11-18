@@ -5,8 +5,9 @@ Status: LOCKED for Cx 0.1
 the place, and the rule that a compound assignment does not see writes made by
 its own operand.)*
 
-*(Extended 2026-11-18 with the method-call section. It states what the receiver
-being an alias already implied; the interpreter did something else.)*
+*(Extended 2026-11-18 with the index-read and method-call sections. Both state
+what strict left-to-right evaluation already implied; in each, one backend did
+something else.)*
 
 ---
 
@@ -46,6 +47,7 @@ evaluated first, then `B`, then `C`.
 | `A + B`, `A - B`, `A * B`, `A / B`, `A % B` | A then B | arithmetic |
 | `A == B`, `A != B`, `A < B`, `A <= B`, `A > B`, `A >= B` | A then B | comparison |
 | `f(A, B, …)` | A then B then … | argument list, left-to-right |
+| `A:[I]` (read) | A's value, then I | the element comes from A as it was before I ran — see "Index read" |
 | `x.m(A, B, …)` | A then B then …, then `m` runs on `x` | the receiver is the variable itself, read when the call is made — see "Method call" |
 | `(A ⊕ B) ⊕ C` | A then B then C | nested, outermost rule applied recursively |
 | `A && B`, `A || B` | A then B (B skipped on short-circuit) | short-circuit logical; lowered via `lower_logical()` in `src/ir/lower.rs` (decision/rhs/sc/merge CFG), fixtures t141/t142 |
@@ -164,6 +166,35 @@ that program does not lower there at all: a function that writes a top-level
 variable is an unsupported construct on the Cranelift backend today (exit 127).
 So the JIT claim rests on the instruction order above, not on a run. When
 top-level mutation from a function lowers, this deserves a parity fixture.
+
+---
+
+## Index read: the array, then the index
+
+`A:[I]` evaluates `A`, then `I`, then takes element `I` of the value `A` had.
+That is the left-to-right rule with nothing added: `A` is the left operand.
+It matters only when evaluating `I` changes the array:
+
+```
+fnc: t64 idx(a.copy: [3: t64]) { a:[1] += 50; return 1 }
+arr: [3: t64] = [0, 10, 20]
+print(arr:[idx(arr.copy)])     // 10 — the element as it was
+print(arr:[1])                 // 60 — the change is still there
+```
+
+Two things can change an array while an index into it is being evaluated:
+passing the variable that holds it as `.copy`, and calling a method on that
+variable. The interpreter gets this from holding the array's value. Compiled
+code holds the array's address, which is the same thing until one of those two
+appears in the index expression; when one does, it reads from a copy of the
+array taken before the index is evaluated (`lower_index`,
+`expr_may_write`). An index expression without either costs nothing extra.
+
+This is the rule for a **read**. A compound assignment `A:[I] += V` resolves its
+place — which includes evaluating `I` — before it reads, as the section above
+says, so it reads the element as `I` left it.
+
+Fixture: `t_index_read_takes_array_before_index`.
 
 ---
 

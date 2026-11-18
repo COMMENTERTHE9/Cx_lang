@@ -4696,3 +4696,57 @@ Fixture: `t_method_receiver_changed_by_argument` — at the top level, in a loop
 inside a function, with two arguments that each change the receiver, through
 `.copy`, and with a second alias. It fails on the unfixed interpreter and passes
 on the unfixed JIT.
+
+## 66. An index read took its element after the index expression had changed the array
+
+*(Found 2026-11-18 by the independent review of §58. Compiled code only. One
+shape was a regression from §58; the other was there before. Fixed by the commit
+that introduces this entry.)*
+
+```cx
+fnc: t64 idx(a.copy: [3: t64]) {
+    a:[1] += 50
+    return 1
+}
+arr: [3: t64] = [0, 10, 20]
+print(arr:[idx(arr.copy)])    // interpreter: 10     JIT: 60     (both exit 0)
+```
+
+`A:[I]` evaluates `A`, then `I`. The interpreter holds the array's value, so it
+reads element 1 of the array as it was. Compiled code resolved the array's
+address, evaluated the index, and loaded through the address afterwards — by
+which time the `.copy` write-back had landed in that storage.
+
+Before §58 the JIT printed 10. That was not a snapshot it took: §58 fixed a
+write-back that moved the aggregate to new storage, and the old storage, left
+behind, happened to hold the value from before. §58 was right to remove the
+move, and removing it exposed this.
+
+The second shape never agreed:
+
+```cx
+print(o.arr:[o.mutate()])     // mutate() adds 500 to arr[1] and returns 1
+                              // interpreter: 2      JIT: 502
+```
+
+Compiled code now copies the array before evaluating the index when — and only
+when — the index expression can change it: it passes the variable holding the
+array as `.copy`, or calls a method on that variable, anywhere inside it
+(`expr_may_write` looks through nested expressions and through the statements of
+an `if`/`when` value). Every other index read is lowered as before, with no
+copy.
+
+**Cost.** In the affected shape the whole array is copied per read. A method
+called on the same variable in the index — `s.items:[s.find(key)]` — pays it
+whether or not the method changes anything, because nothing yet tells compiled
+code that a method leaves its receiver alone. That is a correct answer bought
+with a copy; a way to know a method does not write its receiver would remove it.
+
+The rule is written in `docs/backend/cx_eval_order.md`, "Index read". A compound
+assignment `A:[I] += V` is a different rule and is unchanged: it resolves the
+place, index included, before it reads.
+
+Fixture: `t_index_read_takes_array_before_index` — a top-level array, an index
+that is an `if` or `when` value, a nested array's row and a row's element, and
+an array in a struct field reached through `.copy` and through a method, in a
+loop. It fails on the unfixed JIT and passes on the interpreter.

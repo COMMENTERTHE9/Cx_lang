@@ -6101,6 +6101,115 @@ fn lower_array_lit(
     })
 }
 
+/// Whether evaluating `expr` may change the variable `scan`: by passing it as
+/// `.copy` (copy-out writes it back when the call returns), or by calling a
+/// method on it (a method's receiver is the one alias the language has, so the
+/// method may change it). Looks through every nested expression and statement,
+/// so an `if`/`when` value is not a blind spot.
+fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
+    let any = |e: &SemanticExpr| expr_may_write(e, scan);
+    match &expr.kind {
+        SemanticExprKind::Value(_)
+        | SemanticExprKind::VarRef { .. }
+        | SemanticExprKind::DotAccess { .. }
+        | SemanticExprKind::HandleVal { .. }
+        | SemanticExprKind::HandleDrop { .. } => false,
+        SemanticExprKind::HandleNew { value: e, .. }
+        | SemanticExprKind::Unary { expr: e, .. }
+        | SemanticExprKind::Cast { expr: e, .. }
+        | SemanticExprKind::ResultOk { expr: e }
+        | SemanticExprKind::ResultErr { expr: e }
+        | SemanticExprKind::Try { expr: e, .. } => any(e),
+        SemanticExprKind::Range { start, end, .. } => any(start) || any(end),
+        SemanticExprKind::Binary { lhs, rhs, .. } => any(lhs) || any(rhs),
+        SemanticExprKind::Index { target, index, .. } => any(target) || any(index),
+        SemanticExprKind::ArrayLit { elements } => elements.iter().any(any),
+        SemanticExprKind::StructInstance { fields, .. } => fields.iter().any(|(_, e)| any(e)),
+        SemanticExprKind::Call { args, .. } => args_may_write(args, scan),
+        SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
+            let on_it = match receiver_expr {
+                Some(receiver) => any(receiver),
+                None => *instance_binding == scan,
+            };
+            on_it || args_may_write(args, scan)
+        }
+        SemanticExprKind::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
+        SemanticExprKind::If { condition, then_body, else_body, .. } => {
+            any(condition) || stmts_may_write(then_body, scan) || stmts_may_write(else_body, scan)
+        }
+    }
+}
+
+fn args_may_write(args: &[SemanticCallArg], scan: BindingId) -> bool {
+    args.iter().any(|arg| match arg {
+        SemanticCallArg::Expr(e) => expr_may_write(e, scan),
+        SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => *binding == scan,
+        SemanticCallArg::CopyInto(bindings) => bindings.iter().any(|b| b.binding == scan),
+    })
+}
+
+fn arms_may_write(arms: &[SemanticWhenArm], scan: BindingId) -> bool {
+    arms.iter().any(|arm| {
+        arm.guard.as_ref().is_some_and(|g| expr_may_write(g, scan)) || stmts_may_write(&arm.body, scan)
+    })
+}
+
+fn stmts_may_write(stmts: &[SemanticStmt], scan: BindingId) -> bool {
+    let any = |e: &SemanticExpr| expr_may_write(e, scan);
+    let target_may = |target: &SemanticLValue| match target {
+        SemanticLValue::Index { target, index, .. } => any(target) || any(index),
+        SemanticLValue::Binding { .. } | SemanticLValue::DotAccess { .. } => false,
+    };
+    stmts.iter().any(|stmt| match stmt {
+        SemanticStmt::Assign { target, expr, .. } => target_may(target) || any(expr),
+        SemanticStmt::CompoundAssign { target, operand, .. } => target_may(target) || any(operand),
+        SemanticStmt::TypedAssign { expr, .. }
+        | SemanticStmt::ExprStmt { expr, .. }
+        | SemanticStmt::ConstDecl { value: expr, .. } => any(expr),
+        SemanticStmt::Return { expr, .. } => expr.as_ref().is_some_and(any),
+        SemanticStmt::Block { stmts, .. } | SemanticStmt::Loop { body: stmts, .. } => stmts_may_write(stmts, scan),
+        SemanticStmt::While { cond, body, .. } => any(cond) || stmts_may_write(body, scan),
+        SemanticStmt::For { start, end, body, .. } => any(start) || any(end) || stmts_may_write(body, scan),
+        SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
+            any(condition)
+                || stmts_may_write(then_body, scan)
+                || else_ifs.iter().any(|(c, body)| any(c) || stmts_may_write(body, scan))
+                || else_body.as_ref().is_some_and(|body| stmts_may_write(body, scan))
+        }
+        SemanticStmt::WhileIn { range_start, range_end, body, then_chains, result, .. } => {
+            any(range_start)
+                || any(range_end)
+                || stmts_may_write(body, scan)
+                || then_chains.iter().any(|c| any(&c.range_start) || any(&c.range_end) || stmts_may_write(&c.body, scan))
+                || result.as_ref().is_some_and(any)
+        }
+        SemanticStmt::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
+        // Declarations and definitions evaluate nothing here.
+        SemanticStmt::Noop
+        | SemanticStmt::ModuleNames { .. }
+        | SemanticStmt::EnumDef { .. }
+        | SemanticStmt::GeneDef { .. }
+        | SemanticStmt::PhenDef { .. }
+        | SemanticStmt::Decl { .. }
+        | SemanticStmt::FuncDef(_)
+        | SemanticStmt::Break { .. }
+        | SemanticStmt::Continue { .. }
+        | SemanticStmt::StructDef { .. }
+        | SemanticStmt::ImplBlock { .. } => false,
+    })
+}
+
+/// The variable an aggregate expression is ultimately stored in: `a`, `a.f`,
+/// `a:[i]`, `a.f:[i]:[j]` are all rooted at `a`. `None` for a temporary.
+fn root_binding(expr: &SemanticExpr) -> Option<BindingId> {
+    match &expr.kind {
+        SemanticExprKind::VarRef { binding, .. } => Some(*binding),
+        SemanticExprKind::DotAccess { binding, .. } => *binding,
+        SemanticExprKind::Index { target, .. } => root_binding(target),
+        _ => None,
+    }
+}
+
 // Array element read lowering strategy
 //
 // An index expression `arr[i]` where `arr: Array(N, ElemTy)` is lowered to:
@@ -6182,6 +6291,27 @@ fn lower_index(
             detail: format!("Index target must lower to Ptr, got {:?}", base.ty),
         });
     }
+
+    // 1b. An index read takes the array's VALUE, then evaluates the index
+    // (docs/backend/cx_eval_order.md, "Index read"). Holding the array's
+    // address instead is the same thing unless evaluating the index changes
+    // the array — it is passed as `.copy` in there, or a method is called on
+    // it. Then the element has to come from the array as it was, so read from
+    // a copy taken now.
+    let base = match root_binding(target) {
+        Some(root) if expr_may_write(index, root) => {
+            let (size, align, parts) = ret_slot_plan(&target.ty, &ctx.struct_table).ok_or_else(|| {
+                LoweringError::UnsupportedSemanticConstruct {
+                    construct: "an index whose index expression changes the indexed array, for an array compiled code cannot copy".to_string(),
+                }
+            })?;
+            let snapshot = ctx.fresh_value();
+            active.emit(IrInst::Alloca { dst: snapshot, size, align })?;
+            copy_parts(base.value, 0, snapshot, 0, &parts, ctx, active)?;
+            LoweredValue { value: snapshot, ty: IrType::Ptr }
+        }
+        _ => base,
+    };
 
     // 2. Lower the index expression; cast to I64 if it isn't already.
     let idx = lower_expr(index, ctx, active)?;
@@ -13057,5 +13187,28 @@ mod divergence_shape_tests {
              print(n)\n",
         );
         assert_eq!(traps(function(&ir, "main")), 0);
+    }
+    /// §66: an index read copies the array before evaluating its index only
+    /// when the index expression can change the array — and then exactly once.
+    #[test]
+    fn index_read_copies_the_array_only_when_its_index_can_change_it() {
+        let array_slots = |body: &str| {
+            let src = format!(
+                "fnc: t64 idx(a.copy: [3: t64]) {{ a:[1] += 50\n return 1 }}\n\
+                 fnc: t64 pick(a: [3: t64]) {{ return 1 }}\n\
+                 arr: [3: t64] = [0, 10, 20]\n{body}"
+            );
+            let ir = lowered(&src);
+            function(&ir, "main").blocks.iter().flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, IrInst::Alloca { size: 24, .. }))
+                .count()
+        };
+        let call_first = array_slots("i: t64 = idx(arr.copy)\nprint(arr:[i])\n");
+        let call_in_index = array_slots("print(arr:[idx(arr.copy)])\n");
+        assert_eq!(call_in_index, call_first + 1, "one copy of the array, taken before the index");
+
+        let by_value_first = array_slots("i: t64 = pick(arr)\nprint(arr:[i])\n");
+        let by_value_in_index = array_slots("print(arr:[pick(arr)])\n");
+        assert_eq!(by_value_in_index, by_value_first, "a call that cannot change the array costs no copy");
     }
 }
