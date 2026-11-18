@@ -1926,7 +1926,6 @@ fn lower_stmt_inner(
                     Ok(Some(current))
                 }
                 SemanticLValue::DotAccess { binding, container, field, ty, struct_name } => {
-                    let lowered = lower_expr(expr, ctx, &mut current)?;
                     let (field_ptr, field_ir_ty) = resolve_field_ptr(
                         binding, container, field, struct_name, ty, ctx, &mut current,
                     )?;

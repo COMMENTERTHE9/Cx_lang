@@ -1,0 +1,9 @@
+calls: t64 = 0
+fnc: t64 next() { calls += 1; return calls }
+struct Cell { value: t64 }
+let cell
+cell = Cell { value: 0 }
+cell.value = next()
+assert_eq(calls, 1)
+assert_eq(cell.value, 1)
+print("rhs-once")

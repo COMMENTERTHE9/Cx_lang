@@ -4094,3 +4094,35 @@ array elements and indices. Both builds passed: 314 default / 493 JIT tests,
 682 prior fixtures/examples recovered 15 former SKIPs, kept all 612 previously
 supported native outputs/exits, and left 55 unsupported; no disagreements or
 timeouts. Standard JIT clippy passed with the existing 111 warnings.
+
+## 52. A field assignment evaluated its right-hand side twice in compiled code
+
+*(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
+this entry. The same one-line fix and its fixture were first written in PR #476,
+which also carries unrelated string work that has not landed — see §55.)*
+
+`p.x = next()` ran `next()` twice on the JIT and once on the interpreter. Both
+exited 0. The second call's result was the one stored, so a right-hand side with
+a side effect printed twice, counted twice, and left the field holding the wrong
+value:
+
+```cx
+calls: t64 = 0
+fnc: t64 next() { calls += 1; return calls * 10 }
+p.x = next()
+print(p.x)     // interpreter 10, JIT 20
+print(calls)   // interpreter 1,  JIT 2
+```
+
+`lower_stmt_inner`'s `Assign` arm lowers the right-hand side once, before it
+looks at the target, and the `DotAccess` arm then lowered it again into a
+variable of the same name. The binding and index arms used the first value; only
+a field target used the second. The aggregate copy path (`h.row = make()`) went
+through the same arm and doubled as well.
+
+Fixed by removing the second lowering. Fixtures: `t_field_assignment_rhs_once`
+(from PR #476, unchanged) and `t_field_assign_rhs_once_shapes`, which covers a
+scalar field, an array field, a struct-valued field and a method-call right-hand
+side, each printing from inside the call so a second evaluation is visible in
+the output as well as in the count. On the unfixed JIT that fixture prints 19
+lines where the interpreter prints 15.
