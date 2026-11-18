@@ -4950,3 +4950,41 @@ text "top-level Return". The cost §66 names is real: the review measured
 reading `g.items:[g.here()]` from a 3000-element array field in a 20,000-pass
 loop at 0.35 s before and 1.8 s after on the JIT.
 
+**Addendum to §68, from the review of its fixes (2026-11-18).**
+
+*(d) was incomplete.* The first fix covered a left operand that is a variable.
+A field, an array element, or an `if`/`when` value yielding a variable is the
+thing itself in compiled code as well, and was still read after the right
+operand:
+
+```cx
+r1: V = w.inner + bumpw(w.copy)              // submain 2 / 2;   was 2 / 102
+r2: V = ps:[0] + bumpa(ps.copy)              // submain 2 / 2;   was 2 / 102
+print((when 2 { 1 => p, _ => p }) < (p + p.grow()))
+                                             // true / true on every build until
+                                             // (d)'s first fix made it true / false
+```
+
+The first two were regressions from §58 that (d) did not reach; the third was
+new with (d)'s first fix. The copy is now taken for any left operand that is
+not already a fresh value, whenever the right operand contains a call — not
+"whenever the right operand can change the left", which cannot always be read
+off the expression. `a + b` on two names still copies nothing. On the review's
+operator fuzzer, 2000 programs with field and element operands: 191 silent
+divergences and 4 exit mismatches before, none after; 2000 with named operands:
+1 before, none after. Fixture `t_operator_left_operand_is_a_place`.
+
+*§69's opening line is wrong for these.* It says every case there was present
+on `submain`. The disagreements about a variable's value afterwards were; the
+operator results above agreed on `submain` and did not for a while here.
+
+*The index scan was broader than it needed to be.* A number, bool, string or
+enum passed to a method is a value, not an alias, so an index that passes one
+no longer causes a copy of the array (the review measured the unnecessary copy
+at 0.13 s → 0.30 s on a 3000-element array).
+
+*`cx_eval_order.md` said* that with the same variable passed as two aliases
+compiled code reads an indexed element after the call. The review could not
+observe that — the element read agrees; what differs is the variable
+afterwards (§69d) — and the sentence is removed.
+

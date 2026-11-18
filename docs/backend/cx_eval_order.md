@@ -199,10 +199,6 @@ itself, so no copy is taken at any level, whatever `I` does. A compound
 assignment resolves its place — which includes evaluating its indexes — before
 it reads, as the section above says, so it reads the element as they left it.
 
-**Where it does not hold yet** (known-issues §69): when the same variable is
-passed to a method as two aliases at once, compiled code reads the element
-after the call.
-
 Fixtures: `t_index_read_takes_array_before_index`,
 `t_index_read_array_changed_through_alias`,
 `t_index_store_through_changed_array`.
@@ -236,11 +232,13 @@ each predates this section except the first:
 
 - *An operator is not a method call.* `a + b` on a type with a user `+` runs
   that type's method, but its left operand is an operand: it is read before the
-  right one is evaluated, as the table above says for every `A + B`. Both
-  backends do this (fixture `t_operator_left_operand_before_right`). What they
-  do not agree on is what the left operand's *variable* holds afterwards when
-  the right operand changed it — whether an operator's operands are values or
-  aliases has not been decided.
+  right one is evaluated, as the table above says for every `A + B` — whether
+  the left operand is a variable, a field, an element, or an `if`/`when` value
+  yielding one. Both backends do this (fixtures
+  `t_operator_left_operand_before_right`, `t_operator_left_operand_is_a_place`).
+  What they do not agree on is what the left operand's *variable* holds
+  afterwards when the right operand changed it — whether an operator's operands
+  are values or aliases has not been decided.
 - *A further alias that is a number, bool or string* is passed by value from
   its position in the argument list on both backends. They disagree about the
   variable afterwards: the interpreter writes the alias back, compiled code

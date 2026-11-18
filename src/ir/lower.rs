@@ -6116,16 +6116,26 @@ fn lower_array_lit(
     })
 }
 
-/// The left operand of a dispatched operator, when the right operand can
-/// change it: `a + f(a.copy)` on a type with a user `+`.
+/// The left operand of a dispatched operator, taken before the right operand
+/// is evaluated: `a + f(a.copy)`, `w.inner + g(w.copy)`, `ps:[0] + h(ps.copy)`
+/// on a type with a user `+`.
 ///
 /// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
-/// method takes its receiver by address, so handing it `a` itself would let it
-/// see what evaluating B did to `a`. Instead `a` is copied before the
-/// arguments are lowered and the method is given the copy. Returns the
-/// expression that names the copy, or `None` when no copy is needed — an
-/// ordinary method call, an expression receiver, or a right operand that
-/// cannot change the variable — and the call is lowered exactly as before.
+/// method takes its receiver by address, and a left operand that is a
+/// variable, a field, an element, or an `if`/`when` value yielding one of
+/// those lowers to the address of the thing itself — so the method would see
+/// whatever evaluating B did to it. When B calls anything at all, the left
+/// operand is copied first and the method is given the copy.
+///
+/// The test is "B contains a call", not "B can change A". Which variable a
+/// left operand ends up naming is not always readable from the expression
+/// (an `if` value), and a call can change a variable through a chain of
+/// aliases this function cannot follow; a call is the one thing every such
+/// case has. `a + b` on two names copies nothing.
+///
+/// Returns the expression that names the copy, or `None` when none is needed
+/// — a written method call, a right operand without a call, or a left operand
+/// that is already a fresh value — and the call is lowered exactly as before.
 #[allow(clippy::too_many_arguments)]
 fn operator_operand_copy(
     operator: bool,
@@ -6137,20 +6147,25 @@ fn operator_operand_copy(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<Option<SemanticExpr>, LoweringError> {
-    if !operator || receiver_expr.is_some() || !args_may_write(args, instance_binding) {
+    if !operator || !args_may_write(args, Scan::AnyCall) {
         return Ok(None);
     }
     let ty = SemanticType::Struct(struct_name.to_string());
+    let operand = match receiver_expr {
+        // The result of a call or a literal is a value nothing else names.
+        Some(rx) if matches!(
+            rx.kind,
+            SemanticExprKind::Call { .. } | SemanticExprKind::MethodCall { .. } | SemanticExprKind::StructInstance { .. }
+        ) => return Ok(None),
+        Some(rx) => (**rx).clone(),
+        None => SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
+    };
     let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
         LoweringError::UnsupportedSemanticConstruct {
-            construct: format!("an operator whose right operand changes its left operand, for a left operand ({struct_name}) compiled code cannot copy"),
+            construct: format!("an operator whose right operand makes a call, for a left operand ({struct_name}) compiled code cannot copy"),
         }
     })?;
-    let original = lower_expr(
-        &SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
-        ctx,
-        active,
-    )?;
+    let original = lower_expr(&operand, ctx, active)?;
     ensure_type_match("operator left operand", IrType::Ptr, original.ty)?;
     let copy = ctx.fresh_value();
     active.emit(IrInst::Alloca { dst: copy, size, align })?;
@@ -6170,6 +6185,37 @@ fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
     }
 }
 
+/// What a walk over an expression is looking for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    /// Anything that may change this variable.
+    Writes(BindingId),
+    /// Any call at all — a function or a method, whatever it is given.
+    AnyCall,
+}
+
+impl Scan {
+    fn names(self, binding: BindingId) -> bool {
+        self == Scan::Writes(binding)
+    }
+}
+
+/// Whether a value of this type is handed to a method as a value. Everything
+/// that is not known to be is treated as a possible reference.
+fn passed_by_value(ty: &SemanticType) -> bool {
+    ty.int_width().is_some()
+        || matches!(
+            ty,
+            SemanticType::Numeric
+                | SemanticType::F64
+                | SemanticType::Bool
+                | SemanticType::Char
+                | SemanticType::Str
+                | SemanticType::StrRef
+                | SemanticType::Enum(_)
+        )
+}
+
 /// Whether evaluating `expr` may change the variable `scan`. Three things can:
 /// passing it as `.copy` (copy-out writes it back when the call returns);
 /// calling a method on it (the receiver is an alias, so the method may change
@@ -6181,7 +6227,7 @@ fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
 ///
 /// Looks through every nested expression and statement, so an `if`/`when`
 /// value is not a blind spot.
-fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
+fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     match &expr.kind {
         SemanticExprKind::Value(_)
@@ -6200,18 +6246,21 @@ fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
         SemanticExprKind::Index { target, index, .. } => any(target) || any(index),
         SemanticExprKind::ArrayLit { elements } => elements.iter().any(any),
         SemanticExprKind::StructInstance { fields, .. } => fields.iter().any(|(_, e)| any(e)),
-        SemanticExprKind::Call { args, .. } => args_may_write(args, scan),
+        SemanticExprKind::Call { args, .. } => scan == Scan::AnyCall || args_may_write(args, scan),
         SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
             let on_it = match receiver_expr {
                 // An expression receiver that is a place in the variable is
                 // passed by address, exactly as a named one is.
-                Some(receiver) => root_binding(receiver) == Some(scan) || any(receiver),
-                None => *instance_binding == scan,
+                Some(receiver) => root_binding(receiver).is_some_and(|b| scan.names(b)) || any(receiver),
+                None => scan.names(*instance_binding),
             };
+            // Only a struct or an array is passed by reference; a number,
+            // bool, string or enum argument is a value wherever it came from.
             let as_alias = args.iter().any(|arg| {
-                matches!(arg, SemanticCallArg::Expr(e) if root_binding(e) == Some(scan))
+                matches!(arg, SemanticCallArg::Expr(e)
+                    if !passed_by_value(&e.ty) && root_binding(e).is_some_and(|b| scan.names(b)))
             });
-            on_it || as_alias || args_may_write(args, scan)
+            scan == Scan::AnyCall || on_it || as_alias || args_may_write(args, scan)
         }
         SemanticExprKind::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
         SemanticExprKind::If { condition, then_body, else_body, .. } => {
@@ -6220,29 +6269,29 @@ fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
     }
 }
 
-fn args_may_write(args: &[SemanticCallArg], scan: BindingId) -> bool {
+fn args_may_write(args: &[SemanticCallArg], scan: Scan) -> bool {
     args.iter().any(|arg| match arg {
         SemanticCallArg::Expr(e) => expr_may_write(e, scan),
-        SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => *binding == scan,
-        SemanticCallArg::CopyInto(bindings) => bindings.iter().any(|b| b.binding == scan),
+        SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => scan.names(*binding),
+        SemanticCallArg::CopyInto(bindings) => bindings.iter().any(|b| scan.names(b.binding)),
     })
 }
 
-fn arms_may_write(arms: &[SemanticWhenArm], scan: BindingId) -> bool {
+fn arms_may_write(arms: &[SemanticWhenArm], scan: Scan) -> bool {
     arms.iter().any(|arm| {
         arm.guard.as_ref().is_some_and(|g| expr_may_write(g, scan)) || stmts_may_write(&arm.body, scan)
     })
 }
 
-fn stmts_may_write(stmts: &[SemanticStmt], scan: BindingId) -> bool {
+fn stmts_may_write(stmts: &[SemanticStmt], scan: Scan) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     // An assignment to the variable itself is the plainest write there is.
     let target_may = |target: &SemanticLValue| match target {
         SemanticLValue::Index { target, index, .. } => {
-            root_binding(target) == Some(scan) || any(target) || any(index)
+            root_binding(target).is_some_and(|b| scan.names(b)) || any(target) || any(index)
         }
-        SemanticLValue::Binding { binding, .. } => *binding == scan,
-        SemanticLValue::DotAccess { binding, .. } => *binding == Some(scan),
+        SemanticLValue::Binding { binding, .. } => scan.names(*binding),
+        SemanticLValue::DotAccess { binding, .. } => binding.is_some_and(|b| scan.names(b)),
     };
     stmts.iter().any(|stmt| match stmt {
         SemanticStmt::Assign { target, expr, .. } => target_may(target) || any(expr),
@@ -6415,7 +6464,7 @@ fn lower_index(
     // Only for a read. On the way to a store the array is a place, and a copy
     // here would receive the store instead of the array (known-issues §68).
     let base = match root_binding(target) {
-        Some(root) if index_use == IndexUse::Read && expr_may_write(index, root) => {
+        Some(root) if index_use == IndexUse::Read && expr_may_write(index, Scan::Writes(root)) => {
             let (size, align, parts) = ret_slot_plan(&target.ty, &ctx.struct_table).ok_or_else(|| {
                 LoweringError::UnsupportedSemanticConstruct {
                     construct: "an index whose index expression changes the indexed array, for an array compiled code cannot copy".to_string(),
