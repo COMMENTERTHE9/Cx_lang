@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+assert(make()) is not an assertion about anything; compiled code refuses it.

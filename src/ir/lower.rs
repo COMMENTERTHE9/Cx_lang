@@ -846,6 +846,32 @@ impl StaticData {
     }
 }
 
+/// One use of a Result that depends on what its payload word holds, to be
+/// decided once the function's whole value graph exists.
+struct ResultCheck {
+    value: ValueId,
+    /// The payload kind the use assumes. `Unknown` means "no Ok payload at
+    /// all": the use treats the value as an Err.
+    expected: SemanticType,
+    context: String,
+    /// What to do when the graph cannot say what the value holds.
+    unproven: Unproven,
+}
+
+/// A proven mismatch is always refused. This is about the other case: the
+/// proof reaches a value it knows nothing about.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unproven {
+    /// Go by the declared type, as compiled code did before payload kinds
+    /// were tracked. For a use that existed then and took the declared type
+    /// on trust: crossing a typed boundary, printing, `?`.
+    TrustDeclaredType,
+    /// Refuse. For a use that reads the payload in a way nothing did before
+    /// (comparing two Results by content), and for any use that assumes the
+    /// value is an Err because its type names no payload.
+    Refuse,
+}
+
 struct LoweringCtx {
     builder: IrBuilder,
     /// The module's read-only data, shared by every function's context.
@@ -862,7 +888,10 @@ struct LoweringCtx {
     result_types: HashMap<ValueId, SemanticType>,
     /// Payload checks involving a phi wait until all backedges exist. Unknown
     /// here means a proven Err, rather than an arbitrary opaque Result.
-    result_checks: Vec<(ValueId, SemanticType, String)>,
+    result_checks: Vec<ResultCheck>,
+    /// How many operator left operands have been copied in this function
+    /// (`operator_operand_copy`); each copy gets a binding of its own.
+    operand_copies: u32,
     /// The current function's `.copy` parameters, for a return that does not go
     /// through `finish_return`: `?` on an `Err` leaves from inside an
     /// expression, where no `FunctionLoweringSpec` is in reach.
@@ -983,6 +1012,7 @@ impl LoweringCtx {
             static_data: Default::default(),
             result_types: HashMap::new(),
             result_checks: Vec::new(),
+            operand_copies: 0,
             early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
@@ -1677,6 +1707,11 @@ fn lower_semantic_function(
                     read_only: false,
                 });
                 bindings.insert(param.binding, LoweredValue { value, ty });
+                // A parameter declared `Result<T>` holds a T payload: every
+                // call site's argument is checked against this declaration.
+                if let Some(pty) = &param.ty {
+                    if known_result_type(pty) { ctx.result_types.insert(value, pty.clone()); }
+                }
                 // The exemption is read off the parameter, never off its index.
                 if !param.is_receiver {
                     if let Some(pty) = &param.ty {
@@ -1704,6 +1739,7 @@ fn lower_semantic_function(
                 ir_params.push(IrParam { name: param.name.clone(), ty: ty.clone() });
                 let value = ctx.fresh_value();
                 block_params.push(BlockParam { value, ty: ty.clone(), read_only: false });
+                if known_result_type(&sem_ty) { ctx.result_types.insert(value, sem_ty.clone()); }
                 bindings.insert(param.binding, LoweredValue { value, ty });
             }
             (crate::frontend::semantic_types::SemanticParamKind::Typed, None) => {
@@ -1784,6 +1820,8 @@ fn lower_semantic_function(
                 let ty = lower_type(&sem_ty)?;
                 let local = ctx.fresh_value();
                 entry.emit(IrInst::Load { dst: local, ptr: slot, ty: ty.clone() })?;
+                // A `.copy` parameter declared `Result<T>`: as for a plain one.
+                if known_result_type(&sem_ty) { ctx.result_types.insert(local, sem_ty.clone()); }
                 entry.bindings.insert(binding, LoweredValue { value: local, ty });
                 copy_writebacks.push((slot, binding, sem_ty));
             }
@@ -2004,7 +2042,7 @@ fn lower_stmt_inner(
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
                     let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
                     let dst = ctx.fresh_value();
-                    remember_result(dst, &LoweredValue { value: src_value, ty: target_ty.clone() }, expr, ctx);
+                    remember_result(dst, &LoweredValue { value: src_value, ty: target_ty.clone() }, ty, expr, ctx);
                     current.emit(IrInst::SsaBind {
                         dst,
                         ty: target_ty.clone(),
@@ -2106,7 +2144,7 @@ fn lower_stmt_inner(
                 return Ok(Some(current));
             }
             let dst = ctx.fresh_value();
-            remember_result(dst, &LoweredValue { value: src_value, ty: bind_ty.clone() }, expr, ctx);
+            remember_result(dst, &LoweredValue { value: src_value, ty: bind_ty.clone() }, ty, expr, ctx);
             current.emit(IrInst::SsaBind {
                 dst,
                 ty: bind_ty.clone(),
@@ -2168,11 +2206,13 @@ fn lower_stmt_inner(
             // lower_void_call so the receiver lowers through the existing
             // VarRef→Ptr path. Mirrors the Call arm above; same fall-through
             // to lower_expr for non-void.
-            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, .. } = &expr.kind {
+            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, .. } = &expr.kind {
                 // Same receiver choice as the value-position arm above.
-                let recv_arg = SemanticCallArg::Expr(match receiver_expr {
-                    Some(rx) => (**rx).clone(),
-                    None => SemanticExpr {
+                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, &mut current)?;
+                let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
+                    (_, Some(copy)) => copy.clone(),
+                    (Some(rx), None) => (**rx).clone(),
+                    (None, None) => SemanticExpr {
                         ty: SemanticType::Struct(struct_name.clone()),
                         kind: SemanticExprKind::VarRef {
                             binding: *instance_binding,
@@ -2188,8 +2228,12 @@ fn lower_stmt_inner(
                     .map(|s| (s.return_ty.clone(), s.param_types.clone()));
                 if let Some((None, param_types)) = sig_info {
                     lower_void_call(&callee, &full_args, &param_types, ctx, &mut current)?;
+                    drop_operand_copy(&operand, &mut current);
                     return Ok(Some(current));
                 }
+                // Not a void call: the value-position arm lowers it, and
+                // takes its own copy there.
+                drop_operand_copy(&operand, &mut current);
             }
             let _ = lower_expr(expr, ctx, &mut current)?;
             Ok(Some(current))
@@ -2538,7 +2582,7 @@ fn lower_stmt_inner(
                 return Ok(Some(current));
             }
             let dst = ctx.fresh_value();
-            remember_result(dst, &LoweredValue { value: bind_value, ty: bind_ty.clone() }, value, ctx);
+            remember_result(dst, &LoweredValue { value: bind_value, ty: bind_ty.clone() }, ty, value, ctx);
             current.emit(IrInst::SsaBind {
                 dst,
                 ty: bind_ty.clone(),
@@ -3203,26 +3247,67 @@ fn try_fold_len(
         },
     };
     // The length is known without the operand, but evaluating the operand can
-    // still do something: call a function, trap on an index. A name, a field
-    // or a literal can do neither, and lowering one here would only bring its
-    // restrictions along (a top-level array read inside a function is refused)
-    // for a value nothing uses.
-    if !len_operand_is_inert(arg) {
-        let _ = lower_expr(arg, ctx, active)?;
-    }
+    // still do something: call a function, trap on an index, stop at a
+    // variable that was never given a value.
+    lower_len_operand(arg, ctx, active)?;
     let dst = ctx.fresh_value();
     active.emit(IrInst::ConstInt { dst, ty: IrType::I64, value: n })?;
     Ok(Some(LoweredValue { value: dst, ty: IrType::I64 }))
 }
 
-/// Whether evaluating `expr` can be skipped without anyone noticing: it calls
-/// nothing and cannot trap. Only what `len` is commonly given — a literal, a
-/// name, a field of a name.
-fn len_operand_is_inert(expr: &SemanticExpr) -> bool {
+/// Evaluate a `len` operand for what evaluating it DOES, without reading the
+/// array whose length is already known.
+///
+/// - A call runs; anything this function does not take apart is lowered in
+///   full.
+/// - An element `a:[i]` evaluates `a` the same way, then `i`, and checks `i`
+///   against `a`'s length. The element is not read — so `len(grid:[0])` works
+///   inside a function for a top-level `grid`, which compiled code cannot yet
+///   read from there and has no need to.
+/// - A name, or a field of one, runs nothing. It must have been given a value
+///   by now: the interpreter stops at a variable that was declared and never
+///   assigned, and a folded length must not paper over that.
+fn lower_len_operand(expr: &SemanticExpr, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    let require_assigned = |binding: &BindingId, name: &str, ctx: &LoweringCtx, active: &ActiveBlock| {
+        // Module storage and top-level variables seen from a function are
+        // assigned where they are declared.
+        if ctx.module_bindings.contains_key(binding) || ctx.top_level_bindings.contains(binding) || active.bindings.contains_key(binding) {
+            return Ok(());
+        }
+        Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("`len` of '{name}', which has not been given a value on every path to here"),
+        })
+    };
     match &expr.kind {
-        SemanticExprKind::Value(_) | SemanticExprKind::VarRef { .. } | SemanticExprKind::DotAccess { .. } => true,
-        SemanticExprKind::ArrayLit { elements, .. } => elements.iter().all(len_operand_is_inert),
-        _ => false,
+        SemanticExprKind::Value(_) => Ok(()),
+        SemanticExprKind::VarRef { binding, name } => require_assigned(binding, name, ctx, active),
+        SemanticExprKind::DotAccess { binding: Some(binding), container, .. } => require_assigned(binding, container, ctx, active),
+        SemanticExprKind::Index { target, index, .. } => {
+            let SemanticType::Array(count, _) = &target.ty else {
+                lower_expr(expr, ctx, active)?;
+                return Ok(());
+            };
+            lower_len_operand(target, ctx, active)?;
+            let idx = lower_expr(index, ctx, active)?;
+            let idx_i64 = if idx.ty == IrType::I64 {
+                idx.value
+            } else {
+                let cast = ctx.fresh_value();
+                active.emit(IrInst::Cast { dst: cast, from: idx.ty.clone(), to: IrType::I64, value: idx.value })?;
+                cast
+            };
+            emit_bounds_check(idx_i64, *count, ctx, active)
+        }
+        SemanticExprKind::ArrayLit { elements } => {
+            for element in elements {
+                lower_len_operand(element, ctx, active)?;
+            }
+            Ok(())
+        }
+        _ => {
+            lower_expr(expr, ctx, active)?;
+            Ok(())
+        }
     }
 }
 
@@ -3551,6 +3636,12 @@ fn lower_expr_inner(
         // All other operator tokens are rejected at this stage; they either
         // do not exist in the current grammar or have no unary meaning.
         SemanticExprKind::Unary { op, expr, .. } => {
+    // `-r` on a Result is a runtime error on the interpreter. Lowered, it was
+    // an arithmetic negation of the packed word, whose result then passed for
+    // a Result and crashed whatever read it.
+    if matches!(expr.ty, SemanticType::Result(_)) {
+        unsupported!("a unary operator on a Result value has no reference implementation");
+    }
     let lowered = lower_expr(expr, ctx, active)?;
     match op {
         Op::Minus => {
@@ -3607,9 +3698,9 @@ fn lower_expr_inner(
             lower_array_lit(elements, &expr.ty, ctx, active)
         }
         SemanticExprKind::Index { target, index, .. } => {
-            lower_index(target, index, &expr.ty, ctx, active)
+            lower_index(target, index, &expr.ty, IndexUse::Read, ctx, active)
         }
-        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, pos: _ } => {
+        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, pos: _ } => {
             // Synthesize an equivalent Call and recurse into the existing Call
             // arm (which has the proven signature_table lookup, void-in-value-
             // position rejection, arity check, per-arg ensure_type_match, and
@@ -3622,9 +3713,11 @@ fn lower_expr_inner(
             // synthesizes the `VarRef` it always did. Either way the receiver
             // occupies argument 0 and is evaluated there, so no evaluation
             // order changes and no new lowering machinery is involved.
-            let recv_arg = SemanticCallArg::Expr(match receiver_expr {
-                Some(rx) => (**rx).clone(),
-                None => SemanticExpr {
+            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, active)?;
+            let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
+                (_, Some(copy)) => copy.clone(),
+                (Some(rx), None) => (**rx).clone(),
+                (None, None) => SemanticExpr {
                     ty: SemanticType::Struct(struct_name.clone()),
                     kind: SemanticExprKind::VarRef {
                         binding: *instance_binding,
@@ -3647,7 +3740,9 @@ fn lower_expr_inner(
                     type_args: Vec::new(),
                 },
             };
-            lower_expr(&synthetic, ctx, active)
+            let result = lower_expr(&synthetic, ctx, active);
+            drop_operand_copy(&operand, active);
+            result
         }
         // Struct literal lowering strategy
         //
@@ -3977,12 +4072,39 @@ fn storage_shape(expected: &SemanticType, actual: &SemanticType) -> bool {
         (SemanticType::I64, SemanticType::Numeric) => true,
         (SemanticType::Numeric, SemanticType::I64) => true,
         (SemanticType::Array(n, a), SemanticType::Array(m, b)) => n == m && storage_shape(a, b),
-        (SemanticType::Result(a), SemanticType::Result(b)) => {
-            let numeric = |t: &SemanticType| t.int_width().is_some() || matches!(t, SemanticType::Numeric | SemanticType::F64);
-            a == b || (numeric(a) && numeric(b))
-        }
+        (SemanticType::Result(a), SemanticType::Result(b)) => payload_fits(a, b),
         _ => false,
     }
+}
+
+/// How many bits a whole-number payload kind needs; `None` for a kind that is
+/// not a whole number a Result can carry in compiled code.
+///
+/// `Numeric` is a number with no declared width — a literal, in practice.
+/// Analysis has already checked a literal against the type it is used at, so
+/// as a payload it needs no particular width (0); where it is the declared
+/// side, it is the default integer (64).
+fn int_payload_bits(ty: &SemanticType, declared: bool) -> Option<u32> {
+    match ty {
+        SemanticType::I8 => Some(8),
+        SemanticType::I16 => Some(16),
+        SemanticType::I32 => Some(32),
+        SemanticType::I64 => Some(64),
+        SemanticType::Numeric => Some(if declared { 64 } else { 0 }),
+        _ => None,
+    }
+}
+
+/// Whether a Result whose payload is `actual` may be used where `expected` is
+/// declared: the same kind, or a whole number at the same or a wider width.
+///
+/// Never narrower, and never a whole number as a float. `?` converts the
+/// payload word to the declared type, so reading `Ok(300)` as a `Result<t8>`
+/// gave 44 in compiled code where the interpreter, which does not convert,
+/// gives 300 (known-issues §70).
+fn payload_fits(expected: &SemanticType, actual: &SemanticType) -> bool {
+    expected == actual
+        || matches!((int_payload_bits(expected, true), int_payload_bits(actual, false)), (Some(e), Some(a)) if a <= e)
 }
 
 fn require_storage_shape(expected: &SemanticType, expr: &SemanticExpr, ctx: &LoweringCtx) -> Result<(), LoweringError> {
@@ -4000,8 +4122,17 @@ fn known_result_type(ty: &SemanticType) -> bool {
     matches!(ty, SemanticType::Result(inner) if !matches!(inner.as_ref(), SemanticType::Unknown | SemanticType::TypeParam(_)))
 }
 
-fn remember_result(dst: ValueId, source: &LoweredValue, expr: &SemanticExpr, ctx: &mut LoweringCtx) {
-    let ty = ctx.result_types.get(&source.value).cloned().or_else(|| known_result_type(&expr.ty).then(|| expr.ty.clone()));
+/// Record what a newly bound Result holds.
+///
+/// Past a typed boundary the declaration is the fact. The value was checked to
+/// fit it, and a variable declared `Result<t64>` may be given any i64 later;
+/// keeping the narrower kind of the value it happens to start with would let
+/// it then be read as a `Result<t8>`. An Err stays an Err: that fits every
+/// declaration and says more than any of them.
+fn remember_result(dst: ValueId, source: &LoweredValue, declared: &SemanticType, expr: &SemanticExpr, ctx: &mut LoweringCtx) {
+    let held = ctx.result_types.get(&source.value).cloned().or_else(|| known_result_type(&expr.ty).then(|| expr.ty.clone()));
+    let is_err = matches!(&held, Some(SemanticType::Result(inner)) if **inner == SemanticType::Unknown);
+    let ty = if known_result_type(declared) && !is_err { Some(declared.clone()) } else { held };
     if let Some(ty) = ty { ctx.result_types.insert(dst, ty); }
 }
 
@@ -4013,13 +4144,17 @@ fn ensure_result_value(context: &str, expected: &SemanticType, expr: &SemanticEx
     // Unknown is an opaque carrier; interpreting it at a typed boundary still
     // requires the payload proof below. It must not authorize a pointer cast.
     if **want == SemanticType::Unknown { return Ok(()); }
-    ctx.result_checks.push((value.value, *want.clone(), context.into()));
+    ctx.result_checks.push(ResultCheck {
+        value: value.value,
+        expected: *want.clone(),
+        context: context.into(),
+        unproven: Unproven::TrustDeclaredType,
+    });
     let actual = ctx.result_types.get(&value.value).or_else(|| known_result_type(&expr.ty).then_some(&expr.ty));
     let Some(SemanticType::Result(got)) = actual else {
         return Ok(());
     };
-    let numeric = |t: &SemanticType| t.int_width().is_some() || matches!(t, SemanticType::Numeric | SemanticType::F64);
-    if **got == SemanticType::Unknown || storage_shape(want, got) || (numeric(want) && numeric(got)) { return Ok(()); }
+    if **got == SemanticType::Unknown || storage_shape(want, got) || payload_fits(want, got) { return Ok(()); }
     ensure_enum_identity(context, want, got)?;
     Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("semantic identity in {context}: expected {}, got {}", crate::frontend::semantic::type_name(expected), crate::frontend::semantic::type_name(actual.unwrap())) })
 }
@@ -4035,8 +4170,14 @@ fn check_result_proofs(ctx: &LoweringCtx) -> Result<(), LoweringError> {
         match (a, b) {
             (Proof::Kind(SemanticType::Unknown), b) => b,
             (a, Proof::Kind(SemanticType::Unknown)) => a,
+            // Two whole numbers: the value may be either, so it needs as many
+            // bits as the one that needs more. Decided before the "same shape"
+            // arm below, which would let an unsized literal stand in for an
+            // i64 it was joined with.
+            (Proof::Kind(a), Proof::Kind(b)) if int_payload_bits(&a, false).is_some() && int_payload_bits(&b, false).is_some() => {
+                if int_payload_bits(&a, false) >= int_payload_bits(&b, false) { Proof::Kind(a) } else { Proof::Kind(b) }
+            }
             (Proof::Kind(a), Proof::Kind(b)) if storage_shape(&a, &b) && storage_shape(&b, &a) => Proof::Kind(a),
-            (Proof::Kind(a), Proof::Kind(b)) if numeric_result_kind(&a) && numeric_result_kind(&b) => Proof::Kind(SemanticType::I64),
             _ => Proof::Any,
         }
     }
@@ -4086,18 +4227,25 @@ fn check_result_proofs(ctx: &LoweringCtx) -> Result<(), LoweringError> {
         }
         if !changed { break; }
     }
-    for (value, expected, context) in &ctx.result_checks {
-        let Some(Proof::Kind(actual)) = facts.get(value) else {
-            return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context}: Result payload kind is not proven") });
-        };
-        if *actual != SemanticType::Unknown && !storage_shape(expected, actual) && !(numeric_result_kind(actual) && numeric_result_kind(expected)) {
-            return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context}: incompatible Result payload kind") });
+    for ResultCheck { value, expected, context, unproven } in &ctx.result_checks {
+        match facts.get(value) {
+            Some(Proof::Kind(actual)) => {
+                if *actual != SemanticType::Unknown && !storage_shape(expected, actual) && !payload_fits(expected, actual) {
+                    return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context}: incompatible Result payload kind") });
+                }
+            }
+            // The graph reaches something it knows nothing about — a value
+            // loaded from memory, a call whose result type names no payload.
+            _ => match unproven {
+                Unproven::Refuse => {
+                    return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context}: Result payload kind is not proven") });
+                }
+                Unproven::TrustDeclaredType => {}
+            },
         }
     }
     Ok(())
 }
-
-fn numeric_result_kind(ty: &SemanticType) -> bool { ty.int_width().is_some() || matches!(ty, SemanticType::Numeric | SemanticType::F64) }
 
 /// Recursively evaluate a compile-time-known string: a `str` literal, or a
 /// left-associative chain of `+` over known strings. Returns `None` for any
@@ -5037,6 +5185,58 @@ fn lower_when_stmt(
 /// lowering (stmt's fallthrough vs expr's value-merge) — only the judgment is
 /// shared, the mechanism stays local. Catchall is caller-handled (its control
 /// flow differs between the two forms) and never reaches here.
+/// Whether a literal `when` pattern is of a different kind from the scrutinee,
+/// going by the scrutinee's type. Only a definite mismatch answers yes: a
+/// scrutinee whose type is not known here is compared as it always was.
+fn when_literal_never_matches(value: &SemanticValue, scrutinee: &SemanticType) -> bool {
+    let whole_number = |ty: &SemanticType| ty.int_width().is_some() || *ty == SemanticType::Numeric;
+    let definite = !matches!(scrutinee, SemanticType::Unknown | SemanticType::TypeParam(_));
+    definite
+        && match value {
+            // A float scrutinee against a whole-number arm is left to the
+            // comparison below, as before.
+            SemanticValue::Num(_) => !(whole_number(scrutinee) || *scrutinee == SemanticType::F64),
+            SemanticValue::Float(_) => !(*scrutinee == SemanticType::F64 || whole_number(scrutinee)),
+            SemanticValue::Bool(_) => *scrutinee != SemanticType::Bool,
+            SemanticValue::Char(_) => *scrutinee != SemanticType::Char,
+            SemanticValue::Str(_) | SemanticValue::EnumVariant { .. } | SemanticValue::Unknown => false,
+        }
+}
+
+/// The same for an enum-variant pattern: it matches only a scrutinee of its
+/// own enum.
+fn when_variant_never_matches(enum_name: &str, scrutinee: &SemanticType) -> bool {
+    match scrutinee {
+        SemanticType::Unknown | SemanticType::TypeParam(_) => false,
+        SemanticType::Enum(name) => name != enum_name,
+        _ => true,
+    }
+}
+
+/// An arm that cannot match: fall through to the next arm, keeping the arm's
+/// body block reachable in shape (a branch on a constant false) so the control
+/// flow built around it is the same as for any other arm.
+fn emit_never_matching_arm(
+    body_id: crate::ir::types::BlockId,
+    incoming: &BindingMap,
+    mut current: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<ActiveBlock, LoweringError> {
+    let never = ctx.fresh_value();
+    current.emit(IrInst::ConstInt { dst: never, ty: IrType::Bool, value: 0 })?;
+    let next_block = ctx.start_block(vec![], incoming.clone());
+    let next_id = next_block.id();
+    current.terminate(IrTerminator::Branch {
+        cond: never,
+        then_block: body_id,
+        then_args: vec![],
+        else_block: next_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(current)?;
+    Ok(next_block)
+}
+
 fn emit_when_arm_match(
     pattern: &SemanticWhenPattern,
     scrutinee: &SemanticExpr,
@@ -5078,6 +5278,16 @@ fn emit_when_arm_match(
             })?;
             ctx.seal_block(current)?;
             Ok(next_block)
+        }
+        // A literal of one kind never matches a scrutinee of another: the
+        // number 1 is not `Color::Green`, though that is what Green's tag is,
+        // and it is not `true`. The interpreter compares them as unequal;
+        // comparing the bits would take the arm (known-issues §70).
+        SemanticWhenPattern::Literal(value) if when_literal_never_matches(value, &scrutinee.ty) => {
+            emit_never_matching_arm(body_id, incoming, current, ctx)
+        }
+        SemanticWhenPattern::EnumVariant { enum_name, .. } if when_variant_never_matches(enum_name, &scrutinee.ty) => {
+            emit_never_matching_arm(body_id, incoming, current, ctx)
         }
         SemanticWhenPattern::Literal(value) => {
             let pat_value = if scrutinee_val.ty == IrType::TBool {
@@ -6036,8 +6246,9 @@ fn resolve_array_element_ptr(
         ..compute_array_layout(&elem_ir_ty, count)
     };
 
-    // 2. Lower the array target to a base pointer.
-    let base = lower_expr(target, ctx, active)?;
+    // 2. Lower the array target to a base pointer. It is the place the store
+    // goes through, so a nested index in it is lowered as a place as well.
+    let base = lower_place_base(target, ctx, active)?;
     if base.ty != IrType::Ptr {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!(
@@ -6379,11 +6590,71 @@ fn lower_array_lit(
     })
 }
 
-/// Whether evaluating `expr` may change the variable `scan`: by passing it as
-/// `.copy` (copy-out writes it back when the call returns), or by calling a
-/// method on it (a method's receiver is the one alias the language has, so the
-/// method may change it). Looks through every nested expression and statement,
-/// so an `if`/`when` value is not a blind spot.
+/// The left operand of a dispatched operator, when the right operand can
+/// change it: `a + f(a.copy)` on a type with a user `+`.
+///
+/// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
+/// method takes its receiver by address, so handing it `a` itself would let it
+/// see what evaluating B did to `a`. Instead `a` is copied before the
+/// arguments are lowered and the method is given the copy. Returns the
+/// expression that names the copy, or `None` when no copy is needed — an
+/// ordinary method call, an expression receiver, or a right operand that
+/// cannot change the variable — and the call is lowered exactly as before.
+#[allow(clippy::too_many_arguments)]
+fn operator_operand_copy(
+    operator: bool,
+    receiver_expr: &Option<Box<SemanticExpr>>,
+    instance: &str,
+    instance_binding: BindingId,
+    struct_name: &str,
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<Option<SemanticExpr>, LoweringError> {
+    if !operator || receiver_expr.is_some() || !args_may_write(args, instance_binding) {
+        return Ok(None);
+    }
+    let ty = SemanticType::Struct(struct_name.to_string());
+    let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
+        LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("an operator whose right operand changes its left operand, for a left operand ({struct_name}) compiled code cannot copy"),
+        }
+    })?;
+    let original = lower_expr(
+        &SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
+        ctx,
+        active,
+    )?;
+    ensure_type_match("operator left operand", IrType::Ptr, original.ty)?;
+    let copy = ctx.fresh_value();
+    active.emit(IrInst::Alloca { dst: copy, size, align })?;
+    copy_parts(original.value, 0, copy, 0, &parts, ctx, active)?;
+    // The copy needs a name for the call's receiver argument to refer to. It
+    // gets a binding no source variable can have, for the length of the call.
+    ctx.operand_copies += 1;
+    let binding = BindingId(u32::MAX - ctx.operand_copies);
+    active.bindings.insert(binding, LoweredValue { value: copy, ty: IrType::Ptr });
+    Ok(Some(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name: instance.to_string() } }))
+}
+
+/// Forget the binding `operator_operand_copy` made, once its call is lowered.
+fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
+    if let Some(SemanticExpr { kind: SemanticExprKind::VarRef { binding, .. }, .. }) = operand {
+        active.bindings.remove(binding);
+    }
+}
+
+/// Whether evaluating `expr` may change the variable `scan`. Three things can:
+/// passing it as `.copy` (copy-out writes it back when the call returns);
+/// calling a method on it (the receiver is an alias, so the method may change
+/// it); and passing it to a method as an argument, because a further alias of a
+/// multi-alias `impl` is a leading argument and is an alias too. Which of a
+/// method's arguments are aliases depends on the `impl`, so any argument that
+/// names the variable counts — answering "may" for one that is in fact passed
+/// by value costs a copy and nothing else.
+///
+/// Looks through every nested expression and statement, so an `if`/`when`
+/// value is not a blind spot.
 fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     match &expr.kind {
@@ -6406,10 +6677,15 @@ fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
         SemanticExprKind::Call { args, .. } => args_may_write(args, scan),
         SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
             let on_it = match receiver_expr {
-                Some(receiver) => any(receiver),
+                // An expression receiver that is a place in the variable is
+                // passed by address, exactly as a named one is.
+                Some(receiver) => root_binding(receiver) == Some(scan) || any(receiver),
                 None => *instance_binding == scan,
             };
-            on_it || args_may_write(args, scan)
+            let as_alias = args.iter().any(|arg| {
+                matches!(arg, SemanticCallArg::Expr(e) if root_binding(e) == Some(scan))
+            });
+            on_it || as_alias || args_may_write(args, scan)
         }
         SemanticExprKind::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
         SemanticExprKind::If { condition, then_body, else_body, .. } => {
@@ -6434,9 +6710,13 @@ fn arms_may_write(arms: &[SemanticWhenArm], scan: BindingId) -> bool {
 
 fn stmts_may_write(stmts: &[SemanticStmt], scan: BindingId) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
+    // An assignment to the variable itself is the plainest write there is.
     let target_may = |target: &SemanticLValue| match target {
-        SemanticLValue::Index { target, index, .. } => any(target) || any(index),
-        SemanticLValue::Binding { .. } | SemanticLValue::DotAccess { .. } => false,
+        SemanticLValue::Index { target, index, .. } => {
+            root_binding(target) == Some(scan) || any(target) || any(index)
+        }
+        SemanticLValue::Binding { binding, .. } => *binding == scan,
+        SemanticLValue::DotAccess { binding, .. } => *binding == Some(scan),
     };
     stmts.iter().any(|stmt| match stmt {
         SemanticStmt::Assign { target, expr, .. } => target_may(target) || any(expr),
@@ -6507,10 +6787,36 @@ fn root_binding(expr: &SemanticExpr) -> Option<BindingId> {
 // The runtime-constant stride is folded into the multiply operand; a later
 // constant-folding pass may eliminate the ConstInt + Binary pair when the
 // index expression is itself a literal.
+/// What an index expression is being lowered for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IndexUse {
+    /// Its value is wanted: `x = a:[i]`, `a:[i]:[j]` on the right of anything.
+    Read,
+    /// It is on the way to a store: the `a:[i]` of `a:[i]:[j] = v`. The store
+    /// has to reach `a`'s own storage, so nothing here may be a copy.
+    Place,
+}
+
+/// The base a store goes through. An index in it is a place, at every level:
+/// in `a:[i]:[j]:[k] = v` both `a:[i]` and `a:[i]:[j]` are.
+fn lower_place_base(
+    expr: &SemanticExpr,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    match &expr.kind {
+        SemanticExprKind::Index { target, index, .. } => {
+            lower_index(target, index, &expr.ty, IndexUse::Place, ctx, active)
+        }
+        _ => lower_expr(expr, ctx, active),
+    }
+}
+
 fn lower_index(
     target: &SemanticExpr,
     index: &SemanticExpr,
     elem_sem_ty: &SemanticType,
+    index_use: IndexUse,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
@@ -6563,7 +6869,10 @@ fn lower_index(
     }
 
     // 1. Lower the array target to get the base pointer.
-    let base = lower_expr(target, ctx, active)?;
+    let base = match index_use {
+        IndexUse::Read => lower_expr(target, ctx, active)?,
+        IndexUse::Place => lower_place_base(target, ctx, active)?,
+    };
     if base.ty != IrType::Ptr {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!("Index target must lower to Ptr, got {:?}", base.ty),
@@ -6576,8 +6885,11 @@ fn lower_index(
     // the array — it is passed as `.copy` in there, or a method is called on
     // it. Then the element has to come from the array as it was, so read from
     // a copy taken now.
+    //
+    // Only for a read. On the way to a store the array is a place, and a copy
+    // here would receive the store instead of the array (known-issues §68).
     let base = match root_binding(target) {
-        Some(root) if expr_may_write(index, root) => {
+        Some(root) if index_use == IndexUse::Read && expr_may_write(index, root) => {
             let (size, align, parts) = ret_slot_plan(&target.ty, &ctx.struct_table).ok_or_else(|| {
                 LoweringError::UnsupportedSemanticConstruct {
                     construct: "an index whose index expression changes the indexed array, for an array compiled code cannot copy".to_string(),
@@ -7649,7 +7961,7 @@ fn lower_result_construct(
     }
     let payload_i64 = widen_payload_to_i64(&payload, ctx, active)?;
     let packed = result_pack(tag, payload_i64, ctx, active)?;
-    let inner = if tag == 1 { SemanticType::Unknown } else if actual == SemanticType::Numeric { SemanticType::I64 } else { actual };
+    let inner = if tag == 1 { SemanticType::Unknown } else { actual };
     ctx.result_types.insert(packed.value, SemanticType::Result(Box::new(inner)));
     Ok(packed)
 }
@@ -7710,7 +8022,9 @@ fn emit_ok_payload(
     if !matches!(ok_ty, SemanticType::Str) && ok_ty.int_width().is_none() && *ok_ty != SemanticType::Numeric {
         unsupported!("Result printing needs a proven integer or string payload");
     }
-    match lower_type(ok_ty)? {
+    // A number with no declared width is the payload word as it stands.
+    let payload_ir_ty = if *ok_ty == SemanticType::Numeric { IrType::I64 } else { lower_type(ok_ty)? };
+    match payload_ir_ty {
         IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
             active.emit(IrInst::Call {
                 dst: None,
@@ -7753,7 +8067,7 @@ fn lower_result_print(
     mut current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     let result = lower_expr(arg_expr, ctx, &mut current)?;
-    let payload_type = result_inner_type(arg_expr, &result, ctx).ok_or_else(|| LoweringError::UnsupportedSemanticConstruct { construct: "Result printing needs a proven payload kind".into() })?;
+    let payload_type = result_inner_type(arg_expr, &result, Unproven::TrustDeclaredType, ctx).ok_or_else(|| LoweringError::UnsupportedSemanticConstruct { construct: "Result printing needs a proven payload kind".into() })?;
     let ok_ty = &payload_type;
     let (tag, payload) = result_unpack(result.value, ctx, &mut current)?;
     let zero = ctx.fresh_value();
@@ -7881,6 +8195,11 @@ fn lower_assert_stmt(
         }
     };
 
+    // A Result is not a condition. The interpreter fails `assert(r)`; the
+    // packed word is never zero for an Err, so coercing it passed.
+    if matches!(cond_expr.ty, SemanticType::Result(_)) {
+        unsupported!("assert on a Result value has no reference implementation");
+    }
     let cond = lower_expr(cond_expr, ctx, &mut current)?;
 
     // Coerce the condition to Bool (IrType::Bool is the required Branch type).
@@ -7889,14 +8208,21 @@ fn lower_assert_stmt(
     emit_assert_branch(bool_val, ctx, current)
 }
 
-fn result_inner_type(expr: &SemanticExpr, value: &LoweredValue, ctx: &mut LoweringCtx) -> Option<SemanticType> {
+/// The payload kind a use of `value` should go by, and a check that it is so.
+///
+/// `unproven` says what the check does if the value graph cannot confirm a
+/// kind that was taken from a declared type. A kind of `Unknown` — the type
+/// names no payload, so the use will treat the value as an Err — is never
+/// taken on trust: nothing declared it.
+fn result_inner_type(expr: &SemanticExpr, value: &LoweredValue, unproven: Unproven, ctx: &mut LoweringCtx) -> Option<SemanticType> {
     if let Some(SemanticType::Result(inner)) = ctx.result_types.get(&value.value).or_else(|| known_result_type(&expr.ty).then_some(&expr.ty)) {
         let kind = *inner.clone();
-        ctx.result_checks.push((value.value, kind.clone(), "Result consumer".into()));
+        let unproven = if kind == SemanticType::Unknown { Unproven::Refuse } else { unproven };
+        ctx.result_checks.push(ResultCheck { value: value.value, expected: kind.clone(), context: "Result consumer".into(), unproven });
         return Some(kind);
     }
     if expr.ty == SemanticType::Result(Box::new(SemanticType::Unknown)) {
-        ctx.result_checks.push((value.value, SemanticType::Unknown, "opaque Result consumer".into()));
+        ctx.result_checks.push(ResultCheck { value: value.value, expected: SemanticType::Unknown, context: "opaque Result consumer".into(), unproven: Unproven::Refuse });
         return Some(SemanticType::Unknown);
     }
     None
@@ -8052,8 +8378,12 @@ fn lower_assert_eq_stmt(
             current.emit(IrInst::ConstInt { dst: failed, ty: IrType::Bool, value: 0 })?;
             return emit_assert_branch(failed, ctx, current);
         }
-        let left = result_inner_type(lhs_expr, &lhs, ctx);
-        let right = result_inner_type(rhs_expr, &rhs, ctx);
+        // Comparing by content reads each payload as what it is said to be —
+        // a string's address is dereferenced. Nothing did that before, so
+        // there is no earlier behaviour to fall back on: an unproven kind is
+        // refused.
+        let left = result_inner_type(lhs_expr, &lhs, Unproven::Refuse, ctx);
+        let right = result_inner_type(rhs_expr, &rhs, Unproven::Refuse, ctx);
         let eq = emit_result_equality(lhs.value, rhs.value, left.as_ref(), right.as_ref(), ctx, &mut current)?;
         return emit_assert_branch(eq.value, ctx, current);
     }
@@ -8072,12 +8402,14 @@ fn lower_assert_eq_stmt(
 
     // An enum value is equal only to a value of the same enum. Its tag is an I8
     // like any small number, so the comparison below would otherwise call a
-    // variant equal to whatever number its tag happens to be.
+    // variant equal to whatever number its tag happens to be. A handle is the
+    // same story: it is equal to a handle, never to the number its word is.
     match (&lhs_expr.ty, &rhs_expr.ty) {
         (SemanticType::Enum(a), SemanticType::Enum(b)) if a == b => {}
-        (SemanticType::Enum(_), other) | (other, SemanticType::Enum(_)) => {
+        (SemanticType::Handle(_), SemanticType::Handle(_)) => {}
+        (SemanticType::Enum(_) | SemanticType::Handle(_), other) | (other, SemanticType::Enum(_) | SemanticType::Handle(_)) => {
             if matches!(other, SemanticType::Unknown | SemanticType::TypeParam(_)) {
-                unsupported!("assert_eq of an enum against a value whose type is not known here");
+                unsupported!("assert_eq of an enum or a handle against a value whose type is not known here");
             }
             let failed = ctx.fresh_value();
             current.emit(IrInst::ConstInt { dst: failed, ty: IrType::Bool, value: 0 })?;
@@ -8338,6 +8670,10 @@ fn reload_call_copies(copy_reloads: CopyReloads, ctx: &mut LoweringCtx, active: 
                     ptr: slot,
                     ty: ty.clone(),
                 })?;
+                // What comes back from a `.copy` parameter declared `Result<T>`
+                // holds a T payload: the callee's writes to it were checked
+                // against that declaration.
+                if known_result_type(&sem_ty) { ctx.result_types.insert(reloaded, sem_ty.clone()); }
                 let value = LoweredValue { value: reloaded, ty };
                 if ctx.module_bindings.contains_key(&binding) { write_module_binding(binding, &value, &sem_ty, false, ctx, active)?; }
                 else { active.bindings.insert(binding, value); }
@@ -11680,6 +12016,7 @@ mod tests {
                     kind: SemanticExprKind::MethodCall {
                         instance: "obj".to_string(),
                         receiver_expr: None,
+                        operator: false,
                         method: "foo".to_string(),
                         args: vec![],
                         instance_binding: BindingId(u32::MAX),
@@ -13399,7 +13736,7 @@ mod module_state_tests {
     fn result_proofs_do_not_treat_arbitrary_i128_definitions_as_errors() {
         let mut ctx = LoweringCtx::new(HashMap::new(), HashMap::new(), HashMap::new(), false, TargetConfig::host(), HashMap::new());
         ctx.result_types.insert(ValueId(0), SemanticType::Result(Box::new(SemanticType::Unknown)));
-        ctx.result_checks.push((ValueId(3), SemanticType::Unknown, "opaque consumer".into()));
+        ctx.result_checks.push(ResultCheck { value: ValueId(3), expected: SemanticType::Unknown, context: "opaque consumer".into(), unproven: Unproven::Refuse });
         ctx.finished_blocks = vec![
             IrBlock { id: BlockId(0), params: vec![], insts: vec![
                 IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 0 },
@@ -13415,7 +13752,7 @@ mod module_state_tests {
     fn result_proofs_join_loop_backedges_before_authorizing_consumers() {
         let mut ctx = LoweringCtx::new(HashMap::new(), HashMap::new(), HashMap::new(), false, TargetConfig::host(), HashMap::new());
         ctx.result_types.insert(ValueId(0), SemanticType::Result(Box::new(SemanticType::Unknown)));
-        ctx.result_checks.push((ValueId(3), SemanticType::Unknown, "loop result".into()));
+        ctx.result_checks.push(ResultCheck { value: ValueId(3), expected: SemanticType::Unknown, context: "loop result".into(), unproven: Unproven::Refuse });
         ctx.finished_blocks = vec![
             IrBlock { id: BlockId(0), params: vec![], insts: vec![IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 0 }], term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(0)] } },
             IrBlock { id: BlockId(1), params: vec![BlockParam { value: ValueId(1), ty: IrType::I128, read_only: false }], insts: vec![IrInst::ConstInt { dst: ValueId(2), ty: IrType::Bool, value: 0 }], term: IrTerminator::Branch { cond: ValueId(2), then_block: BlockId(2), then_args: vec![], else_block: BlockId(3), else_args: vec![ValueId(1)] } },
@@ -13803,6 +14140,7 @@ mod divergence_shape_tests {
         let by_value_in_index = array_slots("print(arr:[pick(arr)])\n");
         assert_eq!(by_value_in_index, by_value_first, "a call that cannot change the array costs no copy");
     }
+
     fn string_objects(ir: &IrModule) -> (Vec<&IrData>, Vec<&IrData>) {
         ir.data.iter().partition(|d| d.relocs.is_empty())
     }
@@ -13955,5 +14293,114 @@ mod divergence_shape_tests {
         // 4000 lowerings x 60 strings x (bytes + descriptor) leaked was more
         // than 20 MB. Anything near that is the leak back.
         assert!(grown < 4096, "lowering grew resident memory by {grown} KB over 4000 runs");
+    }
+
+    /// §68: on the way to a store an index is a place. `rows:[h(rows.copy)]:[1]
+    /// = 5` must write `rows`, so no copy of `rows` is taken for it — a copy
+    /// would receive the store. The same index as a read does take one.
+    #[test]
+    fn a_store_through_a_nested_index_takes_no_copy_of_the_array() {
+        let row_slots = |body: &str| {
+            let src = format!(
+                "fnc: t64 h(r.copy: [2:[2:t64]]) {{ r:[0]:[0] += 1000\n return 1 }}\n\
+                 rows: [2:[2:t64]] = [[1, 2], [3, 4]]\n{body}"
+            );
+            let ir = lowered(&src);
+            function(&ir, "main").blocks.iter().flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, IrInst::Alloca { size: 32, .. }))
+                .count()
+        };
+        let call_first = row_slots("i: t64 = h(rows.copy)\nrows:[i]:[1] = 5\n");
+        assert_eq!(row_slots("rows:[h(rows.copy)]:[1] = 5\n"), call_first, "plain store");
+        assert_eq!(row_slots("rows:[h(rows.copy)]:[1] += 6\n"), call_first, "compound store");
+        assert_eq!(row_slots("print(rows:[h(rows.copy)]:[1])\n"), call_first + 1, "the read still copies");
+    }
+    /// §70: a Result is read at the payload type it was made with or a wider
+    /// whole number, never a narrower one — `?` would cut the number down.
+    #[test]
+    fn a_result_is_not_read_at_a_narrower_integer_type() {
+        for narrowing in [
+            "large: Result<t64> = Ok(300)\nnarrow: Result<t8> = large\nprint(narrow)\n",
+            "x: t64 = 300\nnarrow: Result<t8> = Ok(x)\nprint(narrow)\n",
+            "fnc: Result<t8> small(r: Result<t8>) { return r }\nlarge: Result<t64> = Ok(300)\nprint(small(large))\n",
+        ] {
+            let err = format!("{}", lowering_error(narrowing));
+            assert!(err.contains("Result"), "{narrowing}: {err}");
+        }
+        for fine in [
+            "small: Result<t8> = Ok(7)\nwide: Result<t64> = small\nprint(wide)\n",
+            "negative: Result<t8> = Ok(-3)\nprint(negative)\n",
+            "fnc: Result<t64> wide(r: Result<t64>) { return r }\nsmall: Result<t8> = Ok(7)\nprint(wide(small))\n",
+        ] {
+            let _ = lowered(fine);
+        }
+    }
+
+    /// §70: where the value graph cannot say what a Result holds — here a
+    /// parameter that a loop header re-binds before it is read — a use that
+    /// existed before payload kinds were tracked goes by the declared type.
+    #[test]
+    fn a_result_the_proof_cannot_follow_is_used_as_its_declared_type() {
+        let _ = lowered(
+            "fnc: Result<t64> run(p: Result<t64>, n: t64) {\n\
+                 i: t64 = 0\n\
+                 while (i < n) { i = i + 1 }\n\
+                 return p\n\
+             }\n\
+             fnc: Result<t64> cp(r.copy: Result<t64>) { return r }\n\
+             v: Result<t64> = Ok(1)\n\
+             print(run(Ok(1), 3))\n\
+             print(cp(v.copy))\n\
+             print(cp(v.copy))\n",
+        );
+    }
+
+    /// §70: comparing two Results by content dereferences a string payload,
+    /// which nothing did before — so there an unproven kind is refused.
+    #[test]
+    fn result_equality_on_a_kind_the_proof_cannot_follow_is_refused() {
+        let err = lowering_error(
+            "fnc: T <T> second(a: T, b: T) { print(1)\n return b }\n\
+             assert_eq(second(Err(\"x\"), Err(\"y\")), Err(\"y\"))\n",
+        );
+        assert!(format!("{err}").contains("not proven"), "{err}");
+    }
+
+    /// §62: `len` of a variable that was never given a value is not folded
+    /// into a length; the interpreter stops there.
+    #[test]
+    fn len_of_a_variable_never_assigned_is_refused() {
+        let err = lowering_error(
+            "fnc: t64 f(c: bool) {\n let a\n if c { a = [1, 2, 3] }\n return len(a)\n}\nprint(f(false))\n",
+        );
+        assert!(format!("{err}").contains("has not been given a value"), "{err}");
+    }
+
+    /// §62: `len` of an element checks the index and does not read the array.
+    #[test]
+    fn len_of_an_element_checks_its_index_without_reading_the_array() {
+        let ir = lowered(
+            "grid: [2:[3:t64]] = [[1, 2, 3], [4, 5, 6]]\n\
+             fnc: t64 width(i: t64) { return len(grid:[i]) }\n\
+             print(width(0))\n",
+        );
+        let width = function(&ir, "width");
+        assert_eq!(traps(width), 1, "the bounds check");
+        assert!(!width.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { .. } | IrInst::GlobalAddr { .. })));
+    }
+
+    /// §70: a `when` arm of another kind than the scrutinee cannot match, so
+    /// no comparison of the two is emitted for it.
+    #[test]
+    fn a_when_arm_of_another_kind_is_not_compared() {
+        let compares = |src: &str| {
+            let ir = lowered(src);
+            function(&ir, "main").blocks.iter().flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, IrInst::Compare { .. })).count()
+        };
+        let prelude = "enum Color { Red, Green }\nc: Color = Color::Green\n";
+        assert_eq!(compares(&format!("{prelude}print(when c {{ 1 => 1, _ => 2 }})\n")), 0, "a number arm on an enum");
+        assert_eq!(compares(&format!("{prelude}print(when c {{ Color::Green => 1, _ => 2 }})\n")), 1, "a variant arm on its enum");
+        assert_eq!(compares("b: bool = true\nprint(when b { 1 => 1, _ => 2 })\n"), 0, "a number arm on a bool");
     }
 }

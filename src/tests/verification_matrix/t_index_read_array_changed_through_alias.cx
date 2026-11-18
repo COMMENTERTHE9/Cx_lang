@@ -1,0 +1,32 @@
+// An index read takes the array before its index is evaluated — also when the
+// index passes the variable that holds the array to a method as a further
+// alias. A further alias is passed by reference, so the method can change the
+// array; the element read is the one from before, and the change stays.
+struct R { items: [3: t64] }
+ops: impl (a: R, b: R) {
+    fnc: t64 touch() {
+        b.items:[1] += 50
+        return 1
+    }
+}
+p: R = R { items: [0, 10, 20] }
+q: R = R { items: [0, 0, 0] }
+print(p.items:[q.touch(p)])
+print(p.items:[1])
+
+// The alias is the array itself.
+struct K { n: t64 }
+arr_ops: impl (a: K, b: [3: t64]) {
+    fnc: t64 bump() {
+        b:[1] += 50
+        return 1
+    }
+}
+fnc: t64 run() {
+    arr: [3: t64] = [0, 10, 20]
+    k: K = K { n: 0 }
+    print(arr:[k.bump(arr)])
+    print(arr:[1])
+    return 0
+}
+print(run())

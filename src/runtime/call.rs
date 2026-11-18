@@ -143,6 +143,7 @@ impl RunTime {
                             | (Value::Char(_), Value::Char(_))
                             | (Value::Str(..), Value::Str(..))
                             | (Value::EnumVariant(..), Value::EnumVariant(..))
+                            | (Value::Handle(_), Value::Handle(_))
                             | (Value::ResultOk(_), Value::ResultOk(_))
                             | (Value::ResultErr(_), Value::ResultErr(_))
                     );
@@ -316,6 +317,7 @@ impl RunTime {
         instance: &str,
         method: &str,
         args: &[SemanticCallArg],
+        operator: bool,
         pos: usize,
     ) -> Result<Value, RuntimeError> {
         let is_temporary = receiver.is_some();
@@ -381,12 +383,19 @@ impl RunTime {
         // called on it, or passing it as `.copy` — and this method must run on
         // what the variable holds now. The value read above (needed to find the
         // method) would hide that change from the method and then, at the
-        // write-back below, overwrite it (known-issues §64).
-        if !is_temporary {
+        // write-back below, overwrite it (known-issues §65).
+        //
+        // Not for a dispatched operator. Its receiver is the operator's left
+        // operand, and `A + B` evaluates A before B: the value read above,
+        // before the right operand was evaluated, is the one the method gets.
+        if !is_temporary && !operator {
             alias_vals[0].3 = self.get_var(instance, pos)?;
         }
-        // The same for each further alias that names a variable — the ones the
-        // write-back below writes to.
+        // The same for each further alias that names a variable and holds a
+        // struct or an array. Only those: a number, bool or string alias is
+        // passed by value from where it stands in the argument list — that is
+        // what compiled code does, and re-reading it here made the two
+        // backends disagree (known-issues §68).
         for i in 0..extra_alias_count {
             let name = match args.get(i) {
                 Some(SemanticCallArg::Expr(e)) => match &e.kind {
@@ -397,7 +406,9 @@ impl RunTime {
                 _ => None,
             };
             if let Some(name) = name {
-                alias_vals[i + 1].3 = self.get_var(name, pos)?;
+                if matches!(alias_vals[i + 1].3, Value::Struct(..) | Value::Array(_)) {
+                    alias_vals[i + 1].3 = self.get_var(name, pos)?;
+                }
             }
         }
 

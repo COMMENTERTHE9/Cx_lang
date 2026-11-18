@@ -4296,11 +4296,12 @@ preserve it.
   failed on the interpreter. It is now decided from the types: never equal.
 
 Fixtures and measurements are listed in `docs/backend/value_equality.md` §5.
-Four neighbouring questions are deliberately **not** decided by this change —
-top-level structs and arrays, three-state bools, an integer against a float, and
-a `Result` assigned to a `Result` of a narrower payload type — and are written
-down in §4 of that document. In each of them compiled code refuses, so none is a
-case of two answers.
+Neighbouring questions are deliberately **not** decided by this change —
+top-level structs and arrays, three-state bools, an integer against a float, an
+unknown number, and a `Result` assigned to a `Result` of a narrower payload type
+— and are written down in §4 of that document. In each of them compiled code
+refuses, so none is a case of two answers. (For the last one that became true
+only with §70: the first version compiled it, and `?` then gave two answers.)
 
 ## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
 
@@ -4707,7 +4708,7 @@ on that premise.
 | Regression | Status |
 |---|---|
 | unbounded memory and a 140× slowdown for string-binding loops | gone — no allocation is made |
-| `len(arr)` of a top-level array inside a function refused | gone — §62 |
+| `len(arr)` of a top-level array inside a function refused | gone — §62. The first fix covered a plain name only; `len(grid:[0])` stayed refused until §70 |
 | `?` in a bare `when` arm with a `.copy` parameter: interpreter 2, JIT 1 | gone — the interpreter leaked a scope; §59 |
 | a user function named `cx_str_copy`, `cx_value_copy` or `cx_str_identity_eq` refused | gone — those runtime symbols do not exist |
 | `Ok(<generic struct>)` refused | stays refused, on purpose — §60 |
@@ -4906,6 +4907,283 @@ values" for `t_try_early_return_exit_path`; it is eight differing lines. §59
 also says a guard that uses `?` has no compiled-code fixture; it has one now
 (§64). The commit for §61 states no gate numbers; they were 322 default / 501
 with `--features jit`, parity 613 / 52 / 0 over 665 fixtures.
+
+## 68. Regressions introduced by §65 and §66, found by their independent review
+
+*(2026-11-18. §65 and §66 were themselves fixes made in response to a review.
+A second independent review of those fixes found that two of them were wrong in
+ways the first had not been. Fixed by the commit that introduces this entry.)*
+
+**a. A store through a nested index was lost (§66) — blocking.** Both backends
+exit 0; the program was correct before §66 on both.
+
+```cx
+struct Grid { cells: [2:[2:t64]], at: t64 }
+gm: impl (s: Grid) {
+    fnc: t64 row() { return 1 }
+}
+g: Grid = Grid { cells: [[1, 2], [3, 4]], at: 0 }
+g.cells:[g.row()]:[0] = 50
+g.cells:[g.row()]:[1] += 7
+print(g.cells:[1]:[0])      // interpreter 50     JIT 3
+print(g.cells:[1]:[1])      // interpreter 11     JIT 4
+```
+
+§66 made an index read copy the array when its index expression could change
+it. The target of `A:[I]:[J] = V` is resolved through the same code, so `A:[I]`
+was "read" into a copy and the store went into the copy. The method here does
+not even change the array: calling it was enough to trigger the copy.
+
+An index is now lowered for one of two uses, `IndexUse::Read` or
+`IndexUse::Place`. On the way to a store it is a place at every level and takes
+no copy. §66's own text said "a compound assignment is unchanged" and "every
+other index read is lowered as before"; neither was true until now, and neither
+its fixture nor its unit test contained a store.
+
+**b. A number, bool or string passed as a further alias was re-read (§65).**
+
+```cx
+struct P { n: t64 }
+pm: impl (p: P, k: t64) {
+    fnc: t64 total(z: t64) { return p.n * 1000 + k + z }
+}
+fnc: t64 inc(v.copy: t64) {
+    v += 7
+    return 1
+}
+q: P = P { n: 1 }
+m: t64 = 5
+print(q.total(m, inc(m.copy)))     // was 1006 on both; §65 made the interpreter 1013
+```
+
+§65 re-read every further alias that named a variable. Compiled code passes
+only a struct or array alias by reference; a scalar one is passed by value from
+its place in the argument list. The interpreter's re-read is now limited to
+struct and array aliases, which restores what both backends printed before. The
+two backends' *other* disagreement about scalar aliases is older and is §69b.
+
+**c. An index read was not copied when the index passed the array's variable
+as a further alias (§66).** `p.items:[q.touch(p)]`, where `touch` changes its
+second alias: interpreter 10, JIT 60. Present before §66 and inside what §66
+claimed. `expr_may_write` now counts any argument of a method call that names
+the variable, and an expression receiver that is a place in it.
+
+**d. A user-defined operator read its left operand after its right operand
+(§58 and §65 together).** This contradicted a LOCKED rule — "`A + B`: A then B"
+in `docs/backend/cx_eval_order.md` — and was a change from `submain`.
+
+```cx
+struct V { x: t64 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+fnc: V bumpv(k.copy: V) {
+    k.x += 100
+    return V { x: 1 }
+}
+a: V = V { x: 1 }
+r: V = a + bumpv(a.copy)
+print(r.x)      // submain 2 / 2.   after §58: 2 / 102.   after §65: 102 / 102.   now 2 / 2
+```
+
+`a + b` on a type with a user `+` is lowered as a method call on `a`. §58
+removed the accidental copy that had made compiled code read `a` first; §65
+then made the interpreter read a method's receiver after its arguments, which
+is right for `a.method(b)` and wrong for `a + b`. In a loop
+(`acc = acc + bumpv(acc.copy)`, three passes) the result had gone from 3 to 303.
+
+A dispatched operator is now marked as one (`MethodCall.operator`). The
+interpreter gives its method the left operand as it was before the right
+operand was evaluated, as it did on `submain`. Compiled code copies the left
+operand before lowering the right when the right can change it
+(`operator_operand_copy`), and otherwise lowers the call as before. One case
+that never agreed now does: `b + b.grow()`, where `grow` is a method that
+changes `b`, was 2 on the interpreter and 1002 in compiled code.
+
+**Also.** A direct assignment to the scanned variable inside an `if`/`when`
+value now answers "may write" (it answered "no"; unreachable today, since a
+value branch is a single expression). A comment in the interpreter cited §64
+for what is §65.
+
+Fixtures: `t_index_store_through_changed_array` (a method that changes nothing,
+`.copy`, three levels with the write in the outer and in the middle index, a
+loop), `t_index_read_array_changed_through_alias`,
+`t_method_scalar_alias_at_argument_position`,
+`t_operator_left_operand_before_right` (through `.copy`, through a method, an
+expression operand, a comparison in a condition, a loop; it fails on the
+compiled side of `submain` and on both sides of the build before this entry).
+Unit test
+`a_store_through_a_nested_index_takes_no_copy_of_the_array`. Expected outputs
+derived by hand. The reviewer's differential fuzzer, which found (a) in 67 of
+3000 programs, finds none in the same 3000.
+
+## 69. Open: receivers, aliases and operands whose evaluation the two backends do not agree on
+
+*(2026-11-18, from the same review. All were present on `submain`. None is
+fixed here: together they are one question — what a receiver, a further alias
+and an operator's operand are — and it should be answered once rather than
+patched five times.)*
+
+In each line the result is interpreter / JIT, both exiting 0 unless stated.
+
+**a. What an operator's left operand holds afterwards.** After
+`r: V = a + bumpv(a.copy)` the result agrees (§68d) and `a.x` does not: 1 / 101.
+The interpreter stores the operand it gave the method back into `a`, which
+undoes what `bumpv` wrote; compiled code keeps `bumpv`'s write. The same
+after `b + b.grow()`: 1 / 1001. Nothing in the language says whether an
+operator's operands are values — evaluated left to right and never written
+back, which the evaluation-order document implies — or aliases, as a method's
+receiver is. Each backend currently does some of both: the interpreter writes
+the operand back, and compiled code hands the method the variable itself when
+the right operand cannot change it, so a `+` that modifies its receiver
+modifies the variable on both. Deciding it settles (c) as well.
+
+**b. A scalar further alias is not written back by compiled code.**
+`q.grow(n, 1)`, where `grow` does `k += 100` on its second alias: `n`
+afterwards is 105 / 5. And the interpreter writes an *unchanged* scalar alias
+back over a change made meanwhile: after `q.total(m, inc(m.copy))`, `m` is
+5 / 12.
+
+**c. An expression receiver or alias that is a place is not a temporary in
+compiled code.** `s: V = ps:[0] + b`, where `add` sets its receiver's `x` to
+100: `ps:[0].x` afterwards is 1 / 100. The same for `w.inner + b`,
+`p.mix(arr:[0], 5)` and `p.mix(w.inner, 5)`.
+
+**d. The same variable as two aliases.** `p.mix(p, 5)`: 602 2 / 707 7. The
+interpreter gives each alias its own copy and the last write-back wins;
+compiled code has one object.
+
+**e. Inside a method body the interpreter works on a copy of the receiver.** A
+method on a top-level `top` whose body calls a function that changes `top`:
+110 1 on the interpreter (the review works out 1111 11 for a true alias). Compiled code
+refuses the program (127), with an internal-error message rather than an
+"unsupported" one.
+
+**f. A scalar `.copy` write-back is lost in compiled code in more places than
+§57b says**: inside an `if`/`when` value branch and on the right of `&&` /
+`||`, not only in a condition. `x: t64 = if 1 > 0 { inc(n.copy) } else { 0 }`
+then `b: bool = true && inc(n.copy) > 0`, printing `n` after each: 25 32 /
+18 18.
+
+**g. `break` in a function body outside any loop is accepted by the
+interpreter and breaks the caller's loop.** Same family as §64: only the
+early-return signal is caught at the function boundary. Compiled code refuses
+(127).
+
+**Smaller notes.** §64's fix also stops a `return` nested in a trailing
+`if`/`else` value from escaping to the caller, which its message does not say
+and no fixture covers; compiled code refuses that shape with the misleading
+text "top-level Return". The cost §66 names is real: the review measured
+reading `g.items:[g.here()]` from a 3000-element array field in a 20,000-pass
+loop at 0.35 s before and 1.8 s after on the JIT.
+
+## 70. Findings of the independent review of the PR #476 revision, and their fixes
+
+*(2026-11-18. The revision — §55, §62, §63 — was reviewed independently before
+being proposed for integration, as the owner required. The review rated its
+first commit blocking. Everything below is fixed by the two commits that
+introduce this entry unless it says otherwise.)*
+
+**a. Blocking: the payload checks refused ordinary programs.** §63 took PR
+#476's payload proofs "as written". They refused any use of a `Result` whose
+payload kind the value graph could not establish, and it could not for:
+
+```cx
+fnc: Result<t64> run(p: Result<t64>, n: t64) {
+    i: t64 = 0
+    while (i < n) { i = i + 1 }      // the loop re-binds p before it is read
+    return p
+}
+
+fnc: Result<t64> cp(r.copy: Result<t64>) { return r }
+v: Result<t64> = Ok(1)
+print(cp(v.copy))
+print(cp(v.copy))                    // v was reloaded from memory after the first call
+
+fnc: T <T> second(a: T, b: T) { print("second"); return b }
+r: Result<t64> = second(Err("x"), Err("y"))   // a Result type that names no payload
+```
+
+Each ran correctly on the base and was refused (127). The review's fuzzer: 358
+of 3000 function-body programs. The corpus replay did not see it because no
+tracked program has these shapes.
+
+Fixed in two parts. The graph is given the facts it lacked: a parameter
+declared `Result<T>`, and a value reloaded after a `.copy` call to one, hold a
+T payload. And an unproven kind is no longer a refusal for a use that existed
+before kinds were tracked — it goes by the declared type, as it always did. A
+proven mismatch is still refused everywhere; an unproven kind is still refused
+for content equality, which is new and dereferences the payload. Same fuzzer,
+both modes: 0 of 3000 refused that the base ran.
+
+**b. `len(grid:[0])` of a top-level array inside a function was refused**
+(§62's fix handled a plain name only). `len` now evaluates its operand for
+effects only: the index is evaluated and bounds-checked, the element is not
+read. This also closes a hole older than this work — `len(a)` of a variable
+never assigned printed a length in compiled code where the interpreter stops.
+
+**c. A `Result` read at a narrower integer type** — older than this work, and
+described as agreeing in the first version of `value_equality.md`:
+
+```cx
+large: Result<t64> = Ok(300)
+narrow: Result<t8> = large
+v: t8 = narrow?
+print(v)              // interpreter 300, JIT 44 — both exit 0
+```
+
+Compiled code now refuses to read a `Result` at a narrower whole-number type
+or a whole number as a float. The interpreter still accepts the program;
+whether the second line should be a type error is the open question recorded in
+`value_equality.md` §4. Cost: 15 of the review's 428 probes of this shape that
+only *printed* the narrowed value, and so agreed, are refused too.
+
+**d. `-r` on a `Result` crashed compiled code** (exit 134; older than this
+work). Refused.
+
+**e. A user function named `cx_str_eq` replaced the runtime's.** Older than
+this work for `==`, where it was a silent wrong answer; the revision made
+`Result` equality depend on the same symbol. `cx_str_eq`, `cx_handle_new`,
+`cx_handle_val`, `cx_handle_drop`, `cx_trap`, `cx_depth_enter` and
+`cx_depth_exit` are now reserved names in compiled code, like the print
+intrinsics already were.
+
+**f. Three older disagreements of the kind §55 fixed for enums.**
+`assert_eq(h, h)` on a handle failed on the interpreter and passed in compiled
+code; `assert_eq(h, zero)` against a number passed in compiled code. A `when`
+arm of another kind than its scrutinee — `when c { 1 => .. }` on an enum —
+never matched on the interpreter and matched by bit pattern in compiled code,
+both exiting 0. `assert(r)` on a `Result` failed on the interpreter and passed
+in compiled code. All three now agree, the last by refusal.
+
+**g. Documentation.** `value_equality.md` said `assert_eq(1, 1.0)` fails (two
+literals pass; the typed form fails); that compiled code refuses every case in
+its "not decided" list (not the narrowing one, until (c)); omitted handles,
+unknown numbers and the fact that its gaps apply inside a `Result` too; and
+omitted a fifth change to the interpreter (a string inside an aggregate
+payload). All corrected there. The commit message of 815784a says a small
+integer "may be read as a Result of a wider one"; the code it describes also
+allowed narrower and float, until (c). That message cannot be amended; this is
+the correction.
+
+**h. Fixtures.** Seven of the eight unequal-case fixtures would pass with the
+fix removed, for the reason now stated in `value_equality.md` §5; the first
+commit of the revision had no fixture that failed without it, and a refusal is
+a SKIP, so nothing pinned (a). Added: `t_result_reaches_its_use_indirectly` and
+`t_len_of_an_element_does_not_read_it` (both pass on the base and were refused
+by the revision), `t_assert_eq_str_in_result_aggregate`,
+`t_when_arm_of_another_kind_never_matches`, `t_assert_eq_handle`,
+`t_assert_eq_handle_not_a_number`, `t_assert_on_a_result`,
+`t_unary_minus_on_a_result`, `t_user_function_named_like_the_runtime`.
+
+**On the review's 428 probe programs**, base → now: crashes 3 → 0, exit
+mismatches 21 → 0, silent divergences 17 → 0, agreeing 162 → 190. Refused that
+the base ran and agreed on: the 15 of (c).
+
+**Corpus.** The review counts 714 tracked `.cx` files on the base; the replay
+used throughout covers the 694 under `src/tests/verification_matrix`,
+`examples` and `bench`. On those, against the build before this branch: no exit
+code or output changes.
 
 ## 71. Compiled programs contained addresses from inside the compiler
 

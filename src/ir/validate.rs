@@ -131,8 +131,25 @@ fn known_intrinsic_sigs() -> HashMap<String, ValidatorFunctionSig> {
 /// Authoritative set shared between the validator and the IR lowering pass so
 /// that both agree on which names are reserved JIT runtime symbols.
 pub fn runtime_intrinsic_names() -> HashSet<String> {
-    known_intrinsic_sigs().into_keys().collect()
+    known_intrinsic_sigs().into_keys()
+        .chain(UNLISTED_RUNTIME_SYMBOLS.iter().map(|name| name.to_string()))
+        .collect()
 }
+
+/// Runtime symbols compiled code calls that have no signature in
+/// `known_intrinsic_sigs` yet (teaching the validator about them is M1.2).
+/// They are reserved all the same: a user function with one of these names
+/// would be called in the runtime function's place. `cx_str_eq` decides every
+/// string comparison, `cx_trap` every failed check.
+const UNLISTED_RUNTIME_SYMBOLS: [&str; 7] = [
+    "cx_str_eq",
+    "cx_handle_new",
+    "cx_handle_val",
+    "cx_handle_drop",
+    "cx_trap",
+    "cx_depth_enter",
+    "cx_depth_exit",
+];
 
 pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> {
     let mut errors = Vec::new();

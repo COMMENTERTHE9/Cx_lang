@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Negating a Result has no meaning; compiled code used to crash on it and now refuses.
