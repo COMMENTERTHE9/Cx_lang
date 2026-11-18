@@ -1,0 +1,54 @@
+// `A + B` evaluates A, then B, whatever A is: a field, an array element, or
+// an `if`/`when` value that yields a variable. Each of those is the thing
+// itself, not a copy of it, until the operator takes its value — and it takes
+// it before B runs.
+struct V { x: t64 }
+struct W { inner: V, k: t64 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+phen Ord (v: V) {
+    fnc: bool lt(rhs: V) { return v.x < rhs.x }
+    fnc: bool gt(rhs: V) { return v.x > rhs.x }
+    fnc: bool le(rhs: V) { return v.x <= rhs.x }
+    fnc: bool ge(rhs: V) { return v.x >= rhs.x }
+}
+vm: impl (s: V) {
+    fnc: V grow() {
+        s.x += 1000
+        return V { x: 1 }
+    }
+}
+fnc: V bumpv(k.copy: V) {
+    k.x += 100
+    return V { x: 1 }
+}
+fnc: V bumpw(k.copy: W) {
+    t: V = k.inner
+    k.inner = V { x: t.x + 100 }
+    return V { x: 1 }
+}
+fnc: V bumpa(k.copy: [2:V]) {
+    t: V = k:[0]
+    k:[0] = V { x: t.x + 100 }
+    return V { x: 1 }
+}
+
+// A field.
+w: W = W { inner: V { x: 1 }, k: 0 }
+r1: V = w.inner + bumpw(w.copy)
+print(r1.x)
+
+// An array element.
+ps: [2:V] = [V { x: 1 }, V { x: 2 }]
+r2: V = ps:[0] + bumpa(ps.copy)
+print(r2.x)
+
+// An `if` value that yields a variable.
+q: V = V { x: 1 }
+r3: V = (if true { q } else { q }) + bumpv(q.copy)
+print(r3.x)
+
+// A `when` value on the left of a comparison whose right side changes it.
+p: V = V { x: 1 }
+print((when 2 { 1 => p, _ => p }) < (p + p.grow()))
