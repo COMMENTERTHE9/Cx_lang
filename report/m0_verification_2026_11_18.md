@@ -123,9 +123,26 @@ be seen. It is recorded as `docs/known_issues.md` §55 for an owner ruling.
 ### 3.4 Independent review
 
 A second reviewer was given the PR's diff and both binaries, without the
-findings above, and asked to break it. **That review had not reported when this
-document was committed.** Its result is added in a follow-up commit; the
-decision in §3.3 rests on the measurements above and does not depend on it.
+findings above, and asked to break it. It ran about 170 programs on both
+backends with both builds. Its verdict: **blocking defects found.** I re-ran each
+finding below before recording it.
+
+| # | Severity | Finding | Reproduced |
+|---|---|---|---|
+| 1 | Blocking | Every string literal evaluation, string binding and string parameter allocates and is never freed during the run. It measured the same growth independently: 20 million bindings, 14 MB → 7 GB and 0.44 s → 56 s. Under a 1 GB memory limit the PR's JIT aborts where `submain`'s finishes | Yes |
+| 2 | Should fix | `len(arr)` inside a function, where `arr` is a top-level array, ran on `submain`'s JIT and is refused by the PR's (exit 127). The PR makes `len` evaluate its operand, which then hits the module-storage refusal | Yes |
+| 3 | Should fix | A new output difference: `?` inside a bare-expression `when` arm, in a function with a `.copy` parameter, writes back on the PR's JIT and not on the interpreter. The root cause is an interpreter bug (known-issues §56b), but before the PR the two agreed | Yes |
+| 4 | Note | New clean refusals of programs `submain`'s JIT ran: `Ok(<generic struct>)`, `assert_eq` on two `Result` values of different array lengths, and user functions named `cx_str_copy`, `cx_value_copy` or `cx_str_identity_eq` | Not re-run |
+| 5 | Note | Two of the PR's five `expected_fail` fixtures (`t_result_empty_identity_len`, `t_result_empty_identity_print`) already trap on `submain`, and the harness checks only the exit shape, so they cannot tell the intended trap from any other | Not re-run |
+
+What held up under that review: no crash and no wrong output in the new `Result`
+and identity logic itself; no unsoundness found in the new host functions; the
+existing 650 fixtures unchanged; aggregate `Result` snapshots isolated correctly
+across wrap, unwrap, loops and nested values; payload-kind checks could not be
+tricked into reading a payload as the wrong type.
+
+It also found four defects that exist on `submain` independently of the PR. They
+are recorded as known-issues §56 and listed in §6 below.
 
 ### 3.5 What the PR gets right
 
@@ -248,7 +265,9 @@ All run on Linux on the branch head.
   phase, interpreter against JIT on the fixed build: none exits 0 on both
   backends with different output. Three still differ by exit code, all already
   recorded: the `cx_trap` name collision from the audit, and the two `assert_eq`
-  cases in known-issues §55.
+  cases in known-issues §55. That sweep is not a proof of absence: the
+  independent review of PR #476 afterwards found one more silent difference that
+  none of these programs exercised (known-issues §56a).
 - **Five unit tests pin the IR** (`divergence_shape_tests` in `src/ir/lower.rs`):
   one call per field-assignment right-hand side, one `cx_str_eq` per string arm,
   the refusal at the string-pattern boundary, the unknown guard in the loop
@@ -303,6 +322,10 @@ binaries, found nothing on the fixed build:
 
 | Finding | Where recorded |
 |---|---|
+| A compound field assignment whose right-hand side changes the same struct through `.copy`: interpreter 102, JIT 101, both exit 0. **The one remaining silent difference found** | Known-issues §56a |
+| The interpreter leaks a function scope when `?` returns early from a bare-expression `when` arm | Known-issues §56b |
+| Printing a `Result` that holds a struct crashes compiled code (segfault or abort) | Known-issues §56c |
+| The interpreter prints a struct's fields in a different order on different runs | Known-issues §56d |
 | `assert_eq` compares strings in a `Result` by storage position and rejects two equal enums; the JIT differs | Known-issues §55 — needs a ruling |
 | A string `when` pattern against a non-string scrutinee is accepted by analysis | Known-issues §53, boundary |
 | A `bool` assigned an unknown value inside a loop cannot be compiled, so that shape of §54 is covered on the interpreter only | Known-issues §54 |

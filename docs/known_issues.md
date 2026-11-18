@@ -4254,3 +4254,64 @@ contradicts itself, and ordinary string equality is by content everywhere else �
 and make both backends compare `Result` payloads by content. That changes what
 the reference prints for the four lines above, so it is recorded here rather than
 decided in passing.
+
+## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
+
+*(Found 2026-11-18 by the independent review of PR #476 and reproduced on the M0
+build. Recorded so they are not rediscovered; each needs its own packet.)*
+
+**a. A compound field assignment loses its store when the right-hand side
+changes the same struct through `.copy`.** Both backends exit 0.
+
+```cx
+struct C { v: t64, w: t64 }
+fnc: t64 bump(c.copy: C) { c.v += 100; return c.v }
+let c
+c = C { v: 1, w: 2 }
+c.v += bump(c.copy)
+print(c.v)        // interpreter 102, JIT 101
+```
+
+The interpreter reads the field (1), evaluates the call (which writes 101 back
+into `c`), and stores 1 + 101. Compiled code ends with the value the call wrote
+back, so its own store is overwritten. The plain `=` form agrees since §52. This
+is the one remaining case found where both backends exit 0 and print different
+things.
+
+**b. The interpreter leaks a function scope when `?` returns early from a bare
+expression `when` arm.** `run_semantic_when` evaluates the arm with `?` and
+returns without popping the scope it pushed.
+
+```cx
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> run(n: t64) {
+    local: t64 = 5
+    y: t64 = when n { 1 => fail()?, _ => 2 }
+    return Ok(y + local)
+}
+print(run(1))
+local: t64 = 9     // interpreter: "variable 'local' was already declared"; JIT prints 9
+```
+
+The same early return skips `.copy` write-back on the interpreter. Compiled code
+agrees with it today only because it also skips write-back on an early `Err`;
+PR #476 corrects the compiled side, which turns this into an output difference.
+The fix belongs in the interpreter.
+
+**c. Printing a `Result` that holds a struct crashes compiled code.**
+
+```cx
+struct P { x: t64, y: t64 }
+r: Result<P> = Ok(P { x: 1, y: 2 })
+print(r)          // JIT: segfault (139), or abort (134) when the value comes from a call
+```
+
+The payload is a struct pointer and the print path reads it as a string
+descriptor. PR #476 turns this into a clean refusal.
+
+**d. The interpreter prints a struct's fields in a different order on different
+runs.** Six runs of one three-field program gave four orderings
+(`P { x: 1, y: 2, z: 3 }`, `P { z: 3, x: 1, y: 2 }`, …). The fields are held in
+a hash map. Compiled code refuses to print a struct, so there is no parity
+failure, but a reference that is not reproducible cannot be matched by any
+backend, and no fixture can pin this output.
