@@ -31,8 +31,8 @@ attacked the riskiest change with about 30,000 generated programs and could
 not produce a wrong answer, a crash or an exit mismatch; what it found was
 that the change *refuses* more programs than it had said (§7.4), and two
 overstated sentences. One change was made after it — about
-twenty lines, `823b791` — and was sent back to the same reviewer; §7.1 says
-where that stands.
+twenty lines, `823b791` — and went back to the same reviewer, who found it
+sound. Everything on the four branches has now been independently reviewed.
 
 **What needs the owner.** Six behaviour changes to the interpreter (§5), one
 cluster of open semantic questions about receivers, aliases and operator
@@ -53,8 +53,8 @@ Each is stacked on the one before. All are pushed.
 |---|---|---|---|
 | `backend/m0-lowering-divergences` | `5498b41` | 10 | The audit report; M0 (three divergences, plus a non-bool `while`); the M0 report; the M1.1 design |
 | `backend/m0-followup-correctness` | `5bc7782` | 23 | The four follow-up fixes; three fixes from their review; three from the review of those; one from the review after that |
-| `backend/result-content-equality` | `823b791` | 37 | The PR #476 revision: payload checks, `len`, content equality; two commits of fixes from its review; five from the review of those; one from the review after that |
-| `backend/m1.1-static-data` | `046aac2`, then this report | 49 + this report | M1.1 in four commits; four commits from its reviews; the TSG/roadmap reconciliation; the provisional version changes; this report |
+| `backend/result-content-equality` | `ea8f9dc` | 38 | The PR #476 revision: payload checks, `len`, content equality; two commits of fixes from its review; five from the review of those; two from the review after that (one of them documentation only) |
+| `backend/m1.1-static-data` | the commit that carries this report; `046aac2` is the last to change code | 52 + this update | M1.1 in four commits; four commits from its reviews; the TSG/roadmap reconciliation; the provisional version changes; this report |
 
 Untouched: `main` @ `24b6820`, `submain` @ `d4b2c06`,
 `codex/runtime-string-identity` @ `2a68658` (PR #476).
@@ -72,7 +72,7 @@ not the conclusions.
 | 4 | PR #476 revision | **first commit blocking** | The payload checks refused ordinary programs — 358 of 3000 fuzzed programs (fixed, §70a); `len` of an element still refused (fixed, §70b); a `Result` read at a narrower integer type miscompiled (now refused, §70c); unary minus on a `Result` crashed (refused, §70d); a user function named `cx_str_eq` replaced the runtime's (names reserved, §70e); handles, cross-kind `when` arms and `assert` on a `Result` disagreed (fixed, §70f); documentation errors (corrected, §70g) |
 | 5 | The fixes of reviews 3 and 4 | **one blocking** | §70a's fix read a payload on trust and crashed compiled code (fixed by proof, §72a); the operator fix missed field, element and `if`/`when` operands (fixed, §68 addendum); narrowing through an untyped literal (now refused, §72b); range and `unknown` arms still compared bits (fixed, §72c); `__cx_fmod` not reserved (fixed, §72d); `assert` on an enum or handle passed (refused, §72e); a fixture that pinned nothing (replaced, §72f); `len` of a branch-assigned variable newly refused (kept, argued in §72g); an interpreter bug with generic locals (recorded, §72i) |
 | 6 | M1.1 | no blocking | The reported slowdown is the compiler binary's layout, not M1.1 (docs corrected, §73a); taking the address of an empty data object crashed (fixed, §73b); the corpus test passed with nothing to run (fixed, §73c); two claims had no default-run test (added, §73d); the address-constant rule is narrower than described (descriptions corrected, §73e); seven inaccurate comments (corrected, §73f) |
-| 7 | The fixes of reviews 5 and 6 | no blocking | Could not break the payload proofs (0 wrong answers in about 30,000 generated programs and 900 written ones). The fix of §72a refuses more than it said: a forwarder written as an `if`/`when` value (fixed, §72j), and three shapes that pass a value through local memory (recorded, §7.4). Two overstated statements (corrected). Two test notes (addressed). Re-ran review 5's measurements and got the same numbers |
+| 7 | The fixes of reviews 5 and 6 | no blocking | Could not break the payload proofs (0 wrong answers in about 30,000 generated programs and 900 written ones). The fix of §72a refuses more than it said: a forwarder written as an `if`/`when` value (fixed, §72j), and three shapes that pass a value through local memory (recorded, §7.4). Two overstated statements (corrected). Two test notes (addressed). Re-ran review 5's measurements and got the same numbers. **Re-check of the one fix made afterwards (`823b791`) and of the test change `046aac2`: sound** — 464 written probes and 8,000 generated programs, none disagreeing; two statements of mine inexact (corrected in `ea8f9dc`) |
 
 ## 4. Test results
 
@@ -84,7 +84,7 @@ Gates at each branch tip: `cargo build --features jit`, `cargo test`,
 | `submain` `d4b2c06` | 314 | 493 | 602 / 48 / 0 | 650 |
 | `backend/m0-lowering-divergences` `5498b41` | 320 | 499 | 610 / 48 / 0 | 658 |
 | `backend/m0-followup-correctness` `5bc7782` | 324 | 503 | 622 / 52 / 0 | 674 |
-| `backend/result-content-equality` `823b791` | 343 | 523 | 645 / 64 / 0 | 709 |
+| `backend/result-content-equality` `ea8f9dc` (code as at `823b791`) | 343 | 523 | 645 / 64 / 0 | 709 |
 | `backend/m1.1-static-data` `046aac2` | 372 (+1 ignored) | 563 (+1 ignored) | 645 / 64 / 0 | 709 |
 
 Clippy with `--features jit`: 112 warnings at every tip from the follow-up
@@ -121,8 +121,9 @@ prints the wrong numbers.
 | user-defined operators, named operands (review 5) | 2,000 | 0 (1 before the last fix) | — |
 | user-defined operators, field and element operands | 2,000 | 0 (195 before the last fix) | — |
 | `Result`s, top-level and in functions (review 4) | 12,000 | 0 | 0 (358 of 3,000 at the first revision) |
-| payload-kind confusion: untyped `Err` variables filled through `.copy`, generic helpers, arrays, struct fields (review 7) | 12,000 | 0 | 485 — see §7.4 |
-| generic and typed forwarder bodies: reassignment, loops, recursion (review 7) | 8,000 | 0 | 502 — see §7.4 |
+| payload-kind confusion: untyped `Err` variables filled through `.copy`, generic helpers, arrays, struct fields (review 7) | 12,000 | 0 | 530 — see §7.4 |
+| generic and typed forwarder bodies: reassignment, loops, recursion (review 7) | 8,000 | 0 | 540 — see §7.4 |
+| forwarders ending in `if`/`when` values, with side effects in the branches (review 7, re-check; run by the reviewer) | 8,000 | 0 | — |
 
 **The reviewers' probe programs**, interpreter against compiled code:
 
@@ -213,26 +214,22 @@ timings cannot resolve differences of that size.
 
 Nothing known in the code is blocking. What integration is waiting on:
 
-1. **The last change has not completed review.** `823b791` teaches the
-   payload proof to follow a forwarding function written as an `if`/`when`
-   value. It was checked with the seventh reviewer's own generators (20,000
-   programs, no disagreement between the backends, before or after), the
-   corpus replay, the 2,127 earlier probes and 6,000 programs of the earlier
-   generator, all unchanged; and it was sent back to that reviewer for a
-   focused soundness check. **That check had not reported when this was
-   written.** Until it has, treat the tip of
-   `backend/result-content-equality` as one commit ahead of what has been
-   independently reviewed; `24ed07a`, one commit below, is fully reviewed.
-   The test-only commit `046aac2` on the M1.1 branch is in the same position.
+1. **Review is complete.** The last code change, `823b791`, and the last
+   test change, `046aac2`, went back to the seventh reviewer after this
+   report was first written. Both were found sound; the two inexact
+   statements it pointed out are corrected in `ea8f9dc` (documentation only).
+   Nothing on the four branches is unreviewed.
 2. **The owner's confirmation of §5**, item 5 in particular.
 3. **The owner's acceptance of the refusals in §7.4**, or a decision to close
    the gap in analysis (§7.3) instead.
 4. **No pull request exists.** The four branches are stacked and would be
    integrated lowest first.
 5. **Platforms.** Everything here was built and run on Linux x86-64. GitHub's
-   CI (also Linux) ran on every push and passed on `5bc7782`, `823b791`,
-   `10059aa` and the merges between them; its run on `046aac2` was still in
-   progress when this was written. Windows has not been exercised by any of
+   CI (also Linux) runs on every push to these branches and passed on each
+   tip it has finished: `5bc7782` (follow-up), `823b791` (the revision's last code
+   change) and `046aac2` (M1.1's last code change), both the interpreter
+   matrix job and the JIT build-and-test job. The commits after those change
+   documentation only. Windows has not been exercised by any of
    this work.
 
 ### 7.2 Known disagreements between the backends that are still open
@@ -291,7 +288,8 @@ compiled the program and the answer happened to agree.
 The second, third and fourth rows all come from one decision: a value typed
 `Result<unknown>` is trusted only where compiled code can prove what it
 holds. Review 7's generators, which are built around exactly those shapes,
-put a number on it: 4 to 6% of their programs that `submain` ran are refused.
+put a number on it: 530 of 12,000 and 540 of 8,000 of their programs — 4 to
+7% — ran on `submain` and are refused now.
 The earlier generator, built around ordinary `Result` use, finds none in
 12,000. The alternative to refusing is what the fifth review found — a number
 read as a string. The real remedy is in analysis (§7.3), not in more proof.
