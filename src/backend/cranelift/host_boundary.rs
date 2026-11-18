@@ -1323,6 +1323,13 @@ fn compile_ir_function(
                     let address = builder.ins().global_value(ptr_ty, reference);
                     val_map.insert(*dst, address);
                 }
+                // Read-only data. Lowering does not produce it yet; the
+                // support is the next commit's.
+                IrInst::DataAddr { data, .. } => {
+                    return Err(JitExecutionError::CodegenFailure {
+                        detail: format!("read-only data {:?} is not supported by this backend yet", data),
+                    });
+                }
                 IrInst::ConstInt { dst, ty, value } => {
                     if *ty == IrType::I128 {
                         // iconst only accepts imm64; split into lo/hi i64 halves
@@ -1842,6 +1849,7 @@ mod tests {
         IrModule {
             debug_name: "test".into(),
             globals: vec![],
+            data: vec![],
             functions: edges
                 .iter()
                 .map(|(name, callees)| IrFunction {
@@ -1994,6 +2002,7 @@ mod tests {
         let ir = IrModule {
             debug_name: "test_module".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![],
         };
         let result = boundary.execute(&ir);
@@ -2024,6 +2033,7 @@ mod jit_tests {
         IrModule {
             debug_name: "test_const".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2074,6 +2084,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2107,6 +2118,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2140,6 +2152,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2173,6 +2186,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2206,6 +2220,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2238,6 +2253,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "no_main".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![],
         };
         let result = HostBoundary::new().execute(&module);
@@ -2261,6 +2277,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_void_main".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "helper".to_string(),
@@ -2311,6 +2328,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_unsupported".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2352,6 +2370,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_store_load_i32".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2394,6 +2413,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_i8_align".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2430,6 +2450,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_overwrite".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2468,6 +2489,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_two_slots".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2517,6 +2539,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_jump".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2568,6 +2591,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_jump_noarg".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2631,6 +2655,7 @@ mod jit_tests {
         IrModule {
             debug_name: "test_compare_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2782,6 +2807,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_trap_dead".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2838,6 +2864,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_assert_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2906,6 +2933,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_branch_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2963,6 +2991,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_accepted".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3002,6 +3031,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3073,6 +3103,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_slot".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3140,6 +3171,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_large".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3220,6 +3252,7 @@ mod jit_tests {
         IrModule {
             debug_name: "test_fcmp_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3278,6 +3311,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_const_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3412,6 +3446,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_back_edge_loop".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3506,6 +3541,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_void_func".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 // Void-return helper — compiled but never called in this test.
                 IrFunction {
@@ -3561,6 +3597,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_ptr_offset_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3600,6 +3637,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_ptr_offset_nonzero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3642,6 +3680,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_ptr_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3692,6 +3731,7 @@ mod jit_tests {
         IrModule {
             debug_name: format!("tbool_param_{}", raw_value),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "pass_tbool_as_i32".to_string(),
@@ -3783,6 +3823,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3818,6 +3859,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_nested_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3861,6 +3903,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_gt".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3900,6 +3943,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3934,6 +3978,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3969,6 +4014,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_lt".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4009,6 +4055,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_le".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4049,6 +4096,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_ge".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4090,6 +4138,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_ne".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4131,6 +4180,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_eq".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4248,6 +4298,7 @@ mod determinism_tests {
         IrModule {
             debug_name: "det_fcmp_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4307,6 +4358,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_const_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4332,6 +4384,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_const_42".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4359,6 +4412,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4390,6 +4444,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4421,6 +4476,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4452,6 +4508,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4483,6 +4540,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4517,6 +4575,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_neg_int".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4550,6 +4609,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_neg_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4584,6 +4644,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_bool_not_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4617,6 +4678,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_bool_not_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4655,6 +4717,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_alloca".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4683,6 +4746,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_branch_eq_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4741,6 +4805,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_branch_eq_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4799,6 +4864,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_branch_lt".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4876,6 +4942,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_assert_pass".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4952,6 +5019,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_assert_abort".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5007,6 +5075,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_jump".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5061,6 +5130,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_back_edge_loop".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5158,6 +5228,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_loop_break".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5256,6 +5327,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_loop_continue".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5378,6 +5450,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_nested_loops".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5536,6 +5609,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_loop_accum".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5658,6 +5732,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_excl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5757,6 +5832,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_incl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5851,6 +5927,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5960,6 +6037,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_carried".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6080,6 +6158,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_excl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6201,6 +6280,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_incl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6317,6 +6397,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6450,6 +6531,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_carried".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6599,6 +6681,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6696,6 +6779,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_accum".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6794,6 +6878,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_two_fn".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "helper".to_string(),
@@ -6842,6 +6927,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_ret".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_val".to_string(),
@@ -6889,6 +6975,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "noop".to_string(),
@@ -6940,6 +7027,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "sink".to_string(),
@@ -6996,6 +7084,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void_multi".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "noop_a".to_string(),
@@ -7063,6 +7152,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "side_effect".to_string(),
@@ -7142,6 +7232,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_void_main".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7167,6 +7258,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add".to_string(),
@@ -7228,6 +7320,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_chain".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "inner".to_string(),
@@ -7296,6 +7389,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_val".to_string(),
@@ -7377,6 +7471,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_multi".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add_one".to_string(),
@@ -7444,6 +7539,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_i64_ret".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_i64".to_string(),
@@ -7499,6 +7595,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_i64_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add64".to_string(),
@@ -7589,6 +7686,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_and_true_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7669,6 +7767,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_and_sc_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7759,6 +7858,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_or_false_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7856,6 +7956,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_or_sc_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7932,6 +8033,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_ssabind".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7970,6 +8072,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cx_printn".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8012,6 +8115,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cx_printn_computed".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8054,6 +8158,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8088,6 +8193,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8122,6 +8228,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8156,6 +8263,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8190,6 +8298,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8229,6 +8338,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_rem_overflow".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8275,6 +8385,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_sextend".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8302,6 +8413,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_ireduce".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8328,6 +8440,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_int_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8357,6 +8470,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_sextend_neg".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8383,6 +8497,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_ptr_reject".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8423,6 +8538,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_if_else_merge_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8506,6 +8622,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_if_else_merge_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8599,6 +8716,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_dot".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8656,6 +8774,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_index".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8707,6 +8826,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_ptr_offset_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8744,6 +8864,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_ptr_offset_nonzero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8783,6 +8904,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_array_alloca".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8824,6 +8946,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_array_alloca_offset".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8861,6 +8984,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_sextend".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8898,6 +9022,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_ireduce".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8930,6 +9055,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_int_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8967,6 +9093,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_sextend_neg".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9002,6 +9129,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_f64_ret".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_float".to_string(),
@@ -9054,6 +9182,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_f64_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add_floats".to_string(),
@@ -9117,6 +9246,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9154,6 +9284,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9191,6 +9322,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9228,6 +9360,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9265,6 +9398,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9323,6 +9457,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_struct_two_fields".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9371,6 +9506,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_struct_field_isolation".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9426,6 +9562,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "probe_ptr_arg_mutation".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "set_field".to_string(),
@@ -9516,6 +9653,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "probe_ptr_arg_read".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_field".to_string(),
@@ -9586,6 +9724,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_assign_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9622,6 +9761,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_assign_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9658,6 +9798,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_assign_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9708,6 +9849,7 @@ mod determinism_tests {
         IrModule {
             debug_name: format!("det_tbool_call_{}", raw_value),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "pass_tbool_as_i32".to_string(),
@@ -9889,6 +10031,7 @@ mod module_global_tests {
         IrModule {
             debug_name: "global_counter".into(),
             globals: vec![IrGlobal { id: GlobalId(0), name: "counter".into(), size: 8, align: 8 }],
+            data: vec![],
             functions: vec![
                 IrFunction { name: "bump".into(), params: vec![], return_ty: Some(IrType::I64),
                     blocks: vec![IrBlock { id: BlockId(0), params: vec![], insts: vec![

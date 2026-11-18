@@ -165,10 +165,69 @@ pub struct IrGlobal {
     pub align: usize,
 }
 
+/// Read-only module data with fixed contents: the bytes of a string literal,
+/// and the `{pointer, length}` descriptor that names them
+/// (docs/backend/static_data_design.md).
+///
+/// Separate from [`IrGlobal`] on purpose. A global is writable, starts as zeros
+/// and carries a lifecycle byte every access checks; data is read-only, has
+/// contents, and is never checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DataId(pub u32);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrData {
+    pub id: DataId,
+    pub align: usize,
+    /// The contents. A slot named by a relocation holds zeros here: its real
+    /// value is an address, which exists only once the module is placed in
+    /// memory or linked.
+    pub bytes: Vec<u8>,
+    /// The slots of `bytes` that hold the address of another data object.
+    pub relocs: Vec<IrDataReloc>,
+}
+
+/// One address-sized slot inside an [`IrData`]: "the address of `target` goes
+/// at `offset`". This is what lets a descriptor point at its bytes without
+/// either having an address yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrDataReloc {
+    /// Byte offset of the slot inside the object's `bytes`.
+    pub offset: usize,
+    /// The object whose address is stored there.
+    pub target: DataId,
+}
+
+// Used by tests only until lowering produces data, two commits on.
+#[allow(dead_code)]
+impl IrData {
+    /// The bytes of a string, as an object of their own. An empty string is an
+    /// object of no bytes: it still has an address for a descriptor to hold.
+    pub fn string_bytes(id: DataId, bytes: Vec<u8>) -> Self {
+        IrData { id, align: 1, bytes, relocs: Vec::new() }
+    }
+
+    /// A string descriptor: the address of the bytes object, then the length —
+    /// the two 64-bit words every runtime string function reads
+    /// (`{i64 ptr, i64 len}`). The length is written little-endian, which is
+    /// what every target the backend supports uses.
+    pub fn string_descriptor(id: DataId, bytes: DataId, len: usize) -> Self {
+        let mut words = vec![0u8; 2 * DATA_ADDR_SIZE];
+        words[DATA_ADDR_SIZE..].copy_from_slice(&(len as i64).to_le_bytes());
+        IrData { id, align: DATA_ADDR_SIZE, bytes: words, relocs: vec![IrDataReloc { offset: 0, target: bytes }] }
+    }
+}
+
+/// Size in bytes of an address slot in data. The descriptor layout is two
+/// 64-bit words on every target the backend supports.
+pub const DATA_ADDR_SIZE: usize = 8;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IrModule {
     pub debug_name: String,
     pub globals: Vec<IrGlobal>,
+    /// Read-only data, in the order lowering first needed each object.
+    pub data: Vec<IrData>,
     pub functions: Vec<IrFunction>,
 }
 
@@ -215,6 +274,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],

@@ -45,6 +45,7 @@ impl IrBuilder {
         IrModule {
             debug_name: debug_name.into(),
             globals: vec![],
+            data: vec![],
             functions: Vec::new(),
         }
     }

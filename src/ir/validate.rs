@@ -6,6 +6,17 @@ use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IrValidationError {
     InvalidGlobal { id: crate::ir::types::GlobalId, detail: String },
+    /// A read-only data object, or a reference to one, is malformed.
+    InvalidData { id: crate::ir::types::DataId, detail: String },
+    /// A number was turned into a pointer. Compiled code has no address to
+    /// write down — an address exists only once the program is placed in
+    /// memory — so a constant used as one is an address from inside the
+    /// compiler (docs/backend/static_data_design.md).
+    AddressConstant {
+        function: String,
+        block: BlockId,
+        value: ValueId,
+    },
     EmptyFunctionName {
         function_index: usize,
     },
@@ -149,6 +160,8 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
         }
     }
 
+    validate_data(module, &mut errors);
+
     // Seed known runtime intrinsic signatures before scanning user-defined functions.
     let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
     for function in &module.functions {
@@ -170,6 +183,107 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
     } else {
         Err(errors)
     }
+}
+
+/// The data section: every object is well formed, every relocation names a
+/// real slot and a real object, and every `DataAddr` names a real object.
+fn validate_data(module: &IrModule, errors: &mut Vec<IrValidationError>) {
+    use crate::ir::types::{DATA_ADDR_SIZE, MAX_GLOBAL_ALIGNMENT};
+    let mut invalid = |id, detail: String| errors.push(IrValidationError::InvalidData { id, detail });
+
+    let mut ids = HashSet::new();
+    for data in &module.data {
+        if !ids.insert(data.id) {
+            invalid(data.id, "duplicate data id".into());
+        }
+    }
+    for data in &module.data {
+        if !data.align.is_power_of_two() || data.align > MAX_GLOBAL_ALIGNMENT {
+            invalid(data.id, format!("alignment {} is not a power of two of at most {MAX_GLOBAL_ALIGNMENT}", data.align));
+        }
+        if data.bytes.len() > u32::MAX as usize {
+            invalid(data.id, format!("{} bytes is larger than a data object can be", data.bytes.len()));
+        }
+        // An address slot must be placed where an address can be stored and
+        // loaded: on an address boundary, inside an object aligned to one.
+        if !data.relocs.is_empty() && data.align < DATA_ADDR_SIZE {
+            invalid(data.id, format!("holds an address slot but is aligned to {} rather than {DATA_ADDR_SIZE}", data.align));
+        }
+        let mut slots = HashSet::new();
+        for reloc in &data.relocs {
+            let end = reloc.offset.checked_add(DATA_ADDR_SIZE);
+            if end.is_none_or(|end| end > data.bytes.len()) {
+                invalid(data.id, format!("address slot at offset {} runs past the object's {} bytes", reloc.offset, data.bytes.len()));
+                continue;
+            }
+            if reloc.offset % DATA_ADDR_SIZE != 0 {
+                invalid(data.id, format!("address slot at offset {} is not on an {DATA_ADDR_SIZE}-byte boundary", reloc.offset));
+            }
+            if !slots.insert(reloc.offset) {
+                invalid(data.id, format!("two address slots at offset {}", reloc.offset));
+            }
+            // The slot's value is the address, supplied when the module is
+            // placed. Bytes written there as well would be silently replaced.
+            if data.bytes[reloc.offset..reloc.offset + DATA_ADDR_SIZE].iter().any(|b| *b != 0) {
+                invalid(data.id, format!("address slot at offset {} has contents of its own", reloc.offset));
+            }
+            if reloc.target == data.id {
+                invalid(data.id, format!("address slot at offset {} refers to the object it is in", reloc.offset));
+            } else if !ids.contains(&reloc.target) {
+                invalid(data.id, format!("address slot at offset {} refers to undefined data @d{}", reloc.offset, reloc.target.0));
+            }
+        }
+    }
+    for function in &module.functions {
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if let IrInst::DataAddr { data, .. } = inst {
+                    if !ids.contains(data) {
+                        invalid(*data, format!("undefined data in {} block {:?}", function.name, block.id));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every place a module turns a constant into a pointer: a `Cast` from `I64`
+/// to `Ptr` whose operand is defined by a `ConstInt`.
+///
+/// Narrow on purpose. Lowering casts a run-time word to a pointer when it
+/// unpacks a `Result` payload, and that operand comes from a load or a shift,
+/// never from a constant. A constant operand can only be an address the
+/// compiler wrote down, which means nothing outside the process that wrote it.
+///
+/// Public and separate from [`validate_module`] so a backend can run this one
+/// rule before generating code, without the rest of the validator.
+// Not called yet: lowering still writes string descriptors as address
+// constants, and stops in the commit that turns this rule on.
+#[allow(dead_code)]
+pub fn find_address_constants(module: &IrModule) -> Vec<IrValidationError> {
+    let mut found = Vec::new();
+    for function in &module.functions {
+        let constants: HashSet<ValueId> = function.blocks.iter().flat_map(|b| &b.insts)
+            .filter_map(|inst| match inst {
+                IrInst::ConstInt { dst, .. } => Some(*dst),
+                _ => None,
+            })
+            .collect();
+        for block in &function.blocks {
+            for inst in &block.insts {
+                if let IrInst::Cast { from: IrType::I64, to: IrType::Ptr, value, .. } = inst {
+                    if constants.contains(value) {
+                        found.push(IrValidationError::AddressConstant {
+                            function: function.name.clone(),
+                            block: block.id,
+                            value: *value,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    found
 }
 
 fn is_reserved_runtime_intrinsic(name: &str) -> bool {
@@ -345,6 +459,7 @@ fn validate_inst(
 ) {
     match inst {
         IrInst::GlobalAddr { dst, .. } => define_value(function, block, *dst, IrType::Ptr, "GlobalAddr destination", defined_values, errors),
+        IrInst::DataAddr { dst, .. } => define_value(function, block, *dst, IrType::Ptr, "DataAddr destination", defined_values, errors),
         IrInst::ConstInt { dst, ty, .. } => {
             if !matches!(
                 ty,
@@ -950,6 +1065,7 @@ mod tests {
         IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -969,6 +1085,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![],
         };
 
@@ -980,6 +1097,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1109,6 +1227,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1139,6 +1258,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1207,6 +1327,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1243,6 +1364,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1286,6 +1408,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1331,6 +1454,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1377,6 +1501,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "always_fails".to_string(),
                 params: vec![],
@@ -1430,6 +1555,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "add1".to_string(),
                 params: vec![IrParam {
@@ -1473,6 +1599,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![IrParam {
@@ -1513,6 +1640,7 @@ mod tests {
         IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -1623,6 +1751,7 @@ mod tests {
         IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: name.to_string(),
                 params: vec![],
@@ -1771,6 +1900,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![IrParam { name: "x".to_string(), ty: IrType::Void }],
@@ -1793,6 +1923,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1817,6 +1948,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1837,6 +1969,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "f".to_string(),
                 params: vec![],
@@ -1974,6 +2107,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2003,6 +2137,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2044,6 +2179,7 @@ mod tests {
         let module = IrModule {
             debug_name: "m".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2088,6 +2224,7 @@ mod module_global_tests {
         IrModule {
             debug_name: "globals".into(),
             globals: vec![IrGlobal { id: GlobalId(7), name: "counter".into(), size: 8, align: 8 }],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "read_global".into(), params: vec![], return_ty: Some(IrType::I64),
                 blocks: vec![IrBlock { id: BlockId(0), params: vec![],
@@ -2124,5 +2261,198 @@ mod module_global_tests {
         assert_eq!(printed, crate::ir::printer::print_module(&ir));
         assert!(printed.contains("global @g7 counter size 8 align 8"));
         assert!(printed.contains("global_addr @g7"));
+    }
+}
+
+#[cfg(test)]
+mod data_tests {
+    use super::*;
+    use crate::ir::types::{DataId, IrBlock, IrData, IrDataReloc, IrFunction, IrModule};
+
+    /// `"hello"` the way lowering lays a string out — the bytes, and a
+    /// descriptor pointing at them — and a function that reads the length word.
+    fn module() -> IrModule {
+        IrModule {
+            debug_name: "data".into(),
+            globals: vec![],
+            data: vec![
+                IrData::string_bytes(DataId(0), b"hello".to_vec()),
+                IrData::string_descriptor(DataId(1), DataId(0), 5),
+            ],
+            functions: vec![IrFunction {
+                name: "length".into(), params: vec![], return_ty: Some(IrType::I64),
+                blocks: vec![IrBlock { id: BlockId(0), params: vec![],
+                    insts: vec![
+                        IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+                        IrInst::PtrOffset { dst: ValueId(1), base: ValueId(0), offset: 8 },
+                        IrInst::Load { dst: ValueId(2), ty: IrType::I64, ptr: ValueId(1) },
+                    ],
+                    term: IrTerminator::Return { value: Some(ValueId(2)) },
+                }],
+            }],
+        }
+    }
+
+    fn data_errors(module: &IrModule) -> Vec<String> {
+        validate_module(module).err().unwrap_or_default().into_iter()
+            .filter_map(|e| match e { IrValidationError::InvalidData { detail, .. } => Some(detail), _ => None })
+            .collect()
+    }
+
+    fn rejected_for(module: &IrModule, reason: &str) {
+        let errors = data_errors(module);
+        assert!(errors.iter().any(|e| e.contains(reason)), "expected a data error mentioning {reason:?}, got {errors:?}");
+    }
+
+    #[test]
+    fn accepts_a_string_and_its_descriptor() {
+        assert_eq!(validate_module(&module()), Ok(()));
+    }
+
+    #[test]
+    fn accepts_an_empty_string() {
+        let mut ir = module();
+        ir.data[0].bytes.clear();
+        ir.data[1] = IrData::string_descriptor(DataId(1), DataId(0), 0);
+        assert_eq!(validate_module(&ir), Ok(()));
+    }
+
+    #[test]
+    fn accepts_a_descriptor_listed_before_its_bytes_and_two_descriptors_of_one_bytes_object() {
+        let mut ir = module();
+        ir.data.reverse();
+        ir.data.push(IrData::string_descriptor(DataId(2), DataId(0), 5));
+        assert_eq!(validate_module(&ir), Ok(()));
+    }
+
+    #[test]
+    fn rejects_two_objects_with_one_id() {
+        let mut ir = module();
+        let again = ir.data[0].clone();
+        ir.data.push(again);
+        rejected_for(&ir, "duplicate data id");
+    }
+
+    #[test]
+    fn rejects_an_alignment_that_is_not_a_small_power_of_two() {
+        for align in [0, 3, 12, 32, 4096] {
+            let mut ir = module();
+            ir.data[0].align = align;
+            rejected_for(&ir, "alignment");
+        }
+        for align in [1, 2, 4, 8, 16] {
+            let mut ir = module();
+            ir.data[0].align = align;
+            assert_eq!(validate_module(&ir), Ok(()), "align {align}");
+        }
+    }
+
+    #[test]
+    fn rejects_an_address_slot_in_an_object_not_aligned_for_one() {
+        let mut ir = module();
+        ir.data[1].align = 4;
+        rejected_for(&ir, "aligned to 4");
+    }
+
+    #[test]
+    fn rejects_an_address_slot_outside_the_object() {
+        for offset in [16, 9, usize::MAX - 3] {
+            let mut ir = module();
+            ir.data[1].relocs[0].offset = offset;
+            rejected_for(&ir, "runs past");
+        }
+    }
+
+    #[test]
+    fn rejects_an_address_slot_off_an_address_boundary() {
+        let mut ir = module();
+        ir.data[1].bytes = vec![0; 24];
+        ir.data[1].relocs[0].offset = 4;
+        rejected_for(&ir, "boundary");
+    }
+
+    #[test]
+    fn rejects_two_address_slots_in_one_place() {
+        let mut ir = module();
+        let again = ir.data[1].relocs[0].clone();
+        ir.data[1].relocs.push(again);
+        rejected_for(&ir, "two address slots");
+    }
+
+    #[test]
+    fn rejects_an_address_slot_that_already_has_contents() {
+        let mut ir = module();
+        ir.data[1].bytes[3] = 0x7f;
+        rejected_for(&ir, "contents of its own");
+    }
+
+    #[test]
+    fn rejects_an_address_slot_that_refers_to_nothing_or_to_itself() {
+        let mut ir = module();
+        ir.data[1].relocs[0].target = DataId(9);
+        rejected_for(&ir, "undefined data @d9");
+
+        let mut ir = module();
+        ir.data[1].relocs = vec![IrDataReloc { offset: 0, target: DataId(1) }];
+        rejected_for(&ir, "refers to the object it is in");
+    }
+
+    #[test]
+    fn rejects_a_data_address_that_names_no_object() {
+        let mut ir = module();
+        ir.functions[0].blocks[0].insts[0] = IrInst::DataAddr { dst: ValueId(0), data: DataId(4) };
+        rejected_for(&ir, "undefined data in length");
+    }
+
+    #[test]
+    fn a_data_address_is_a_pointer() {
+        // `module()` loads through the data address and validates. The same
+        // load through a number does not, so the check is live — and a data
+        // address is what satisfies it.
+        let mut ir = module();
+        ir.functions[0].blocks[0].insts[0] = IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 16 };
+        let errors = validate_module(&ir).expect_err("an I64 used as a pointer");
+        assert!(errors.iter().any(|e| matches!(e, IrValidationError::InvalidTypeUsage { detail, .. } if detail.contains("must be Ptr"))), "{errors:?}");
+    }
+
+    #[test]
+    fn a_data_address_defines_its_value_once() {
+        let mut ir = module();
+        ir.functions[0].blocks[0].insts.insert(1, IrInst::DataAddr { dst: ValueId(0), data: DataId(1) });
+        let errors = validate_module(&ir).expect_err("v0 defined twice");
+        assert!(errors.iter().any(|e| matches!(e, IrValidationError::DuplicateValueDefinition { value: ValueId(0), .. })), "{errors:?}");
+    }
+
+    fn casting(operand: IrInst, to: IrType) -> IrModule {
+        let mut ir = module();
+        ir.functions[0].return_ty = None;
+        ir.functions[0].blocks[0].insts = vec![
+            IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+            operand,
+            IrInst::Cast { dst: ValueId(9), from: IrType::I64, to, value: ValueId(1) },
+        ];
+        ir.functions[0].blocks[0].term = IrTerminator::Return { value: None };
+        ir
+    }
+
+    #[test]
+    fn a_constant_cast_to_a_pointer_is_an_address_constant() {
+        let ir = casting(IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 0x7f00_dead_beef }, IrType::Ptr);
+        assert_eq!(find_address_constants(&ir), vec![IrValidationError::AddressConstant {
+            function: "length".into(), block: BlockId(0), value: ValueId(1),
+        }]);
+    }
+
+    #[test]
+    fn a_loaded_word_cast_to_a_pointer_is_not_an_address_constant() {
+        // What unpacking a Result's string payload does.
+        let ir = casting(IrInst::Load { dst: ValueId(1), ty: IrType::I64, ptr: ValueId(0) }, IrType::Ptr);
+        assert_eq!(find_address_constants(&ir), vec![]);
+    }
+
+    #[test]
+    fn a_constant_cast_to_a_number_is_not_an_address_constant() {
+        let ir = casting(IrInst::ConstInt { dst: ValueId(1), ty: IrType::I64, value: 7 }, IrType::I32);
+        assert_eq!(find_address_constants(&ir), vec![]);
     }
 }

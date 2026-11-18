@@ -1,13 +1,16 @@
 use std::fmt::Write;
 
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
-use crate::ir::types::{BlockId, IrBlock, IrFunction, IrModule, IrType, ValueId};
+use crate::ir::types::{BlockId, IrBlock, IrData, IrFunction, IrModule, IrType, ValueId, DATA_ADDR_SIZE};
 
 pub fn print_module(module: &IrModule) -> String {
     let mut out = String::new();
     writeln!(out, "module {}", module.debug_name).unwrap();
     for global in &module.globals {
         writeln!(out, "global @g{} {} size {} align {}", global.id.0, global.name, global.size, global.align).unwrap();
+    }
+    for data in &module.data {
+        writeln!(out, "{}", print_data(data)).unwrap();
     }
     for (i, function) in module.functions.iter().enumerate() {
         if i > 0 {
@@ -16,6 +19,43 @@ pub fn print_module(module: &IrModule) -> String {
         write!(out, "{}", print_function(function)).unwrap();
     }
     out
+}
+
+/// One line per data object. Nothing in it depends on where the object will
+/// live, so printing a module twice gives the same text.
+///
+/// - contents only, valid UTF-8: `data @d0 align 1 bytes "hello\n"`
+/// - contents only, otherwise:   `data @d0 align 1 hex ff 00 7f`
+/// - with address slots:         `data @d1 align 8 { addr @d0, i64 5 }` — the
+///   object read as 8-byte words, `addr @dN` where a relocation sits.
+pub fn print_data(data: &IrData) -> String {
+    let head = format!("data @d{} align {}", data.id.0, data.align);
+    if data.relocs.is_empty() {
+        return match std::str::from_utf8(&data.bytes) {
+            Ok(text) => format!("{head} bytes \"{}\"", text.escape_default()),
+            Err(_) => {
+                let hex: Vec<String> = data.bytes.iter().map(|b| format!("{b:02x}")).collect();
+                format!("{head} hex {}", hex.join(" "))
+            }
+        };
+    }
+    let mut words = Vec::new();
+    for (index, chunk) in data.bytes.chunks(DATA_ADDR_SIZE).enumerate() {
+        let offset = index * DATA_ADDR_SIZE;
+        if let Some(reloc) = data.relocs.iter().find(|r| r.offset == offset) {
+            words.push(format!("addr @d{}", reloc.target.0));
+        } else if chunk.len() == DATA_ADDR_SIZE {
+            let mut word = [0u8; DATA_ADDR_SIZE];
+            word.copy_from_slice(chunk);
+            words.push(format!("i64 {}", i64::from_le_bytes(word)));
+        } else {
+            // A tail shorter than a word. The validator rejects this shape for
+            // an object with relocations; print it rather than hide it.
+            let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+            words.push(format!("hex {}", hex.join(" ")));
+        }
+    }
+    format!("{head} {{ {} }}", words.join(", "))
 }
 
 pub fn print_function(function: &IrFunction) -> String {
@@ -59,6 +99,7 @@ fn print_block(block: &IrBlock) -> String {
 pub fn print_inst(inst: &IrInst) -> String {
     match inst {
         IrInst::GlobalAddr { dst, global } => format!("{} = global_addr @g{}", print_value_id(*dst), global.0),
+        IrInst::DataAddr { dst, data } => format!("{} = data_addr @d{}", print_value_id(*dst), data.0),
         IrInst::ConstInt { dst, ty, value } => {
             format!("{} = const {} {}", print_value_id(*dst), print_type(ty), value)
         }
@@ -248,6 +289,7 @@ mod tests {
         let module = IrModule {
             debug_name: "test".into(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".into(),
                 params: vec![],
@@ -279,6 +321,7 @@ mod tests {
         let module = IrModule {
             debug_name: "test".into(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "caller".into(),
                 params: vec![],
@@ -369,5 +412,69 @@ mod tests {
 
         let output = print_block(&block);
         assert!(output.contains("bb3:(v5: i64, v6: bool)"));
+    }
+
+    fn string_module() -> IrModule {
+        use crate::ir::types::{DataId, GlobalId, IrGlobal};
+        IrModule {
+            debug_name: "strings".into(),
+            globals: vec![IrGlobal { id: GlobalId(0), name: "counter".into(), size: 8, align: 8 }],
+            data: vec![
+                IrData::string_bytes(DataId(0), b"he said \"hi\"\n".to_vec()),
+                IrData::string_descriptor(DataId(1), DataId(0), 14),
+                IrData::string_bytes(DataId(2), vec![0xff, 0x00, 0x7f]),
+                IrData::string_bytes(DataId(3), Vec::new()),
+                IrData::string_descriptor(DataId(4), DataId(3), 0),
+            ],
+            functions: vec![IrFunction {
+                name: "main".into(),
+                params: vec![],
+                return_ty: None,
+                blocks: vec![IrBlock {
+                    id: BlockId(0),
+                    params: vec![],
+                    insts: vec![IrInst::DataAddr { dst: ValueId(0), data: DataId(1) }],
+                    term: IrTerminator::Return { value: None },
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn prints_string_bytes_escaped_and_other_bytes_as_hex() {
+        let printed = print_module(&string_module());
+        assert!(printed.contains(r#"data @d0 align 1 bytes "he said \"hi\"\n""#), "{printed}");
+        assert!(printed.contains("data @d2 align 1 hex ff 00 7f"), "{printed}");
+    }
+
+    #[test]
+    fn prints_a_descriptor_as_an_address_and_a_length() {
+        let printed = print_module(&string_module());
+        assert!(printed.contains("data @d1 align 8 { addr @d0, i64 14 }"), "{printed}");
+    }
+
+    #[test]
+    fn prints_an_empty_string() {
+        let printed = print_module(&string_module());
+        assert!(printed.contains("data @d3 align 1 bytes \"\"\n"), "{printed}");
+        assert!(printed.contains("data @d4 align 8 { addr @d3, i64 0 }"), "{printed}");
+    }
+
+    #[test]
+    fn prints_data_between_globals_and_functions_and_names_it_in_code() {
+        let printed = print_module(&string_module());
+        let global = printed.find("global @g0").expect("global");
+        let data = printed.find("data @d0").expect("data");
+        let function = printed.find("fn main").expect("function");
+        assert!(global < data && data < function, "{printed}");
+        assert!(printed.contains("v0 = data_addr @d1"), "{printed}");
+    }
+
+    #[test]
+    fn printing_a_module_with_data_twice_gives_the_same_text() {
+        let module = string_module();
+        assert_eq!(print_module(&module), print_module(&module));
+        // Nothing about the text depends on where the module was built.
+        assert_eq!(print_module(&module), print_module(&module.clone()));
     }
 }

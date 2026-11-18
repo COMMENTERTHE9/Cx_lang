@@ -1344,6 +1344,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
         globals: vec![],
+        data: vec![],
         functions: vec![],
     };
     let mut top_level_stmts = Vec::new();
