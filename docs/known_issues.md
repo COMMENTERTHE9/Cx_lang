@@ -5225,3 +5225,76 @@ used throughout covers the 694 under `src/tests/verification_matrix`,
 `examples` and `bench`. On those, against the build before this branch: no exit
 code or output changes.
 
+## 72. Findings of the confirmation review of §68–§70's fixes, and their fixes
+
+*(2026-11-18. The fixes for the two previous reviews were themselves reviewed
+before anything was proposed for integration. This entry is numbered 72 because
+71 is taken on the static-data branch, which is merged on top of this one. One
+finding was blocking; (g) is deliberately not changed; (i) is found and not
+fixed.)*
+
+**a. Blocking: an unproven payload kind was taken on trust (§70a).** §70a made
+a use "go by the declared type" when the value graph could not say what a
+`Result` held. The declared type it went by was the *use's*. That is sound when
+the value has a declared kind of its own, which analysis has checked against
+the use. It is not when the value's type is `Result<unknown>` — an untyped
+variable that started as an `Err`, the result of a function generic in `T` —
+because analysis accepts that wherever a `Result` is declared, whatever it
+holds:
+
+```cx
+fnc: T <T> id(x: T) { return x }
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok("a")); return 0 }
+fnc: t64 run(c: bool) {
+    let e
+    e = Err("x")
+    if c { x: t64 = fill(e.copy) }     // e now holds Ok(5)
+    print(cmp(id(e)))                  // interpreter: Ok(5) != Ok(a), exit 1
+    return 0                           // compiled: read 5 as a string, exit 134
+}
+```
+
+New with §70a: on `submain` this trapped (126). The same route printed
+`Ok()` for a `Result<Color>` that held another enum's variant, where the
+interpreter prints `Ok(Shape::Square)` — both exit 0, also new; `submain`
+refused it. Printing the value as a `Result<str>` crashed, and reading it as a
+`Result<t8>` gave 44 for 300: both as on `submain`, both refused by the first
+version of the revision and reopened by §70a. An array literal `[e, e]`
+laundered the value the same way.
+
+Fixed: the declared type is trusted only when the value's own static type
+names a payload kind. Otherwise the graph must prove the kind or the use is
+refused. So that this does not bring back §70a's refusals, a function that can
+only return some of its own arguments unchanged, or an `Err`, is now followed
+through the call — the value of `id(e)` is whatever `e` is — including a
+statement before the `return`, a branch between two arguments, a function that
+returns another such function's result, and recursion
+(`result_sources`, `settle_result_sources`). With that the graph finds the
+`Ok(5)` above and refuses by proof rather than by doubt.
+
+What this refuses that `submain` ran and agreed on: a generic function that
+does more than forward — `fnc: T <T> swap(a: T, b: T) { a = b; return a }` —
+called with `Err(..)` arguments and assigned to a declared `Result`. None of
+the review's 1,709 probes or 12,000 generated programs has that shape.
+
+**b. A narrowing the first fix did not see (§70c).**
+
+```cx
+let lit
+lit = Ok(300)
+narrow: Result<t8> = lit
+v: t8 = narrow?
+print(v)                  // interpreter 300, compiled 44 — both exit 0
+```
+
+§70c recorded an untyped literal as "a number of no particular width", which
+fits any declaration. A constant payload is now recorded at the narrowest
+width that holds its value (`Ok(5)` → 8 bits, `Ok(300)` → 16, `Ok(1 + 2)` →
+8), and a number with no declared width that is computed at run time is the
+whole word. Present on `submain`. The same through a loop, an `if` value, a
+`.copy` parameter and a generic forwarder is refused as well; each was a
+silent 300/44 on `submain`.
+
+This also *accepts* shapes §70c refused that are sound: `c: Result<t8> =
+Ok(1 + 2)`, and an untyped `Ok(5)` passed where a `Result<t8>` is declared.
