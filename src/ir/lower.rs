@@ -5414,18 +5414,33 @@ fn lower_when_stmt(
 /// going by the scrutinee's type. Only a definite mismatch answers yes: a
 /// scrutinee whose type is not known here is compared as it always was.
 fn when_literal_never_matches(value: &SemanticValue, scrutinee: &SemanticType) -> bool {
-    let whole_number = |ty: &SemanticType| ty.int_width().is_some() || *ty == SemanticType::Numeric;
     let definite = !matches!(scrutinee, SemanticType::Unknown | SemanticType::TypeParam(_));
     definite
         && match value {
-            // A float scrutinee against a whole-number arm is left to the
-            // comparison below, as before.
-            SemanticValue::Num(_) => !(whole_number(scrutinee) || *scrutinee == SemanticType::F64),
-            SemanticValue::Float(_) => !(*scrutinee == SemanticType::F64 || whole_number(scrutinee)),
+            // A whole number and a float are different kinds too: `1` is not
+            // `1.0` to the interpreter, in either direction.
+            SemanticValue::Num(_) => !is_whole_number_type(scrutinee),
+            SemanticValue::Float(_) => *scrutinee != SemanticType::F64,
             SemanticValue::Bool(_) => *scrutinee != SemanticType::Bool,
             SemanticValue::Char(_) => *scrutinee != SemanticType::Char,
-            SemanticValue::Str(_) | SemanticValue::EnumVariant { .. } | SemanticValue::Unknown => false,
+            // `unknown` is a state only a bool has in compiled code. Against
+            // anything else the arm compared the value with the number 2.
+            SemanticValue::Unknown => *scrutinee != SemanticType::Bool,
+            SemanticValue::Str(_) | SemanticValue::EnumVariant { .. } => false,
         }
+}
+
+fn is_whole_number_type(ty: &SemanticType) -> bool {
+    ty.int_width().is_some() || *ty == SemanticType::Numeric
+}
+
+/// The same for a range pattern. The interpreter matches a range only when
+/// the scrutinee and both bounds are whole numbers; an enum, a bool, a char or
+/// a float is never "in" `0..5`, whatever its bits are.
+fn when_range_never_matches(low: &SemanticValue, high: &SemanticValue, scrutinee: &SemanticType) -> bool {
+    let definite = !matches!(scrutinee, SemanticType::Unknown | SemanticType::TypeParam(_));
+    !matches!((low, high), (SemanticValue::Num(_), SemanticValue::Num(_)))
+        || (definite && !is_whole_number_type(scrutinee))
 }
 
 /// The same for an enum-variant pattern: it matches only a scrutinee of its
@@ -5512,6 +5527,9 @@ fn emit_when_arm_match(
             emit_never_matching_arm(body_id, incoming, current, ctx)
         }
         SemanticWhenPattern::EnumVariant { enum_name, .. } if when_variant_never_matches(enum_name, &scrutinee.ty) => {
+            emit_never_matching_arm(body_id, incoming, current, ctx)
+        }
+        SemanticWhenPattern::Range(low, high, _) if when_range_never_matches(low, high, &scrutinee.ty) => {
             emit_never_matching_arm(body_id, incoming, current, ctx)
         }
         SemanticWhenPattern::Literal(value) => {
@@ -14674,5 +14692,15 @@ mod divergence_shape_tests {
         assert_eq!(compares(&format!("{prelude}print(when c {{ 1 => 1, _ => 2 }})\n")), 0, "a number arm on an enum");
         assert_eq!(compares(&format!("{prelude}print(when c {{ Color::Green => 1, _ => 2 }})\n")), 1, "a variant arm on its enum");
         assert_eq!(compares("b: bool = true\nprint(when b { 1 => 1, _ => 2 })\n"), 0, "a number arm on a bool");
+        // §72: the same for a range, for `unknown`, and between a whole
+        // number and a float.
+        assert_eq!(compares(&format!("{prelude}print(when c {{ 0..5 => 1, _ => 2 }})\n")), 0, "a range arm on an enum");
+        assert_eq!(compares(&format!("{prelude}print(when c {{ unknown => 1, _ => 2 }})\n")), 0, "unknown on an enum");
+        assert_eq!(compares("n: t64 = 2\nprint(when n { unknown => 1, _ => 2 })\n"), 0, "unknown on a number");
+        assert_eq!(compares("x: f64 = 1.0\nprint(when x { 1 => 1, _ => 2 })\n"), 0, "a whole-number arm on a float");
+        assert_eq!(compares("n: t64 = 2\nprint(when n { 2.0 => 1, _ => 2 })\n"), 0, "a float arm on a whole number");
+        assert_eq!(compares("x: f64 = 2.0\nprint(when x { 0..5 => 1, _ => 2 })\n"), 0, "a range arm on a float");
+        assert_eq!(compares("n: t64 = 2\nprint(when n { 0..5 => 1, _ => 2 })\n"), 2, "a range arm on a whole number");
+        assert_eq!(compares("x: f64 = 1.5\nprint(when x { 1.5 => 1, _ => 2 })\n"), 1, "a float arm on a float");
     }
 }

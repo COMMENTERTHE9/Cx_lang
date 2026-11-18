@@ -5298,3 +5298,21 @@ silent 300/44 on `submain`.
 
 This also *accepts* shapes §70c refused that are sound: `c: Result<t8> =
 Ok(1 + 2)`, and an untyped `Ok(5)` passed where a `Result<t8>` is declared.
+
+**c. Range arms, `unknown` arms, and whole numbers against floats (§70f).**
+§70f made a literal arm of another kind never match. A range arm and an
+`unknown` arm still compared bits:
+
+```cx
+c: Color = Color::Green
+print(when c { 0..5 => 1, _ => 2 })      // interpreter 2, compiled 1
+n: t64 = 2
+print(when n { unknown => 1, _ => 2 })   // interpreter 2, compiled 1
+x: f64 = 1.0
+print(when x { 1 => 1, _ => 2 })         // interpreter 2; compiled code stopped
+                                         // inside Cranelift's verifier (exit 2)
+```
+
+All present on `submain`. A range arm now matches only a whole-number
+scrutinee, `unknown` only a bool, and a whole-number arm never matches a float
+or the reverse — which is what the interpreter does in each case.
