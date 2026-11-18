@@ -161,6 +161,7 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
     }
 
     errors.extend(data_errors(module));
+    errors.extend(find_address_constants(module));
 
     // Seed known runtime intrinsic signatures before scanning user-defined functions.
     let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
@@ -263,9 +264,6 @@ pub fn data_errors(module: &IrModule) -> Vec<IrValidationError> {
 ///
 /// Public and separate from [`validate_module`] so a backend can run this one
 /// rule before generating code, without the rest of the validator.
-// Not called yet: lowering still writes string descriptors as address
-// constants, and stops in the commit that turns this rule on.
-#[allow(dead_code)]
 pub fn find_address_constants(module: &IrModule) -> Vec<IrValidationError> {
     let mut found = Vec::new();
     for function in &module.functions {

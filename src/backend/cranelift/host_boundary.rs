@@ -296,12 +296,14 @@ extern "C" fn cx_print_bool(b: i8) {
 /// `{byte_ptr: i64, byte_len: i64}` descriptor (string rep (a), storage (ii));
 /// this reads both fields and writes the raw bytes followed by a newline,
 /// matching the interpreter's `print_value` for a string byte-for-byte (no
-/// quotes, no escaping). The descriptor and its bytes are leaked `&'static` at
-/// lowering, so the address is valid for the process lifetime (JIT-only).
+/// quotes, no escaping). The descriptor and its bytes are read-only data
+/// objects of the compiled module (`IrData`), valid for as long as the module
+/// is in memory.
 extern "C" fn cx_print_str(descriptor: *const i64) {
     use std::io::{self, Write};
-    // SAFETY: `descriptor` points at a leaked `&'static [i64; 2]` whose first
-    // slot is the (also leaked) byte pointer and second is the byte length.
+    // SAFETY: `descriptor` is the address of a two-word descriptor in the
+    // module's read-only data: the address of the bytes object, then the byte
+    // length. The data section is checked before the module is placed.
     let (ptr, len) = unsafe { (*descriptor as *const u8, *descriptor.add(1) as usize) };
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let mut stdout = io::stdout().lock();
@@ -318,7 +320,7 @@ extern "C" fn cx_print_str(descriptor: *const i64) {
 /// 1 iff the lengths match and the bytes are equal (length-check then memcmp),
 /// matching the interpreter's content equality. Returns an i8 Bool (0/1).
 extern "C" fn cx_str_eq(a: *const i64, b: *const i64) -> i8 {
-    // SAFETY: both args are leaked `&'static` descriptors (see cx_print_str).
+    // SAFETY: both args are descriptors in module data (see cx_print_str).
     let (pa, la) = unsafe { (*a as *const u8, *a.add(1) as usize) };
     let (pb, lb) = unsafe { (*b as *const u8, *b.add(1) as usize) };
     if la != lb {
@@ -337,7 +339,7 @@ extern "C" fn cx_str_eq(a: *const i64, b: *const i64) -> i8 {
 
 extern "C" fn cx_print_str_inline(descriptor: *const i64) {
     use std::io::{self, Write};
-    // SAFETY: leaked `&'static` descriptor (see cx_print_str).
+    // SAFETY: a descriptor in module data (see cx_print_str).
     let (ptr, len) = unsafe { (*descriptor as *const u8, *descriptor.add(1) as usize) };
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let _ = io::stdout().lock().write_all(bytes);
@@ -820,6 +822,20 @@ impl HostBoundary {
             module.define_data(id, &data)
                 .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
             data_ids.insert(global.id, id);
+        }
+
+        // No address constants. A number cast to a pointer can only be an
+        // address the compiler wrote down, which this process may happen to be
+        // able to use and no other can. Refused here, on the one path every
+        // compiled program takes, until the full validator runs on it (M1.2).
+        if let Some(crate::ir::validate::IrValidationError::AddressConstant { function, block, value }) =
+            crate::ir::validate::find_address_constants(ir).into_iter().next()
+        {
+            return Err(JitExecutionError::UnsupportedConstruct {
+                construct: format!(
+                    "function '{function}' block {block:?} turns the constant {value:?} into a pointer — compiled code may not contain an address from inside the compiler"
+                ),
+            });
         }
 
         // Read-only data (string bytes and their descriptors). Checked before

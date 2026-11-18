@@ -24,8 +24,6 @@ pub enum IrInst {
     /// Address of module storage, never a pointer into a callee stack frame.
     GlobalAddr { dst: ValueId, global: GlobalId },
     /// The address of a read-only data object ([`crate::ir::types::IrData`]).
-    // Nothing produces it yet; lowering starts to two commits on.
-    #[allow(dead_code)]
     DataAddr { dst: ValueId, data: DataId },
     ConstInt {
         dst: ValueId,

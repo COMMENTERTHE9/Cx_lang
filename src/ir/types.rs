@@ -198,8 +198,6 @@ pub struct IrDataReloc {
     pub target: DataId,
 }
 
-// Used by tests only until lowering produces data, two commits on.
-#[allow(dead_code)]
 impl IrData {
     /// The bytes of a string, as an object of their own. An empty string is an
     /// object of no bytes: it still has an address for a descriptor to hold.
