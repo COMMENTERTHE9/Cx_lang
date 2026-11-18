@@ -797,6 +797,10 @@ struct LoweringCtx {
     module_bindings: ModuleBindings,
     /// The function being lowered, for diagnostics.
     function_name: String,
+    /// The current function's `.copy` parameters, for a return that does not go
+    /// through `finish_return`: `?` on an `Err` leaves from inside an
+    /// expression, where no `FunctionLoweringSpec` is in reach.
+    early_copy_writebacks: Vec<CopyWriteback>,
     signature_table: HashMap<String, FunctionSignature>,
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
@@ -910,6 +914,7 @@ impl LoweringCtx {
             top_level_bindings: HashSet::new(),
             module_bindings: HashMap::new(),
             function_name: String::new(),
+            early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
             binding_decl_types: HashMap::new(),
@@ -1706,6 +1711,7 @@ fn lower_semantic_function(
         }
     }
     let spec = FunctionLoweringSpec { copy_writebacks: copy_writebacks.clone(), ..spec };
+    ctx.early_copy_writebacks = copy_writebacks;
     // Model B, the callee half: an aggregate parameter names storage the caller
     // still owns, so the callee gets its own. `ret_slot_plan` supplies the size,
     // alignment and parts — the same authority the return slot and the bind copy
@@ -5448,7 +5454,13 @@ fn lower_try(
     let old = std::mem::replace(active, cont_block);
     ctx.seal_block(old)?;
 
-    // Err: early-return the whole original Result i128, unchanged.
+    // Err: early-return the whole original Result i128, unchanged — through
+    // the same copy-out an explicit return performs. Without it a `.copy`
+    // parameter the function had already changed kept its old value in the
+    // caller whenever the function left through `?`
+    // (`docs/known_issues.md` §59).
+    let writebacks = ctx.early_copy_writebacks.clone();
+    emit_copy_writebacks(&writebacks, ctx, &mut err_block)?;
     err_block.terminate(IrTerminator::Return { value: Some(result.value) })?;
     ctx.seal_block(err_block)?;
 
@@ -6314,7 +6326,19 @@ fn finish_return(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<Option<ValueId>, LoweringError> {
-    for (slot, binding, sem_ty) in spec.copy_writebacks.clone() {
+    emit_copy_writebacks(&spec.copy_writebacks, ctx, active)?;
+    match value {
+        Some(v) => Ok(Some(emit_return_through_slot(spec, v, ctx, active)?)),
+        None => Ok(None),
+    }
+}
+
+/// Write every `.copy` parameter's current contents back through the address
+/// it arrived on. Every way out of a function runs this: an explicit or
+/// trailing return through `finish_return`, and the early return of `?` on an
+/// `Err` directly from `lower_try`.
+fn emit_copy_writebacks(writebacks: &[CopyWriteback], ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    for (slot, binding, sem_ty) in writebacks.iter().cloned() {
         let Some(current) = active.bindings.get(&binding).cloned() else {
             continue;
         };
@@ -6330,10 +6354,7 @@ fn finish_return(
             }
         }
     }
-    match value {
-        Some(v) => Ok(Some(emit_return_through_slot(spec, v, ctx, active)?)),
-        None => Ok(None),
-    }
+    Ok(())
 }
 
 fn emit_return_through_slot(

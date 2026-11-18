@@ -1,0 +1,86 @@
+// `?` on an `Err` is a return. It has to leave the function the way every
+// other return does: the function's locals end with the call, and each `.copy`
+// parameter is written back to the caller.
+//
+// The interpreter used to keep the function's scope alive when the `?` sat in
+// a bare-expression `when` arm, so a later top-level variable with the same
+// name as one of its locals was "already declared", and the write-back was
+// skipped. Compiled code skipped the write-back on every early `?` return.
+// Each case below prints the caller's variable after the call.
+struct Acc { total: t64, calls: t64 }
+
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> pass(n: t64) { return Ok(n) }
+
+// 1. `?` as a plain statement.
+fnc: Result<t64> plain(v.copy: t64) {
+    v += 1
+    let got
+    got = fail()?
+    return Ok(got)
+}
+
+// 2. `?` in a bare-expression `when` arm.
+fnc: Result<t64> in_arm(v.copy: t64, n: t64) {
+    local: t64 = 5
+    v += 10
+    y: t64 = when n { 1 => fail()?, _ => 2 }
+    return Ok(y + local)
+}
+
+// 3. `?` inside a loop, after two iterations of work.
+fnc: Result<t64> in_loop(v.copy: t64) {
+    i: t64 = 0
+    while (i < 5) {
+        v += 100
+        i += 1
+        if i == 2 {
+            let got
+            got = fail()?
+            v += got
+        }
+    }
+    return Ok(v)
+}
+
+// 4. An aggregate `.copy` parameter.
+fnc: Result<t64> on_struct(a.copy: Acc) {
+    a.total += 7
+    a.calls += 1
+    let got
+    got = fail()?
+    return Ok(got)
+}
+
+// 5. The Ok path still returns normally and still writes back.
+fnc: Result<t64> ok_path(v.copy: t64) {
+    v += 1000
+    let got
+    got = pass(3)?
+    return Ok(got + v)
+}
+
+x: t64 = 1
+print(plain(x.copy))
+print(x)
+
+print(in_arm(x.copy, 1))
+print(x)
+print(in_arm(x.copy, 2))
+print(x)
+
+print(in_loop(x.copy))
+print(x)
+
+acc: Acc = Acc { total: 0, calls: 0 }
+print(on_struct(acc.copy))
+print(acc.total)
+print(acc.calls)
+
+print(ok_path(x.copy))
+print(x)
+
+// A top-level variable named like a local of `in_arm`. With the function's
+// scope leaked this line was rejected as already declared.
+local: t64 = 9
+print(local)

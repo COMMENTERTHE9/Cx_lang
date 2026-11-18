@@ -4302,7 +4302,8 @@ that kind.
 
 **b. The interpreter leaks a function scope when `?` returns early from a bare
 expression `when` arm.** `run_semantic_when` evaluates the arm with `?` and
-returns without popping the scope it pushed.
+returns without popping the scope it pushed. *(FIXED — §59, together with the
+compiled side's missing write-back.)*
 
 ```cx
 fnc: Result<t64> fail() { return Err("bad") }
@@ -4445,4 +4446,56 @@ cost is one aggregate copy per `.copy` call that used to be free.
 
 Fixtures: `t_copy_compound_assign_same_aggregate` (field and element targets) and
 `t_copy_receiver_in_method`. Both give wrong output on the unfixed JIT.
+
+## 59. An early `?` return did not leave the function the way a return does
+
+*(Fixes §56b. Fixed 2026-11-18 by the commit that introduces this entry. The
+compiled half is PR #476's change, carried over; the interpreter half is new.)*
+
+`?` on an `Err` returns from the enclosing function. Two things every return
+does were skipped, one on each backend.
+
+**Interpreter: the function's scope outlived the call** when the `?` sat in a
+bare-expression `when` arm or in an arm's guard. `run_semantic_when` pushed a
+scope for the arm and evaluated the guard and the body with `?`, so the early
+return left with that scope still pushed. The call then popped the leaked scope
+instead of its own frame. The function's locals stayed declared — a later
+top-level variable of the same name was rejected as "already declared" — and
+the `.copy` write-back, which happens when the frame is popped, did not happen.
+
+**Compiled code: no `.copy` write-back on any early `?` return.** `lower_try`
+emitted a bare `Return` for the `Err` path. A `.copy` parameter the function had
+already changed kept its old value in the caller.
+
+The two defects hid each other in one shape: with the `?` in a `when` arm,
+neither backend wrote back, so they agreed. Fixing either alone would have
+turned that agreement into a silent difference, which is why they land
+together.
+
+```cx
+fnc: Result<t64> in_arm(v.copy: t64, n: t64) {
+    local: t64 = 5
+    v += 10
+    y: t64 = when n { 1 => fail()?, _ => 2 }
+    return Ok(y + local)
+}
+x: t64 = 2
+print(in_arm(x.copy, 1))     // Err(bad) everywhere
+print(x)                     // was: interpreter 2, JIT 2.   now: 12, 12
+local: t64 = 9               // was: interpreter "already declared"
+```
+
+**Fix.** The interpreter runs a matched arm through a helper and pops the arm's
+scope on every way out. Compiled code runs the same copy-out on the `Err` path
+of `?` that an explicit return runs (`emit_copy_writebacks`, split out of
+`finish_return`).
+
+Fixtures: `t_try_early_return_exit_path` — `?` as a plain statement, in a `when`
+arm, inside a loop after two iterations, with an aggregate `.copy` parameter,
+and the `Ok` path as a control — and `t_try_copy_writeback` from PR #476,
+unchanged. On the unfixed build the first fails on the interpreter (the leak)
+and prints six wrong values on the JIT.
+
+A guard that itself uses `?` leaked the same way. It is fixed by the same
+change but has no compiled-code fixture: a `Result<bool>` is refused there.
 
