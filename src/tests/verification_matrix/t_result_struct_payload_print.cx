@@ -4,9 +4,6 @@
 // now refuses the program cleanly; this fixture is recorded as a compiled-code
 // SKIP and exists so that a crash can never again pass unnoticed — any exit
 // other than "not supported" fails parity.
-//
-// One field, because the interpreter does not yet print a struct's fields in a
-// fixed order (known-issues §56d).
 struct P { x: t64 }
 
 fnc: Result<P> make(n: t64) {

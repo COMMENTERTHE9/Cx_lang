@@ -1,0 +1,70 @@
+// A method runs on its receiver as the variable is when the call is made. An
+// argument that changes the receiver — a method called on it, or passing it
+// as `.copy` — is evaluated first, and the method sees that change and does
+// not undo it.
+struct Counter { n: t64, total: t64 }
+c: impl (s: Counter) {
+    fnc: t64 next() {
+        s.n += 1
+        return s.n
+    }
+    fnc: add(v: t64) { s.total += v }
+    fnc: t64 sum(a: t64, b: t64) { return s.total + a + b }
+    fnc: t64 peek(v: t64) { return s.n * 1000 + v }
+}
+fnc: t64 bump(k.copy: Counter) {
+    k.n += 100
+    return k.n
+}
+
+// At the top level.
+top: Counter = Counter { n: 0, total: 0 }
+top.add(top.next())
+top.add(top.next())
+print(top.n)
+print(top.total)
+
+// Inside a function, in a loop.
+fnc: t64 run() {
+    k: Counter = Counter { n: 0, total: 0 }
+    i: t64 = 0
+    while (i < 4) {
+        k.add(k.next())
+        i += 1
+    }
+    print(k.n)
+    print(k.total)
+    print(k.sum(k.next(), k.next()))
+    print(k.n)
+    // The argument changes the receiver through `.copy`.
+    print(k.peek(bump(k.copy)))
+    print(k.n)
+    return 0
+}
+print(run())
+
+// A second alias is its variable too.
+struct V { x: t64 }
+ops: impl (a: V, b: V) {
+    fnc: t64 mix(n: t64) {
+        a.x += n
+        b.x += 1
+        return a.x * 100 + b.x
+    }
+}
+fnc: t64 lift(v.copy: V) {
+    v.x += 1000
+    return 1
+}
+fnc: t64 pair() {
+    p: V = V { x: 1 }
+    q: V = V { x: 2 }
+    print(p.mix(q, lift(p.copy)))
+    print(p.x)
+    print(q.x)
+    print(p.mix(q, lift(q.copy)))
+    print(p.x)
+    print(q.x)
+    return 0
+}
+print(pair())

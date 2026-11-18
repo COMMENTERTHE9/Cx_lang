@@ -1,0 +1,24 @@
+// `?` on an Err inside a `when` guard returns from the function the way a
+// return does: the `.copy` parameter is written back, and nothing of the
+// function is left behind in the caller.
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> good() { return Ok(4) }
+fnc: Result<t64> run(n: t64, v.copy: t64) {
+    local: t64 = 5
+    v = v + 1
+    y: t64 = when n {
+        1 if fail()? > 0 => 10,
+        2 if good()? > 0 => 20,
+        _ => 30,
+    }
+    return Ok(y + local)
+}
+a: t64 = 1
+print(run(1, a.copy))
+print(a)
+print(run(2, a.copy))
+print(a)
+print(run(3, a.copy))
+print(a)
+local: t64 = 9
+print(local)

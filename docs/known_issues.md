@@ -4715,3 +4715,194 @@ on that premise.
 **Verification.** Replaying all 694 tracked programs on both backends against
 the build before this change gives identical exit codes and output; the only
 difference is the wording of the refusal for two nested-`Result` programs.
+
+## 64. `?` in a function's trailing expression returned from the caller as well
+
+*(Found 2026-11-18 by the independent review of §58–§61. Interpreter only; it
+was there before those fixes and is inside what §59 claimed to have closed.
+Fixed by the commit that introduces this entry. §62 and §63 are on
+`backend/result-content-equality`.)*
+
+```cx
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> mid() { Ok(fail()? + 1) }
+
+fnc: t64 top() {
+    let r
+    r = mid()
+    print(5)
+    return 7
+}
+print(top())      // interpreter: Err(bad)        JIT: 5 7        (both exit 0)
+```
+
+`?` on an `Err` leaves its function through an early-return signal. The
+interpreter turned that signal into the function's result inside the loop over
+the body's statements, and evaluated the trailing expression after the loop,
+where nothing caught it. The signal went on to the caller's statement loop, so
+`top` returned `Err(bad)` from the middle of an assignment. At the top level
+there is no caller to catch it:
+
+```cx
+print(mid())      // "unhandled control flow signal -- this is likely a compiler bug", exit 1
+```
+
+In a method the receiver's changes were dropped as well, because the write-back
+ran only for a result that looked like an ordinary return.
+
+The trailing expression of a function and of a method now ends the call exactly
+as a statement does. Compiled code was already right.
+
+`Ok(f()? + 1)` as a last line is the ordinary way to write this, more so than
+the `when`-arm shape §59 fixed.
+
+Fixtures: `t_try_in_trailing_expression` (a function, a `.copy` parameter
+through two levels, a method that changed its receiver first, and the top
+level) and `t_try_in_when_guard`. The second is the compiled-code fixture §59
+said could not be written: a guard `1 if fail()? > 0 => ..` compiles, since the
+guard's `?` yields a number.
+
+## 65. A method ran on a copy of its receiver taken before its arguments, and wrote that copy back
+
+*(Found 2026-11-18 while resolving the review of §58. Interpreter only, and on
+`submain` before any of this work. Fixed by the commit that introduces this
+entry. **Changes interpreter behaviour** — read below.)*
+
+```cx
+struct Counter { n: t64, total: t64 }
+c: impl (s: Counter) {
+    fnc: t64 next() {
+        s.n += 1
+        return s.n
+    }
+    fnc: add(v: t64) { s.total += v }
+}
+k: Counter = Counter { n: 0, total: 0 }
+k.add(k.next())
+k.add(k.next())
+print(k.n)          // interpreter: 0      JIT: 2      (both exit 0)
+print(k.total)      // interpreter: 2      JIT: 3
+```
+
+The interpreter read the receiver's value first — it needs the struct's name to
+find the method — evaluated the arguments, ran the method on the value it had
+read, and stored that value back into the variable. `next()` did change `k`; the
+store put the earlier `k` back over it. `next()` returns 1, then 2, and `k.n` is
+0 afterwards: the count the program was just handed is not the count it has.
+
+The same happened when an argument passed the receiver as `.copy`
+(`x.peek(bump(x.copy))`: the write-back `.copy` promises was discarded), and for
+the second alias of a two-alias `impl`.
+
+**This is the interpreter's defect, not a difference of opinion between
+backends.** A method's receiver is documented as the one alias the language has;
+an alias of a variable sees the variable. Compiled code passes the receiver's
+address and has always given 2 and 3 above.
+
+The interpreter now re-reads a named receiver, and each further alias that names
+a variable, after the arguments are evaluated. A receiver that is an expression
+(operator dispatch on `(a + b) + c`) is unchanged: it is a temporary.
+
+**Why this is recorded as a behaviour change.** It alters what the reference
+prints for a program that worked — in the sense of running to completion —
+before. Replaying all 694 tracked programs on both backends shows no difference,
+so nothing in the repository relied on the old result, but a program outside it
+could have. The rule is now written in `docs/backend/cx_eval_order.md`, "Method
+call". Reversing it means reverting the interpreter half of this commit and
+making compiled code copy its receiver, which would bring the lost update to
+compiled code.
+
+**How it was found.** The review reported `x.peek(bump(x.copy))` as a regression
+from §58: compiled code had agreed with the interpreter there only because the
+move §58 removed left the old storage behind as an accidental copy. Checking
+which side was right, rather than restoring the agreement, turned up the lost
+update.
+
+Fixture: `t_method_receiver_changed_by_argument` — at the top level, in a loop
+inside a function, with two arguments that each change the receiver, through
+`.copy`, and with a second alias. It fails on the unfixed interpreter and passes
+on the unfixed JIT.
+
+## 66. An index read took its element after the index expression had changed the array
+
+*(Found 2026-11-18 by the independent review of §58. Compiled code only. One
+shape was a regression from §58; the other was there before. Fixed by the commit
+that introduces this entry.)*
+
+```cx
+fnc: t64 idx(a.copy: [3: t64]) {
+    a:[1] += 50
+    return 1
+}
+arr: [3: t64] = [0, 10, 20]
+print(arr:[idx(arr.copy)])    // interpreter: 10     JIT: 60     (both exit 0)
+```
+
+`A:[I]` evaluates `A`, then `I`. The interpreter holds the array's value, so it
+reads element 1 of the array as it was. Compiled code resolved the array's
+address, evaluated the index, and loaded through the address afterwards — by
+which time the `.copy` write-back had landed in that storage.
+
+Before §58 the JIT printed 10. That was not a snapshot it took: §58 fixed a
+write-back that moved the aggregate to new storage, and the old storage, left
+behind, happened to hold the value from before. §58 was right to remove the
+move, and removing it exposed this.
+
+The second shape never agreed:
+
+```cx
+print(o.arr:[o.mutate()])     // mutate() adds 500 to arr[1] and returns 1
+                              // interpreter: 2      JIT: 502
+```
+
+Compiled code now copies the array before evaluating the index when — and only
+when — the index expression can change it: it passes the variable holding the
+array as `.copy`, or calls a method on that variable, anywhere inside it
+(`expr_may_write` looks through nested expressions and through the statements of
+an `if`/`when` value). Every other index read is lowered as before, with no
+copy.
+
+**Cost.** In the affected shape the whole array is copied per read. A method
+called on the same variable in the index — `s.items:[s.find(key)]` — pays it
+whether or not the method changes anything, because nothing yet tells compiled
+code that a method leaves its receiver alone. That is a correct answer bought
+with a copy; a way to know a method does not write its receiver would remove it.
+
+The rule is written in `docs/backend/cx_eval_order.md`, "Index read". A compound
+assignment `A:[I] += V` is a different rule and is unchanged: it resolves the
+place, index included, before it reads.
+
+Fixture: `t_index_read_takes_array_before_index` — a top-level array, an index
+that is an `if` or `when` value, a nested array's row and a row's element, and
+an array in a struct field reached through `.copy` and through a method, in a
+loop. It fails on the unfixed JIT and passes on the interpreter.
+
+## 67. Notes from the review of §58–§61 that are not fixed
+
+*(2026-11-18. Recorded so they are not rediscovered. None is a case where the
+two backends give different answers.)*
+
+**a. Two modules that each declare a struct of the same name share one print
+order (§61).** The interpreter keeps struct declarations by bare name and the
+last one registered wins. A library with `struct P { zed, alpha, mid }` and an
+entry file with `struct P { mid, alpha, zed }`: the library's own `print(p)`
+uses the entry file's order. When the two declare different field sets, the
+fields fall back to alphabetical order. The output is the same on every run;
+it is the wrong declaration's order. Interpreter only — compiled code does not
+print structs.
+
+**b. Two things still print in hash-map order (§61).** A `copy_into` bundle,
+which §61 says, and the text of the runtime error for `t: str = "debug {s:?}"`,
+which embeds a map's debug form: 18 different error texts in 20 runs, exit 1
+each time. Neither reaches stdout of a program that succeeds.
+
+**c. A `Result` of an aggregate type that is only ever `Err` can no longer be
+printed by compiled code (§60).** `Result<[2: t64]>` holding `Err("no arr")`
+printed correctly before §60 and is now refused with the rest of the class. The
+refusal is by the declared payload type, not by which variant the value is.
+
+**d. Corrections to earlier text.** §59 says the unfixed JIT printed "six wrong
+values" for `t_try_early_return_exit_path`; it is eight differing lines. §59
+also says a guard that uses `?` has no compiled-code fixture; it has one now
+(§64). The commit for §61 states no gate numbers; they were 322 default / 501
+with `--features jit`, parity 613 / 52 / 0 over 665 fixtures.
