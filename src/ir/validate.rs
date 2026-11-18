@@ -274,13 +274,20 @@ pub fn data_errors(module: &IrModule) -> Vec<IrValidationError> {
     errors
 }
 
-/// Every place a module turns a constant into a pointer: a `Cast` from `I64`
-/// to `Ptr` whose operand is defined by a `ConstInt`.
+/// Every `Cast` from `I64` to `Ptr` whose operand is defined directly by a
+/// `ConstInt` — the shape lowering used to write a string's address in.
 ///
-/// Narrow on purpose. Lowering casts a run-time word to a pointer when it
-/// unpacks a `Result` payload, and that operand comes from a load or a shift,
-/// never from a constant. A constant operand can only be an address the
-/// compiler wrote down, which means nothing outside the process that wrote it.
+/// Narrow on purpose, and no wider than that sentence. Lowering casts a
+/// run-time word to a pointer in the four places it unpacks a `Result`
+/// payload, and that operand is the low half of the packed word, never a
+/// constant. A constant operand can only be an address the compiler wrote
+/// down, which means nothing outside the process that wrote it.
+///
+/// What this does not find: a constant that reaches the cast through a bind,
+/// through arithmetic, or by narrowing a wider constant. Lowering emits none
+/// of those, and the corpus test (`diff_harness`) would show an address by
+/// its other symptom — two processes printing different IR — but hand-built
+/// IR of that shape passes this rule.
 ///
 /// Public and separate from [`validate_module`] so a backend can run this one
 /// rule before generating code, without the rest of the validator.

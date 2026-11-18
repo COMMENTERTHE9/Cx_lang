@@ -49,8 +49,9 @@ pub fn print_data(data: &IrData) -> String {
             word.copy_from_slice(chunk);
             words.push(format!("i64 {}", i64::from_le_bytes(word)));
         } else {
-            // A tail shorter than a word. The validator rejects this shape for
-            // an object with relocations; print it rather than hide it.
+            // A tail shorter than a word. Lowering does not produce one in an
+            // object with relocations, and the validator does not reject it;
+            // print it rather than hide it.
             let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
             words.push(format!("hex {}", hex.join(" ")));
         }

@@ -165,6 +165,10 @@ pub struct IrGlobal {
     pub align: usize,
 }
 
+/// Names one [`IrData`] object of a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DataId(pub u32);
+
 /// Read-only module data with fixed contents: the bytes of a string literal,
 /// and the `{pointer, length}` descriptor that names them
 /// (docs/backend/static_data_design.md).
@@ -172,9 +176,6 @@ pub struct IrGlobal {
 /// Separate from [`IrGlobal`] on purpose. A global is writable, starts as zeros
 /// and carries a lifecycle byte every access checks; data is read-only, has
 /// contents, and is never checked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct DataId(pub u32);
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrData {
     pub id: DataId,

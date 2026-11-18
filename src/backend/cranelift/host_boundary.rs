@@ -842,7 +842,8 @@ impl HostBoundary {
         // anything is placed: a relocation outside its object would be a write
         // outside an allocation. Then every object is declared before any is
         // defined, so a descriptor can name bytes that are listed after it.
-        // The memory belongs to this JITModule and goes when it does.
+        // The memory is the JITModule's; this code never frees it, and the
+        // module's own drop does not unmap it (static_data_design.md §3.6).
         if let Some(error) = crate::ir::validate::data_errors(ir).into_iter().next() {
             return Err(JitExecutionError::CodegenFailure { detail: format!("invalid module data: {:?}", error) });
         }
@@ -1669,8 +1670,10 @@ fn compile_ir_function(
                     // Reject Ptr and Void — neither has a meaningful scalar cast path.
                     match (from, to) {
                         // D2.3b: I64 ↔ Ptr is a no-op reinterpret — both map to
-                        // cranelift `types::I64`, so this materializes a baked
-                        // string-descriptor address as a Ptr (string rep (a)). It
+                        // cranelift `types::I64`. Since M1.1 the only I64 that
+                        // lowering turns into a Ptr is a `Result`'s payload word
+                        // holding a string descriptor's address; a constant is
+                        // refused before this point (`find_address_constants`). It
                         // falls through to the `from_cl == to_cl` alias path below.
                         // All other Ptr casts stay unsupported (no scalar equivalent).
                         (IrType::I64, IrType::Ptr) | (IrType::Ptr, IrType::I64) => {}

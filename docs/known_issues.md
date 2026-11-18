@@ -5279,6 +5279,9 @@ identified — which misses the design's own "no more than 10%" in some variants
 The benchmark programs are unchanged. `static_data_design.md` §11 has the
 measurements and what was ruled out; it is a decision for the owner.
 
+*(Superseded by §73a: the cause was identified by the independent review and
+is not this change. Nothing is open here.)*
+
 ## 72. Findings of the confirmation review of §68–§70's fixes, and their fixes
 
 *(2026-11-18. The fixes for the two previous reviews were themselves reviewed
@@ -5451,6 +5454,7 @@ agreed on. Its 418 earlier probes: 128 refused, 193 agreeing, 97 failing alike
 on both; refused that the base agreed on, the same 15 narrowings as §70c.
 Corpus replay, 694 programs on both backends, against the build before this
 entry: identical.
+
 ## 73. Findings of the independent review of M1.1 (§71), and what was done
 
 *(2026-11-18. The four commits of M1.1 were reviewed independently before
@@ -5460,6 +5464,19 @@ programs and 29 scale programs, exit code, output and error text, both
 backends; and the IR is the old IR with the address constant replaced, over
 908 programs that lower. Four findings it rated "should fix", all addressed
 below.)*
+
+**a. The slowdown reported in §71 is not caused by M1.1.** §71 and the design
+document said a string-comparing loop was a few percent slower, cause not
+identified, and asked for the owner's decision. The cause is where the
+runtime's string comparison lands in the compiler's own binary: 36 bytes of
+code that fit inside a 64-byte cache line in the build before the change and
+cross a line boundary in the build after, because unrelated code moved. With
+that held fixed, in one binary that can do either: address constants 17.55 ns,
+data objects 17.57 ns (sum over six loop variants). Crossing the boundary
+costs about 9.5% whichever is used. Reproduced here on three of the variants.
+The design document's §11 is corrected; the criterion is met; there is nothing
+to decide. What remains true is that any commit which moves host code can
+shift a string-comparison benchmark by a tenth.
 
 **b. Taking the address of an object of no bytes brought the process down.**
 Valid IR, accepted by the validator: `data @d0 align 1 bytes ""` and
@@ -5492,3 +5509,28 @@ whole process; this one names the primitives a leak would need). And
 `two_descriptors_of_one_string_are_distinct_and_share_its_bytes` passed with
 every relocation written eight bytes off, because it compared two slots with
 each other; it now compares them with the bytes object's address.
+
+**e. The address-constant rule is narrower than it was described.** It finds a
+constant cast directly to a pointer. A constant that reaches the cast through
+a bind, through arithmetic or by narrowing is not found, and such hand-built
+IR runs. §71's "cannot come back unnoticed" overstated it: the direct shape
+cannot; the corpus test would show any other by the IR differing between two
+processes. The owner asked for a narrow rule, and it is left narrow; the
+descriptions are corrected (`validate.rs`, the design's §3.5). The one
+constant-to-pointer cast lowering still emitted from source — the `unknown`
+arm of a `when` on a string, refused by the JIT — is gone with §72c.
+
+**f. Comments and documents that said something untrue**, each corrected: that
+the data's memory "goes when" the JIT module does (it stays mapped); that the
+pointer cast materialises "a baked string-descriptor address"; that the
+validator rejects a data object with a tail shorter than a word (it does not);
+"three places … from a load" for the four places a `Result` payload is cast;
+the `IrData` description attached to `DataId`; `module_state.md` still saying
+string lowering embeds addresses; and the design saying the table is passed by
+`&mut` where the code shares it by reference count.
+
+**g. Recorded, not changed.** What an object-file backend still needs from
+this representation (no addend, data-only targets, no names or sections, fixed
+pointer size) is the design's new §12. `printing_a_module_with_data_twice_…`
+can only fail if the printer consults addresses, which it never did.
+
