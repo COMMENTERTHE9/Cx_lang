@@ -5316,3 +5316,10 @@ print(when x { 1 => 1, _ => 2 })         // interpreter 2; compiled code stopped
 All present on `submain`. A range arm now matches only a whole-number
 scrutinee, `unknown` only a bool, and a whole-number arm never matches a float
 or the reverse — which is what the interpreter does in each case.
+
+**d. `__cx_fmod` was not reserved (§70e).** The list of runtime names written
+for §70e left out the one `%` on floats calls. A program's own function of that
+name was called in its place: `7.5 % 2.0` printed 99. Present on `submain`.
+Reserved now, and a test beside the JIT's registrations
+(`every_registered_runtime_symbol_is_reserved`) fails if a symbol is registered
+without being reserved.

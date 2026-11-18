@@ -1832,6 +1832,46 @@ fn compile_ir_function(
 mod tests {
     use super::*;
 
+    /// Every symbol the JIT registers is a name a Cx program may not give a
+    /// function of its own. A user function called `__cx_fmod` used to be
+    /// called in place of the runtime's for every `%` on floats, because the
+    /// reserved list had been written without it (known-issues §72).
+    ///
+    /// The list here is kept by hand, so the registrations in this file are
+    /// counted against it: adding one without naming it here fails.
+    #[cfg(feature = "jit")]
+    #[test]
+    fn every_registered_runtime_symbol_is_reserved() {
+        let registered = [
+            "cx_printn",
+            "cx_print_bool",
+            "cx_print_str",
+            "cx_str_eq",
+            "cx_print_str_inline",
+            "cx_printn_inline",
+            "cx_print_bool_inline",
+            "cx_print_f64_inline",
+            "cx_print_newline",
+            JIT_F64_REM_SYMBOL,
+            JIT_TRAP_SYMBOL,
+            JIT_EXIT_SYMBOL,
+            JIT_DEPTH_ENTER_SYMBOL,
+            JIT_DEPTH_EXIT_SYMBOL,
+            "cx_handle_new",
+            "cx_handle_val",
+            "cx_handle_drop",
+        ];
+        let reserved = crate::ir::validate::runtime_intrinsic_names();
+        for name in registered {
+            assert!(reserved.contains(name), "the JIT registers `{name}` but a program may define a function with that name");
+        }
+        let registrations = include_str!("host_boundary.rs")
+            .lines()
+            .filter(|line| line.trim_start().starts_with("jit_builder.symbol("))
+            .count();
+        assert_eq!(registrations, registered.len(), "a runtime symbol was added or removed; update the list in this test");
+    }
+
     /// Build a throwaway `IrModule` whose only content is the call edges: each
     /// entry is `(function name, callees)`. Blocks and instructions beyond the
     /// calls are irrelevant to the graph.
