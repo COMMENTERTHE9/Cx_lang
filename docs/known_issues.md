@@ -5505,9 +5505,18 @@ taken at its word.
 On the review's own two generators — written to stress exactly these shapes,
 with helpers that swap, reassign and store their arguments through arrays —
 programs refused now that `submain` and the build before (a) both ran and
-agreed on: 562 of 12,000 and 578 of 8,000 before the `if`/`when` fix, 485 and
-502 after it. Disagreements between the backends, crashes or exit mismatches
-in those 20,000: none, before or after.
+agreed on: 608 of 12,000 and 615 of 8,000 before the `if`/`when` fix, 530 and
+540 after it. Disagreements between the backends, crashes or exit mismatches
+in those 20,000: none, before or after. (The message of the commit that makes
+the fix gives 562, 578, 485 and 502. Those were read off summaries that list
+only the commonest reasons; the figures here count every program.)
+
+The fix itself went back to the same reviewer, who found it sound: 464
+written probes and 8,000 generated programs ending in `if`/`when` values with
+side effects in the branches, none disagreeing; every program that the fix
+newly accepts agrees with the interpreter. A variant of that generator that
+also puts `.copy` calls in conditions found 32 disagreements — all of them
+§57b, which is open and on `submain`, and has nothing to do with payloads.
 
 **Measured.** The review's 1,709 probe programs, interpreter against compiled
 code, `submain` → before this entry → now: crashes 13 → 5 → 0; exit mismatches
