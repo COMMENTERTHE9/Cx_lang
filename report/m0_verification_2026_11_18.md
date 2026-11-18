@@ -18,9 +18,11 @@ Nothing here touches `main` or a release. Nothing was merged into `submain`.
 | PR #476 reviewed against the three audit failures | Fixes one of three; **not integrated** — a blocking regression and an unresolved semantic question (§3) |
 | Field-assignment right-hand side evaluated twice | Fixed, 2 fixtures (§4.1) |
 | String `when` arms never matching | Fixed, 1 fixture (§4.2) |
-| `while` on an unknown condition | Fixed on both backends, 4 fixtures (§4.3) |
+| `while` on an unknown condition | Fixed on both backends, 5 fixtures (§4.3). **Changes the interpreter; needs your confirmation** |
+| `while` on a non-bool condition, found by review | Compiled code now refuses it, as `if` does (§4.4) |
 | Default, JIT, parity, matrix | All pass; no fixture moved to SKIP; no expectation changed (§5) |
-| Independent review of the fixes | §5 |
+| Independent review of the fixes | No blocking defect (§5) |
+| Silent differences still open | Three, all pre-existing, filed (§6) |
 | M1.1 proposal | `docs/backend/static_data_design.md`, awaiting approval (§8) |
 
 ---

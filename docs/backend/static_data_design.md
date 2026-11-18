@@ -268,15 +268,15 @@ M0 baseline.
 
 | Gate | Baseline | Requirement |
 |---|---|---|
-| `cargo test` | 319 / 0 | all pass; count rises only by new tests |
-| `cargo test --features jit` | 498 / 0 | all pass; count rises only by new tests |
-| Parity | 609 PASS / 48 SKIP / 0 PARITY_FAIL (657 fixtures) | PASS ≥ 609, SKIP = 48 with the **same 48 fixtures**, 0 PARITY_FAIL |
-| `run_matrix.sh` | 657 / 657 | all pass |
+| `cargo test` | 320 / 0 | all pass; count rises only by new tests |
+| `cargo test --features jit` | 499 / 0 | all pass; count rises only by new tests |
+| Parity | 610 PASS / 48 SKIP / 0 PARITY_FAIL (658 fixtures) | PASS ≥ 610, SKIP = 48 with the **same 48 fixtures**, 0 PARITY_FAIL |
+| `run_matrix.sh` | 658 / 658 | all pass |
 | Clippy | recorded count on both feature sets | no new lint |
 
 **Behaviour preservation**
 
-- Replay every fixture, example and benchmark (694 programs plus the 7 from M0)
+- Replay every fixture, example and benchmark (694 programs plus the 8 from M0)
   on both backends with the pre-change and post-change binaries. Requirement:
   zero differences in exit code or stdout. Stderr may differ only where it
   contains an IR dump.
