@@ -14697,6 +14697,38 @@ mod divergence_shape_tests {
         assert!(grown < 4096, "lowering grew resident memory by {grown} KB over 4000 runs");
     }
 
+    /// M1.1: the guard for the same thing that runs every time. The
+    /// measurement above is ignored by default, so with it alone a leak could
+    /// come back and every default run stay green (the review put one back
+    /// and nothing failed). The IR sources name none of the ways to hand
+    /// memory to the process for good.
+    #[test]
+    fn the_ir_sources_name_no_way_to_leak() {
+        // Spelled in pieces so that this test does not find itself.
+        let ways = [
+            ["Box::", "leak"].concat(),
+            [".le", "ak("].concat(),
+            ["into_", "raw("].concat(),
+            ["mem::", "forget"].concat(),
+            ["Manually", "Drop"].concat(),
+        ];
+        let sources = [
+            ("lower.rs", include_str!("lower.rs")),
+            ("types.rs", include_str!("types.rs")),
+            ("validate.rs", include_str!("validate.rs")),
+            ("printer.rs", include_str!("printer.rs")),
+        ];
+        for (name, source) in sources {
+            for way in &ways {
+                let lines: Vec<usize> = source.lines().enumerate()
+                    .filter(|(_, line)| line.contains(way.as_str()))
+                    .map(|(index, _)| index + 1)
+                    .collect();
+                assert!(lines.is_empty(), "{name} uses `{way}` on line(s) {lines:?}");
+            }
+        }
+    }
+
     /// §68: on the way to a store an index is a place. `rows:[h(rows.copy)]:[1]
     /// = 5` must write `rows`, so no copy of `rows` is taken for it — a copy
     /// would receive the store. The same index as a read does take one.

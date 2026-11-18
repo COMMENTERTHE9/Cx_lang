@@ -1517,16 +1517,25 @@ fnc: second() {
     /// address-constant rule — reports none. Two processes, not two calls in
     /// one: the thing being ruled out is a value that differs between
     /// processes, and before M1.1 every string literal carried one.
+    ///
+    /// Like the parity gate, this runs the binary that is on disk — build
+    /// first — and like it, refuses to pass when there is none: it used to
+    /// print SKIP and report `ok` having looked at nothing.
     #[test]
+    #[cfg(feature = "jit")]
     fn ir_is_reproducible_and_holds_no_compiler_address_across_the_corpus() {
         let binary = cx_binary_path();
         if !binary.exists() {
-            eprintln!(
-                "SKIP ir_is_reproducible_and_holds_no_compiler_address_across_the_corpus — \
-                 binary not found at {:?}. Build with `cargo build --features jit` then re-run.",
+            panic!(
+                "\n==================================================================\n\
+                 IR REPRODUCIBILITY CHECK ABORTED — binary not found.\n\
+                 No Cx_0V binary at {:?}.\n\
+                 Build and run together:\n\n    \
+                 cargo build --features jit && cargo test --features jit\n\n\
+                 Refusing to report a green result when no binary was exercised.\n\
+                 ==================================================================",
                 binary
             );
-            return;
         }
         let dump = |fixture: &TestFixture| -> String {
             let output = Command::new(&binary)

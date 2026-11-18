@@ -10256,8 +10256,9 @@ mod module_data_tests {
     }
 
     /// Descriptor identity: two descriptors of one bytes object are two
-    /// addresses holding one bytes address, and one descriptor asked for
-    /// twice is one address.
+    /// addresses holding one bytes address — the address of the bytes object
+    /// itself, not merely the same wrong one twice — and one descriptor asked
+    /// for twice is one address.
     #[test]
     fn two_descriptors_of_one_string_are_distinct_and_share_its_bytes() {
         let bit = |dst: u32, op: CompareOp, lhs: u32, rhs: u32, weight: i128| vec![
@@ -10275,14 +10276,18 @@ mod module_data_tests {
             IrInst::Cast { dst: ValueId(5), from: IrType::Ptr, to: IrType::I64, value: ValueId(2) },
             IrInst::Load { dst: ValueId(6), ty: IrType::I64, ptr: ValueId(0) },
             IrInst::Load { dst: ValueId(7), ty: IrType::I64, ptr: ValueId(1) },
+            IrInst::DataAddr { dst: ValueId(8), data: DataId(0) },
+            IrInst::Cast { dst: ValueId(9), from: IrType::Ptr, to: IrType::I64, value: ValueId(8) },
         ];
         insts.extend(bit(10, CompareOp::Ne, 3, 4, 1));   // the two descriptors differ
         insts.extend(bit(20, CompareOp::Eq, 6, 7, 2));   // their bytes addresses agree
         insts.extend(bit(30, CompareOp::Eq, 3, 5, 4));   // one descriptor is one address
+        insts.extend(bit(50, CompareOp::Eq, 6, 9, 8));   // and that address is the bytes object's
         insts.extend([
             IrInst::Binary { dst: ValueId(40), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(13), rhs: ValueId(23) },
             IrInst::Binary { dst: ValueId(41), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(40), rhs: ValueId(33) },
-            IrInst::Cast { dst: ValueId(42), from: IrType::I64, to: IrType::I32, value: ValueId(41) },
+            IrInst::Binary { dst: ValueId(43), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(41), rhs: ValueId(53) },
+            IrInst::Cast { dst: ValueId(42), from: IrType::I64, to: IrType::I32, value: ValueId(43) },
         ]);
         let ir = main_returning(
             vec![
@@ -10292,7 +10297,30 @@ mod module_data_tests {
             ],
             insts, ValueId(42),
         );
-        assert_eq!(run(&ir), 1 + 2 + 4);
+        assert_eq!(run(&ir), 1 + 2 + 4 + 8);
+    }
+
+    /// A number turned into a pointer is refused on the path every compiled
+    /// program takes, before anything is placed or run — not only by the
+    /// standalone validator. Without this the rule could be unwired from the
+    /// JIT and every default test stay green (the review did exactly that).
+    #[test]
+    fn a_constant_turned_into_a_pointer_is_refused_before_anything_runs() {
+        let ir = main_returning(
+            vec![],
+            vec![
+                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 0x7000_0000_1000 },
+                IrInst::Cast { dst: ValueId(1), from: IrType::I64, to: IrType::Ptr, value: ValueId(0) },
+                IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(1) },
+            ],
+            ValueId(2),
+        );
+        match HostBoundary::new().execute(&ir) {
+            Err(JitExecutionError::UnsupportedConstruct { construct }) => {
+                assert!(construct.contains("address from inside the compiler"), "{construct}");
+            }
+            other => panic!("expected the address constant to be refused, got {other:?}"),
+        }
     }
 
     /// An empty string: no bytes, a length of zero, and an address that is

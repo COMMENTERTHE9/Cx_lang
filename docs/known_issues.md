@@ -5474,3 +5474,21 @@ That also removes a cost older than M1.1. The bytes of `""` had the address 1
 library's comparison, handed it, took a suppressed fault each time: 20 million
 comparisons of `""` took 2.0 s against 0.45 s for `"a"`, on `submain` as well.
 Now 0.45 s.
+
+**c. The corpus test passed without looking at anything when there was no
+binary.** It printed SKIP and returned `ok`, while the parity gate beside it
+refuses to. It now refuses too, and is built with the `jit` feature like the
+parity gate, so that plain `cargo test` does not depend on a build having been
+made first. Like the parity gate it tests the binary on disk, which
+`cargo test` does not rebuild.
+
+**d. Two claims were not held by any test that runs by default.** The review
+removed the JIT's address-constant refusal and put a leak back into lowering;
+nothing failed for either. Added:
+`a_constant_turned_into_a_pointer_is_refused_before_anything_runs` (the JIT
+itself, on hand-built IR) and `the_ir_sources_name_no_way_to_leak` (the
+measurement of the leak stays ignored by default, because it measures the
+whole process; this one names the primitives a leak would need). And
+`two_descriptors_of_one_string_are_distinct_and_share_its_bytes` passed with
+every relocation written eight bytes off, because it compared two slots with
+each other; it now compares them with the bytes object's address.
