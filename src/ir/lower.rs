@@ -2715,6 +2715,13 @@ fn lower_while(
     // header, so it re-checks on every backedge. A definite Bool condition is
     // returned unchanged with no IR emitted.
     let cond_val = guard_unknown_condition(cond_val, ctx, &mut header)?;
+    // The same check `if` makes. Without it a condition that is not a bool —
+    // `while (n)` on an integer — was branched on as "non-zero", while the
+    // interpreter ends the loop for anything that is not true: both exit 0 with
+    // different output (`docs/known_issues.md` §57a). Compiled code refuses the
+    // shape, as it already does for `if n { .. }`; what a number should MEAN as
+    // a condition is not decided here.
+    ensure_type_match("while condition", IrType::Bool, cond_val.ty.clone())?;
 
     let body_block = ctx.start_block(vec![], header_bindings.clone());
     let body_id = body_block.id();
@@ -12898,6 +12905,21 @@ mod divergence_shape_tests {
             .filter(|b| matches!(&b.term, IrTerminator::Jump { target, .. } if *target == header.id))
             .count();
         assert!(backedges >= 2, "entry and backedge both reach the guarded header, found {backedges}");
+    }
+
+    /// §57a: a `while` condition that is not a bool is refused, as `if` already
+    /// refuses it, instead of being branched on as "non-zero".
+    #[test]
+    fn while_on_a_non_bool_condition_is_refused() {
+        let id = resolver::ModuleId(0);
+        let src = "n: t64 = 1\nwhile (n) {\n    print(7)\n    n = 0\n}\nprint(8)\n";
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape today");
+        let error = lower_program(&analyzed).expect_err("an integer is not a loop condition compiled code can branch on");
+        assert!(matches!(error, LoweringError::InternalInvariantViolation { ref detail }
+            if detail.contains("while condition")), "{error:?}");
     }
 
     /// §54, the other half: a definite `bool` condition lowers exactly as it did

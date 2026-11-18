@@ -4216,6 +4216,27 @@ compiled code refuses the assignment itself ("assign type mismatch: expected
 Bool, got TBool"). The interpreter handles that shape and now refuses it at the
 next evaluation.
 
+**What the independent review added.**
+
+- *This is a ruling, and it needs the owner's confirmation.* The principle
+  existed; the run-time rule for `while` did not. #026 was scoped to the `if`
+  condition site, and the README stated the rule for `if` only (it now says
+  `if` or `while`). Skipping the loop came from a catch-all `_ => break`, not
+  from a decision. Reversing the ruling means reverting the interpreter half of
+  this commit and making compiled code skip the loop instead.
+- *The reach is one step wider than a `bool` holding `?`.* A comparison on an
+  unknown number is itself unknown, so `x: t64 = ?` followed by `while (x < 5)`
+  is refused by the interpreter too (it used to skip the loop). `if x < 5`
+  already behaved this way. Compiled code refuses the program earlier, at the
+  untyped unknown.
+- *`t_while_unknown_after_iterations` does not assert its output.* The harness
+  checks only the exit shape of an `expected_fail` fixture, so "runs twice, then
+  refused" is not pinned by it. `t_while_three_state_break_before_unknown` pins
+  the first half — the same loop, leaving before the third evaluation, must run
+  to completion — and the unit test
+  `while_on_a_three_state_condition_guards_unknown_in_the_loop_header` pins that
+  the guard is in the header.
+
 ## 55. `assert_eq` compares strings inside a `Result` by where they are stored, and never accepts two enums
 
 *(Found 2026-11-18 while reviewing PR #476. **Open — needs an owner ruling.**
@@ -4274,9 +4295,9 @@ print(c.v)        // interpreter 102, JIT 101
 
 The interpreter reads the field (1), evaluates the call (which writes 101 back
 into `c`), and stores 1 + 101. Compiled code ends with the value the call wrote
-back, so its own store is overwritten. The plain `=` form agrees since §52. This
-is the one remaining case found where both backends exit 0 and print different
-things.
+back, so its own store is overwritten. The plain `=` form agrees since §52.
+Both backends exit 0 and print different things; §57 records two more cases of
+that kind.
 
 **b. The interpreter leaks a function scope when `?` returns early from a bare
 expression `when` arm.** `run_semantic_when` evaluates the arm with `?` and
@@ -4315,3 +4336,62 @@ runs.** Six runs of one three-field program gave four orderings
 a hash map. Compiled code refuses to print a struct, so there is no parity
 failure, but a reference that is not reproducible cannot be matched by any
 backend, and no fixture can pin this output.
+
+## 57. Open findings from the review of the M0 fixes — conditions and guards
+
+*(Found 2026-11-18 by the independent review of §52–§54 and reproduced on the
+unfixed and the fixed build alike. (a) is closed on the compiled side by the
+commit that introduces this entry; (b) and (c) are open.)*
+
+**a. A condition that is not a bool.** `while (n)` on an integer: the
+interpreter ends the loop for anything that is not true, compiled code branched
+on non-zero. Both exited 0.
+
+```cx
+n: t64 = 1
+while (n) {
+    print(7)
+    n = 0
+}
+print(8)          // interpreter: 8      JIT: 7 8
+```
+
+Compiled code now refuses the shape (exit 127), with the same check `if`
+already makes — `if n { .. }` has always been refused there. **Still open on
+the interpreter**, which is inconsistent with itself: a number is false as a
+`while` condition and true-if-non-zero as an `if` condition, and analysis accepts
+both. What a number means as a condition is a language question.
+
+**b. A `.copy` write-back made while evaluating a condition is lost in compiled
+code.** The branch's bindings are captured before the condition is lowered, so
+the body reads the value from before the call. Both exit 0.
+
+```cx
+i: t64 = 0
+fnc: bool step(n.copy: t64) {
+    n = n + 1
+    return n < 4
+}
+if step(i.copy) { print(i) } else { print(100 + i) }
+print(i)          // interpreter: 1 1    JIT: 0 0
+```
+
+The same happens in a `while` condition and a `when` scrutinee.
+
+**c. A guarded catch-all followed by another arm drops the later arms in
+compiled code.** Both exit 0; the expression form traps instead.
+
+```cx
+n: t64 = 3
+when n {
+    _ if n == 9 => print(4),
+    _ => print(0),
+}
+print(5)          // interpreter: 0 5    JIT: 5
+```
+
+**The count.** After §52–§54 and (a), three cases are known where both backends
+exit 0 and print different things: §56a, §57b and §57c. Each was found by
+writing a program aimed at one construct. The reviewer's 900 random programs and
+a replay of every tracked `.cx` file found none, which says the generated
+programs do not reach these shapes, not that there are no more.
