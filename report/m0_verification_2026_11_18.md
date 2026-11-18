@@ -230,15 +230,41 @@ Each is one commit with its fixtures and its known-issues entry.
   `UnknownLoopCondition` error (exit 1, a diagnostic naming `while`). The JIT
   reuses the guard `if` already has, placed in the loop header so it runs on
   every evaluation (exit 126).
-- **This changes interpreter behaviour.** A program that relied on an unknown
-  `while` condition quietly ending the loop now stops with an error. No fixture,
-  example or benchmark did.
+- **This changes interpreter behaviour, and it is a ruling that needs your
+  confirmation.** A program that relied on an unknown `while` condition quietly
+  ending the loop now stops with an error. No fixture, example or benchmark did.
+  The independent reviewer's reading, which I accept: the principle existed, but
+  the run-time rule for `while` did not — #026 was scoped to `if`, and the README
+  stated the rule for `if` only (it now says `if` or `while`). The audit's own
+  plan for this task said "no interpreter change"; your later instruction to
+  check the interpreter independently is what this rests on. The reviewer would
+  have made the same call on the merits.
+- **Reach.** It also covers a comparison on an unknown number
+  (`x: t64 = ?` … `while (x < 5)`), which is itself unknown. `if x < 5` already
+  behaved this way.
 - **Fixtures.** `t_while_unknown_condition`, `t_while_unknown_after_iterations`
   (both recorded as interpreter diagnostic, JIT trap — the same pair
   `t_if_unknown_condition` records), `t_while_definite_bool`,
-  `t_while_three_state_definite`.
+  `t_while_three_state_definite`, `t_while_three_state_break_before_unknown`.
 - **Discriminates.** On the second fixture the unfixed interpreter runs to
-  completion and the unfixed JIT loops until killed.
+  completion and the unfixed JIT loops until killed. The last three are controls:
+  they pass before and after, and exist to catch a guard that refuses too much.
+
+### 4.4 A `while` condition that is not a bool — known-issues §57a
+
+Found by the independent review at the site of 4.3, and not one of the three
+audit failures.
+
+- **Cause.** `while (n)` on an integer: the interpreter ends the loop for
+  anything that is not true; compiled code branched on non-zero. Both exited 0.
+- **Fix, compiled side only.** `while` now makes the type check `if` already
+  makes, so compiled code refuses the shape (exit 127) as it always has for
+  `if n { .. }`.
+- **Left open.** The interpreter treats a number as false in `while` and as
+  true-if-non-zero in `if`, and analysis accepts both. Deciding what a number
+  means as a condition is a language question, so nothing was changed there.
+- **Test.** A unit test for the refusal. No fixture: the interpreter runs the
+  program and compiled code refuses it, which would add a SKIP.
 
 ---
 
@@ -248,15 +274,16 @@ All run on Linux on the branch head.
 
 | Gate | `submain` `d4b2c06` | M0 head | Change |
 |---|---|---|---|
-| `cargo test` | 314 / 0 | 319 / 0 | +5 new unit tests |
-| `cargo test --features jit` | 493 / 0 | 498 / 0 | +5 new unit tests |
-| Fixtures | 650 | 657 | +7 new |
-| Parity | 602 PASS / 48 SKIP / 0 FAIL | 609 PASS / 48 SKIP / 0 FAIL | +7 PASS, SKIP unchanged |
-| `run_matrix.sh` | not re-run | 657 / 657 | |
+| `cargo test` | 314 / 0 | 320 / 0 | +6 new unit tests |
+| `cargo test --features jit` | 493 / 0 | 499 / 0 | +6 new unit tests |
+| Fixtures | 650 | 658 | +8 new |
+| Parity | 602 PASS / 48 SKIP / 0 FAIL | 610 PASS / 48 SKIP / 0 FAIL | +8 PASS, SKIP unchanged |
+| `run_matrix.sh` | not re-run | 658 / 658 | |
 
 - **Replay.** All 694 pre-existing fixtures, examples and benchmarks, on both
   backends, with the pre-fix and post-fix binaries: 1,388 runs, zero differences
-  in exit code, stdout or stderr, zero timeouts.
+  in exit code, stdout or stderr, zero timeouts. Run twice: after the three
+  fixes, and again on the final build.
 - **No expectation was edited.** The diff adds files under
   `src/tests/verification_matrix/` and changes none.
 - **No fixture moved to SKIP.** The 48 are the same 48.
@@ -265,14 +292,15 @@ All run on Linux on the branch head.
   phase, interpreter against JIT on the fixed build: none exits 0 on both
   backends with different output. Three still differ by exit code, all already
   recorded: the `cx_trap` name collision from the audit, and the two `assert_eq`
-  cases in known-issues §55. That sweep is not a proof of absence: the
-  independent review of PR #476 afterwards found one more silent difference that
-  none of these programs exercised (known-issues §56a).
-- **Five unit tests pin the IR** (`divergence_shape_tests` in `src/ir/lower.rs`):
+  cases in known-issues §55. That sweep is not a proof of absence: the two
+  independent reviews afterwards found four more silent differences that none of
+  these programs exercised. One is fixed (§4.4); three are open (§6).
+- **Six unit tests pin the IR** (`divergence_shape_tests` in `src/ir/lower.rs`):
   one call per field-assignment right-hand side, one `cx_str_eq` per string arm,
   the refusal at the string-pattern boundary, the unknown guard in the loop
-  header, and no guard for a definite condition. Run against the parent of the
-  fixes, four fail and the negative control passes.
+  header, no guard for a definite condition, and the refusal of a non-bool
+  `while` condition. Run against the parent of the fixes, the first four of the
+  original five fail and the negative control passes.
 
 **Each commit passes on its own.** The JIT gate was run at every commit, not
 only at the head:
@@ -283,6 +311,7 @@ only at the head:
 | `eed8a4d` string `when` | 493 / 0 | 605 PASS / 48 SKIP / 0 FAIL (653) |
 | `1b87fe6` unknown `while` | 493 / 0 | 609 PASS / 48 SKIP / 0 FAIL (657) |
 | `63c4544` IR-shape unit tests | 498 / 0 | 609 PASS / 48 SKIP / 0 FAIL (657) |
+| Head: non-bool `while` refusal, eighth fixture | 499 / 0 | 610 PASS / 48 SKIP / 0 FAIL (658) |
 
 **Clippy.** 111 warnings on both feature sets, before and after (clippy
 0.1.97). No new lint.
@@ -297,9 +326,31 @@ regression of this size but not a small one.
 ### Independent review of the M0 commits
 
 A second reviewer was given the three fix commits and both binaries and asked to
-break them and to judge the `while` ruling on its merits. **That review had not
-reported when this document was committed.** Its result is added in a follow-up
-commit.
+break them and to judge the `while` ruling on its merits. Its verdict: **no
+blocking defect; each fix does what its commit claims and could not be broken.**
+
+What it ran, all on both backends with the pre-fix and post-fix binaries:
+
+| Check | Result |
+|---|---|
+| Replay of all 706 tracked `.cx` files | Only the five discriminating new fixtures changed; no hang, crash or disagreement on the fixed build |
+| IR dump of all 706 files, before and after | 24 differ: 20 field-assignment programs (the duplicate lowering removed, nothing else), `t_when_str_content`, and the three three-state `while` fixtures. No definite-bool `while` changed |
+| 900 generated programs mixing the three constructs | No disagreement on the fixed build; the interpreter changed only on the 159 that reach an unknown `while` condition |
+| About 95 hand-written programs | No disagreement on the fixed build |
+| The seven fixtures | All expected outputs correct; five discriminate, two are appropriate controls |
+
+What it raised, and what was done:
+
+| # | Its finding | Action |
+|---|---|---|
+| 1 | The interpreter change is a new ruling, disclosed but beyond the audit plan's stated scope; it would make the same call | Flagged for your confirmation (§4.3); README aligned |
+| 2 | A non-bool `while` condition still differs silently | Compiled side fixed (§4.4); interpreter side filed, §57a |
+| 3 | A string pattern on an integer scrutinee went from running to refused on the JIT | Intended and stated in the commit; bool, enum and float scrutinees were already refused. Kept |
+| 4 | `--backend=validate` now fails on `t_when_str_content` | The validator does not know `cx_str_eq`; same gap as string `==`. Input to M1.2 |
+| 5 | `t_while_unknown_after_iterations` does not assert "runs twice, then refused" | Added `t_while_three_state_break_before_unknown`, which pins the first half |
+| 6 | Two more pre-existing silent differences, unrelated to these commits | Reproduced and filed, §57b and §57c (§6 below) |
+
+It did not run `cargo test` or the parity harness; those results are mine.
 
 My own adversarial pass, run on both backends with the pre-fix and post-fix
 binaries, found nothing on the fixed build:
@@ -322,7 +373,10 @@ binaries, found nothing on the fixed build:
 
 | Finding | Where recorded |
 |---|---|
-| A compound field assignment whose right-hand side changes the same struct through `.copy`: interpreter 102, JIT 101, both exit 0. **The one remaining silent difference found** | Known-issues §56a |
+| A compound field assignment whose right-hand side changes the same struct through `.copy`: interpreter 102, JIT 101, both exit 0. **Silent** | Known-issues §56a |
+| A `.copy` write-back made while evaluating an `if`, `while` or `when` condition is lost in compiled code: interpreter `1 1`, JIT `0 0`. **Silent** | Known-issues §57b |
+| A guarded catch-all `when` arm followed by another arm drops the later arms in compiled code: interpreter `0 5`, JIT `5`. **Silent** | Known-issues §57c |
+| The interpreter treats a number as false in a `while` condition and as true-if-non-zero in an `if` condition; analysis accepts both | Known-issues §57a |
 | The interpreter leaks a function scope when `?` returns early from a bare-expression `when` arm | Known-issues §56b |
 | Printing a `Result` that holds a struct crashes compiled code (segfault or abort) | Known-issues §56c |
 | The interpreter prints a struct's fields in a different order on different runs | Known-issues §56d |
