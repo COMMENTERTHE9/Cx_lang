@@ -1,0 +1,6 @@
+// A handle is not a condition either.
+let h
+h = Handle.new(5)
+print("before")
+assert(h)
+print("unreachable")

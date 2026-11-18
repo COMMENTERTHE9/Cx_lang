@@ -5323,3 +5323,8 @@ name was called in its place: `7.5 % 2.0` printed 99. Present on `submain`.
 Reserved now, and a test beside the JIT's registrations
 (`every_registered_runtime_symbol_is_reserved`) fails if a symbol is registered
 without being reserved.
+
+**e. `assert` on an enum or a handle (§70f).** §70f refused `assert(r)` on a
+`Result`. The interpreter fails `assert` on anything but `true` and a non-zero
+number; compiled code passed it for any enum variant but the first and any
+live handle. Present on `submain`. Refused now.

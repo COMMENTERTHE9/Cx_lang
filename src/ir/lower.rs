@@ -8545,6 +8545,12 @@ fn lower_assert_stmt(
     if matches!(cond_expr.ty, SemanticType::Result(_)) {
         unsupported!("assert on a Result value has no reference implementation");
     }
+    // Nor is an enum or a handle. The interpreter passes `assert` only for
+    // `true` and a non-zero number and fails everything else; coercing the
+    // word passed for any variant but the first and any live handle.
+    if matches!(cond_expr.ty, SemanticType::Enum(_) | SemanticType::Handle(_)) {
+        unsupported!("assert on an enum or a handle, which is not a condition");
+    }
     let cond = lower_expr(cond_expr, ctx, &mut current)?;
 
     // Coerce the condition to Bool (IrType::Bool is the required Branch type).
@@ -14677,6 +14683,18 @@ mod divergence_shape_tests {
         let width = function(&ir, "width");
         assert_eq!(traps(width), 1, "the bounds check");
         assert!(!width.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { .. } | IrInst::GlobalAddr { .. })));
+    }
+
+    /// §72: `assert` on an enum or a handle is refused, as on a Result.
+    #[test]
+    fn assert_on_an_enum_or_a_handle_is_refused() {
+        for src in [
+            "enum C { R, G }\nx: C = C::G\nassert(x)\n",
+            "let h\nh = Handle.new(5)\nassert(h)\n",
+        ] {
+            let err = format!("{}", lowering_error(src));
+            assert!(err.contains("not a condition"), "{src}: {err}");
+        }
     }
 
     /// §70: a `when` arm of another kind than the scrutinee cannot match, so
