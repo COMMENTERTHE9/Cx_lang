@@ -1,0 +1,58 @@
+// A store through a nested index reaches the array itself, whatever its outer
+// index does on the way. In `a:[i]:[j] = v`, `a:[i]` is a place: evaluating
+// `i` may call a method on the variable that holds `a`, or pass it as `.copy`,
+// and the store still lands in `a` — not in a copy of it.
+struct Grid { cells: [2:[2:t64]], at: t64 }
+gm: impl (s: Grid) {
+    fnc: t64 row() { return 1 }
+    fnc: t64 next() {
+        s.at = (s.at + 1) % 2
+        return s.at
+    }
+}
+
+// The outer index calls a method on the variable. The method changes nothing.
+g: Grid = Grid { cells: [[1, 2], [3, 4]], at: 0 }
+g.cells:[g.row()]:[0] = 50
+g.cells:[g.row()]:[1] += 7
+print(g.cells:[1]:[0])
+print(g.cells:[1]:[1])
+
+// The outer index passes the array as `.copy`, and the call changes it.
+fnc: t64 h(r.copy: [2:[2:t64]]) {
+    r:[0]:[0] += 1000
+    return 1
+}
+rows: [2:[2:t64]] = [[1, 2], [3, 4]]
+rows:[h(rows.copy)]:[1] = 5
+print(rows:[1]:[1])
+print(rows:[0]:[0])
+rows:[h(rows.copy)]:[1] += 6
+print(rows:[1]:[1])
+print(rows:[0]:[0])
+
+// Three levels: the write in the outer index, then in the middle one.
+fnc: t64 pick(c.copy: [2:[2:[2:t64]]]) {
+    c:[0]:[0]:[0] += 100
+    return 1
+}
+cube: [2:[2:[2:t64]]] = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+cube:[pick(cube.copy)]:[0]:[1] = 60
+cube:[1]:[pick(cube.copy)]:[0] += 9
+print(cube:[1]:[0]:[1])
+print(cube:[1]:[1]:[0])
+print(cube:[0]:[0]:[0])
+
+// In a loop, with a method that does change the variable.
+fnc: t64 run() {
+    q: Grid = Grid { cells: [[0, 0], [0, 0]], at: 0 }
+    i: t64 = 0
+    while (i < 4) {
+        q.cells:[q.next()]:[0] += 10
+        i += 1
+    }
+    print(q.cells:[0]:[0])
+    print(q.cells:[1]:[0])
+    return q.at
+}
+print(run())
