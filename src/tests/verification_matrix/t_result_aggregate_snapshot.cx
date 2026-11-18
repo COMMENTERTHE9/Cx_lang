@@ -1,0 +1,22 @@
+fnc: Result<[2:t64]> make(v: t64) {
+    a: [2:t64] = [v, v + 1]
+    let result
+    result = Ok(a)
+    a:[0] = 999
+    return result
+}
+fnc: Result<t64> check() {
+    let result
+    result = make(7)
+    let first
+    first = result?
+    first:[0] = 500
+    let second
+    second = result?
+    assert_eq(second:[0], 7)
+    assert_eq(second:[1], 8)
+    assert_eq(first:[0], 500)
+    print("result-snapshot-ok")
+    return Ok(0)
+}
+print(check())

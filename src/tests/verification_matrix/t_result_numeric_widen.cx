@@ -1,0 +1,11 @@
+// A Result holding a small integer, read as a Result of a wider one, holds the
+// same number.
+small: Result<t8> = Ok(7)
+wide: Result<t64> = small
+assert_eq(small, wide)
+assert_eq(wide, Ok(7))
+print(wide)
+negative: Result<t8> = Ok(-3)
+wide_negative: Result<t64> = negative
+assert_eq(negative, wide_negative)
+print(wide_negative)

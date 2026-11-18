@@ -122,6 +122,9 @@ struct FunctionSignature {
     /// entry copy cannot disagree about what is at the address.
     copy_pointees: Vec<Option<SemanticType>>,
     return_ty: Option<IrType>,
+    return_semantic_ty: Option<SemanticType>,
+    result_forward: Option<usize>,
+    result_error_only: bool,
     /// Struct name when the function's semantic return type is a struct.
     /// Struct returns use a caller-allocated return slot: the caller allocas
     /// this struct's layout and passes its address as a hidden trailing Ptr
@@ -410,6 +413,11 @@ fn instantiate_struct_layout(
     Some(StructLayoutInfo { fields: ir_fields, sem_fields, layout })
 }
 
+fn simple_result_return(function: &crate::frontend::semantic_types::SemanticFunction) -> Option<&SemanticExpr> {
+    if let [SemanticStmt::Return { expr: Some(expr), .. }] = function.body.as_slice() { return Some(expr); }
+    if function.body.is_empty() { function.ret_expr.as_ref() } else { None }
+}
+
 fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> HashMap<String, FunctionSignature> {
     let mut table = HashMap::new();
     for stmt in &program.stmts {
@@ -469,6 +477,9 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                 param_semantic_types: function.params.iter().map(|p| p.ty.clone().unwrap_or_else(|| copy_param_pointee(p, target))).collect(),
                 param_types,
                 copy_pointees,
+                return_semantic_ty: function.return_ty.clone(),
+                result_forward: simple_result_return(function).and_then(|e| match e.kind { SemanticExprKind::VarRef { binding, .. } => function.params.iter().position(|p| p.binding == binding), _ => None }),
+                result_error_only: simple_result_return(function).is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. })),
                 return_ty,
                 ret_slot_ty,
             });
@@ -549,6 +560,9 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         param_semantic_types: method_alias_params.get(i).into_iter().flatten().chain(method.params.iter()).filter_map(|p| p.ty.clone()).collect(),
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
+                        return_semantic_ty: method.return_ty.clone(),
+                        result_forward: None,
+                        result_error_only: simple_result_return(method).is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. })),
                         return_ty,
                         ret_slot_ty,
                     },
@@ -637,6 +651,9 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         param_semantic_types: method_receiver_params.get(i).into_iter().flatten().chain(method.params.iter()).filter_map(|p| p.ty.clone()).collect(),
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
+                        return_semantic_ty: method.return_ty.clone(),
+                        result_forward: None,
+                        result_error_only: simple_result_return(method).is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. })),
                         return_ty,
                         ret_slot_ty,
                     },
@@ -797,6 +814,11 @@ struct LoweringCtx {
     module_bindings: ModuleBindings,
     /// The function being lowered, for diagnostics.
     function_name: String,
+    /// Actual boxed Result payload kinds; Result<Unknown> here proves Err.
+    result_types: HashMap<ValueId, SemanticType>,
+    /// Payload checks involving a phi wait until all backedges exist. Unknown
+    /// here means a proven Err, rather than an arbitrary opaque Result.
+    result_checks: Vec<(ValueId, SemanticType, String)>,
     /// The current function's `.copy` parameters, for a return that does not go
     /// through `finish_return`: `?` on an `Err` leaves from inside an
     /// expression, where no `FunctionLoweringSpec` is in reach.
@@ -914,6 +936,8 @@ impl LoweringCtx {
             top_level_bindings: HashSet::new(),
             module_bindings: HashMap::new(),
             function_name: String::new(),
+            result_types: HashMap::new(),
+            result_checks: Vec::new(),
             early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
@@ -1195,6 +1219,7 @@ fn contains_enum(ty: &SemanticType) -> bool {
 fn check_enum_call_args(callee: &str, args: &[SemanticCallArg], ctx: &LoweringCtx) -> Result<(), LoweringError> {
     let Some(signature) = ctx.signature_table.get(callee) else { return Ok(()); };
     for (arg, expected) in args.iter().zip(&signature.param_semantic_types) {
+        if matches!(expected, SemanticType::Result(_)) { continue; }
         let actual = match arg {
             SemanticCallArg::Expr(expr) => {
                 ensure_enum_expr(&format!("call to '{callee}'"), expected, expr)?;
@@ -1544,6 +1569,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         finalize_active_block(&mut ctx, active, IrTerminator::Return { value: None })?;
     }
 
+    check_result_proofs(&ctx)?;
     Ok(IrFunction {
         name: spec.name,
         params: vec![],
@@ -1756,9 +1782,11 @@ fn lower_semantic_function(
                 }
             } else {
             if let Some(expected) = &spec.return_semantic_ty {
-                ensure_enum_expr("trailing return", expected, ret_expr)?;
+                if !matches!(expected, SemanticType::Result(_)) { ensure_enum_expr("trailing return", expected, ret_expr)?; }
+                if *expected == SemanticType::Str { require_string(ret_expr, &ctx)?; }
             }
             let lowered = lower_expr(ret_expr, &mut ctx, &mut active)?;
+            if let Some(expected) = &spec.return_semantic_ty { ensure_result_value("trailing return", expected, ret_expr, &lowered, &mut ctx)?; }
             let expected =
                 spec.return_ty
                     .clone()
@@ -1789,6 +1817,7 @@ fn lower_semantic_function(
         }
     }
 
+    check_result_proofs(&ctx)?;
     Ok(IrFunction {
         name: function.name.clone(),
         params: ir_params,
@@ -1890,15 +1919,17 @@ fn lower_stmt_inner(
                 SemanticLValue::Binding { ty, .. } | SemanticLValue::DotAccess { ty, .. } => ty,
                 SemanticLValue::Index { elem_ty, .. } => elem_ty,
             };
-            ensure_enum_expr("assignment", expected, expr)?;
+            if !matches!(expected, SemanticType::Result(_)) { ensure_enum_expr("assignment", expected, expr)?; }
             if let SemanticLValue::Binding { binding, ty, .. } = target {
                 ctx.binding_decl_types.entry(*binding).or_insert_with(|| {
                     if matches!(ty, SemanticType::Unknown | SemanticType::Numeric) { expr.ty.clone() } else { ty.clone() }
                 });
             }
             let lowered = lower_expr(expr, ctx, &mut current)?;
+            ensure_result_value("assignment", expected, expr, &lowered, ctx)?;
             match target {
                 SemanticLValue::Binding { binding, name, ty } => {
+                    if *ty == SemanticType::Str || expr.ty == SemanticType::Str { require_string(expr, ctx)?; }
                     // The one path that did not refuse a top-level binding: the
                     // insert below would have bound a fresh LOCAL under the
                     // global's id, so the program compiled, exited 0, and lost
@@ -1920,6 +1951,7 @@ fn lower_stmt_inner(
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
                     let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
                     let dst = ctx.fresh_value();
+                    remember_result(dst, &LoweredValue { value: src_value, ty: target_ty.clone() }, expr, ctx);
                     current.emit(IrInst::SsaBind {
                         dst,
                         ty: target_ty.clone(),
@@ -1970,7 +2002,7 @@ fn lower_stmt_inner(
         SemanticStmt::TypedAssign {
             binding, ty, expr, ..
         } => {
-            ensure_enum_expr("typed assignment", ty, expr)?;
+            if !matches!(ty, SemanticType::Result(_)) { ensure_enum_expr("typed assignment", ty, expr)?; }
             ctx.binding_decl_types.insert(*binding, ty.clone());
             // D2.x-A1: a bool-typed `?` constructs the three-state-bool unknown
             // wire value (TBool 2, #044), mirroring the interpreter's
@@ -2001,7 +2033,9 @@ fn lower_stmt_inner(
                     .insert(*binding, LoweredValue { value: dst, ty: IrType::TBool });
                 return Ok(Some(current));
             }
+            if *ty == SemanticType::Str { require_string(expr, ctx)?; }
             let lowered = lower_expr(expr, ctx, &mut current)?;
+            ensure_result_value("typed assignment", ty, expr, &lowered, ctx)?;
             let target_ty = lower_type(ty)?;
             // D2.x-A2: a `bool` target may receive a three-state TBool value (a
             // Kleene `&&`/`||`/`!` result, e.g. `z: bool = x && y`). Bind it as
@@ -2019,6 +2053,7 @@ fn lower_stmt_inner(
                 return Ok(Some(current));
             }
             let dst = ctx.fresh_value();
+            remember_result(dst, &LoweredValue { value: src_value, ty: bind_ty.clone() }, expr, ctx);
             current.emit(IrInst::SsaBind {
                 dst,
                 ty: bind_ty.clone(),
@@ -2115,9 +2150,11 @@ fn lower_stmt_inner(
             match (&spec.return_ty, expr) {
                 (Some(expected), Some(expr)) => {
                     if let Some(semantic_ty) = &spec.return_semantic_ty {
-                        ensure_enum_expr("explicit return", semantic_ty, expr)?;
+                        if !matches!(semantic_ty, SemanticType::Result(_)) { ensure_enum_expr("explicit return", semantic_ty, expr)?; }
+                        if *semantic_ty == SemanticType::Str { require_string(expr, ctx)?; }
                     }
                     let lowered = lower_expr(expr, ctx, &mut current)?;
+                    if let Some(ty) = &spec.return_semantic_ty { ensure_result_value("explicit return", ty, expr, &lowered, ctx)?; }
                     ensure_type_match("function return", expected.clone(), lowered.ty)?;
                     let ret_value = finish_return(spec, Some(lowered.value), ctx, &mut current)?;
                     current.terminate(IrTerminator::Return { value: ret_value })?;
@@ -2414,9 +2451,11 @@ fn lower_stmt_inner(
         // with a Bool target. If that changes, this arm should gain the same
         // ConstInt(I8,2)+Cast construction rather than silently binding wrong.
         SemanticStmt::ConstDecl { binding, ty, value, .. } => {
-            ensure_enum_expr("const declaration", ty, value)?;
+            if !matches!(ty, SemanticType::Result(_)) { ensure_enum_expr("const declaration", ty, value)?; }
             ctx.binding_decl_types.insert(*binding, ty.clone());
+            if *ty == SemanticType::Str { require_string(value, ctx)?; }
             let lowered = lower_expr(value, ctx, &mut current)?;
+            ensure_result_value("const declaration", ty, value, &lowered, ctx)?;
             let target_ty = lower_type(ty)?;
             let (bind_value, bind_ty) = if target_ty == IrType::Bool && lowered.ty == IrType::TBool {
                 (lowered.value, IrType::TBool)
@@ -2446,6 +2485,7 @@ fn lower_stmt_inner(
                 return Ok(Some(current));
             }
             let dst = ctx.fresh_value();
+            remember_result(dst, &LoweredValue { value: bind_value, ty: bind_ty.clone() }, value, ctx);
             current.emit(IrInst::SsaBind {
                 dst,
                 ty: bind_ty.clone(),
@@ -3122,6 +3162,9 @@ fn lower_expr(
     let names = matches!(expr.kind, SemanticExprKind::If { .. } | SemanticExprKind::When { .. })
         .then(|| ctx.binding_names.clone());
     let result = lower_expr_inner(expr, ctx, current);
+    if let Ok(value) = &result {
+        if known_result_type(&expr.ty) && !ctx.result_types.contains_key(&value.value) { ctx.result_types.insert(value.value, expr.ty.clone()); }
+    }
     if let Some(names) = names { ctx.binding_names = names; }
     result
 }
@@ -3384,12 +3427,18 @@ fn lower_expr_inner(
             }
 
             let dst = ctx.fresh_value();
+            let result_hint = ctx.signature_table.get(callee).and_then(|sig| {
+                if sig.result_error_only { return Some(SemanticType::Result(Box::new(SemanticType::Unknown))); }
+                sig.result_forward.and_then(|i| lowered_args.get(i)).and_then(|v| ctx.result_types.get(v).cloned())
+                    .or_else(|| sig.return_semantic_ty.as_ref().filter(|ty| known_result_type(ty)).cloned())
+            });
             active.emit(IrInst::Call {
                 dst: Some(dst),
                 callee: callee.clone(),
                 args: lowered_args,
                 return_ty: Some(return_ty.clone()),
             })?;
+            if let Some(ty) = result_hint { ctx.result_types.insert(dst, ty); }
 
             reload_call_copies(copy_reloads, ctx, active)?;
 
@@ -3605,7 +3654,9 @@ fn lower_expr_inner(
                     .get(field_idx)
                     .map(|(_, t)| t.clone());
                 if let Some(sem_ty) = field_sem_ty {
-                    ensure_enum_expr("struct field", &sem_ty, &field_expr.1)?;
+                    if !matches!(sem_ty, SemanticType::Result(_)) { ensure_enum_expr("struct field", &sem_ty, &field_expr.1)?; }
+                    require_storage_shape(&sem_ty, &field_expr.1, ctx)?;
+                    if sem_ty == SemanticType::Str { require_string(&field_expr.1, ctx)?; }
                     if let Some((_, _, parts)) = ret_slot_plan(&sem_ty, &ctx.struct_table) {
                         let src = lower_expr(&field_expr.1, ctx, active)?;
                         copy_parts(src.value, 0, ptr, field_offset, &parts, ctx, active)?;
@@ -3614,6 +3665,7 @@ fn lower_expr_inner(
                 }
 
                 let lowered_field = lower_expr(&field_expr.1, ctx, active)?;
+                if let Some((_, sem_ty)) = layout_info.sem_fields.get(field_idx) { ensure_result_value("struct field", sem_ty, &field_expr.1, &lowered_field, ctx)?; }
                 if lowered_field.ty == IrType::TBool && *field_ir_ty == IrType::Bool {
                     unsupported!("three-state bool aggregate storage needs a preserved unknown-state representation");
                 }
@@ -3830,6 +3882,148 @@ fn construct_static_str(
     Ok(LoweredValue { value: ptr, ty: IrType::Ptr })
 }
 
+fn proven_string(expr: &SemanticExpr, ctx: &LoweringCtx) -> bool {
+    if expr.ty == SemanticType::Str { return true; }
+    match &expr.kind {
+        SemanticExprKind::DotAccess { binding, struct_name, field, .. } =>
+            instantiated_field_type(binding, struct_name, field, ctx) == Some(SemanticType::Str),
+        _ => false,
+    }
+}
+
+fn require_string(expr: &SemanticExpr, ctx: &LoweringCtx) -> Result<(), LoweringError> {
+    if proven_string(expr, ctx) { return Ok(()); }
+    Err(LoweringError::UnsupportedSemanticConstruct { construct: "string storage requires a proven string descriptor".into() })
+}
+
+fn storage_shape(expected: &SemanticType, actual: &SemanticType) -> bool {
+    if expected == actual { return true; }
+    match (expected, actual) {
+        (SemanticType::I64, SemanticType::Numeric) => true,
+        (SemanticType::Numeric, SemanticType::I64) => true,
+        (SemanticType::Array(n, a), SemanticType::Array(m, b)) => n == m && storage_shape(a, b),
+        (SemanticType::Result(a), SemanticType::Result(b)) => {
+            let numeric = |t: &SemanticType| t.int_width().is_some() || matches!(t, SemanticType::Numeric | SemanticType::F64);
+            a == b || (numeric(a) && numeric(b))
+        }
+        _ => false,
+    }
+}
+
+fn require_storage_shape(expected: &SemanticType, expr: &SemanticExpr, ctx: &LoweringCtx) -> Result<(), LoweringError> {
+    if *expected == SemanticType::Str { return require_string(expr, ctx); }
+    if !matches!(expected, SemanticType::Struct(_) | SemanticType::Array(_, _)) { return Ok(()); }
+    let actual = match &expr.kind {
+        SemanticExprKind::DotAccess { binding, struct_name, field, .. } => instantiated_field_type(binding, struct_name, field, ctx).unwrap_or_else(|| expr.ty.clone()),
+        _ => expr.ty.clone(),
+    };
+    if storage_shape(expected, &actual) { return Ok(()); }
+    Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("aggregate storage shape: expected {}, got {}", crate::frontend::semantic::type_name(expected), crate::frontend::semantic::type_name(&actual)) })
+}
+
+fn known_result_type(ty: &SemanticType) -> bool {
+    matches!(ty, SemanticType::Result(inner) if !matches!(inner.as_ref(), SemanticType::Unknown | SemanticType::TypeParam(_)))
+}
+
+fn remember_result(dst: ValueId, source: &LoweredValue, expr: &SemanticExpr, ctx: &mut LoweringCtx) {
+    let ty = ctx.result_types.get(&source.value).cloned().or_else(|| known_result_type(&expr.ty).then(|| expr.ty.clone()));
+    if let Some(ty) = ty { ctx.result_types.insert(dst, ty); }
+}
+
+fn ensure_result_value(context: &str, expected: &SemanticType, expr: &SemanticExpr, value: &LoweredValue, ctx: &mut LoweringCtx) -> Result<(), LoweringError> {
+    let SemanticType::Result(want) = expected else { require_storage_shape(expected, expr, ctx)?; return ensure_enum_expr(context, expected, expr); };
+    if value.ty != IrType::I128 || !matches!(expr.ty, SemanticType::Result(_)) {
+        return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context} requires a boxed Result value") });
+    }
+    // Unknown is an opaque carrier; interpreting it at a typed boundary still
+    // requires the payload proof below. It must not authorize a pointer cast.
+    if **want == SemanticType::Unknown { return Ok(()); }
+    ctx.result_checks.push((value.value, *want.clone(), context.into()));
+    let actual = ctx.result_types.get(&value.value).or_else(|| known_result_type(&expr.ty).then_some(&expr.ty));
+    let Some(SemanticType::Result(got)) = actual else {
+        return Ok(());
+    };
+    let numeric = |t: &SemanticType| t.int_width().is_some() || matches!(t, SemanticType::Numeric | SemanticType::F64);
+    if **got == SemanticType::Unknown || storage_shape(want, got) || (numeric(want) && numeric(got)) { return Ok(()); }
+    ensure_enum_identity(context, want, got)?;
+    Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("semantic identity in {context}: expected {}, got {}", crate::frontend::semantic::type_name(expected), crate::frontend::semantic::type_name(actual.unwrap())) })
+}
+
+/// Infer payload kinds over the completed SSA graph. Starting without a fact
+/// is bottom; an untyped call/load is top. Err joins any supported Ok kind,
+/// while distinct nominal/value kinds cannot grant each other a pointer cast.
+fn check_result_proofs(ctx: &LoweringCtx) -> Result<(), LoweringError> {
+    if ctx.result_checks.is_empty() { return Ok(()); }
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Proof { Kind(SemanticType), Any }
+    fn join(a: Proof, b: Proof) -> Proof {
+        match (a, b) {
+            (Proof::Kind(SemanticType::Unknown), b) => b,
+            (a, Proof::Kind(SemanticType::Unknown)) => a,
+            (Proof::Kind(a), Proof::Kind(b)) if storage_shape(&a, &b) && storage_shape(&b, &a) => Proof::Kind(a),
+            (Proof::Kind(a), Proof::Kind(b)) if numeric_result_kind(&a) && numeric_result_kind(&b) => Proof::Kind(SemanticType::I64),
+            _ => Proof::Any,
+        }
+    }
+    let mut facts: HashMap<ValueId, Proof> = ctx.result_types.iter().filter_map(|(value, ty)| {
+        if let SemanticType::Result(inner) = ty { Some((*value, Proof::Kind(*inner.clone()))) } else { None }
+    }).collect();
+    let mut flows: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    let params: HashMap<_, _> = ctx.finished_blocks.iter().map(|b| (b.id, &b.params)).collect();
+    for block in &ctx.finished_blocks {
+        for inst in &block.insts {
+            match inst {
+                IrInst::SsaBind { dst, src, ty: IrType::I128 } => { flows.entry(*dst).or_default().push(*src); }
+                IrInst::Call { dst: Some(dst), return_ty: Some(IrType::I128), .. }
+                | IrInst::ConstInt { dst, ty: IrType::I128, .. }
+                | IrInst::Binary { dst, ty: IrType::I128, .. }
+                | IrInst::Load { dst, ty: IrType::I128, .. }
+                | IrInst::Cast { dst, to: IrType::I128, .. } => { facts.entry(*dst).or_insert(Proof::Any); }
+                _ => {}
+            }
+        }
+        let mut edge = |target: &BlockId, args: &[ValueId]| {
+            if let Some(parameters) = params.get(target) {
+                for (param, arg) in parameters.iter().zip(args) {
+                    if param.ty == IrType::I128 { flows.entry(param.value).or_default().push(*arg); }
+                }
+            }
+        };
+        match &block.term {
+            IrTerminator::Jump { target, args } => edge(target, args),
+            IrTerminator::Branch { then_block, then_args, else_block, else_args, .. } => { edge(then_block, then_args); edge(else_block, else_args); }
+            _ => {}
+        }
+    }
+    for block in &ctx.finished_blocks {
+        for param in &block.params {
+            if param.ty == IrType::I128 && !flows.contains_key(&param.value) { facts.entry(param.value).or_insert(Proof::Any); }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (dst, sources) in &flows {
+            let fact = sources.iter().filter_map(|src| facts.get(src).cloned()).reduce(join);
+            if let Some(fact) = fact {
+                let fact = facts.get(dst).cloned().map(|old| join(old, fact.clone())).unwrap_or(fact);
+                if facts.get(dst) != Some(&fact) { facts.insert(*dst, fact); changed = true; }
+            }
+        }
+        if !changed { break; }
+    }
+    for (value, expected, context) in &ctx.result_checks {
+        let Some(Proof::Kind(actual)) = facts.get(value) else {
+            return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context}: Result payload kind is not proven") });
+        };
+        if *actual != SemanticType::Unknown && !storage_shape(expected, actual) && !(numeric_result_kind(actual) && numeric_result_kind(expected)) {
+            return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("{context}: incompatible Result payload kind") });
+        }
+    }
+    Ok(())
+}
+
+fn numeric_result_kind(ty: &SemanticType) -> bool { ty.int_width().is_some() || matches!(ty, SemanticType::Numeric | SemanticType::F64) }
+
 /// Recursively evaluate a compile-time-known string: a `str` literal, or a
 /// left-associative chain of `+` over known strings. Returns `None` for any
 /// runtime operand (VarRef, call, …) — those stay SKIP (R6 / D2.3-DYN).
@@ -3904,6 +4098,9 @@ fn lower_binary(
     if matches!(op, Op::And | Op::Or) {
         return lower_logical(lhs, op, rhs, result_ty, ctx, active);
     }
+    if matches!(lhs.ty, SemanticType::Result(_)) || matches!(rhs.ty, SemanticType::Result(_)) {
+        unsupported!("binary operators on Result values have no reference implementation");
+    }
 
     // D2.3c: `str + str` is concatenation, constant-folded to one static
     // descriptor — handled before the operands lower (the fold needs their string
@@ -3917,6 +4114,7 @@ fn lower_binary(
     let str_eq = matches!(op, Op::EqEq | Op::NotEq)
         && (matches!(lhs.ty, SemanticType::Str | SemanticType::StrRef)
             || matches!(rhs.ty, SemanticType::Str | SemanticType::StrRef));
+    if str_eq { require_string(lhs, ctx)?; require_string(rhs, ctx)?; }
 
     // Left operand lowered first — preserves left-to-right evaluation order.
     let lhs = lower_expr(lhs, ctx, active)?;
@@ -5420,6 +5618,7 @@ fn lower_try(
 
     // Lower the Result operand and unpack it into (tag, payload word).
     let result = lower_expr(inner_expr, ctx, active)?;
+    ensure_result_value("? payload", &SemanticType::Result(Box::new(result_ty.clone())), inner_expr, &result, ctx)?;
     let (tag, payload) = result_unpack(result.value, ctx, active)?;
 
     // Ok payload narrowed back to T (i64 word -> T). Identity when T is already I64.
@@ -5895,7 +6094,8 @@ fn fill_aggregate_slot(
     })?;
 
     for (i, elem_expr) in elements.iter().enumerate() {
-        ensure_enum_expr("array element", elem_sem_ty, elem_expr)?;
+        if !matches!(elem_sem_ty, SemanticType::Result(_)) { ensure_enum_expr("array element", elem_sem_ty, elem_expr)?; }
+        require_storage_shape(elem_sem_ty, elem_expr, ctx)?;
         let offset = base_offset + i * stride;
         match (&elem_expr.kind, ret_slot_plan(elem_sem_ty, &ctx.struct_table)) {
             // A nested literal writes into this same block.
@@ -5918,6 +6118,7 @@ fn fill_aggregate_slot(
                     lower_type(elem_sem_ty)?
                 };
                 let lowered = lower_expr(elem_expr, ctx, active)?;
+                ensure_result_value("array element", elem_sem_ty, elem_expr, &lowered, ctx)?;
                 if lowered.ty == IrType::TBool && elem_ir_ty == IrType::Bool {
                     unsupported!("three-state bool aggregate storage needs a preserved unknown-state representation");
                 }
@@ -6049,8 +6250,10 @@ fn lower_array_lit(
 
     // 2. Store each element at its stride-aligned byte offset.
     for (i, elem_expr) in elements.iter().enumerate() {
-        ensure_enum_expr("array element", elem_sem_ty, elem_expr)?;
+        if !matches!(elem_sem_ty, SemanticType::Result(_)) { ensure_enum_expr("array element", elem_sem_ty, elem_expr)?; }
+        require_storage_shape(elem_sem_ty, elem_expr, ctx)?;
         let lowered_elem = lower_expr(elem_expr, ctx, active)?;
+        ensure_result_value("array element", elem_sem_ty, elem_expr, &lowered_elem, ctx)?;
         let byte_offset = i * layout.stride;
 
         let elem_ptr = if byte_offset == 0 {
@@ -7174,9 +7377,6 @@ fn result_pack(
     Ok(LoweredValue { value: result, ty: IrType::I128 })
 }
 
-/// D2.4a: lower `Ok(x)` (tag 0) / `Err("...")` (tag 1) — lower the payload, widen
-/// to the i64 word, pack. Err's str payload is the static D2.3 descriptor Ptr, so
-/// nothing runtime-allocated escapes (R7-clean).
 /// Whether `ty` is a struct or an array — a value that lives in memory and is
 /// reached through a pointer in compiled code.
 fn is_aggregate_payload(ty: &SemanticType) -> bool {
@@ -7209,27 +7409,44 @@ fn refuse_aggregate_result_payload(context: &str, ty: &SemanticType) -> Result<(
     Ok(())
 }
 
+/// Lower `Ok(x)` (tag 0) / `Err("...")` (tag 1): lower the payload, widen it to
+/// the i64 word, pack. A number is the word itself; a string is the address of
+/// its descriptor, which lives as long as the program. Nothing else may be a
+/// payload: a nested Result does not fit the word, and a struct or array would
+/// be a pointer with no owner (see `refuse_aggregate_result_payload`).
 fn lower_result_construct(
     tag: i128,
     payload_expr: &SemanticExpr,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
-    refuse_aggregate_result_payload("Result construction", &payload_expr.ty)?;
+    let actual = match &payload_expr.kind {
+        SemanticExprKind::DotAccess { binding, struct_name, field, .. } => instantiated_field_type(binding, struct_name, field, ctx).unwrap_or_else(|| payload_expr.ty.clone()),
+        _ => payload_expr.ty.clone(),
+    };
+    if tag == 1 { require_string(payload_expr, ctx)?; }
+    if matches!(actual, SemanticType::Result(_)) {
+        unsupported!("nested Result payload exceeds the packed word representation");
+    }
+    refuse_aggregate_result_payload("Result construction", &actual)?;
+    if actual == SemanticType::Str { require_string(payload_expr, ctx)?; }
     let payload = lower_expr(payload_expr, ctx, active)?;
     // A payload that lowers to a pointer must be a string descriptor. Anything
     // else that reaches here as a pointer — a generic struct whose semantic
     // type was not the aggregate it is — is the same unowned pointee.
-    if payload.ty == IrType::Ptr && !matches!(payload_expr.ty, SemanticType::Str | SemanticType::StrRef) {
+    if payload.ty == IrType::Ptr && !matches!(actual, SemanticType::Str | SemanticType::StrRef) {
         return Err(LoweringError::UnsupportedSemanticConstruct {
             construct: format!(
                 "Result construction: a Result whose payload is a struct or array ({}) — compiled code has no storage for the payload that lasts as long as the Result",
-                crate::frontend::semantic::type_name(&payload_expr.ty)
+                crate::frontend::semantic::type_name(&actual)
             ),
         });
     }
     let payload_i64 = widen_payload_to_i64(&payload, ctx, active)?;
-    result_pack(tag, payload_i64, ctx, active)
+    let packed = result_pack(tag, payload_i64, ctx, active)?;
+    let inner = if tag == 1 { SemanticType::Unknown } else if actual == SemanticType::Numeric { SemanticType::I64 } else { actual };
+    ctx.result_types.insert(packed.value, SemanticType::Result(Box::new(inner)));
+    Ok(packed)
 }
 
 /// D2.4a: unpack a Result i128 into (tag, payload_word). Payload is the low half
@@ -7285,6 +7502,9 @@ fn emit_ok_payload(
     active: &mut ActiveBlock,
 ) -> Result<(), LoweringError> {
     refuse_aggregate_result_payload("print of a Result", ok_ty)?;
+    if !matches!(ok_ty, SemanticType::Str) && ok_ty.int_width().is_none() && *ok_ty != SemanticType::Numeric {
+        unsupported!("Result printing needs a proven integer or string payload");
+    }
     match lower_type(ok_ty)? {
         IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
             active.emit(IrInst::Call {
@@ -7322,12 +7542,14 @@ fn emit_ok_payload(
 /// interpreter's `Ok(15)` / `Err(cannot be zero)` byte-for-byte.
 fn lower_result_print(
     arg_expr: &SemanticExpr,
-    ok_ty: &SemanticType,
+    _ok_ty: &SemanticType,
     newline: bool,
     ctx: &mut LoweringCtx,
     mut current: ActiveBlock,
 ) -> Result<Option<ActiveBlock>, LoweringError> {
     let result = lower_expr(arg_expr, ctx, &mut current)?;
+    let payload_type = result_inner_type(arg_expr, &result, ctx).ok_or_else(|| LoweringError::UnsupportedSemanticConstruct { construct: "Result printing needs a proven payload kind".into() })?;
+    let ok_ty = &payload_type;
     let (tag, payload) = result_unpack(result.value, ctx, &mut current)?;
     let zero = ctx.fresh_value();
     current.emit(IrInst::ConstInt { dst: zero, ty: IrType::I64, value: 0 })?;
@@ -7355,7 +7577,10 @@ fn lower_result_print(
 
     // Ok( payload ) — an enum payload by its variant's name.
     emit_inline_str("Ok(", ctx, &mut ok_block)?;
-    if let SemanticType::Enum(name) = ok_ty {
+    if *ok_ty == SemanticType::Unknown {
+        // A constructor or proven forwarding function established Err. There
+        // is no Ok payload to interpret, even for an opaque Result parameter.
+    } else if let SemanticType::Enum(name) = ok_ty {
         let tag = ctx.fresh_value();
         ok_block.emit(IrInst::Cast { dst: tag, from: IrType::I64, to: IrType::I8, value: payload })?;
         ok_block = emit_enum_inline(tag, IrType::I8, name, ctx, ok_block)?;
@@ -7457,6 +7682,19 @@ fn lower_assert_stmt(
     let bool_val = coerce_to_bool(cond, ctx, &mut current)?;
 
     emit_assert_branch(bool_val, ctx, current)
+}
+
+fn result_inner_type(expr: &SemanticExpr, value: &LoweredValue, ctx: &mut LoweringCtx) -> Option<SemanticType> {
+    if let Some(SemanticType::Result(inner)) = ctx.result_types.get(&value.value).or_else(|| known_result_type(&expr.ty).then_some(&expr.ty)) {
+        let kind = *inner.clone();
+        ctx.result_checks.push((value.value, kind.clone(), "Result consumer".into()));
+        return Some(kind);
+    }
+    if expr.ty == SemanticType::Result(Box::new(SemanticType::Unknown)) {
+        ctx.result_checks.push((value.value, SemanticType::Unknown, "opaque Result consumer".into()));
+        return Some(SemanticType::Unknown);
+    }
+    None
 }
 
 /// Lower `assert_eq(lhs, rhs)` as a void statement.
@@ -7643,7 +7881,10 @@ fn prepare_call_args(
     for (i, arg) in args.iter().enumerate() {
         match arg {
             SemanticCallArg::Expr(expr) => {
+                let expected = ctx.signature_table.get(callee).and_then(|sig| sig.param_semantic_types.get(i)).cloned();
+                if let Some(expected) = &expected { require_storage_shape(expected, expr, ctx)?; }
                 let lowered = lower_expr(expr, ctx, active)?;
+                if let Some(expected) = &expected { ensure_result_value("call argument", expected, expr, &lowered, ctx)?; }
                 ensure_type_match(
                     &format!("argument {} of call to '{}'", i, callee),
                     param_types[i].clone(),
@@ -7668,6 +7909,7 @@ fn prepare_call_args(
                 ensure_type_match("copy.free argument", param_types[i].clone(), current.ty.clone())?;
                 let sem_ty = ctx.binding_decl_types.get(binding).cloned().unwrap_or(SemanticType::Unknown);
                 let source = SemanticExpr { ty: sem_ty.clone(), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
+                if let Some(expected) = ctx.signature_table.get(callee).and_then(|sig| sig.param_semantic_types.get(i)).cloned() { ensure_result_value("copy.free argument", &expected, &source, &current, ctx)?; }
                 let value = copy_if_memory_resident(&sem_ty, &source, current.value, ctx, active)?;
                 lowered_args.push(value);
             }
@@ -7691,6 +7933,8 @@ fn prepare_call_args(
                     }
                 })? };
                 let payload_ty = lower_type(&sem_ty)?;
+                let source = SemanticExpr { ty: ctx.binding_decl_types.get(binding).cloned().unwrap_or_else(|| sem_ty.clone()), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
+                ensure_result_value("copy argument", &sem_ty, &source, &current, ctx)?;
                 if current.ty == IrType::TBool && payload_ty == IrType::Bool {
                     unsupported!("three-state bool copy parameters need a preserved unknown-state representation");
                 }
@@ -12808,6 +13052,39 @@ mod module_state_tests {
         let ir = lower_program(&semantic).expect("numeric module state lowers");
         crate::ir::validate::validate_module(&ir).expect("module IR validates");
         ir
+    }
+
+    #[test]
+    fn result_proofs_do_not_treat_arbitrary_i128_definitions_as_errors() {
+        let mut ctx = LoweringCtx::new(HashMap::new(), HashMap::new(), HashMap::new(), false, TargetConfig::host(), HashMap::new());
+        ctx.result_types.insert(ValueId(0), SemanticType::Result(Box::new(SemanticType::Unknown)));
+        ctx.result_checks.push((ValueId(3), SemanticType::Unknown, "opaque consumer".into()));
+        ctx.finished_blocks = vec![
+            IrBlock { id: BlockId(0), params: vec![], insts: vec![
+                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 0 },
+                IrInst::Binary { dst: ValueId(1), ty: IrType::I128, op: BinaryOp::Add, lhs: ValueId(0), rhs: ValueId(0) },
+                IrInst::ConstInt { dst: ValueId(2), ty: IrType::Bool, value: 1 },
+            ], term: IrTerminator::Branch { cond: ValueId(2), then_block: BlockId(1), then_args: vec![ValueId(0)], else_block: BlockId(1), else_args: vec![ValueId(1)] } },
+            IrBlock { id: BlockId(1), params: vec![BlockParam { value: ValueId(3), ty: IrType::I128, read_only: false }], insts: vec![], term: IrTerminator::Return { value: None } },
+        ];
+        assert!(check_result_proofs(&ctx).is_err(), "a numeric i128 is not a tagged Err");
+    }
+
+    #[test]
+    fn result_proofs_join_loop_backedges_before_authorizing_consumers() {
+        let mut ctx = LoweringCtx::new(HashMap::new(), HashMap::new(), HashMap::new(), false, TargetConfig::host(), HashMap::new());
+        ctx.result_types.insert(ValueId(0), SemanticType::Result(Box::new(SemanticType::Unknown)));
+        ctx.result_checks.push((ValueId(3), SemanticType::Unknown, "loop result".into()));
+        ctx.finished_blocks = vec![
+            IrBlock { id: BlockId(0), params: vec![], insts: vec![IrInst::ConstInt { dst: ValueId(0), ty: IrType::I128, value: 0 }], term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(0)] } },
+            IrBlock { id: BlockId(1), params: vec![BlockParam { value: ValueId(1), ty: IrType::I128, read_only: false }], insts: vec![IrInst::ConstInt { dst: ValueId(2), ty: IrType::Bool, value: 0 }], term: IrTerminator::Branch { cond: ValueId(2), then_block: BlockId(2), then_args: vec![], else_block: BlockId(3), else_args: vec![ValueId(1)] } },
+            IrBlock { id: BlockId(2), params: vec![], insts: vec![], term: IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(1)] } },
+            IrBlock { id: BlockId(3), params: vec![BlockParam { value: ValueId(3), ty: IrType::I128, read_only: false }], insts: vec![], term: IrTerminator::Return { value: None } },
+        ];
+        check_result_proofs(&ctx).expect("an all-Err cycle retains its proof");
+        ctx.finished_blocks[2].insts.push(IrInst::Binary { dst: ValueId(4), ty: IrType::I128, op: BinaryOp::Add, lhs: ValueId(1), rhs: ValueId(1) });
+        ctx.finished_blocks[2].term = IrTerminator::Jump { target: BlockId(1), args: vec![ValueId(4)] };
+        assert!(check_result_proofs(&ctx).is_err(), "a later untyped backedge invalidates the initial Err proof");
     }
 
     #[test]
