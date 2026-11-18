@@ -822,6 +822,32 @@ impl HostBoundary {
             data_ids.insert(global.id, id);
         }
 
+        // Read-only data (string bytes and their descriptors). Checked before
+        // anything is placed: a relocation outside its object would be a write
+        // outside an allocation. Then every object is declared before any is
+        // defined, so a descriptor can name bytes that are listed after it.
+        // The memory belongs to this JITModule and goes when it does.
+        if let Some(error) = crate::ir::validate::data_errors(ir).into_iter().next() {
+            return Err(JitExecutionError::CodegenFailure { detail: format!("invalid module data: {:?}", error) });
+        }
+        let mut rodata_ids = HashMap::new();
+        for data in &ir.data {
+            let id = module.declare_anonymous_data(false, false)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+            rodata_ids.insert(data.id, id);
+        }
+        for data in &ir.data {
+            let mut description = cranelift_module::DataDescription::new();
+            description.define(data.bytes.clone().into_boxed_slice());
+            description.set_align(data.align as u64);
+            for reloc in &data.relocs {
+                let target = module.declare_data_in_data(rodata_ids[&reloc.target], &mut description);
+                description.write_data_addr(reloc.offset as u32, target, 0);
+            }
+            module.define_data(rodata_ids[&data.id], &description)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+        }
+
 
         // Pre-declare runtime intrinsics as imported symbols.
         {
@@ -1060,7 +1086,7 @@ impl HostBoundary {
                 let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
                 let mut builder =
                     cranelift_frontend::FunctionBuilder::new(&mut cl_func, &mut fbc);
-                compile_ir_function(&mut builder, ir_func, &func_id_map, &data_ids, &mut module, &can_recurse)?;
+                compile_ir_function(&mut builder, ir_func, &func_id_map, &data_ids, &rodata_ids, &mut module, &can_recurse)?;
                 builder.finalize();
             }
 
@@ -1238,6 +1264,7 @@ fn compile_ir_function(
     ir_func: &crate::ir::types::IrFunction,
     func_id_map: &std::collections::HashMap<String, cranelift_module::FuncId>,
     data_ids: &std::collections::HashMap<crate::ir::types::GlobalId, cranelift_module::DataId>,
+    rodata_ids: &std::collections::HashMap<crate::ir::types::DataId, cranelift_module::DataId>,
     module: &mut cranelift_jit::JITModule,
     can_recurse: &std::collections::HashSet<String>,
 ) -> Result<(), JitExecutionError> {
@@ -1323,12 +1350,14 @@ fn compile_ir_function(
                     let address = builder.ins().global_value(ptr_ty, reference);
                     val_map.insert(*dst, address);
                 }
-                // Read-only data. Lowering does not produce it yet; the
-                // support is the next commit's.
-                IrInst::DataAddr { data, .. } => {
-                    return Err(JitExecutionError::CodegenFailure {
-                        detail: format!("read-only data {:?} is not supported by this backend yet", data),
-                    });
+                IrInst::DataAddr { dst, data } => {
+                    let id = rodata_ids.get(data).ok_or_else(|| JitExecutionError::CodegenFailure {
+                        detail: format!("undefined module data {:?}", data),
+                    })?;
+                    let reference = module.declare_data_in_func(*id, builder.func);
+                    let ptr_ty = module.target_config().pointer_type();
+                    let address = builder.ins().global_value(ptr_ty, reference);
+                    val_map.insert(*dst, address);
                 }
                 IrInst::ConstInt { dst, ty, value } => {
                     if *ty == IrType::I128 {
@@ -10088,5 +10117,245 @@ mod module_global_tests {
         assert!(HostBoundary::new().execute(&missing).is_err());
         let mut duplicate = counter_module(); duplicate.globals.push(duplicate.globals[0].clone());
         assert!(HostBoundary::new().execute(&duplicate).is_err());
+    }
+}
+
+
+#[cfg(all(test, feature = "jit"))]
+mod module_data_tests {
+    //! Read-only data through the JIT, on hand-built IR: nothing in lowering
+    //! produces data yet, so these are the only programs that reach it.
+    //! Each `main` returns a number computed from what it read, and the test
+    //! asserts that number.
+    use super::*;
+    use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
+    use crate::ir::types::*;
+
+    fn main_returning(data: Vec<IrData>, insts: Vec<IrInst>, result: ValueId) -> IrModule {
+        IrModule {
+            debug_name: "data".into(),
+            globals: vec![],
+            data,
+            functions: vec![IrFunction {
+                name: "main".into(), params: vec![], return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock { id: BlockId(0), params: vec![], insts,
+                    term: IrTerminator::Return { value: Some(result) } }],
+            }],
+        }
+    }
+
+    fn run(ir: &IrModule) -> i32 {
+        crate::ir::validate::validate_module(ir).expect("the test module is valid IR");
+        HostBoundary::new().execute(ir).expect("compiles and runs").exit_code.raw()
+    }
+
+    /// `main` for a descriptor `@d1`: first byte + last byte + length of the
+    /// string it describes, read through the descriptor's address slot.
+    fn read_string_through_descriptor(len: usize) -> Vec<IrInst> {
+        vec![
+            IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+            IrInst::Load { dst: ValueId(1), ty: IrType::Ptr, ptr: ValueId(0) },
+            IrInst::PtrOffset { dst: ValueId(2), base: ValueId(0), offset: 8 },
+            IrInst::Load { dst: ValueId(3), ty: IrType::I64, ptr: ValueId(2) },
+            IrInst::Load { dst: ValueId(4), ty: IrType::I8, ptr: ValueId(1) },
+            IrInst::PtrOffset { dst: ValueId(5), base: ValueId(1), offset: len - 1 },
+            IrInst::Load { dst: ValueId(6), ty: IrType::I8, ptr: ValueId(5) },
+            IrInst::Cast { dst: ValueId(7), from: IrType::I8, to: IrType::I64, value: ValueId(4) },
+            IrInst::Cast { dst: ValueId(8), from: IrType::I8, to: IrType::I64, value: ValueId(6) },
+            IrInst::Binary { dst: ValueId(9), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(7), rhs: ValueId(8) },
+            IrInst::Binary { dst: ValueId(10), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(9), rhs: ValueId(3) },
+            IrInst::Cast { dst: ValueId(11), from: IrType::I64, to: IrType::I32, value: ValueId(10) },
+        ]
+    }
+
+    const HELLO: i32 = b'h' as i32 + b'o' as i32 + 5;
+
+    /// The relocation: a descriptor's first word is the address of its bytes.
+    #[test]
+    fn a_string_is_read_back_through_its_descriptor() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), b"hello".to_vec()), IrData::string_descriptor(DataId(1), DataId(0), 5)],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        assert_eq!(run(&ir), HELLO);
+    }
+
+    /// Every object is declared before any is defined, so order does not matter.
+    #[test]
+    fn a_descriptor_may_be_listed_before_its_bytes() {
+        let ir = main_returning(
+            vec![IrData::string_descriptor(DataId(1), DataId(0), 5), IrData::string_bytes(DataId(0), b"hello".to_vec())],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        assert_eq!(run(&ir), HELLO);
+    }
+
+    /// Descriptor identity: two descriptors of one bytes object are two
+    /// addresses holding one bytes address, and one descriptor asked for
+    /// twice is one address.
+    #[test]
+    fn two_descriptors_of_one_string_are_distinct_and_share_its_bytes() {
+        let bit = |dst: u32, op: CompareOp, lhs: u32, rhs: u32, weight: i128| vec![
+            IrInst::Compare { dst: ValueId(dst), op, lhs: ValueId(lhs), rhs: ValueId(rhs) },
+            IrInst::Cast { dst: ValueId(dst + 1), from: IrType::Bool, to: IrType::I64, value: ValueId(dst) },
+            IrInst::ConstInt { dst: ValueId(dst + 2), ty: IrType::I64, value: weight },
+            IrInst::Binary { dst: ValueId(dst + 3), op: BinaryOp::Mul, ty: IrType::I64, lhs: ValueId(dst + 1), rhs: ValueId(dst + 2) },
+        ];
+        let mut insts = vec![
+            IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+            IrInst::DataAddr { dst: ValueId(1), data: DataId(2) },
+            IrInst::DataAddr { dst: ValueId(2), data: DataId(1) },
+            IrInst::Cast { dst: ValueId(3), from: IrType::Ptr, to: IrType::I64, value: ValueId(0) },
+            IrInst::Cast { dst: ValueId(4), from: IrType::Ptr, to: IrType::I64, value: ValueId(1) },
+            IrInst::Cast { dst: ValueId(5), from: IrType::Ptr, to: IrType::I64, value: ValueId(2) },
+            IrInst::Load { dst: ValueId(6), ty: IrType::I64, ptr: ValueId(0) },
+            IrInst::Load { dst: ValueId(7), ty: IrType::I64, ptr: ValueId(1) },
+        ];
+        insts.extend(bit(10, CompareOp::Ne, 3, 4, 1));   // the two descriptors differ
+        insts.extend(bit(20, CompareOp::Eq, 6, 7, 2));   // their bytes addresses agree
+        insts.extend(bit(30, CompareOp::Eq, 3, 5, 4));   // one descriptor is one address
+        insts.extend([
+            IrInst::Binary { dst: ValueId(40), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(13), rhs: ValueId(23) },
+            IrInst::Binary { dst: ValueId(41), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(40), rhs: ValueId(33) },
+            IrInst::Cast { dst: ValueId(42), from: IrType::I64, to: IrType::I32, value: ValueId(41) },
+        ]);
+        let ir = main_returning(
+            vec![
+                IrData::string_bytes(DataId(0), b"same".to_vec()),
+                IrData::string_descriptor(DataId(1), DataId(0), 4),
+                IrData::string_descriptor(DataId(2), DataId(0), 4),
+            ],
+            insts, ValueId(42),
+        );
+        assert_eq!(run(&ir), 1 + 2 + 4);
+    }
+
+    /// An empty string: no bytes, a length of zero, and an address that is
+    /// still something a slice may be built from.
+    #[test]
+    fn an_empty_string_has_length_zero_and_a_non_null_address() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), Vec::new()), IrData::string_descriptor(DataId(1), DataId(0), 0)],
+            vec![
+                IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+                IrInst::Load { dst: ValueId(1), ty: IrType::I64, ptr: ValueId(0) },
+                IrInst::PtrOffset { dst: ValueId(2), base: ValueId(0), offset: 8 },
+                IrInst::Load { dst: ValueId(3), ty: IrType::I64, ptr: ValueId(2) },
+                IrInst::ConstInt { dst: ValueId(4), ty: IrType::I64, value: 0 },
+                IrInst::Compare { dst: ValueId(5), op: CompareOp::Ne, lhs: ValueId(1), rhs: ValueId(4) },
+                IrInst::Cast { dst: ValueId(6), from: IrType::Bool, to: IrType::I64, value: ValueId(5) },
+                IrInst::ConstInt { dst: ValueId(7), ty: IrType::I64, value: 10 },
+                IrInst::Binary { dst: ValueId(8), op: BinaryOp::Mul, ty: IrType::I64, lhs: ValueId(3), rhs: ValueId(7) },
+                IrInst::Binary { dst: ValueId(9), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(8), rhs: ValueId(6) },
+                IrInst::Cast { dst: ValueId(10), from: IrType::I64, to: IrType::I32, value: ValueId(9) },
+            ],
+            ValueId(10),
+        );
+        // length * 10 + (address != 0)
+        assert_eq!(run(&ir), 1);
+    }
+
+    /// The runtime's string functions read what the data holds: two strings
+    /// with the same bytes in two bytes objects are equal, and a different
+    /// string is not.
+    #[test]
+    fn the_runtime_compares_strings_held_in_data() {
+        let compare = |right: &[u8]| {
+            let ir = main_returning(
+                vec![
+                    IrData::string_bytes(DataId(0), b"same".to_vec()),
+                    IrData::string_descriptor(DataId(1), DataId(0), 4),
+                    IrData::string_bytes(DataId(2), right.to_vec()),
+                    IrData::string_descriptor(DataId(3), DataId(2), right.len()),
+                ],
+                vec![
+                    IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+                    IrInst::DataAddr { dst: ValueId(1), data: DataId(3) },
+                    IrInst::Call { dst: Some(ValueId(2)), callee: "cx_str_eq".into(), args: vec![ValueId(0), ValueId(1)], return_ty: Some(IrType::Bool) },
+                    IrInst::Cast { dst: ValueId(3), from: IrType::Bool, to: IrType::I32, value: ValueId(2) },
+                ],
+                ValueId(3),
+            );
+            // The standalone validator does not know `cx_str_eq` yet (M1.2),
+            // so this module goes to the backend without it.
+            HostBoundary::new().execute(&ir).expect("compiles and runs").exit_code.raw()
+        };
+        assert_eq!(compare(b"same"), 1);
+        assert_eq!(compare(b"sane"), 0);
+        assert_eq!(compare(b"sam"), 0);
+        assert_eq!(compare(b""), 0);
+    }
+
+    /// Alignment: an object is placed at a multiple of its alignment whatever
+    /// was placed before it.
+    #[test]
+    fn data_is_placed_at_its_alignment() {
+        let aligned = |id: u32, align: usize| IrData { id: DataId(id), align, bytes: vec![0xAB; align], relocs: vec![] };
+        let odd = |id: u32| IrData::string_bytes(DataId(id), b"x".to_vec());
+        let data = vec![odd(0), aligned(1, 16), odd(2), aligned(3, 8), odd(4), aligned(5, 4), odd(6), aligned(7, 2)];
+        // Sum of (address % alignment) over the four aligned objects, plus 1.
+        let mut insts = vec![IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 1 }];
+        let mut total = ValueId(0);
+        for (n, (id, align)) in [(1u32, 16i128), (3, 8), (5, 4), (7, 2)].into_iter().enumerate() {
+            let base = 10 + n as u32 * 10;
+            insts.extend([
+                IrInst::DataAddr { dst: ValueId(base), data: DataId(id) },
+                IrInst::Cast { dst: ValueId(base + 1), from: IrType::Ptr, to: IrType::I64, value: ValueId(base) },
+                IrInst::ConstInt { dst: ValueId(base + 2), ty: IrType::I64, value: align },
+                IrInst::Binary { dst: ValueId(base + 3), op: BinaryOp::Rem, ty: IrType::I64, lhs: ValueId(base + 1), rhs: ValueId(base + 2) },
+                IrInst::Binary { dst: ValueId(base + 4), op: BinaryOp::Add, ty: IrType::I64, lhs: total, rhs: ValueId(base + 3) },
+            ]);
+            total = ValueId(base + 4);
+        }
+        insts.push(IrInst::Cast { dst: ValueId(99), from: IrType::I64, to: IrType::I32, value: total });
+        assert_eq!(run(&main_returning(data, insts, ValueId(99))), 1);
+    }
+
+    /// Repeated compilation: one module compiled and run many times gives the
+    /// same answer every time, each in a fresh JIT module.
+    #[test]
+    fn a_module_with_data_compiles_and_runs_repeatedly() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), b"hello".to_vec()), IrData::string_descriptor(DataId(1), DataId(0), 5)],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        for round in 0..40 {
+            assert_eq!(run(&ir), HELLO, "round {round}");
+        }
+    }
+
+    /// Invalid references are errors, never a write outside an object and never
+    /// a panic. Each case is one defect in an otherwise valid module.
+    #[test]
+    fn malformed_data_is_refused_before_anything_is_placed() {
+        let valid = || main_returning(
+            vec![IrData::string_bytes(DataId(0), b"hello".to_vec()), IrData::string_descriptor(DataId(1), DataId(0), 5)],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        assert_eq!(run(&valid()), HELLO);
+
+        let cases: Vec<(&str, Box<dyn Fn(&mut IrModule)>)> = vec![
+            ("address slot past the end", Box::new(|ir| ir.data[1].relocs[0].offset = 16)),
+            ("address slot far past the end", Box::new(|ir| ir.data[1].relocs[0].offset = 1 << 40)),
+            ("address slot straddling the end", Box::new(|ir| ir.data[1].relocs[0].offset = 12)),
+            ("address slot off its boundary", Box::new(|ir| { ir.data[1].bytes = vec![0; 24]; ir.data[1].relocs[0].offset = 4 })),
+            ("address slot naming no object", Box::new(|ir| ir.data[1].relocs[0].target = DataId(77))),
+            ("address slot naming its own object", Box::new(|ir| ir.data[1].relocs[0].target = DataId(1))),
+            ("address slot with contents", Box::new(|ir| ir.data[1].bytes[0] = 1)),
+            ("two address slots in one place", Box::new(|ir| { let again = ir.data[1].relocs[0].clone(); ir.data[1].relocs.push(again) })),
+            ("descriptor not aligned for an address", Box::new(|ir| ir.data[1].align = 1)),
+            ("alignment zero", Box::new(|ir| ir.data[0].align = 0)),
+            ("alignment not a power of two", Box::new(|ir| ir.data[0].align = 3)),
+            ("alignment larger than supported", Box::new(|ir| ir.data[0].align = 8192)),
+            ("two objects with one id", Box::new(|ir| { let again = ir.data[0].clone(); ir.data.push(again) })),
+            ("code naming no object", Box::new(|ir| ir.functions[0].blocks[0].insts[0] = IrInst::DataAddr { dst: ValueId(0), data: DataId(9) })),
+            ("no data at all", Box::new(|ir| ir.data.clear())),
+        ];
+        for (what, damage) in cases {
+            let mut ir = valid();
+            damage(&mut ir);
+            let outcome = HostBoundary::new().execute(&ir);
+            assert!(outcome.is_err(), "{what}: expected a refusal, got {outcome:?}");
+        }
     }
 }

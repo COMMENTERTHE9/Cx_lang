@@ -160,7 +160,7 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
         }
     }
 
-    validate_data(module, &mut errors);
+    errors.extend(data_errors(module));
 
     // Seed known runtime intrinsic signatures before scanning user-defined functions.
     let mut function_sigs: HashMap<String, ValidatorFunctionSig> = known_intrinsic_sigs();
@@ -187,8 +187,13 @@ pub fn validate_module(module: &IrModule) -> Result<(), Vec<IrValidationError>> 
 
 /// The data section: every object is well formed, every relocation names a
 /// real slot and a real object, and every `DataAddr` names a real object.
-fn validate_data(module: &IrModule, errors: &mut Vec<IrValidationError>) {
+///
+/// Public and separate from [`validate_module`] because a backend must not
+/// place data it has not checked: a relocation outside its object is a write
+/// outside an allocation. The JIT runs this before it defines any data.
+pub fn data_errors(module: &IrModule) -> Vec<IrValidationError> {
     use crate::ir::types::{DATA_ADDR_SIZE, MAX_GLOBAL_ALIGNMENT};
+    let mut errors = Vec::new();
     let mut invalid = |id, detail: String| errors.push(IrValidationError::InvalidData { id, detail });
 
     let mut ids = HashSet::new();
@@ -245,6 +250,7 @@ fn validate_data(module: &IrModule, errors: &mut Vec<IrValidationError>) {
             }
         }
     }
+    errors
 }
 
 /// Every place a module turns a constant into a pointer: a `Cast` from `I64`
