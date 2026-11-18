@@ -7657,11 +7657,23 @@ fn prepare_call_args(
 fn reload_call_copies(copy_reloads: CopyReloads, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
     for (binding, slot, sem_ty) in copy_reloads {
         match ret_slot_plan(&sem_ty, &ctx.struct_table) {
-            Some(_) => {
-                active.bindings.insert(
-                    binding,
-                    LoweredValue { value: slot, ty: IrType::Ptr },
-                );
+            // Copy the callee's result back INTO the binding's own storage.
+            // This used to re-point the binding at the slot instead, which
+            // saved the copy and moved the aggregate: every address taken
+            // before the call then named dead storage. A compound assignment
+            // had already resolved its field or element, so its store was lost
+            // (`c.v += bump(c.copy)`), and a method that passed its receiver as
+            // `.copy` stopped writing to the caller's struct from that point on
+            // (`docs/known_issues.md` §58). The storage an aggregate binding
+            // names does not change because it was an argument.
+            Some((_, _, parts)) => {
+                let target = active.bindings.get(&binding).cloned().ok_or_else(|| {
+                    LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!("`.copy` write-back target {:?}", binding),
+                    }
+                })?;
+                ensure_type_match("copy write-back target", IrType::Ptr, target.ty)?;
+                copy_parts(slot, 0, target.value, 0, &parts, ctx, active)?;
             }
             None => {
                 let ty = lower_type(&sem_ty)?;

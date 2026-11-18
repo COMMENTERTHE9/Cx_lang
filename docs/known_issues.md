@@ -4282,7 +4282,8 @@ decided in passing.
 build. Recorded so they are not rediscovered; each needs its own packet.)*
 
 **a. A compound field assignment loses its store when the right-hand side
-changes the same struct through `.copy`.** Both backends exit 0.
+changes the same struct through `.copy`.** Both backends exit 0. *(FIXED — §58,
+which found the cause was wider than this case.)*
 
 ```cx
 struct C { v: t64, w: t64 }
@@ -4395,3 +4396,53 @@ exit 0 and print different things: §56a, §57b and §57c. Each was found by
 writing a program aimed at one construct. The reviewer's 900 random programs and
 a replay of every tracked `.cx` file found none, which says the generated
 programs do not reach these shapes, not that there are no more.
+
+
+## 58. An aggregate passed as `.copy` moved to new storage when the call returned
+
+*(Fixes §56a. Found 2026-11-18 while fixing it; fixed by the commit that
+introduces this entry.)*
+
+For a struct or array `.copy` argument, the caller copies the value into a slot,
+passes the slot, and takes the callee's result from it afterwards. Compiled code
+took the result by re-pointing the variable at the slot. That saved a copy and
+moved the aggregate, so every address taken before the call named dead storage.
+Both backends exited 0 in each case below.
+
+**A compound assignment** had already resolved its target, so its store was lost:
+
+```cx
+c.v += bump(c.copy)      // interpreter 102, JIT 101   (field target)
+arr:[0] += f(arr.copy)   // interpreter 102, JIT 101   (element target)
+```
+
+**A method that passed its receiver as `.copy`** stopped writing to the caller's
+struct. The receiver is the caller's storage; after the call the method's name
+for it pointed at a private slot, so the write-back never reached the caller and
+neither did anything the method wrote afterwards:
+
+```cx
+grow: impl (s: C) {
+    fnc: grow_then_touch() {
+        bump(s.copy)     // adds 100 to s.v
+        s.w += 1
+    }
+}
+x: C = C { v: 1, w: 2 }
+x.grow_then_touch()
+print(x.v)               // interpreter 101, JIT 1
+print(x.w)               // interpreter 3,   JIT 2
+```
+
+§56a recorded only the first shape. The second is the more serious one: no
+statement in the method looks unusual, and every later write is dropped.
+
+**Fix.** `reload_call_copies` copies the slot back into the variable's own
+storage instead of re-pointing the variable. The storage an aggregate variable
+names no longer changes because it was passed as an argument, so addresses taken
+before the call stay valid and a receiver keeps naming the caller's struct. The
+cost is one aggregate copy per `.copy` call that used to be free.
+
+Fixtures: `t_copy_compound_assign_same_aggregate` (field and element targets) and
+`t_copy_receiver_in_method`. Both give wrong output on the unfixed JIT.
+
