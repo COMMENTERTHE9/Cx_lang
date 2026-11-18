@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Ok(1) and Ok("1") hold payloads of different kinds and are not equal.

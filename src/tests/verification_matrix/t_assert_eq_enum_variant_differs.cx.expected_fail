@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Color::Green is not Color::Red.

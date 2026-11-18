@@ -3878,6 +3878,11 @@ fn lower_value(
 /// address as a Ptr (ConstInt(I64) + the no-op Cast(I64->Ptr)). Shared by the
 /// literal construct (lower_value) and the D2.3c concat fold. Interpolation
 /// (`{…}`) defers to D2.3d — a brace-containing result stays SKIP.
+///
+/// A string has no identity: two strings are the same string when their bytes
+/// are (docs/backend/value_equality.md). So nothing here, or anywhere a string
+/// is bound, passed or stored, allocates per evaluation — a string value is the
+/// address of this one descriptor for as long as the program runs.
 fn construct_static_str(
     s: &str,
     ctx: &mut LoweringCtx,
@@ -7716,6 +7721,113 @@ fn result_inner_type(expr: &SemanticExpr, value: &LoweredValue, ctx: &mut Loweri
     None
 }
 
+/// What kind of value a Result's `Ok` payload word holds, for comparing two of
+/// them. `None` is a payload compiled code does not carry in the word (a struct,
+/// an array, a nested Result) or one whose kind is not known here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PayloadClass {
+    /// One side is proven to be an `Err`: there is no `Ok` payload to compare.
+    NoOk,
+    /// A whole number of any width, sign-extended into the word.
+    Int,
+    /// The address of a string descriptor.
+    Str,
+    /// The tag of a variant of the named enum.
+    Enum(String),
+    /// A handle's word.
+    Handle,
+}
+
+fn payload_class(ty: Option<&SemanticType>) -> Option<PayloadClass> {
+    match ty? {
+        SemanticType::Unknown => Some(PayloadClass::NoOk),
+        SemanticType::Str | SemanticType::StrRef => Some(PayloadClass::Str),
+        SemanticType::Enum(name) => Some(PayloadClass::Enum(name.clone())),
+        SemanticType::Handle(_) => Some(PayloadClass::Handle),
+        SemanticType::Numeric => Some(PayloadClass::Int),
+        ty if ty.int_width().is_some() => Some(PayloadClass::Int),
+        _ => None,
+    }
+}
+
+/// Whether two Results are equal, as `assert_eq` observes it
+/// (docs/backend/value_equality.md): they are the same variant and their
+/// payloads are equal by content. An `Err` carries a string, compared byte for
+/// byte. An `Ok` payload is compared as what it is: a string byte for byte, a
+/// number by value, an enum by its variant; payloads of two different kinds are
+/// never equal. Where a string is stored never enters into it.
+///
+/// Refuses when a payload's kind is not proven, and for a struct or array
+/// payload, which compiled code does not carry (`refuse_aggregate_result_payload`).
+fn emit_result_equality(left: ValueId, right: ValueId, left_ty: Option<&SemanticType>, right_ty: Option<&SemanticType>, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<LoweredValue, LoweringError> {
+    for ty in [left_ty, right_ty].into_iter().flatten() {
+        refuse_aggregate_result_payload("equality of two Results", ty)?;
+    }
+    // Decide how the Ok payloads compare before any block is opened, so a
+    // refusal leaves nothing half-built.
+    let (Some(left_class), Some(right_class)) = (payload_class(left_ty), payload_class(right_ty)) else {
+        return Err(LoweringError::UnsupportedSemanticConstruct { construct: "Result equality needs a proven scalar payload kind".into() });
+    };
+
+    let (ltag, lval) = result_unpack(left, ctx, active)?;
+    let (rtag, rval) = result_unpack(right, ctx, active)?;
+    let incoming = active.bindings.clone();
+    let failed = ctx.fresh_value();
+    active.emit(IrInst::ConstInt { dst: failed, ty: IrType::Bool, value: 0 })?;
+    let result = ctx.fresh_value();
+    let merge = ctx.start_block(vec![BlockParam { value: result, ty: IrType::Bool, read_only: false }], incoming.clone());
+    let merge_id = merge.id();
+    let mut matched = ctx.start_block(vec![], incoming.clone());
+    let mut error = ctx.start_block(vec![], incoming.clone());
+    let mut ok = ctx.start_block(vec![], incoming);
+    let same_tag = ctx.fresh_value();
+    active.emit(IrInst::Compare { dst: same_tag, op: CompareOp::Eq, lhs: ltag, rhs: rtag })?;
+    active.terminate(IrTerminator::Branch { cond: same_tag, then_block: matched.id(), then_args: vec![], else_block: merge_id, else_args: vec![failed] })?;
+    let old = std::mem::replace(active, merge);
+    ctx.seal_block(old)?;
+    let one = ctx.fresh_value();
+    matched.emit(IrInst::ConstInt { dst: one, ty: IrType::I64, value: 1 })?;
+    let is_error = ctx.fresh_value();
+    matched.emit(IrInst::Compare { dst: is_error, op: CompareOp::Eq, lhs: ltag, rhs: one })?;
+    matched.terminate(IrTerminator::Branch { cond: is_error, then_block: error.id(), then_args: vec![], else_block: ok.id(), else_args: vec![] })?;
+    ctx.seal_block(matched)?;
+
+    // Both Err: the payload word is the address of the message's descriptor.
+    let error_eq = emit_payload_str_eq(lval, rval, ctx, &mut error)?;
+    error.terminate(IrTerminator::Jump { target: merge_id, args: vec![error_eq] })?;
+    ctx.seal_block(error)?;
+
+    // Both Ok.
+    let ok_eq = match (&left_class, &right_class) {
+        // One side is proven Err, so a matching Ok pair cannot reach here.
+        (PayloadClass::NoOk, _) | (_, PayloadClass::NoOk) => failed,
+        (PayloadClass::Str, PayloadClass::Str) => emit_payload_str_eq(lval, rval, ctx, &mut ok)?,
+        (a, b) if a == b => {
+            let dst = ctx.fresh_value();
+            ok.emit(IrInst::Compare { dst, op: CompareOp::Eq, lhs: lval, rhs: rval })?;
+            dst
+        }
+        // Two different kinds of payload — a number and a string, variants of
+        // two different enums — are not equal whatever their words hold.
+        _ => failed,
+    };
+    ok.terminate(IrTerminator::Jump { target: merge_id, args: vec![ok_eq] })?;
+    ctx.seal_block(ok)?;
+    Ok(LoweredValue { value: result, ty: IrType::Bool })
+}
+
+/// Compare two Result payload words that each hold a string descriptor's
+/// address, by the strings' bytes.
+fn emit_payload_str_eq(left: ValueId, right: ValueId, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<ValueId, LoweringError> {
+    let mut ptrs = Vec::new();
+    for value in [left, right] {
+        let ptr = ctx.fresh_value();
+        active.emit(IrInst::Cast { dst: ptr, from: IrType::I64, to: IrType::Ptr, value })?;
+        ptrs.push(ptr);
+    }
+    Ok(lower_str_eq(Op::EqEq, ptrs[0], ptrs[1], ctx, active)?.value)
+}
+
 /// Lower `assert_eq(lhs, rhs)` as a void statement.
 ///
 /// Emits a Compare(Eq) followed by the same two-way branch pattern as
@@ -7749,20 +7861,49 @@ fn lower_assert_eq_stmt(
         }
     };
 
+    let lhs = lower_expr(lhs_expr, ctx, &mut current)?;
+    let rhs = lower_expr(rhs_expr, ctx, &mut current)?;
+    if matches!(lhs_expr.ty, SemanticType::Result(_)) || matches!(rhs_expr.ty, SemanticType::Result(_))
+        || ctx.result_types.contains_key(&lhs.value) || ctx.result_types.contains_key(&rhs.value) {
+        if !(matches!(lhs_expr.ty, SemanticType::Result(_)) || ctx.result_types.contains_key(&lhs.value))
+            || !(matches!(rhs_expr.ty, SemanticType::Result(_)) || ctx.result_types.contains_key(&rhs.value)) {
+            let failed = ctx.fresh_value();
+            current.emit(IrInst::ConstInt { dst: failed, ty: IrType::Bool, value: 0 })?;
+            return emit_assert_branch(failed, ctx, current);
+        }
+        let left = result_inner_type(lhs_expr, &lhs, ctx);
+        let right = result_inner_type(rhs_expr, &rhs, ctx);
+        let eq = emit_result_equality(lhs.value, rhs.value, left.as_ref(), right.as_ref(), ctx, &mut current)?;
+        return emit_assert_branch(eq.value, ctx, current);
+    }
+
     // D2.3c: assert_eq on strings — content comparison via cx_str_eq (the same
     // operand-type dispatch as `==`), then the standard assert branch. (The
     // existing scalar type check below rejects Ptr, so strings must route here.)
     if matches!(lhs_expr.ty, SemanticType::Str | SemanticType::StrRef)
         || matches!(rhs_expr.ty, SemanticType::Str | SemanticType::StrRef)
     {
-        let lhs = lower_expr(lhs_expr, ctx, &mut current)?;
-        let rhs = lower_expr(rhs_expr, ctx, &mut current)?;
+        require_string(lhs_expr, ctx)?;
+        require_string(rhs_expr, ctx)?;
         let eq = lower_str_eq(Op::EqEq, lhs.value, rhs.value, ctx, &mut current)?;
         return emit_assert_branch(eq.value, ctx, current);
     }
 
-    let lhs = lower_expr(lhs_expr, ctx, &mut current)?;
-    let rhs = lower_expr(rhs_expr, ctx, &mut current)?;
+    // An enum value is equal only to a value of the same enum. Its tag is an I8
+    // like any small number, so the comparison below would otherwise call a
+    // variant equal to whatever number its tag happens to be.
+    match (&lhs_expr.ty, &rhs_expr.ty) {
+        (SemanticType::Enum(a), SemanticType::Enum(b)) if a == b => {}
+        (SemanticType::Enum(_), other) | (other, SemanticType::Enum(_)) => {
+            if matches!(other, SemanticType::Unknown | SemanticType::TypeParam(_)) {
+                unsupported!("assert_eq of an enum against a value whose type is not known here");
+            }
+            let failed = ctx.fresh_value();
+            current.emit(IrInst::ConstInt { dst: failed, ty: IrType::Bool, value: 0 })?;
+            return emit_assert_branch(failed, ctx, current);
+        }
+        _ => {}
+    }
 
     if lhs.ty != rhs.ty {
         return Err(LoweringError::UnsupportedSemanticConstruct {
@@ -13353,6 +13494,84 @@ mod divergence_shape_tests {
              print(n)\n",
         );
         assert_eq!(traps(function(&ir, "main")), 0);
+    }
+    fn all_callees(ir: &IrModule) -> Vec<String> {
+        ir.functions.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts)
+            .filter_map(|i| match i { IrInst::Call { callee, .. } => Some(callee.clone()), _ => None })
+            .collect()
+    }
+
+    /// §55: two Results are compared by content. The Err payloads and the Ok
+    /// string payloads each go through `cx_str_eq`; no payload word that holds
+    /// a string's address is compared as a number.
+    #[test]
+    fn result_equality_compares_strings_by_content() {
+        let ir = lowered(
+            "fnc: Result<str> make() { return Ok(\"same\") }\n\
+             assert_eq(make(), make())\n",
+        );
+        assert_eq!(calls_to(function(&ir, "main"), "cx_str_eq"), 2, "one for two Err, one for two Ok");
+
+        // A number payload has no string to compare on the Ok side.
+        let ir = lowered(
+            "fnc: Result<t64> make() { return Ok(1) }\n\
+             assert_eq(make(), make())\n",
+        );
+        assert_eq!(calls_to(function(&ir, "main"), "cx_str_eq"), 1, "the Err messages only");
+    }
+
+    /// §55: a string has no identity, so nothing allocates when one is bound,
+    /// passed, returned or stored — the only runtime calls a string program
+    /// makes are the ones it wrote and the content comparison.
+    #[test]
+    fn binding_and_passing_a_string_calls_no_runtime_allocator() {
+        let ir = lowered(
+            "const GREETING: str = \"hello\"\n\
+             fnc: Result<str> wrap(value: str) { return Ok(value) }\n\
+             fnc: Result<str> wrap_copy(value.copy: str) { return Ok(value) }\n\
+             s: str = \"same\"\n\
+             t: str = s\n\
+             i: t64 = 0\n\
+             while (i < 3) {\n\
+                 u: str = \"loop\"\n\
+                 t = u\n\
+                 i = i + 1\n\
+             }\n\
+             assert_eq(wrap(s), wrap_copy(t.copy))\n\
+             assert_eq(len(\"padding\"), 7)\n\
+             print(GREETING)\n",
+        );
+        let allowed = ["wrap", "wrap_copy", "cx_str_eq", "cx_print_str"];
+        let unexpected: Vec<String> = all_callees(&ir).into_iter().filter(|c| !allowed.contains(&c.as_str())).collect();
+        assert!(unexpected.is_empty(), "a string program called {unexpected:?}");
+    }
+
+    /// §55: comparing two Results whose payload kind is not proven is refused,
+    /// not guessed.
+    #[test]
+    fn result_equality_on_an_aggregate_payload_is_refused() {
+        let err = lowering_error(
+            "struct P { x: t64 }\n\
+             a: Result<P> = Ok(P { x: 1 })\n\
+             assert_eq(a, a)\n",
+        );
+        assert!(format!("{err}").contains("a Result whose payload is a struct or array"), "{err}");
+    }
+
+    /// §55: an enum's tag is an I8, and so is a `t8`. `assert_eq` of the two is
+    /// decided by their types — never equal — not by a comparison of the bytes.
+    #[test]
+    fn an_enum_is_never_equal_to_a_number() {
+        let ir = lowered(
+            "enum Color { Red, Green }\n\
+             a: Color = Color::Red\n\
+             zero: t8 = 0\n\
+             assert_eq(a, zero)\n",
+        );
+        let main = function(&ir, "main");
+        let compares = main.blocks.iter().flat_map(|b| &b.insts).filter(|i| matches!(i, IrInst::Compare { .. })).count();
+        assert_eq!(compares, 0, "the tag must not be compared with the number");
+        assert_eq!(traps(main), 1);
     }
 
     /// PR #476 regression: `len` of an array is folded, and a name as its

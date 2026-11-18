@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+assert_eq on two Err messages compares their bytes: "bad" is not "bad input".

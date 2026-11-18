@@ -4239,10 +4239,12 @@ next evaluation.
 
 ## 55. `assert_eq` compares strings inside a `Result` by where they are stored, and never accepts two enums
 
-*(Found 2026-11-18 while reviewing PR #476. **Open — needs an owner ruling.**
-Not fixed here.)*
+*(Found 2026-11-18 while reviewing PR #476. **Decided by the owner on
+2026-11-18: equality is by content. Fixed on both backends** by the commit that
+rewrites this entry. The rule is `docs/backend/value_equality.md`; what follows
+is the history, then the resolution.)*
 
-The interpreter's `assert_eq` compares two strings by content, but compares two
+The interpreter's `assert_eq` compared two strings by content, but compares two
 `Result` values with the derived `Value` equality, which compares an embedded
 string by its arena offset and length. Everything it does not name falls to
 `_ => false`:
@@ -4275,6 +4277,30 @@ contradicts itself, and ordinary string equality is by content everywhere else �
 and make both backends compare `Result` payloads by content. That changes what
 the reference prints for the four lines above, so it is recorded here rather than
 decided in passing.
+
+**Resolution.** The owner chose the alternative: a string is equal by its bytes
+wherever it is, a `Result` is equal when its variant and its payload are, and an
+enum is equal by its enum and variant. This corrects the reference; it does not
+preserve it.
+
+- *Interpreter.* `assert_eq` goes through one recursive rule,
+  `RunTime::values_equal`, in place of `Value`'s derived equality. It also
+  accepts two enums and two chars, which fell to `_ => false`.
+- *Compiled code.* Two `Result`s are compared by tag, then by payload: `Err`
+  messages and `Ok` strings through `cx_str_eq`, numbers and enum tags as words,
+  payloads of two different kinds never equal. A payload whose kind is not
+  proven is refused. Nothing allocates when a string is bound, passed or
+  stored — the arena emulation PR #476 added for this is not taken (§63).
+- *Found on the way.* Compiled code compared an enum with a number by their
+  bytes, so `assert_eq(Color::Red, zero)` with `zero: t8 = 0` passed there and
+  failed on the interpreter. It is now decided from the types: never equal.
+
+Fixtures and measurements are listed in `docs/backend/value_equality.md` §5.
+Four neighbouring questions are deliberately **not** decided by this change —
+top-level structs and arrays, three-state bools, an integer against a float, and
+a `Result` assigned to a `Result` of a narrower payload type — and are written
+down in §4 of that document. In each of them compiled code refuses, so none is a
+case of two answers.
 
 ## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
 
@@ -4589,6 +4615,7 @@ a literal written in a different order, a nested struct, a generic struct, an
 array of structs and a `Result` holding one. A compiled-code SKIP, because
 compiled code refuses to print a struct.
 
+
 ## 62. `len` of an array did not evaluate its operand in compiled code
 
 *(Found by PR #476 and fixed there; the fix is taken from it, narrowed, by the
@@ -4623,3 +4650,68 @@ a call, a plain name) and `t_len_operand_index_out_of_bounds`
 (`interp=diagnostic jit=trap`). Unit tests
 `len_of_a_top_level_array_inside_a_function_lowers` and
 `len_still_evaluates_a_call_operand`.
+
+## 63. PR #476 — what was taken, what was not, and why
+
+*(2026-11-18. PR #476, `codex/runtime-string-identity` at 2a68658, is open and
+unmerged. This entry is the record of its revision on
+`backend/result-content-equality`; nothing was pushed to the PR's own branch.)*
+
+PR #476 set out to make compiled code agree with the interpreter about `Result`
+values. Its premise for strings — that two strings are the same string when they
+occupy the same arena position — was the interpreter's behaviour at the time and
+is no longer the language's rule (§55). The revision keeps what does not depend
+on that premise.
+
+**Taken, as written:**
+
+- *Payload kind proofs.* A `Result`'s payload word is a number, an enum tag or a
+  string's address, and compiled code used to act on the word without knowing
+  which. The PR tracks the kind of every `Result` it produces, checks it at each
+  typed boundary and proves it across merges and loops; a consumer of an
+  unproven word is refused (`docs/backend/value_equality.md` §3).
+- *An `Err` passing through a merge* — `if`/`when`/reassignment producing `Err`
+  on every path — fixture `t_result_err_phi`.
+- *Binary operators on two `Result`s are refused* rather than applied to the
+  packed words.
+- *The field-assignment fix* (§52) and *`.copy` write-back on an early `?`
+  return* (§59) — landed earlier, with the PR's fixtures.
+- *`len` evaluates its operand* (§62), narrowed to keep `len(arr)` working.
+
+**Not taken:**
+
+- *String identity.* The PR gave every evaluation, binding and parameter pass of
+  a string a fresh allocation and a simulated arena offset
+  (`cx_str_copy`, `cx_str_identity_eq`), released only when the program ends.
+  A loop binding a string 20 million times went from 0.45 s and 15 MB to 64.5 s
+  and 7,054 MB. With equality by content there is nothing for it to reproduce.
+- *Aggregate `Result` payloads.* The PR stored a struct or array payload in an
+  allocation owned by the whole execution and copied it again at each `?`
+  (`cx_value_copy`). That is memory-safe only because nothing is ever freed.
+  Giving a `Result` an owned aggregate payload needs a decision about ownership
+  and about the `Result` ABI, so compiled code refuses these payloads (§60) and
+  the feature is deferred to that decision. The PR's two fixtures for it,
+  `t_result_aggregate_equality` and `t_result_aggregate_snapshot`, are kept:
+  they pass on the interpreter and are a compiled-code SKIP.
+- *Five fixtures asserting that equal strings must compare unequal*
+  (`t_result_string_factory_identity`, `t_result_error_factory_identity`,
+  `t_result_empty_identity_len`, `t_result_empty_identity_print`,
+  `t_string_parameter_identity`). They pin the rule §55 replaced. Their program
+  shapes are kept, with the decided expectation, in `t_assert_eq_str_in_result`.
+- *`t_result_numeric_alias`* pinned a `Result<t8>` printing `Ok(300)` as
+  expected output. The widening half is kept as `t_result_numeric_widen`; the
+  rest is an open question (`docs/backend/value_equality.md` §4, item 4).
+
+**Regressions the PR introduced, and where each stands:**
+
+| Regression | Status |
+|---|---|
+| unbounded memory and a 140× slowdown for string-binding loops | gone — no allocation is made |
+| `len(arr)` of a top-level array inside a function refused | gone — §62 |
+| `?` in a bare `when` arm with a `.copy` parameter: interpreter 2, JIT 1 | gone — the interpreter leaked a scope; §59 |
+| a user function named `cx_str_copy`, `cx_value_copy` or `cx_str_identity_eq` refused | gone — those runtime symbols do not exist |
+| `Ok(<generic struct>)` refused | stays refused, on purpose — §60 |
+
+**Verification.** Replaying all 694 tracked programs on both backends against
+the build before this change gives identical exit codes and output; the only
+difference is the wording of the refusal for two nested-`Result` programs.

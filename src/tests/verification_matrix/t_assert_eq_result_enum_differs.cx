@@ -1,0 +1,8 @@
+// Inside a Result, two variants of one enum are not equal, and neither are
+// variants of two different enums.
+enum Color { Red, Green }
+fnc: Result<Color> find(f: bool) { if f { return Ok(Color::Green) } return Ok(Color::Red) }
+assert_eq(find(true), Ok(Color::Green))
+print("equal")
+assert_eq(find(true), find(false))
+print("unreachable")

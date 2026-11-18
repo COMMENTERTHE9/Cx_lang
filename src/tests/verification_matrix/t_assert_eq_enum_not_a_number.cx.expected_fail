@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Color::Red is not the number 0.

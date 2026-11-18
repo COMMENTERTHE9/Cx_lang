@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+assert_eq on two Ok strings compares their bytes: "same" is not "sane".

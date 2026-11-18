@@ -1,0 +1,7 @@
+// An Ok and an Err are never equal, even when they carry the same string.
+fnc: Result<str> make(f: bool) { if f { return Ok("same") } return Err("same") }
+assert_eq(make(true), Ok("same"))
+assert_eq(make(false), Err("same"))
+print("equal")
+assert_eq(make(true), make(false))
+print("unreachable")

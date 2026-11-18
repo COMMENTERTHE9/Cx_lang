@@ -1,0 +1,9 @@
+// An enum value is not equal to a number, including the number compiled code
+// uses for its tag.
+enum Color { Red, Green }
+a: Color = Color::Red
+zero: t8 = 0
+assert_eq(a, Color::Red)
+print("equal")
+assert_eq(a, zero)
+print("unreachable")
