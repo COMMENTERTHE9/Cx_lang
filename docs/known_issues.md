@@ -4126,3 +4126,38 @@ scalar field, an array field, a struct-valued field and a method-call right-hand
 side, each printing from inside the call so a second evaluation is visible in
 the output as well as in the count. On the unfixed JIT that fixture prints 19
 lines where the interpreter prints 15.
+
+## 53. `when` on a string never matched a literal arm in compiled code
+
+*(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
+this entry.)*
+
+```cx
+fnc: t64 code(s: str) {
+    when s { "alpha" => 1, "beta" => 2, _ => 0 }
+}
+print(code("alpha"))   // interpreter 1, JIT 0
+```
+
+Every string arm fell through to the catch-all on the JIT, with exit 0. The
+interpreter matches a string pattern by content (`run_semantic_when` resolves
+both sides and compares the text). `emit_when_arm_match` lowered the pattern to
+its own descriptor and emitted the pointer `Compare` it uses for every other
+literal; the scrutinee and the pattern are different descriptors, so the compare
+was never true. `==` and `assert_eq` on strings already went through `cx_str_eq`;
+`when` was the one string comparison that did not.
+
+Fixed: a string pattern now lowers to a `cx_str_eq` call, in both the statement
+and the expression form (they share the arm-match function). Fixture:
+`t_when_str_content` — scrutinees from a parameter, a typed variable, a struct
+field, an array element and a function result; patterns include the empty string
+and a pair where one is a prefix of the other. The unfixed JIT printed the
+catch-all value for every case.
+
+**Boundary, still open.** A string pattern against a scrutinee that analysis has
+not typed as a string (`x: t64 = 5; when x { "five" => … }`) is accepted by
+analysis and runs on the interpreter, where it can never match. Compiled code now
+refuses it (exit 127) rather than pass a non-string to `cx_str_eq`; before this
+fix it compared an integer with an address and happened to print the same thing.
+By the enforcement-layers principle this is analysis's to reject. No fixture has
+this shape.

@@ -4752,6 +4752,38 @@ fn emit_when_arm_match(
     ctx: &mut LoweringCtx,
 ) -> Result<ActiveBlock, LoweringError> {
     match pattern {
+        // A string pattern matches by CONTENT, as the interpreter does
+        // (`run_semantic_when` resolves both sides and compares the text). The
+        // scrutinee and the pattern are two different descriptors, so the
+        // pointer `Compare` every other literal uses below can never be true
+        // for them: every string arm fell through to the catch-all, with exit 0
+        // (`docs/known_issues.md` §53). Route through `cx_str_eq`, the same
+        // call `==` and `assert_eq` use. Only a scrutinee analysis has typed as
+        // a string qualifies — anything else is refused rather than handed to a
+        // function that would read it as a descriptor.
+        SemanticWhenPattern::Literal(value @ SemanticValue::Str(_)) => {
+            if !matches!(scrutinee.ty, SemanticType::Str | SemanticType::StrRef)
+                || scrutinee_val.ty != IrType::Ptr
+            {
+                unsupported!(
+                    "string when-pattern against a scrutinee that is not typed as a string"
+                );
+            }
+            let pat = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
+            let matched =
+                lower_str_eq(Op::EqEq, scrutinee_val.value, pat.value, ctx, &mut current)?;
+            let next_block = ctx.start_block(vec![], incoming.clone());
+            let next_id = next_block.id();
+            current.terminate(IrTerminator::Branch {
+                cond: matched.value,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: next_id,
+                else_args: vec![],
+            })?;
+            ctx.seal_block(current)?;
+            Ok(next_block)
+        }
         SemanticWhenPattern::Literal(value) => {
             let pat_value = if scrutinee_val.ty == IrType::TBool {
                 // D2.x-A1: a three-state TBool scrutinee (a `bool = ?` unknown)
