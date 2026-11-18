@@ -12787,3 +12787,133 @@ mod module_state_tests {
         crate::ir::validate::validate_module(&ir).expect("global names remain unique");
     }
 }
+
+/// The lowered shape of the three divergences fixed in M0
+/// (`docs/known_issues.md` §52–§54). The fixtures prove both backends agree on
+/// the output; these pin what the IR says, so a second backend that consumes
+/// this IR inherits the same guarantees without re-deriving them.
+#[cfg(test)]
+mod divergence_shape_tests {
+    use super::*;
+    use crate::frontend::{resolver, semantic};
+
+    fn lowered(src: &str) -> IrModule {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis succeeds");
+        lower_program(&analyzed).expect("lowers")
+    }
+
+    fn function<'a>(ir: &'a IrModule, name: &str) -> &'a IrFunction {
+        ir.functions.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no function '{name}'"))
+    }
+
+    fn calls_to(function: &IrFunction, callee: &str) -> usize {
+        function.blocks.iter().flat_map(|b| &b.insts)
+            .filter(|i| matches!(i, IrInst::Call { callee: c, .. } if c == callee))
+            .count()
+    }
+
+    fn traps(function: &IrFunction) -> usize {
+        function.blocks.iter().filter(|b| b.term == IrTerminator::Trap).count()
+    }
+
+    /// §52: the right-hand side of a field assignment is lowered once. Two
+    /// calls here is the bug — the stored value came from the second.
+    #[test]
+    fn field_assignment_lowers_its_right_hand_side_once() {
+        let ir = lowered(
+            "struct P { x: t64, row: [2: t64] }\n\
+             fnc: t64 next() { return 7 }\n\
+             fnc: [2: t64] pair() { r: [2: t64] = [1, 2]\n r }\n\
+             p: P = P { x: 0, row: [0, 0] }\n\
+             p.x = next()\n\
+             p.row = pair()\n",
+        );
+        let main = function(&ir, "main");
+        assert_eq!(calls_to(main, "next"), 1, "scalar field target");
+        assert_eq!(calls_to(main, "pair"), 1, "aggregate field target");
+    }
+
+    /// §53: a string `when` arm is a content comparison — one `cx_str_eq` per
+    /// string arm, in the statement form and in the expression form.
+    #[test]
+    fn string_when_arms_compare_content() {
+        let ir = lowered(
+            "fnc: t64 code(s: str) {\n\
+                 when s { \"alpha\" => 1, \"beta\" => 2, _ => 0 }\n\
+             }\n\
+             word: str = \"beta\"\n\
+             when word {\n\
+                 \"alpha\" => print(1),\n\
+                 _ => print(0),\n\
+             }\n\
+             print(code(word))\n",
+        );
+        assert_eq!(calls_to(function(&ir, "code"), "cx_str_eq"), 2, "expression form");
+        assert_eq!(calls_to(function(&ir, "main"), "cx_str_eq"), 1, "statement form");
+    }
+
+    /// §53, the boundary: a string pattern against a scrutinee analysis did not
+    /// type as a string is refused, not handed to `cx_str_eq`.
+    #[test]
+    fn string_when_arm_against_a_non_string_scrutinee_is_refused() {
+        let id = resolver::ModuleId(0);
+        let src = "x: t64 = 5\nwhen x {\n    \"five\" => print(1),\n    _ => print(0),\n}\n";
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape today");
+        let error = lower_program(&analyzed).expect_err("a non-string must not reach cx_str_eq");
+        assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+            if construct.contains("string when-pattern")), "{error:?}");
+    }
+
+    /// §54: a `while` over a three-state condition carries the unknown guard,
+    /// and carries it in the loop header — the block the backedge returns to —
+    /// so it runs on every evaluation, not only on entry.
+    #[test]
+    fn while_on_a_three_state_condition_guards_unknown_in_the_loop_header() {
+        let ir = lowered(
+            "flag: bool = ?\n\
+             n: t64 = 0\n\
+             while (flag) {\n\
+                 n += 1\n\
+                 if n >= 3 { break }\n\
+             }\n\
+             print(n)\n",
+        );
+        let main = function(&ir, "main");
+        assert_eq!(traps(main), 1, "exactly one trap block: the unknown-condition guard");
+        let trap_id = main.blocks.iter().find(|b| b.term == IrTerminator::Trap).unwrap().id;
+        // The header is the only block with parameters that some later block
+        // jumps back to; the guard is the branch that ends it.
+        let header = main.blocks.iter()
+            .find(|b| matches!(&b.term, IrTerminator::Branch { then_block, .. } if *then_block == trap_id))
+            .expect("a block branches to the trap");
+        assert!(!header.params.is_empty(), "the guard sits in the loop header, which carries the loop's bindings");
+        let backedges = main.blocks.iter()
+            .filter(|b| matches!(&b.term, IrTerminator::Jump { target, .. } if *target == header.id))
+            .count();
+        assert!(backedges >= 2, "entry and backedge both reach the guarded header, found {backedges}");
+    }
+
+    /// §54, the other half: a definite `bool` condition lowers exactly as it did
+    /// — no guard, no trap block.
+    #[test]
+    fn while_on_a_definite_condition_emits_no_guard() {
+        let ir = lowered(
+            "run: bool = true\n\
+             n: t64 = 0\n\
+             while (run) {\n\
+                 n += 1\n\
+                 if n >= 3 { run = false }\n\
+             }\n\
+             while (n < 10) { n += 1 }\n\
+             print(n)\n",
+        );
+        assert_eq!(traps(function(&ir, "main")), 0);
+    }
+}
