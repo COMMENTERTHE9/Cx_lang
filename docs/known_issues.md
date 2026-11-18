@@ -4750,3 +4750,33 @@ Fixture: `t_index_read_takes_array_before_index` — a top-level array, an index
 that is an `if` or `when` value, a nested array's row and a row's element, and
 an array in a struct field reached through `.copy` and through a method, in a
 loop. It fails on the unfixed JIT and passes on the interpreter.
+
+## 67. Notes from the review of §58–§61 that are not fixed
+
+*(2026-11-18. Recorded so they are not rediscovered. None is a case where the
+two backends give different answers.)*
+
+**a. Two modules that each declare a struct of the same name share one print
+order (§61).** The interpreter keeps struct declarations by bare name and the
+last one registered wins. A library with `struct P { zed, alpha, mid }` and an
+entry file with `struct P { mid, alpha, zed }`: the library's own `print(p)`
+uses the entry file's order. When the two declare different field sets, the
+fields fall back to alphabetical order. The output is the same on every run;
+it is the wrong declaration's order. Interpreter only — compiled code does not
+print structs.
+
+**b. Two things still print in hash-map order (§61).** A `copy_into` bundle,
+which §61 says, and the text of the runtime error for `t: str = "debug {s:?}"`,
+which embeds a map's debug form: 18 different error texts in 20 runs, exit 1
+each time. Neither reaches stdout of a program that succeeds.
+
+**c. A `Result` of an aggregate type that is only ever `Err` can no longer be
+printed by compiled code (§60).** `Result<[2: t64]>` holding `Err("no arr")`
+printed correctly before §60 and is now refused with the rest of the class. The
+refusal is by the declared payload type, not by which variant the value is.
+
+**d. Corrections to earlier text.** §59 says the unfixed JIT printed "six wrong
+values" for `t_try_early_return_exit_path`; it is eight differing lines. §59
+also says a guard that uses `?` has no compiled-code fixture; it has one now
+(§64). The commit for §61 states no gate numbers; they were 322 default / 501
+with `--features jit`, parity 613 / 52 / 0 over 665 fixtures.
