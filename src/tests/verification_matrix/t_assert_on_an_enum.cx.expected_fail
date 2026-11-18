@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+assert(x) on an enum value is not an assertion about anything; compiled code refuses it.

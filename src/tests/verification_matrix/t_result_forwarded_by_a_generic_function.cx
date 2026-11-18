@@ -1,0 +1,39 @@
+// A function generic in `T` that hands back one of its arguments returns a
+// Result whose payload kind no declaration names. Compiled code follows the
+// argument through the call — through a statement before the return, a branch
+// that picks between two arguments, a function that returns another's result,
+// and one that calls itself — so the value can be used where a kind is
+// declared.
+fnc: T <T> second(a: T, b: T) { print("second"); return b }
+fnc: T <T> pick(c: bool, a: T, b: T) {
+    if c { return a }
+    return b
+}
+fnc: T <T> wrap(x: T) { return second(x, x) }
+fnc: T <T> later(x: T, n: t64) {
+    if n == 0 { return x }
+    return later(x, n - 1)
+}
+
+r: Result<t64> = second(Err("x"), Err("y"))
+print(r)
+
+p: Result<t64> = pick(true, Err("left"), Err("right"))
+print(p)
+
+a1: Result<t64> = Ok(1)
+a2: Result<t64> = Err("no")
+q: Result<t64> = pick(false, a1, a2)
+print(q)
+q = pick(true, a1, a2)
+print(q)
+
+w: Result<str> = wrap(Err("deep"))
+print(w)
+
+l: Result<t64> = later(Err("after three"), 3)
+print(l)
+
+// The same value compared by content: the kind is known, so this is allowed.
+assert_eq(second(Err("x"), Err("y")), Err("y"))
+print("done")

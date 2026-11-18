@@ -1,0 +1,43 @@
+// A range arm matches a whole number that lies in it and nothing else: an
+// enum, a bool or a float is not "in" `0..5`, whatever compiled code keeps it
+// as. `unknown` is a state only a bool has. And `1` is not `1.0`, in either
+// direction.
+enum Color { Red, Green, Blue }
+
+c: Color = Color::Green
+print(when c { 0..5 => 1, _ => 2 })
+b: bool = true
+print(when b { 0..=1 => 1, _ => 2 })
+n: t64 = 2
+print(when n { unknown => 1, _ => 2 })
+k: Color = Color::Blue
+print(when k { unknown => 1, _ => 2 })
+
+x: f64 = 1.0
+print(when x { 1 => 1, _ => 2 })
+print(when n { 2.0 => 1, _ => 2 })
+y: f64 = 1.5
+print(when y { 1.5 => 1, _ => 2 })
+z: f64 = 2.0
+print(when z { 0..5 => 1, _ => 2 })
+
+// The arms that should match still do.
+m: t64 = 3
+print(when m { 0..5 => 1, _ => 2 })
+print(when m { 0..=3 => 1, _ => 2 })
+print(when m { 0..3 => 1, _ => 2 })
+
+fnc: t64 f(c: Color, n: t64, x: f64) {
+    when c {
+        0..5 => { print("range") },
+        unknown => { print("unknown") },
+        Color::Green => { print("green") },
+        _ => { print("other") },
+    }
+    when x {
+        1 => { print("one") },
+        _ => { print("not one") },
+    }
+    return when n { unknown => 1, 2..4 => 7, _ => 2 }
+}
+print(f(Color::Green, 2, 1.0))

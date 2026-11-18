@@ -5083,6 +5083,46 @@ text "top-level Return". The cost §66 names is real: the review measured
 reading `g.items:[g.here()]` from a 3000-element array field in a 20,000-pass
 loop at 0.35 s before and 1.8 s after on the JIT.
 
+**Addendum to §68, from the review of its fixes (2026-11-18).**
+
+*(d) was incomplete.* The first fix covered a left operand that is a variable.
+A field, an array element, or an `if`/`when` value yielding a variable is the
+thing itself in compiled code as well, and was still read after the right
+operand:
+
+```cx
+r1: V = w.inner + bumpw(w.copy)              // submain 2 / 2;   was 2 / 102
+r2: V = ps:[0] + bumpa(ps.copy)              // submain 2 / 2;   was 2 / 102
+print((when 2 { 1 => p, _ => p }) < (p + p.grow()))
+                                             // true / true on every build until
+                                             // (d)'s first fix made it true / false
+```
+
+The first two were regressions from §58 that (d) did not reach — the build
+with §58 and without §65 already gives 102 for both, so the message of the
+commit that fixes them, which blames the receiver change of §65, has the wrong
+cause. The third was new with (d)'s first fix. The copy is now taken for any left operand that is
+not already a fresh value, whenever the right operand contains a call — not
+"whenever the right operand can change the left", which cannot always be read
+off the expression. `a + b` on two names still copies nothing. On the review's
+operator fuzzer, 2000 programs with field and element operands: 191 silent
+divergences and 4 exit mismatches before, none after; 2000 with named operands:
+1 before, none after. Fixture `t_operator_left_operand_is_a_place`.
+
+*§69's opening line is wrong for these.* It says every case there was present
+on `submain`. The disagreements about a variable's value afterwards were; the
+operator results above agreed on `submain` and did not for a while here.
+
+*The index scan was broader than it needed to be.* A number, bool, string or
+enum passed to a method is a value, not an alias, so an index that passes one
+no longer causes a copy of the array (the review measured the unnecessary copy
+at 0.13 s → 0.30 s on a 3000-element array).
+
+*`cx_eval_order.md` said* that with the same variable passed as two aliases
+compiled code reads an indexed element after the call. The review could not
+observe that — the element read agrees; what differs is the variable
+afterwards (§69d) — and the sentence is removed.
+
 ## 70. Findings of the independent review of the PR #476 revision, and their fixes
 
 *(2026-11-18. The revision — §55, §62, §63 — was reviewed independently before
@@ -5238,3 +5278,177 @@ in an optimized build — about one CPU cycle per comparison, cause not
 identified — which misses the design's own "no more than 10%" in some variants.
 The benchmark programs are unchanged. `static_data_design.md` §11 has the
 measurements and what was ruled out; it is a decision for the owner.
+
+## 72. Findings of the confirmation review of §68–§70's fixes, and their fixes
+
+*(2026-11-18. The fixes for the two previous reviews were themselves reviewed
+before anything was proposed for integration. This entry is numbered 72 because
+71 is taken on the static-data branch, which is merged on top of this one. One
+finding was blocking; (g) is deliberately not changed; (i) is found and not
+fixed.)*
+
+**a. Blocking: an unproven payload kind was taken on trust (§70a).** §70a made
+a use "go by the declared type" when the value graph could not say what a
+`Result` held. The declared type it went by was the *use's*. That is sound when
+the value has a declared kind of its own, which analysis has checked against
+the use. It is not when the value's type is `Result<unknown>` — an untyped
+variable that started as an `Err`, the result of a function generic in `T` —
+because analysis accepts that wherever a `Result` is declared, whatever it
+holds:
+
+```cx
+fnc: T <T> id(x: T) { return x }
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok("a")); return 0 }
+fnc: t64 run(c: bool) {
+    let e
+    e = Err("x")
+    if c { x: t64 = fill(e.copy) }     // e now holds Ok(5)
+    print(cmp(id(e)))                  // interpreter: Ok(5) != Ok(a), exit 1
+    return 0                           // compiled: read 5 as a string, exit 134
+}
+```
+
+New with §70a: on `submain` this trapped (126). The same route printed
+`Ok()` for a `Result<Color>` that held another enum's variant, where the
+interpreter prints `Ok(Shape::Square)` — both exit 0, also new; `submain`
+refused it. Printing the value as a `Result<str>` crashed, and reading it as a
+`Result<t8>` gave 44 for 300: both as on `submain`, both refused by the first
+version of the revision and reopened by §70a. An array literal `[e, e]`
+laundered the value the same way.
+
+Fixed: the declared type is trusted only when the value's own static type
+names a payload kind. Otherwise the graph must prove the kind or the use is
+refused. So that this does not bring back §70a's refusals, a function that can
+only return some of its own arguments unchanged, or an `Err`, is now followed
+through the call — the value of `id(e)` is whatever `e` is — including a
+statement before the `return`, a branch between two arguments, a function that
+returns another such function's result, and recursion
+(`result_sources`, `settle_result_sources`). With that the graph finds the
+`Ok(5)` above and refuses by proof rather than by doubt.
+
+What this refuses that `submain` ran and agreed on: a generic function that
+does more than forward — `fnc: T <T> swap(a: T, b: T) { a = b; return a }` —
+called with `Err(..)` arguments and assigned to a declared `Result`. None of
+the review's 1,709 probes or 12,000 generated programs has that shape.
+
+**b. A narrowing the first fix did not see (§70c).**
+
+```cx
+let lit
+lit = Ok(300)
+narrow: Result<t8> = lit
+v: t8 = narrow?
+print(v)                  // interpreter 300, compiled 44 — both exit 0
+```
+
+§70c recorded an untyped literal as "a number of no particular width", which
+fits any declaration. A constant payload is now recorded at the narrowest
+width that holds its value (`Ok(5)` → 8 bits, `Ok(300)` → 16, `Ok(1 + 2)` →
+8), and a number with no declared width that is computed at run time is the
+whole word. Present on `submain`. The same through a loop, an `if` value, a
+`.copy` parameter and a generic forwarder is refused as well; each was a
+silent 300/44 on `submain`.
+
+This also *accepts* shapes §70c refused that are sound: `c: Result<t8> =
+Ok(1 + 2)`, and an untyped `Ok(5)` passed where a `Result<t8>` is declared.
+
+**c. Range arms, `unknown` arms, and whole numbers against floats (§70f).**
+§70f made a literal arm of another kind never match. A range arm and an
+`unknown` arm still compared bits:
+
+```cx
+c: Color = Color::Green
+print(when c { 0..5 => 1, _ => 2 })      // interpreter 2, compiled 1
+n: t64 = 2
+print(when n { unknown => 1, _ => 2 })   // interpreter 2, compiled 1
+x: f64 = 1.0
+print(when x { 1 => 1, _ => 2 })         // interpreter 2; compiled code stopped
+                                         // inside Cranelift's verifier (exit 2)
+```
+
+All present on `submain`. A range arm now matches only a whole-number
+scrutinee, `unknown` only a bool, and a whole-number arm never matches a float
+or the reverse — which is what the interpreter does in each case.
+
+**d. `__cx_fmod` was not reserved (§70e).** The list of runtime names written
+for §70e left out the one `%` on floats calls. A program's own function of that
+name was called in its place: `7.5 % 2.0` printed 99. Present on `submain`.
+Reserved now, and a test beside the JIT's registrations
+(`every_registered_runtime_symbol_is_reserved`) fails if a symbol is registered
+without being reserved.
+
+**e. `assert` on an enum or a handle (§70f).** §70f refused `assert(r)` on a
+`Result`. The interpreter fails `assert` on anything but `true` and a non-zero
+number; compiled code passed it for any enum variant but the first and any
+live handle. Present on `submain`. Refused now.
+
+**f. `t_assert_eq_handle` pinned an ending, not an answer.** Its equal pair is
+followed by an unequal one, so it is an `expected_fail` fixture and its output
+is not compared; it passed on the build where `assert_eq(h, h)` failed.
+`t_assert_eq_handle_is_itself` runs to the end and fails there.
+
+**g. Not changed: `len` of a variable first assigned in both branches of an
+`if` is refused (§70b).**
+
+```cx
+let a
+if c { a = [1, 2, 3] } else { a = [4, 5, 6] }
+return len(a)             // submain: 3 / 3.  Now: 3 / refused
+```
+
+The review counts this as a new refusal, and it is. On `submain` compiled code
+folded `len(a)` from the type without asking whether `a` had a value, so the
+same program with the `else` removed printed 3 where the interpreter stops
+("declared but never assigned"). Compiled code cannot tell the two programs
+apart: it does not track a variable first assigned inside both branches at
+all — reading `a:[0]` there is refused on `submain` too. Folding again would
+bring the wrong answer back for the one-branch program in exchange for the
+length of an array that cannot otherwise be used. Kept as a refusal;
+`t_len_of_a_variable_assigned_in_both_branches` pins the interpreter's answer
+and will start passing in compiled code when such variables can be read.
+
+**h. Corrections to earlier text.** §70a: "it goes by the declared type, as it
+always did" — see (a). §70c: "Compiled code now refuses to read a `Result` at a
+narrower whole-number type" — not through an untyped literal, until (b). §70e's
+list of reserved names: add `__cx_fmod`. §70f: "A `when` arm of another kind
+than its scrutinee … never matched" — for a literal arm; ranges and `unknown`
+with (c). `value_equality.md` is corrected in the same places and gains two
+entries in its "not decided" list: a `Result<unknown>` is accepted wherever a
+`Result` is declared, and `assert` on a value that is not a condition.
+
+**i. Found, not fixed: a local declared with a type parameter fails on the
+interpreter.**
+
+```cx
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+print(id(5))      // interpreter: type mismatch — expected 'typeparam("t")'
+                  //              but got 't128' (exit 1).  Compiled: 5
+```
+
+Present on `submain`, in every generic function that declares a local of type
+`T`. The interpreter runs a generic function as written rather than a copy per
+type, and its check of a declared local's type (`value_matches_type`) has no
+case for a type parameter. It is not a silent difference — the interpreter
+stops — but it is the reference rejecting a correct program. Not fixed here: it
+is outside what these reviews covered, it changes the interpreter, and it
+deserves its own fixture set (a `T` local given a number, a string, a struct,
+an array, a `Result`).
+
+**Measured.** The review's 1,709 probe programs, interpreter against compiled
+code, `submain` → before this entry → now: crashes 13 → 5 → 0; exit mismatches
+81 → 46 → 1; silent differences 196 → 105 → 9; agreeing 757 → 1,165 → 1,377.
+The ten that remain are (i) and the nine open cases of §69a and §69d, all
+present on `submain`. No program that agreed before this entry disagrees now;
+two that agreed are refused (a user `__cx_fmod`, and the narrowing of (b)
+followed by a print).
+The review's generator, both modes, 12,000 programs: no disagreement between
+the backends, and none refused that the build before this branch ran and
+agreed on. Its 418 earlier probes: 128 refused, 193 agreeing, 97 failing alike
+on both; refused that the base agreed on, the same 15 narrowings as §70c.
+Corpus replay, 694 programs on both backends, against the build before this
+entry: identical.
+

@@ -1,0 +1,11 @@
+// A handle is equal to itself. This program runs to the end; the companion
+// fixture t_assert_eq_handle covers the unequal case, where output is not
+// compared.
+let h
+h = Handle.new(5)
+assert_eq(h, h)
+print("same handle")
+let g
+g = h
+assert_eq(g, h)
+print("same handle under another name")

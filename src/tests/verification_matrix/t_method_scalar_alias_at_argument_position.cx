@@ -3,7 +3,7 @@
 // variable does not change what the method was given.
 //
 // What the variable holds AFTER such a call is not pinned here: the two
-// backends disagree about it and always have (known-issues §68).
+// backends disagree about it and always have (known-issues §69b).
 struct P { n: t64 }
 num: impl (p: P, k: t64) {
     fnc: t64 total(z: t64) { return p.n * 1000 + k + z }

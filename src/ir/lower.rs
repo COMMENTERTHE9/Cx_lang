@@ -123,8 +123,11 @@ struct FunctionSignature {
     copy_pointees: Vec<Option<SemanticType>>,
     return_ty: Option<IrType>,
     return_semantic_ty: Option<SemanticType>,
-    result_forward: Option<usize>,
-    result_error_only: bool,
+    /// `Some(params)` when everything the function can return is one of those
+    /// parameters exactly as it was passed in, or an `Err`. Empty: only an
+    /// `Err`. `None`: the function builds or fetches what it returns.
+    /// See `result_sources`.
+    result_sources: Option<Vec<usize>>,
     /// Struct name when the function's semantic return type is a struct.
     /// Struct returns use a caller-allocated return slot: the caller allocas
     /// this struct's layout and passes its address as a hidden trailing Ptr
@@ -413,9 +416,203 @@ fn instantiate_struct_layout(
     Some(StructLayoutInfo { fields: ir_fields, sem_fields, layout })
 }
 
-fn simple_result_return(function: &crate::frontend::semantic_types::SemanticFunction) -> Option<&SemanticExpr> {
-    if let [SemanticStmt::Return { expr: Some(expr), .. }] = function.body.as_slice() { return Some(expr); }
-    if function.body.is_empty() { function.ret_expr.as_ref() } else { None }
+/// Where the `Result` a function returns can come from, when that is knowable
+/// from its text: `Some(params)` if every value it returns is one of those
+/// parameters exactly as the caller passed it, or an `Err(..)`.
+///
+/// A function generic in `T` that hands back one of its arguments returns a
+/// `Result` whose payload kind no declaration names — `id(e)`,
+/// `second(Err("x"), Err("y"))`. With this, the caller's value graph follows
+/// the argument through the call instead of stopping at it, so such a call is
+/// neither refused for want of a proof nor trusted without one.
+///
+/// A returned parameter must be an ordinary one (not `.copy`, not a receiver)
+/// that nothing in the body can change. A `?` that returns early returns an
+/// `Err`, which is covered. A returned call counts when the callee is itself
+/// such a function and the arguments it may return are, in turn, parameters
+/// here or an `Err` (`known` holds what is established so far; see
+/// `settle_result_sources`). Anything else — a field, a value built in the
+/// body, a `return` inside an `if`/`when` value — gives `None`.
+fn result_sources(
+    function: &crate::frontend::semantic_types::SemanticFunction,
+    known: &HashMap<String, Option<Vec<usize>>>,
+) -> Option<Vec<usize>> {
+    if !matches!(function.return_ty, Some(SemanticType::Result(_))) { return None; }
+    let mut returned: Vec<&SemanticExpr> = Vec::new();
+    if !collect_returns(&function.body, &mut returned) { return None; }
+    if let Some(expr) = &function.ret_expr {
+        if expr_has_return(expr) { return None; }
+        returned.push(expr);
+    }
+    if returned.is_empty() { return None; }
+    let mut sources = Vec::new();
+    for expr in returned {
+        if !returned_origins(expr, function, known, &mut sources) { return None; }
+    }
+    Some(sources)
+}
+
+/// Add to `sources` the parameters of `function` that `expr`, a returned
+/// expression, may be. `false` if it may be anything else.
+fn returned_origins(
+    expr: &SemanticExpr,
+    function: &crate::frontend::semantic_types::SemanticFunction,
+    known: &HashMap<String, Option<Vec<usize>>>,
+    sources: &mut Vec<usize>,
+) -> bool {
+    match &expr.kind {
+        SemanticExprKind::ResultErr { .. } => true,
+        SemanticExprKind::VarRef { binding, .. } => {
+            let Some(index) = function.params.iter().position(|p| {
+                p.binding == *binding && p.kind == SemanticParamKind::Typed && !p.is_receiver
+            }) else {
+                return false;
+            };
+            let scan = Scan::Writes(*binding);
+            if stmts_may_write(&function.body, scan) || function.ret_expr.as_ref().is_some_and(|e| expr_may_write(e, scan)) {
+                return false;
+            }
+            if !sources.contains(&index) { sources.push(index); }
+            true
+        }
+        SemanticExprKind::Call { callee, args, .. } => {
+            let Some(Some(forwarded)) = known.get(callee) else { return false };
+            forwarded.iter().all(|index| match args.get(*index) {
+                Some(SemanticCallArg::Expr(arg)) => returned_origins(arg, function, known, sources),
+                _ => false,
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Work out `result_sources` for every function at once. A function that
+/// returns another's result depends on that one's answer, and two can depend
+/// on each other, so this starts from "returns nothing but an `Err`" for all
+/// of them and repeats until no answer changes. Answers only ever grow — more
+/// parameters, or `None` for good — so it stops.
+fn settle_result_sources(program: &SemanticProgram, table: &mut HashMap<String, FunctionSignature>) {
+    let functions: Vec<&crate::frontend::semantic_types::SemanticFunction> = program.stmts.iter().filter_map(|stmt| match stmt {
+        SemanticStmt::FuncDef(function) if table.contains_key(&function.name) => Some(function),
+        _ => None,
+    }).collect();
+    let mut known: HashMap<String, Option<Vec<usize>>> = functions.iter().map(|f| {
+        (f.name.clone(), matches!(f.return_ty, Some(SemanticType::Result(_))).then(Vec::new))
+    }).collect();
+    loop {
+        let mut changed = false;
+        for function in &functions {
+            if known[&function.name].is_none() { continue; }
+            let mut next = result_sources(function, &known);
+            if let Some(list) = &mut next { list.sort_unstable(); }
+            if known[&function.name] != next {
+                known.insert(function.name.clone(), next);
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    for (name, sources) in known {
+        if let Some(signature) = table.get_mut(&name) { signature.result_sources = sources; }
+    }
+}
+
+/// Gather the expression of every `return` statement in `stmts`. `false` if
+/// one of them cannot be gathered: a bare `return`, or a `return` inside an
+/// `if`/`when` *value*, where it is part of an expression.
+fn collect_returns<'a>(stmts: &'a [SemanticStmt], out: &mut Vec<&'a SemanticExpr>) -> bool {
+    let clean = |e: &SemanticExpr| !expr_has_return(e);
+    stmts.iter().all(|stmt| match stmt {
+        SemanticStmt::Return { expr: Some(expr), .. } => {
+            out.push(expr);
+            clean(expr)
+        }
+        SemanticStmt::Return { expr: None, .. } => false,
+        SemanticStmt::Assign { expr, .. } => clean(expr),
+        SemanticStmt::CompoundAssign { operand, .. } => clean(operand),
+        SemanticStmt::TypedAssign { expr, .. }
+        | SemanticStmt::ExprStmt { expr, .. }
+        | SemanticStmt::ConstDecl { value: expr, .. } => clean(expr),
+        SemanticStmt::Block { stmts, .. } | SemanticStmt::Loop { body: stmts, .. } => collect_returns(stmts, out),
+        SemanticStmt::While { cond, body, .. } => clean(cond) && collect_returns(body, out),
+        SemanticStmt::For { start, end, body, .. } => clean(start) && clean(end) && collect_returns(body, out),
+        SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
+            clean(condition)
+                && collect_returns(then_body, out)
+                && else_ifs.iter().all(|(c, body)| clean(c) && collect_returns(body, out))
+                && else_body.as_ref().is_none_or(|body| collect_returns(body, out))
+        }
+        SemanticStmt::WhileIn { range_start, range_end, body, then_chains, result, .. } => {
+            clean(range_start)
+                && clean(range_end)
+                && collect_returns(body, out)
+                && then_chains.iter().all(|c| clean(&c.range_start) && clean(&c.range_end) && collect_returns(&c.body, out))
+                && result.as_ref().is_none_or(clean)
+        }
+        SemanticStmt::When { expr, arms, .. } => {
+            clean(expr) && arms.iter().all(|arm| arm.guard.as_ref().is_none_or(clean) && collect_returns(&arm.body, out))
+        }
+        SemanticStmt::Noop
+        | SemanticStmt::ModuleNames { .. }
+        | SemanticStmt::EnumDef { .. }
+        | SemanticStmt::GeneDef { .. }
+        | SemanticStmt::PhenDef { .. }
+        | SemanticStmt::Decl { .. }
+        | SemanticStmt::FuncDef(_)
+        | SemanticStmt::Break { .. }
+        | SemanticStmt::Continue { .. }
+        | SemanticStmt::StructDef { .. }
+        | SemanticStmt::ImplBlock { .. } => true,
+    })
+}
+
+/// Whether a `return` statement sits anywhere inside this expression — in the
+/// body of an `if` or `when` used as a value.
+fn expr_has_return(expr: &SemanticExpr) -> bool {
+    let any = expr_has_return;
+    let body_has = |stmts: &[SemanticStmt]| {
+        let mut found = Vec::new();
+        !collect_returns(stmts, &mut found) || !found.is_empty()
+    };
+    let arg_has = |arg: &SemanticCallArg| matches!(arg, SemanticCallArg::Expr(e) if any(e));
+    match &expr.kind {
+        SemanticExprKind::Value(_)
+        | SemanticExprKind::VarRef { .. }
+        | SemanticExprKind::DotAccess { .. }
+        | SemanticExprKind::HandleVal { .. }
+        | SemanticExprKind::HandleDrop { .. } => false,
+        SemanticExprKind::HandleNew { value: e, .. }
+        | SemanticExprKind::Unary { expr: e, .. }
+        | SemanticExprKind::Cast { expr: e, .. }
+        | SemanticExprKind::ResultOk { expr: e }
+        | SemanticExprKind::ResultErr { expr: e }
+        | SemanticExprKind::Try { expr: e, .. } => any(e),
+        SemanticExprKind::Range { start, end, .. } => any(start) || any(end),
+        SemanticExprKind::Binary { lhs, rhs, .. } => any(lhs) || any(rhs),
+        SemanticExprKind::Index { target, index, .. } => any(target) || any(index),
+        SemanticExprKind::ArrayLit { elements } => elements.iter().any(any),
+        SemanticExprKind::StructInstance { fields, .. } => fields.iter().any(|(_, e)| any(e)),
+        SemanticExprKind::Call { args, .. } => args.iter().any(arg_has),
+        SemanticExprKind::MethodCall { args, receiver_expr, .. } => {
+            receiver_expr.as_ref().is_some_and(|r| any(r)) || args.iter().any(arg_has)
+        }
+        SemanticExprKind::When { expr, arms, .. } => {
+            any(expr) || arms.iter().any(|arm| arm.guard.as_ref().is_some_and(any) || body_has(&arm.body))
+        }
+        SemanticExprKind::If { condition, then_body, else_body, .. } => {
+            any(condition) || body_has(then_body) || body_has(else_body)
+        }
+    }
+}
+
+/// A method whose whole body is `return Err(..)`.
+fn returns_only_err(function: &crate::frontend::semantic_types::SemanticFunction) -> bool {
+    let only = match function.body.as_slice() {
+        [SemanticStmt::Return { expr: Some(expr), .. }] => Some(expr),
+        [] => function.ret_expr.as_ref(),
+        _ => None,
+    };
+    only.is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. }))
 }
 
 fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> HashMap<String, FunctionSignature> {
@@ -478,8 +675,8 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                 param_types,
                 copy_pointees,
                 return_semantic_ty: function.return_ty.clone(),
-                result_forward: simple_result_return(function).and_then(|e| match e.kind { SemanticExprKind::VarRef { binding, .. } => function.params.iter().position(|p| p.binding == binding), _ => None }),
-                result_error_only: simple_result_return(function).is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. })),
+                // Filled in for all functions together, below.
+                result_sources: None,
                 return_ty,
                 ret_slot_ty,
             });
@@ -561,8 +758,9 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
                         return_semantic_ty: method.return_ty.clone(),
-                        result_forward: None,
-                        result_error_only: simple_result_return(method).is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. })),
+                        // A method's parameters are shifted by its receivers;
+                        // only "returns nothing but an Err" is recorded.
+                        result_sources: returns_only_err(method).then(Vec::new),
                         return_ty,
                         ret_slot_ty,
                     },
@@ -652,8 +850,9 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         copy_pointees: vec![None; param_types.len()],
                         param_types,
                         return_semantic_ty: method.return_ty.clone(),
-                        result_forward: None,
-                        result_error_only: simple_result_return(method).is_some_and(|e| matches!(e.kind, SemanticExprKind::ResultErr { .. })),
+                        // A method's parameters are shifted by its receivers;
+                        // only "returns nothing but an Err" is recorded.
+                        result_sources: returns_only_err(method).then(Vec::new),
                         return_ty,
                         ret_slot_ty,
                     },
@@ -661,6 +860,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
             }
         }
     }
+    settle_result_sources(program, &mut table);
     table
 }
 
@@ -889,6 +1089,14 @@ struct LoweringCtx {
     /// Payload checks involving a phi wait until all backedges exist. Unknown
     /// here means a proven Err, rather than an arbitrary opaque Result.
     result_checks: Vec<ResultCheck>,
+    /// Calls whose value is one of their own arguments (`result_sources`):
+    /// the call's value, and the argument values it may be.
+    result_flows: Vec<(ValueId, Vec<ValueId>)>,
+    /// Values whose static type is a Result of a number with no declared
+    /// width, and for which no kind was recorded. Where the value graph knows
+    /// nothing about such a value, it is a whole number of any width rather
+    /// than nothing at all.
+    result_fallbacks: HashSet<ValueId>,
     /// How many operator left operands have been copied in this function
     /// (`operator_operand_copy`); each copy gets a binding of its own.
     operand_copies: u32,
@@ -1012,6 +1220,8 @@ impl LoweringCtx {
             static_data: Default::default(),
             result_types: HashMap::new(),
             result_checks: Vec::new(),
+            result_flows: Vec::new(),
+            result_fallbacks: HashSet::new(),
             operand_copies: 0,
             early_copy_writebacks: Vec::new(),
             enum_variants,
@@ -3320,7 +3530,18 @@ fn lower_expr(
         .then(|| ctx.binding_names.clone());
     let result = lower_expr_inner(expr, ctx, current);
     if let Ok(value) = &result {
-        if known_result_type(&expr.ty) && !ctx.result_types.contains_key(&value.value) { ctx.result_types.insert(value.value, expr.ty.clone()); }
+        // A static type that names a payload kind is recorded as the value's
+        // kind where nothing more precise is. "A number, width not declared"
+        // says less than the value graph can — the number may be a small
+        // constant — so it is kept apart, as what to go by only if the graph
+        // has nothing to say about the value.
+        if known_result_type(&expr.ty) && !ctx.result_types.contains_key(&value.value) {
+            if width_not_declared(&expr.ty) {
+                ctx.result_fallbacks.insert(value.value);
+            } else {
+                ctx.result_types.insert(value.value, expr.ty.clone());
+            }
+        }
     }
     if let Some(names) = names { ctx.binding_names = names; }
     result
@@ -3584,10 +3805,29 @@ fn lower_expr_inner(
             }
 
             let dst = ctx.fresh_value();
+            // What the callee is known to return: nothing but an `Err`; one
+            // argument, whose kind is already recorded; or what its declared
+            // type says. Failing all three, if it can only return some of its
+            // arguments, the call's value is tied to them and decided with the
+            // rest of the graph (`check_result_proofs`).
+            let mut forwarded: Vec<ValueId> = Vec::new();
             let result_hint = ctx.signature_table.get(callee).and_then(|sig| {
-                if sig.result_error_only { return Some(SemanticType::Result(Box::new(SemanticType::Unknown))); }
-                sig.result_forward.and_then(|i| lowered_args.get(i)).and_then(|v| ctx.result_types.get(v).cloned())
-                    .or_else(|| sig.return_semantic_ty.as_ref().filter(|ty| known_result_type(ty)).cloned())
+                let sources = sig.result_sources.as_deref();
+                if sources.is_some_and(|s| s.is_empty()) { return Some(SemanticType::Result(Box::new(SemanticType::Unknown))); }
+                let single = match sources { Some([only]) => lowered_args.get(*only), _ => None };
+                // A declared type of "a number, width not declared" is passed
+                // over when the arguments can say more.
+                let hint = single.and_then(|v| ctx.result_types.get(v).cloned()).or_else(|| {
+                    sig.return_semantic_ty.as_ref()
+                        .filter(|ty| known_result_type(ty) && !(width_not_declared(ty) && sources.is_some()))
+                        .cloned()
+                });
+                if hint.is_none() {
+                    if let Some(sources) = sources {
+                        forwarded = sources.iter().filter_map(|i| lowered_args.get(*i).copied()).collect();
+                    }
+                }
+                hint
             });
             active.emit(IrInst::Call {
                 dst: Some(dst),
@@ -3596,6 +3836,7 @@ fn lower_expr_inner(
                 return_ty: Some(return_ty.clone()),
             })?;
             if let Some(ty) = result_hint { ctx.result_types.insert(dst, ty); }
+            if !forwarded.is_empty() { ctx.result_flows.push((dst, forwarded)); }
 
             reload_call_copies(copy_reloads, ctx, active)?;
 
@@ -4080,17 +4321,16 @@ fn storage_shape(expected: &SemanticType, actual: &SemanticType) -> bool {
 /// How many bits a whole-number payload kind needs; `None` for a kind that is
 /// not a whole number a Result can carry in compiled code.
 ///
-/// `Numeric` is a number with no declared width — a literal, in practice.
-/// Analysis has already checked a literal against the type it is used at, so
-/// as a payload it needs no particular width (0); where it is the declared
-/// side, it is the default integer (64).
-fn int_payload_bits(ty: &SemanticType, declared: bool) -> Option<u32> {
+/// `Numeric` is a number with no declared width. It is the whole word: it
+/// may hold anything an i64 can. A literal payload is not recorded as
+/// `Numeric` but as the narrowest type its value fits (`literal_payload_type`),
+/// which is what lets `Ok(5)` be read as a `Result<t8>` and stops `Ok(300)`.
+fn int_payload_bits(ty: &SemanticType) -> Option<u32> {
     match ty {
         SemanticType::I8 => Some(8),
         SemanticType::I16 => Some(16),
         SemanticType::I32 => Some(32),
-        SemanticType::I64 => Some(64),
-        SemanticType::Numeric => Some(if declared { 64 } else { 0 }),
+        SemanticType::I64 | SemanticType::Numeric => Some(64),
         _ => None,
     }
 }
@@ -4104,7 +4344,7 @@ fn int_payload_bits(ty: &SemanticType, declared: bool) -> Option<u32> {
 /// gives 300 (known-issues §70).
 fn payload_fits(expected: &SemanticType, actual: &SemanticType) -> bool {
     expected == actual
-        || matches!((int_payload_bits(expected, true), int_payload_bits(actual, false)), (Some(e), Some(a)) if a <= e)
+        || matches!((int_payload_bits(expected), int_payload_bits(actual)), (Some(e), Some(a)) if a <= e)
 }
 
 fn require_storage_shape(expected: &SemanticType, expr: &SemanticExpr, ctx: &LoweringCtx) -> Result<(), LoweringError> {
@@ -4122,6 +4362,12 @@ fn known_result_type(ty: &SemanticType) -> bool {
     matches!(ty, SemanticType::Result(inner) if !matches!(inner.as_ref(), SemanticType::Unknown | SemanticType::TypeParam(_)))
 }
 
+/// A Result of "a number" with no width: the type of an untyped variable that
+/// was given `Ok(5)`. It promises nothing narrower than the whole word.
+fn width_not_declared(ty: &SemanticType) -> bool {
+    matches!(ty, SemanticType::Result(inner) if **inner == SemanticType::Numeric)
+}
+
 /// Record what a newly bound Result holds.
 ///
 /// Past a typed boundary the declaration is the fact. The value was checked to
@@ -4129,10 +4375,16 @@ fn known_result_type(ty: &SemanticType) -> bool {
 /// keeping the narrower kind of the value it happens to start with would let
 /// it then be read as a `Result<t8>`. An Err stays an Err: that fits every
 /// declaration and says more than any of them.
+///
+/// A declaration that names no width — an untyped variable holding a number —
+/// is not one in this sense. It says nothing the value does not already say,
+/// so the value's own kind is kept.
 fn remember_result(dst: ValueId, source: &LoweredValue, declared: &SemanticType, expr: &SemanticExpr, ctx: &mut LoweringCtx) {
-    let held = ctx.result_types.get(&source.value).cloned().or_else(|| known_result_type(&expr.ty).then(|| expr.ty.clone()));
+    let held = ctx.result_types.get(&source.value).cloned()
+        .or_else(|| (known_result_type(&expr.ty) && !width_not_declared(&expr.ty)).then(|| expr.ty.clone()));
     let is_err = matches!(&held, Some(SemanticType::Result(inner)) if **inner == SemanticType::Unknown);
-    let ty = if known_result_type(declared) && !is_err { Some(declared.clone()) } else { held };
+    let names_a_kind = known_result_type(declared) && !width_not_declared(declared);
+    let ty = if names_a_kind && !is_err { Some(declared.clone()) } else { held };
     if let Some(ty) = ty { ctx.result_types.insert(dst, ty); }
 }
 
@@ -4144,19 +4396,32 @@ fn ensure_result_value(context: &str, expected: &SemanticType, expr: &SemanticEx
     // Unknown is an opaque carrier; interpreting it at a typed boundary still
     // requires the payload proof below. It must not authorize a pointer cast.
     if **want == SemanticType::Unknown { return Ok(()); }
-    ctx.result_checks.push(ResultCheck {
-        value: value.value,
-        expected: *want.clone(),
-        context: context.into(),
-        unproven: Unproven::TrustDeclaredType,
-    });
-    let actual = ctx.result_types.get(&value.value).or_else(|| known_result_type(&expr.ty).then_some(&expr.ty));
-    let Some(SemanticType::Result(got)) = actual else {
-        return Ok(());
+    // What is known about the value here: a kind recorded for it, or failing
+    // that its static type, if that names one.
+    let recorded = ctx.result_types.get(&value.value).cloned();
+    let actual = recorded.clone().or_else(|| known_result_type(&expr.ty).then(|| expr.ty.clone()));
+    let fits = match &actual {
+        Some(SemanticType::Result(got)) => **got == SemanticType::Unknown || storage_shape(want, got) || payload_fits(want, got),
+        _ => true,
     };
-    if **got == SemanticType::Unknown || storage_shape(want, got) || payload_fits(want, got) { return Ok(()); }
-    ensure_enum_identity(context, want, got)?;
-    Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("semantic identity in {context}: expected {}, got {}", crate::frontend::semantic::type_name(expected), crate::frontend::semantic::type_name(actual.unwrap())) })
+    // A static type of "a number, width not declared" with no kind recorded
+    // for the value — an untyped variable seen through a loop or an `if`
+    // value — does not fit a narrower declaration, but says less than the
+    // value graph may: the number may be a small constant. That case is left
+    // to the proof, which must then succeed.
+    let width_unknown = recorded.is_none() && actual.as_ref().is_some_and(width_not_declared) && int_payload_bits(want).is_some();
+    if !fits && !width_unknown {
+        let actual = actual.expect("a mismatch was found against something");
+        if let SemanticType::Result(got) = &actual { ensure_enum_identity(context, want, got)?; }
+        return Err(LoweringError::UnsupportedSemanticConstruct { construct: format!("semantic identity in {context}: expected {}, got {}", crate::frontend::semantic::type_name(expected), crate::frontend::semantic::type_name(&actual)) });
+    }
+    // The declared type can be taken on trust only if the value has one. An
+    // expression typed `Result<unknown>` — an untyped variable, the result of
+    // a function generic in `T` — is accepted here by analysis whatever it
+    // holds, so nothing but the value graph vouches for it.
+    let unproven = if fits && known_result_type(&expr.ty) { Unproven::TrustDeclaredType } else { Unproven::Refuse };
+    ctx.result_checks.push(ResultCheck { value: value.value, expected: *want.clone(), context: context.into(), unproven });
+    Ok(())
 }
 
 /// Infer payload kinds over the completed SSA graph. Starting without a fact
@@ -4171,11 +4436,9 @@ fn check_result_proofs(ctx: &LoweringCtx) -> Result<(), LoweringError> {
             (Proof::Kind(SemanticType::Unknown), b) => b,
             (a, Proof::Kind(SemanticType::Unknown)) => a,
             // Two whole numbers: the value may be either, so it needs as many
-            // bits as the one that needs more. Decided before the "same shape"
-            // arm below, which would let an unsized literal stand in for an
-            // i64 it was joined with.
-            (Proof::Kind(a), Proof::Kind(b)) if int_payload_bits(&a, false).is_some() && int_payload_bits(&b, false).is_some() => {
-                if int_payload_bits(&a, false) >= int_payload_bits(&b, false) { Proof::Kind(a) } else { Proof::Kind(b) }
+            // bits as the one that needs more.
+            (Proof::Kind(a), Proof::Kind(b)) if int_payload_bits(&a).is_some() && int_payload_bits(&b).is_some() => {
+                if int_payload_bits(&a) >= int_payload_bits(&b) { Proof::Kind(a) } else { Proof::Kind(b) }
             }
             (Proof::Kind(a), Proof::Kind(b)) if storage_shape(&a, &b) && storage_shape(&b, &a) => Proof::Kind(a),
             _ => Proof::Any,
@@ -4184,17 +4447,25 @@ fn check_result_proofs(ctx: &LoweringCtx) -> Result<(), LoweringError> {
     let mut facts: HashMap<ValueId, Proof> = ctx.result_types.iter().filter_map(|(value, ty)| {
         if let SemanticType::Result(inner) = ty { Some((*value, Proof::Kind(*inner.clone()))) } else { None }
     }).collect();
-    let mut flows: HashMap<ValueId, Vec<ValueId>> = HashMap::new();
+    // What a value the graph cannot see into counts as: a whole number of any
+    // width if its static type says it is a number, otherwise anything.
+    let opaque = |value: &ValueId| {
+        if ctx.result_fallbacks.contains(value) { Proof::Kind(SemanticType::Numeric) } else { Proof::Any }
+    };
+    // A call that can only return some of its arguments holds whatever they do.
+    let mut flows: HashMap<ValueId, Vec<ValueId>> = ctx.result_flows.iter().cloned().collect();
     let params: HashMap<_, _> = ctx.finished_blocks.iter().map(|b| (b.id, &b.params)).collect();
     for block in &ctx.finished_blocks {
         for inst in &block.insts {
             match inst {
                 IrInst::SsaBind { dst, src, ty: IrType::I128 } => { flows.entry(*dst).or_default().push(*src); }
-                IrInst::Call { dst: Some(dst), return_ty: Some(IrType::I128), .. }
-                | IrInst::ConstInt { dst, ty: IrType::I128, .. }
+                IrInst::Call { dst: Some(dst), return_ty: Some(IrType::I128), .. } => {
+                    if !flows.contains_key(dst) { facts.entry(*dst).or_insert_with(|| opaque(dst)); }
+                }
+                IrInst::ConstInt { dst, ty: IrType::I128, .. }
                 | IrInst::Binary { dst, ty: IrType::I128, .. }
                 | IrInst::Load { dst, ty: IrType::I128, .. }
-                | IrInst::Cast { dst, to: IrType::I128, .. } => { facts.entry(*dst).or_insert(Proof::Any); }
+                | IrInst::Cast { dst, to: IrType::I128, .. } => { facts.entry(*dst).or_insert_with(|| opaque(dst)); }
                 _ => {}
             }
         }
@@ -4213,9 +4484,14 @@ fn check_result_proofs(ctx: &LoweringCtx) -> Result<(), LoweringError> {
     }
     for block in &ctx.finished_blocks {
         for param in &block.params {
-            if param.ty == IrType::I128 && !flows.contains_key(&param.value) { facts.entry(param.value).or_insert(Proof::Any); }
+            if param.ty == IrType::I128 && !flows.contains_key(&param.value) { facts.entry(param.value).or_insert_with(|| opaque(&param.value)); }
         }
     }
+    // Whatever else a value is taken from — anything with no recorded kind
+    // that nothing flows into — is something this knows nothing about, and
+    // must count as that in a join rather than be skipped.
+    let roots: Vec<ValueId> = flows.values().flatten().copied().filter(|v| !flows.contains_key(v)).collect();
+    for root in roots { facts.entry(root).or_insert_with(|| opaque(&root)); }
     loop {
         let mut changed = false;
         for (dst, sources) in &flows {
@@ -5189,18 +5465,33 @@ fn lower_when_stmt(
 /// going by the scrutinee's type. Only a definite mismatch answers yes: a
 /// scrutinee whose type is not known here is compared as it always was.
 fn when_literal_never_matches(value: &SemanticValue, scrutinee: &SemanticType) -> bool {
-    let whole_number = |ty: &SemanticType| ty.int_width().is_some() || *ty == SemanticType::Numeric;
     let definite = !matches!(scrutinee, SemanticType::Unknown | SemanticType::TypeParam(_));
     definite
         && match value {
-            // A float scrutinee against a whole-number arm is left to the
-            // comparison below, as before.
-            SemanticValue::Num(_) => !(whole_number(scrutinee) || *scrutinee == SemanticType::F64),
-            SemanticValue::Float(_) => !(*scrutinee == SemanticType::F64 || whole_number(scrutinee)),
+            // A whole number and a float are different kinds too: `1` is not
+            // `1.0` to the interpreter, in either direction.
+            SemanticValue::Num(_) => !is_whole_number_type(scrutinee),
+            SemanticValue::Float(_) => *scrutinee != SemanticType::F64,
             SemanticValue::Bool(_) => *scrutinee != SemanticType::Bool,
             SemanticValue::Char(_) => *scrutinee != SemanticType::Char,
-            SemanticValue::Str(_) | SemanticValue::EnumVariant { .. } | SemanticValue::Unknown => false,
+            // `unknown` is a state only a bool has in compiled code. Against
+            // anything else the arm compared the value with the number 2.
+            SemanticValue::Unknown => *scrutinee != SemanticType::Bool,
+            SemanticValue::Str(_) | SemanticValue::EnumVariant { .. } => false,
         }
+}
+
+fn is_whole_number_type(ty: &SemanticType) -> bool {
+    ty.int_width().is_some() || *ty == SemanticType::Numeric
+}
+
+/// The same for a range pattern. The interpreter matches a range only when
+/// the scrutinee and both bounds are whole numbers; an enum, a bool, a char or
+/// a float is never "in" `0..5`, whatever its bits are.
+fn when_range_never_matches(low: &SemanticValue, high: &SemanticValue, scrutinee: &SemanticType) -> bool {
+    let definite = !matches!(scrutinee, SemanticType::Unknown | SemanticType::TypeParam(_));
+    !matches!((low, high), (SemanticValue::Num(_), SemanticValue::Num(_)))
+        || (definite && !is_whole_number_type(scrutinee))
 }
 
 /// The same for an enum-variant pattern: it matches only a scrutinee of its
@@ -5287,6 +5578,9 @@ fn emit_when_arm_match(
             emit_never_matching_arm(body_id, incoming, current, ctx)
         }
         SemanticWhenPattern::EnumVariant { enum_name, .. } if when_variant_never_matches(enum_name, &scrutinee.ty) => {
+            emit_never_matching_arm(body_id, incoming, current, ctx)
+        }
+        SemanticWhenPattern::Range(low, high, _) if when_range_never_matches(low, high, &scrutinee.ty) => {
             emit_never_matching_arm(body_id, incoming, current, ctx)
         }
         SemanticWhenPattern::Literal(value) => {
@@ -6590,16 +6884,26 @@ fn lower_array_lit(
     })
 }
 
-/// The left operand of a dispatched operator, when the right operand can
-/// change it: `a + f(a.copy)` on a type with a user `+`.
+/// The left operand of a dispatched operator, taken before the right operand
+/// is evaluated: `a + f(a.copy)`, `w.inner + g(w.copy)`, `ps:[0] + h(ps.copy)`
+/// on a type with a user `+`.
 ///
 /// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
-/// method takes its receiver by address, so handing it `a` itself would let it
-/// see what evaluating B did to `a`. Instead `a` is copied before the
-/// arguments are lowered and the method is given the copy. Returns the
-/// expression that names the copy, or `None` when no copy is needed — an
-/// ordinary method call, an expression receiver, or a right operand that
-/// cannot change the variable — and the call is lowered exactly as before.
+/// method takes its receiver by address, and a left operand that is a
+/// variable, a field, an element, or an `if`/`when` value yielding one of
+/// those lowers to the address of the thing itself — so the method would see
+/// whatever evaluating B did to it. When B calls anything at all, the left
+/// operand is copied first and the method is given the copy.
+///
+/// The test is "B contains a call", not "B can change A". Which variable a
+/// left operand ends up naming is not always readable from the expression
+/// (an `if` value), and a call can change a variable through a chain of
+/// aliases this function cannot follow; a call is the one thing every such
+/// case has. `a + b` on two names copies nothing.
+///
+/// Returns the expression that names the copy, or `None` when none is needed
+/// — a written method call, a right operand without a call, or a left operand
+/// that is already a fresh value — and the call is lowered exactly as before.
 #[allow(clippy::too_many_arguments)]
 fn operator_operand_copy(
     operator: bool,
@@ -6611,20 +6915,25 @@ fn operator_operand_copy(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<Option<SemanticExpr>, LoweringError> {
-    if !operator || receiver_expr.is_some() || !args_may_write(args, instance_binding) {
+    if !operator || !args_may_write(args, Scan::AnyCall) {
         return Ok(None);
     }
     let ty = SemanticType::Struct(struct_name.to_string());
+    let operand = match receiver_expr {
+        // The result of a call or a literal is a value nothing else names.
+        Some(rx) if matches!(
+            rx.kind,
+            SemanticExprKind::Call { .. } | SemanticExprKind::MethodCall { .. } | SemanticExprKind::StructInstance { .. }
+        ) => return Ok(None),
+        Some(rx) => (**rx).clone(),
+        None => SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
+    };
     let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
         LoweringError::UnsupportedSemanticConstruct {
-            construct: format!("an operator whose right operand changes its left operand, for a left operand ({struct_name}) compiled code cannot copy"),
+            construct: format!("an operator whose right operand makes a call, for a left operand ({struct_name}) compiled code cannot copy"),
         }
     })?;
-    let original = lower_expr(
-        &SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
-        ctx,
-        active,
-    )?;
+    let original = lower_expr(&operand, ctx, active)?;
     ensure_type_match("operator left operand", IrType::Ptr, original.ty)?;
     let copy = ctx.fresh_value();
     active.emit(IrInst::Alloca { dst: copy, size, align })?;
@@ -6644,6 +6953,37 @@ fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
     }
 }
 
+/// What a walk over an expression is looking for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    /// Anything that may change this variable.
+    Writes(BindingId),
+    /// Any call at all — a function or a method, whatever it is given.
+    AnyCall,
+}
+
+impl Scan {
+    fn names(self, binding: BindingId) -> bool {
+        self == Scan::Writes(binding)
+    }
+}
+
+/// Whether a value of this type is handed to a method as a value. Everything
+/// that is not known to be is treated as a possible reference.
+fn passed_by_value(ty: &SemanticType) -> bool {
+    ty.int_width().is_some()
+        || matches!(
+            ty,
+            SemanticType::Numeric
+                | SemanticType::F64
+                | SemanticType::Bool
+                | SemanticType::Char
+                | SemanticType::Str
+                | SemanticType::StrRef
+                | SemanticType::Enum(_)
+        )
+}
+
 /// Whether evaluating `expr` may change the variable `scan`. Three things can:
 /// passing it as `.copy` (copy-out writes it back when the call returns);
 /// calling a method on it (the receiver is an alias, so the method may change
@@ -6655,7 +6995,7 @@ fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
 ///
 /// Looks through every nested expression and statement, so an `if`/`when`
 /// value is not a blind spot.
-fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
+fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     match &expr.kind {
         SemanticExprKind::Value(_)
@@ -6674,18 +7014,21 @@ fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
         SemanticExprKind::Index { target, index, .. } => any(target) || any(index),
         SemanticExprKind::ArrayLit { elements } => elements.iter().any(any),
         SemanticExprKind::StructInstance { fields, .. } => fields.iter().any(|(_, e)| any(e)),
-        SemanticExprKind::Call { args, .. } => args_may_write(args, scan),
+        SemanticExprKind::Call { args, .. } => scan == Scan::AnyCall || args_may_write(args, scan),
         SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
             let on_it = match receiver_expr {
                 // An expression receiver that is a place in the variable is
                 // passed by address, exactly as a named one is.
-                Some(receiver) => root_binding(receiver) == Some(scan) || any(receiver),
-                None => *instance_binding == scan,
+                Some(receiver) => root_binding(receiver).is_some_and(|b| scan.names(b)) || any(receiver),
+                None => scan.names(*instance_binding),
             };
+            // Only a struct or an array is passed by reference; a number,
+            // bool, string or enum argument is a value wherever it came from.
             let as_alias = args.iter().any(|arg| {
-                matches!(arg, SemanticCallArg::Expr(e) if root_binding(e) == Some(scan))
+                matches!(arg, SemanticCallArg::Expr(e)
+                    if !passed_by_value(&e.ty) && root_binding(e).is_some_and(|b| scan.names(b)))
             });
-            on_it || as_alias || args_may_write(args, scan)
+            scan == Scan::AnyCall || on_it || as_alias || args_may_write(args, scan)
         }
         SemanticExprKind::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
         SemanticExprKind::If { condition, then_body, else_body, .. } => {
@@ -6694,29 +7037,29 @@ fn expr_may_write(expr: &SemanticExpr, scan: BindingId) -> bool {
     }
 }
 
-fn args_may_write(args: &[SemanticCallArg], scan: BindingId) -> bool {
+fn args_may_write(args: &[SemanticCallArg], scan: Scan) -> bool {
     args.iter().any(|arg| match arg {
         SemanticCallArg::Expr(e) => expr_may_write(e, scan),
-        SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => *binding == scan,
-        SemanticCallArg::CopyInto(bindings) => bindings.iter().any(|b| b.binding == scan),
+        SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => scan.names(*binding),
+        SemanticCallArg::CopyInto(bindings) => bindings.iter().any(|b| scan.names(b.binding)),
     })
 }
 
-fn arms_may_write(arms: &[SemanticWhenArm], scan: BindingId) -> bool {
+fn arms_may_write(arms: &[SemanticWhenArm], scan: Scan) -> bool {
     arms.iter().any(|arm| {
         arm.guard.as_ref().is_some_and(|g| expr_may_write(g, scan)) || stmts_may_write(&arm.body, scan)
     })
 }
 
-fn stmts_may_write(stmts: &[SemanticStmt], scan: BindingId) -> bool {
+fn stmts_may_write(stmts: &[SemanticStmt], scan: Scan) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     // An assignment to the variable itself is the plainest write there is.
     let target_may = |target: &SemanticLValue| match target {
         SemanticLValue::Index { target, index, .. } => {
-            root_binding(target) == Some(scan) || any(target) || any(index)
+            root_binding(target).is_some_and(|b| scan.names(b)) || any(target) || any(index)
         }
-        SemanticLValue::Binding { binding, .. } => *binding == scan,
-        SemanticLValue::DotAccess { binding, .. } => *binding == Some(scan),
+        SemanticLValue::Binding { binding, .. } => scan.names(*binding),
+        SemanticLValue::DotAccess { binding, .. } => binding.is_some_and(|b| scan.names(b)),
     };
     stmts.iter().any(|stmt| match stmt {
         SemanticStmt::Assign { target, expr, .. } => target_may(target) || any(expr),
@@ -6889,7 +7232,7 @@ fn lower_index(
     // Only for a read. On the way to a store the array is a place, and a copy
     // here would receive the store instead of the array (known-issues §68).
     let base = match root_binding(target) {
-        Some(root) if index_use == IndexUse::Read && expr_may_write(index, root) => {
+        Some(root) if index_use == IndexUse::Read && expr_may_write(index, Scan::Writes(root)) => {
             let (size, align, parts) = ret_slot_plan(&target.ty, &ctx.struct_table).ok_or_else(|| {
                 LoweringError::UnsupportedSemanticConstruct {
                     construct: "an index whose index expression changes the indexed array, for an array compiled code cannot copy".to_string(),
@@ -7961,9 +8304,62 @@ fn lower_result_construct(
     }
     let payload_i64 = widen_payload_to_i64(&payload, ctx, active)?;
     let packed = result_pack(tag, payload_i64, ctx, active)?;
-    let inner = if tag == 1 { SemanticType::Unknown } else { actual };
+    let inner = match actual {
+        _ if tag == 1 => SemanticType::Unknown,
+        // A number with no declared width, or the default one: a constant is
+        // as wide as its value needs, anything else is the whole word.
+        SemanticType::Numeric | SemanticType::I64 => literal_payload_type(payload_expr).unwrap_or(SemanticType::I64),
+        other => other,
+    };
     ctx.result_types.insert(packed.value, SemanticType::Result(Box::new(inner)));
     Ok(packed)
+}
+
+/// The narrowest whole-number type that holds the value of a constant — `5`,
+/// `-3`, `300`, `1 + 2` — or `None` if `expr` is not one.
+///
+/// `Ok(300)` typed nowhere used to be recorded as "a number of no particular
+/// width", which fits any declaration; read as a `Result<t8>`, `?` then
+/// truncated it to 44 where the interpreter gives 300 (known-issues §72).
+fn literal_payload_type(expr: &SemanticExpr) -> Option<SemanticType> {
+    let value = constant_whole_number(expr)?;
+    Some(if i8::try_from(value).is_ok() {
+        SemanticType::I8
+    } else if i16::try_from(value).is_ok() {
+        SemanticType::I16
+    } else if i32::try_from(value).is_ok() {
+        SemanticType::I32
+    } else if i64::try_from(value).is_ok() {
+        SemanticType::I64
+    } else {
+        return None;
+    })
+}
+
+/// The value of an expression made only of whole-number literals, unary minus
+/// and `+ - *`, when no step leaves the i64 range (so both backends compute
+/// the same thing). Division is left out: it has its own rules for zero.
+fn constant_whole_number(expr: &SemanticExpr) -> Option<i128> {
+    let in_range = |v: i128| i64::try_from(v).is_ok().then_some(v);
+    match &expr.kind {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => in_range(*n),
+        SemanticExprKind::Unary { op: Op::Minus, expr: inner, .. } => in_range(constant_whole_number(inner)?.checked_neg()?),
+        // Analysis wraps a literal used at the default width in a cast to it,
+        // which changes nothing about the value.
+        SemanticExprKind::Cast { expr: inner, from: SemanticType::Numeric, to: SemanticType::I64 | SemanticType::Numeric, .. } => {
+            constant_whole_number(inner)
+        }
+        SemanticExprKind::Binary { lhs, op, rhs, .. } => {
+            let (a, b) = (constant_whole_number(lhs)?, constant_whole_number(rhs)?);
+            in_range(match op {
+                Op::Plus => a.checked_add(b)?,
+                Op::Minus => a.checked_sub(b)?,
+                Op::Mul => a.checked_mul(b)?,
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// D2.4a: unpack a Result i128 into (tag, payload_word). Payload is the low half
@@ -8199,6 +8595,12 @@ fn lower_assert_stmt(
     // packed word is never zero for an Err, so coercing it passed.
     if matches!(cond_expr.ty, SemanticType::Result(_)) {
         unsupported!("assert on a Result value has no reference implementation");
+    }
+    // Nor is an enum or a handle. The interpreter passes `assert` only for
+    // `true` and a non-zero number and fails everything else; coercing the
+    // word passed for any variant but the first and any live handle.
+    if matches!(cond_expr.ty, SemanticType::Enum(_) | SemanticType::Handle(_)) {
+        unsupported!("assert on an enum or a handle, which is not a condition");
     }
     let cond = lower_expr(cond_expr, ctx, &mut current)?;
 
@@ -14323,6 +14725,13 @@ mod divergence_shape_tests {
             "large: Result<t64> = Ok(300)\nnarrow: Result<t8> = large\nprint(narrow)\n",
             "x: t64 = 300\nnarrow: Result<t8> = Ok(x)\nprint(narrow)\n",
             "fnc: Result<t8> small(r: Result<t8>) { return r }\nlarge: Result<t64> = Ok(300)\nprint(small(large))\n",
+            // §72: a literal typed nowhere is as wide as its value...
+            "fnc: Result<t64> run() {\n let lit\n lit = Ok(300)\n narrow: Result<t8> = lit\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run())\n",
+            // ...on every path that reaches the use...
+            "fnc: Result<t64> run(k: t64) {\n let lit\n lit = Ok(1)\n i: t64 = 0\n while (i < k) { lit = Ok(300)\n i = i + 1 }\n narrow: Result<t8> = lit\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run(1))\n",
+            // ...and so is a constant expression.
+            "a: Result<t8> = Ok(100 + 28)\nprint(a)\n",
+            "a: Result<t8> = Ok(-(100 + 29))\nprint(a)\n",
         ] {
             let err = format!("{}", lowering_error(narrowing));
             assert!(err.contains("Result"), "{narrowing}: {err}");
@@ -14331,6 +14740,14 @@ mod divergence_shape_tests {
             "small: Result<t8> = Ok(7)\nwide: Result<t64> = small\nprint(wide)\n",
             "negative: Result<t8> = Ok(-3)\nprint(negative)\n",
             "fnc: Result<t64> wide(r: Result<t64>) { return r }\nsmall: Result<t8> = Ok(7)\nprint(wide(small))\n",
+            // §72: a constant that fits is not refused for having no declared width.
+            "fnc: Result<t64> run() {\n let lit\n lit = Ok(5)\n narrow: Result<t8> = lit\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run())\n",
+            "a: Result<t8> = Ok(100 + 27)\nprint(a)\n",
+            "a: Result<t8> = Ok(-(100 + 28))\nprint(a)\n",
+            "fnc: t64 take8(p: Result<t8>) { print(p)\n return 0 }\nlet u\nu = Ok(12)\nprint(take8(u))\n",
+            // ...also where the variable is seen through a loop or an `if` value.
+            "fnc: Result<t64> run() {\n let v\n v = Ok(-3)\n n: Result<t8> = v\n i: t64 = 0\n while (i < 3) { if i == 2 { n = v }\n i = i + 1 }\n print(n)\n return Ok(0)\n}\nprint(run())\n",
+            "fnc: T <T> id(x: T) { return x }\nlet v\nv = Ok(100)\nn: Result<t8> = if true { v } else { id(v) }\nprint(n)\n",
         ] {
             let _ = lowered(fine);
         }
@@ -14360,10 +14777,94 @@ mod divergence_shape_tests {
     #[test]
     fn result_equality_on_a_kind_the_proof_cannot_follow_is_refused() {
         let err = lowering_error(
-            "fnc: T <T> second(a: T, b: T) { print(1)\n return b }\n\
-             assert_eq(second(Err(\"x\"), Err(\"y\")), Err(\"y\"))\n",
+            "fnc: T <T> swap(a: T, b: T) { a = b\n return a }\n\
+             assert_eq(swap(Err(\"x\"), Err(\"y\")), Err(\"y\"))\n",
         );
         assert!(format!("{err}").contains("not proven"), "{err}");
+    }
+
+    /// §72: a value analysis types `Result<unknown>` — an untyped variable
+    /// that started as an Err, the result of a function generic in `T` — is
+    /// accepted wherever a Result is declared, whatever it holds. No
+    /// declaration vouches for it. Where the value graph shows it holds
+    /// another kind, or cannot say, a use at a declared kind is refused; it
+    /// used to be taken on trust, and `Ok(5)` was read as a string.
+    #[test]
+    fn a_result_no_declaration_vouches_for_is_refused_where_a_kind_is_declared() {
+        let prelude = "fnc: T <T> id(x: T) { return x }\n\
+                       fnc: T <T> swap(a: T, b: T) { a = b\n return a }\n\
+                       fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5)\n return 0 }\n\
+                       fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok(\"a\"))\n return 0 }\n";
+        let holds_a_number = "let e\n e = Err(\"x\")\n if c { x: t64 = fill(e.copy) }\n";
+        for (body, reason) in [
+            // The graph follows `e` through `id` and finds a number.
+            ("print(cmp(id(e)))\n", "incompatible Result payload kind"),
+            ("t: Result<str> = id(e)\n print(t)\n", "incompatible Result payload kind"),
+            // An array element and a function that does more than forward
+            // are where the graph stops.
+            ("let a\n a = [e, e]\n t: Result<str> = a:[1]\n print(t)\n", "not proven"),
+            ("t: Result<str> = swap(e, e)\n print(t)\n", "not proven"),
+        ] {
+            let src = format!("{prelude}fnc: t64 run(c: bool) {{\n {holds_a_number} {body} return 0\n}}\nprint(run(true))\n");
+            let err = format!("{}", lowering_error(&src));
+            assert!(err.contains(reason), "{body}: {err}");
+        }
+    }
+
+    /// §72: ...while a function that can only hand back its own arguments is
+    /// followed: through a statement before the return, a branch between two
+    /// arguments, a function that returns another's result, and recursion.
+    #[test]
+    fn a_function_that_returns_its_arguments_carries_their_kind() {
+        let _ = lowered(
+            "fnc: T <T> second(a: T, b: T) { print(1)\n return b }\n\
+             fnc: T <T> pick(c: bool, a: T, b: T) {\n if c { return a }\n return b\n}\n\
+             fnc: T <T> wrap(x: T) { return second(x, x) }\n\
+             fnc: T <T> later(x: T, n: t64) {\n if n == 0 { return x }\n return later(x, n - 1)\n}\n\
+             r: Result<t64> = second(Err(\"x\"), Err(\"y\"))\n\
+             p: Result<t64> = pick(true, Err(\"l\"), Err(\"r\"))\n\
+             w: Result<str> = wrap(Err(\"deep\"))\n\
+             l: Result<t64> = later(Err(\"late\"), 3)\n\
+             assert_eq(second(Err(\"x\"), Err(\"y\")), Err(\"y\"))\n\
+             print(r)\nprint(p)\nprint(w)\nprint(l)\n",
+        );
+    }
+
+    /// §72: a Result of a number with no declared width, read from where the
+    /// value graph cannot see — an element of an untyped array — is still a
+    /// whole number. It can be printed and compared; it cannot be read at a
+    /// narrower type, because nothing says how wide the number is.
+    #[test]
+    fn an_untyped_number_result_read_from_memory_is_a_whole_number() {
+        let _ = lowered("let a\na = [Ok(5), Err(\"x\"), Ok(7)]\nprint(a:[0])\nassert_eq(a:[0], Ok(5))\n");
+        let err = lowering_error("let a\na = [Ok(5), Err(\"x\"), Ok(300)]\nn: Result<t8> = a:[2]\nprint(n)\n");
+        assert!(format!("{err}").contains("Result"), "{err}");
+    }
+
+    /// §72: the width a constant payload is recorded with.
+    #[test]
+    fn a_constant_payload_is_as_wide_as_its_value() {
+        let num = |n: i128| SemanticExpr { ty: SemanticType::Numeric, kind: SemanticExprKind::Value(SemanticValue::Num(n)) };
+        for (value, expected) in [
+            (0, Some(SemanticType::I8)),
+            (127, Some(SemanticType::I8)),
+            (-128, Some(SemanticType::I8)),
+            (128, Some(SemanticType::I16)),
+            (-129, Some(SemanticType::I16)),
+            (32767, Some(SemanticType::I16)),
+            (32768, Some(SemanticType::I32)),
+            (i128::from(i32::MAX), Some(SemanticType::I32)),
+            (i128::from(i32::MAX) + 1, Some(SemanticType::I64)),
+            (i128::from(i64::MIN), Some(SemanticType::I64)),
+            (i128::from(i64::MAX) + 1, None),
+        ] {
+            assert_eq!(literal_payload_type(&num(value)), expected, "{value}");
+        }
+        let not_a_constant = SemanticExpr {
+            ty: SemanticType::I64,
+            kind: SemanticExprKind::VarRef { binding: BindingId(1), name: "n".into() },
+        };
+        assert_eq!(literal_payload_type(&not_a_constant), None);
     }
 
     /// §62: `len` of a variable that was never given a value is not folded
@@ -14389,6 +14890,18 @@ mod divergence_shape_tests {
         assert!(!width.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { .. } | IrInst::GlobalAddr { .. })));
     }
 
+    /// §72: `assert` on an enum or a handle is refused, as on a Result.
+    #[test]
+    fn assert_on_an_enum_or_a_handle_is_refused() {
+        for src in [
+            "enum C { R, G }\nx: C = C::G\nassert(x)\n",
+            "let h\nh = Handle.new(5)\nassert(h)\n",
+        ] {
+            let err = format!("{}", lowering_error(src));
+            assert!(err.contains("not a condition"), "{src}: {err}");
+        }
+    }
+
     /// §70: a `when` arm of another kind than the scrutinee cannot match, so
     /// no comparison of the two is emitted for it.
     #[test]
@@ -14402,5 +14915,15 @@ mod divergence_shape_tests {
         assert_eq!(compares(&format!("{prelude}print(when c {{ 1 => 1, _ => 2 }})\n")), 0, "a number arm on an enum");
         assert_eq!(compares(&format!("{prelude}print(when c {{ Color::Green => 1, _ => 2 }})\n")), 1, "a variant arm on its enum");
         assert_eq!(compares("b: bool = true\nprint(when b { 1 => 1, _ => 2 })\n"), 0, "a number arm on a bool");
+        // §72: the same for a range, for `unknown`, and between a whole
+        // number and a float.
+        assert_eq!(compares(&format!("{prelude}print(when c {{ 0..5 => 1, _ => 2 }})\n")), 0, "a range arm on an enum");
+        assert_eq!(compares(&format!("{prelude}print(when c {{ unknown => 1, _ => 2 }})\n")), 0, "unknown on an enum");
+        assert_eq!(compares("n: t64 = 2\nprint(when n { unknown => 1, _ => 2 })\n"), 0, "unknown on a number");
+        assert_eq!(compares("x: f64 = 1.0\nprint(when x { 1 => 1, _ => 2 })\n"), 0, "a whole-number arm on a float");
+        assert_eq!(compares("n: t64 = 2\nprint(when n { 2.0 => 1, _ => 2 })\n"), 0, "a float arm on a whole number");
+        assert_eq!(compares("x: f64 = 2.0\nprint(when x { 0..5 => 1, _ => 2 })\n"), 0, "a range arm on a float");
+        assert_eq!(compares("n: t64 = 2\nprint(when n { 0..5 => 1, _ => 2 })\n"), 2, "a range arm on a whole number");
+        assert_eq!(compares("x: f64 = 1.5\nprint(when x { 1.5 => 1, _ => 2 })\n"), 1, "a float arm on a float");
     }
 }

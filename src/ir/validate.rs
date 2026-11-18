@@ -140,8 +140,11 @@ pub fn runtime_intrinsic_names() -> HashSet<String> {
 /// `known_intrinsic_sigs` yet (teaching the validator about them is M1.2).
 /// They are reserved all the same: a user function with one of these names
 /// would be called in the runtime function's place. `cx_str_eq` decides every
-/// string comparison, `cx_trap` every failed check.
-const UNLISTED_RUNTIME_SYMBOLS: [&str; 7] = [
+/// string comparison, `cx_trap` every failed check, `__cx_fmod` every `%` on
+/// floats. The JIT's own list of what it registers is checked against this
+/// one by a test beside it (`every_registered_runtime_symbol_is_reserved`).
+const UNLISTED_RUNTIME_SYMBOLS: [&str; 8] = [
+    "__cx_fmod",
     "cx_str_eq",
     "cx_handle_new",
     "cx_handle_val",
