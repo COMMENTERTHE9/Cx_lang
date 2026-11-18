@@ -4215,3 +4215,42 @@ assigned an unknown value inside it cannot be tested on the JIT, because
 compiled code refuses the assignment itself ("assign type mismatch: expected
 Bool, got TBool"). The interpreter handles that shape and now refuses it at the
 next evaluation.
+
+## 55. `assert_eq` compares strings inside a `Result` by where they are stored, and never accepts two enums
+
+*(Found 2026-11-18 while reviewing PR #476. **Open — needs an owner ruling.**
+Not fixed here.)*
+
+The interpreter's `assert_eq` compares two strings by content, but compares two
+`Result` values with the derived `Value` equality, which compares an embedded
+string by its arena offset and length. Everything it does not name falls to
+`_ => false`:
+
+```cx
+assert_eq("same", "same")              // passes
+assert_eq(Ok("same"), Ok("same"))      // fails: "assert_eq failed: Ok(same) != Ok(same)"
+assert_eq(parse(false), Err("bad"))    // fails: "Err(bad) != Err(bad)"
+assert_eq(Color::Red, Color::Red)      // fails: "Color::Red != Color::Red"
+```
+
+Whether two `Ok("")` values are equal depends on whether another string literal
+was evaluated between them, because an empty string does not advance the arena.
+`==` on two `Result` values is a semantic error, so `assert_eq` is the only place
+this is observable.
+
+The JIT differs: it compares the packed word, so two results from one literal
+site are equal and two from different sites are not; two equal enums pass.
+
+PR #476 resolves the string half by making compiled code reproduce the
+interpreter — an execution-scoped table that assigns each string evaluation a
+simulated arena offset — and pins it with five `expected_fail` fixtures asserting
+that `assert_eq(Ok("same"), Ok("same"))` must fail. Measured cost: a loop that
+binds and compares a string 20 million times goes from 0.48 s and 15 MB to 57.6 s
+and 7.05 GB on the JIT, because every string evaluation allocates and nothing is
+released until the program ends.
+
+The alternative is to treat this as an interpreter defect — the error text
+contradicts itself, and ordinary string equality is by content everywhere else —
+and make both backends compare `Result` payloads by content. That changes what
+the reference prints for the four lines above, so it is recorded here rather than
+decided in passing.
