@@ -5,6 +5,9 @@ Status: LOCKED for Cx 0.1
 the place, and the rule that a compound assignment does not see writes made by
 its own operand.)*
 
+*(Extended 2026-11-18 with the method-call section. It states what the receiver
+being an alias already implied; the interpreter did something else.)*
+
 ---
 
 ## Summary
@@ -43,6 +46,7 @@ evaluated first, then `B`, then `C`.
 | `A + B`, `A - B`, `A * B`, `A / B`, `A % B` | A then B | arithmetic |
 | `A == B`, `A != B`, `A < B`, `A <= B`, `A > B`, `A >= B` | A then B | comparison |
 | `f(A, B, …)` | A then B then … | argument list, left-to-right |
+| `x.m(A, B, …)` | A then B then …, then `m` runs on `x` | the receiver is the variable itself, read when the call is made — see "Method call" |
 | `(A ⊕ B) ⊕ C` | A then B then C | nested, outermost rule applied recursively |
 | `A && B`, `A || B` | A then B (B skipped on short-circuit) | short-circuit logical; lowered via `lower_logical()` in `src/ir/lower.rs` (decision/rhs/sc/merge CFG), fixtures t141/t142 |
 | `when X { ... }` (statement and expression) | X then arms left-to-right | chained Compare/Branch CFG via `lower_when_stmt` / `lower_when_expr` in `src/ir/lower.rs` (Option A, landed bed71c1); supports Literal/Range/Bool/Catchall arms + TBool unknown wire-match; fixtures t143/t144/t145 PASS |
@@ -160,6 +164,30 @@ that program does not lower there at all: a function that writes a top-level
 variable is an unsupported construct on the Cranelift backend today (exit 127).
 So the JIT claim rests on the instruction order above, not on a run. When
 top-level mutation from a function lowers, this deserves a parity fixture.
+
+---
+
+## Method call: the arguments, then the method on its receiver
+
+In `x.m(A, B)` the arguments are evaluated left to right, and then `m` runs on
+`x`. The receiver is the variable itself — the one alias the language has — not
+a copy of it taken before the arguments. So an argument that changes `x` is
+seen by `m`, and is not undone when `m` returns:
+
+```
+k.add(k.next())      // next() changes k and returns the new count;
+                     // add() runs on k as next() left it
+```
+
+The same holds for each further alias of a multi-alias `impl` that is passed a
+variable, and for a change made by passing the receiver as `.copy` to a call in
+the argument list.
+
+A receiver that is an expression — the left operand of a dispatched operator,
+`(a + b) + c` — is a temporary: it is evaluated first, as the left operand it
+is, and there is no variable for a change to be visible through.
+
+Fixture: `t_method_receiver_changed_by_argument`.
 
 ---
 

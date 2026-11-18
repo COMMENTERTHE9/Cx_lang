@@ -4635,3 +4635,64 @@ through two levels, a method that changed its receiver first, and the top
 level) and `t_try_in_when_guard`. The second is the compiled-code fixture §59
 said could not be written: a guard `1 if fail()? > 0 => ..` compiles, since the
 guard's `?` yields a number.
+
+## 65. A method ran on a copy of its receiver taken before its arguments, and wrote that copy back
+
+*(Found 2026-11-18 while resolving the review of §58. Interpreter only, and on
+`submain` before any of this work. Fixed by the commit that introduces this
+entry. **Changes interpreter behaviour** — read below.)*
+
+```cx
+struct Counter { n: t64, total: t64 }
+c: impl (s: Counter) {
+    fnc: t64 next() {
+        s.n += 1
+        return s.n
+    }
+    fnc: add(v: t64) { s.total += v }
+}
+k: Counter = Counter { n: 0, total: 0 }
+k.add(k.next())
+k.add(k.next())
+print(k.n)          // interpreter: 0      JIT: 2      (both exit 0)
+print(k.total)      // interpreter: 2      JIT: 3
+```
+
+The interpreter read the receiver's value first — it needs the struct's name to
+find the method — evaluated the arguments, ran the method on the value it had
+read, and stored that value back into the variable. `next()` did change `k`; the
+store put the earlier `k` back over it. `next()` returns 1, then 2, and `k.n` is
+0 afterwards: the count the program was just handed is not the count it has.
+
+The same happened when an argument passed the receiver as `.copy`
+(`x.peek(bump(x.copy))`: the write-back `.copy` promises was discarded), and for
+the second alias of a two-alias `impl`.
+
+**This is the interpreter's defect, not a difference of opinion between
+backends.** A method's receiver is documented as the one alias the language has;
+an alias of a variable sees the variable. Compiled code passes the receiver's
+address and has always given 2 and 3 above.
+
+The interpreter now re-reads a named receiver, and each further alias that names
+a variable, after the arguments are evaluated. A receiver that is an expression
+(operator dispatch on `(a + b) + c`) is unchanged: it is a temporary.
+
+**Why this is recorded as a behaviour change.** It alters what the reference
+prints for a program that worked — in the sense of running to completion —
+before. Replaying all 694 tracked programs on both backends shows no difference,
+so nothing in the repository relied on the old result, but a program outside it
+could have. The rule is now written in `docs/backend/cx_eval_order.md`, "Method
+call". Reversing it means reverting the interpreter half of this commit and
+making compiled code copy its receiver, which would bring the lost update to
+compiled code.
+
+**How it was found.** The review reported `x.peek(bump(x.copy))` as a regression
+from §58: compiled code had agreed with the interpreter there only because the
+move §58 removed left the old storage behind as an accidental copy. Checking
+which side was right, rather than restoring the agreement, turned up the lost
+update.
+
+Fixture: `t_method_receiver_changed_by_argument` — at the top level, in a loop
+inside a function, with two arguments that each change the receiver, through
+`.copy`, and with a second alias. It fails on the unfixed interpreter and passes
+on the unfixed JIT.

@@ -371,6 +371,31 @@ impl RunTime {
             resolved_params.push((param.binding, param.name.clone(), val));
         }
 
+        // A named receiver is its variable, not a copy of it taken before the
+        // arguments. Evaluating an argument can change that variable — a method
+        // called on it, or passing it as `.copy` — and this method must run on
+        // what the variable holds now. The value read above (needed to find the
+        // method) would hide that change from the method and then, at the
+        // write-back below, overwrite it (known-issues §64).
+        if !is_temporary {
+            alias_vals[0].3 = self.get_var(instance, pos)?;
+        }
+        // The same for each further alias that names a variable — the ones the
+        // write-back below writes to.
+        for i in 0..extra_alias_count {
+            let name = match args.get(i) {
+                Some(SemanticCallArg::Expr(e)) => match &e.kind {
+                    SemanticExprKind::VarRef { name, .. } => Some(name),
+                    _ => None,
+                },
+                Some(SemanticCallArg::Copy { name, .. }) => Some(name),
+                _ => None,
+            };
+            if let Some(name) = name {
+                alias_vals[i + 1].3 = self.get_var(name, pos)?;
+            }
+        }
+
         // Push scope
         // known-issues §20: the method path recurses natively just as the free
         // function path does, so it carries the same guard, in the same place —
