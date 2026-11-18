@@ -2607,6 +2607,7 @@ Expr::Unary(op, inner, pos) => {
                             instance: instance.clone(),
                             // An ordinary `a.method()` receiver is always a name.
                             receiver_expr: None,
+                            operator: false,
                             method: method.clone(),
                             args: semantic_args,
                             instance_binding,
@@ -2768,6 +2769,7 @@ Expr::Unary(op, inner, pos) => {
                         struct_name,
                         // An ordinary `a.method()` receiver is always a name.
                         receiver_expr: None,
+                        operator: false,
                         pos: *pos,
                     },
                 })
@@ -3444,6 +3446,7 @@ Expr::Unary(op, inner, pos) => {
                 instance_binding,
                 struct_name: struct_name.clone(),
                 receiver_expr,
+                operator: true,
                 pos: op_pos,
             },
         }))

@@ -7,7 +7,8 @@ its own operand.)*
 
 *(Extended 2026-11-18 with the index-read and method-call sections. Both state
 what strict left-to-right evaluation already implied; in each, one backend did
-something else.)*
+something else. Corrected the same day after an independent review: each
+section now says where it does not yet hold.)*
 
 ---
 
@@ -182,19 +183,29 @@ print(arr:[idx(arr.copy)])     // 10 — the element as it was
 print(arr:[1])                 // 60 — the change is still there
 ```
 
-Two things can change an array while an index into it is being evaluated:
-passing the variable that holds it as `.copy`, and calling a method on that
-variable. The interpreter gets this from holding the array's value. Compiled
-code holds the array's address, which is the same thing until one of those two
-appears in the index expression; when one does, it reads from a copy of the
-array taken before the index is evaluated (`lower_index`,
-`expr_may_write`). An index expression without either costs nothing extra.
+Three things can change an array while an index into it is being evaluated:
+passing the variable that holds it as `.copy`; calling a method on that
+variable; and passing that variable to a method as an argument, since a further
+alias of a multi-alias `impl` is an argument and is passed by reference. The
+interpreter gets the rule from holding the array's value. Compiled code holds
+the array's address, which is the same thing until one of those three appears
+in the index expression; when one does, it reads from a copy of the array taken
+before the index is evaluated (`lower_index`, `expr_may_write`). An index
+expression without any of them costs nothing extra.
 
-This is the rule for a **read**. A compound assignment `A:[I] += V` resolves its
-place — which includes evaluating `I` — before it reads, as the section above
-says, so it reads the element as `I` left it.
+This is the rule for a **read**. An index on the way to a store is a place, not
+a read: in `A:[I]:[J] = V` and `A:[I]:[J] += V` the store must reach `A`
+itself, so no copy is taken at any level, whatever `I` does. A compound
+assignment resolves its place — which includes evaluating its indexes — before
+it reads, as the section above says, so it reads the element as they left it.
 
-Fixture: `t_index_read_takes_array_before_index`.
+**Where it does not hold yet** (known-issues §69): when the same variable is
+passed to a method as two aliases at once, compiled code reads the element
+after the call.
+
+Fixtures: `t_index_read_takes_array_before_index`,
+`t_index_read_array_changed_through_alias`,
+`t_index_store_through_changed_array`.
 
 ---
 
@@ -211,14 +222,40 @@ k.add(k.next())      // next() changes k and returns the new count;
 ```
 
 The same holds for each further alias of a multi-alias `impl` that is passed a
-variable, and for a change made by passing the receiver as `.copy` to a call in
-the argument list.
+variable holding a struct or an array, and for a change made by passing the
+receiver as `.copy` to a call in the argument list.
 
-A receiver that is an expression — the left operand of a dispatched operator,
-`(a + b) + c` — is a temporary: it is evaluated first, as the left operand it
-is, and there is no variable for a change to be visible through.
+A receiver that is an expression which is not a place — the left operand of a
+dispatched operator, `(a + b) + c` — is a temporary: it is evaluated first, as
+the left operand it is, and there is no variable for a change to be visible
+through.
 
-Fixture: `t_method_receiver_changed_by_argument`.
+**Where this is not the whole story** (known-issues §69). Each of these is a
+case the rule above does not settle, or that one backend gets differently, and
+each predates this section except the first:
+
+- *An operator is not a method call.* `a + b` on a type with a user `+` runs
+  that type's method, but its left operand is an operand: it is read before the
+  right one is evaluated, as the table above says for every `A + B`. Both
+  backends do this (fixture `t_operator_left_operand_before_right`). What they
+  do not agree on is what the left operand's *variable* holds afterwards when
+  the right operand changed it — whether an operator's operands are values or
+  aliases has not been decided.
+- *A further alias that is a number, bool or string* is passed by value from
+  its position in the argument list on both backends. They disagree about the
+  variable afterwards: the interpreter writes the alias back, compiled code
+  does not.
+- *An expression receiver or alias that is a place* — `ps:[0] + b`,
+  `p.mix(w.inner, 5)` — is a temporary on the interpreter and the place itself
+  in compiled code.
+- *The same variable as two aliases* — `p.mix(p, 5)` — is two copies on the
+  interpreter and one object in compiled code.
+- *Inside the method body* the interpreter works on a copy of the receiver and
+  stores it back at the end; "the variable itself" is true at entry and exit,
+  not in between.
+
+Fixtures: `t_method_receiver_changed_by_argument`,
+`t_method_scalar_alias_at_argument_position`.
 
 ---
 
