@@ -1508,4 +1508,77 @@ fnc: second() {
             total_pass, total_skip, total_fail, total
         );
     }
+    /// M1.1 (docs/backend/static_data_design.md): the IR of a program does not
+    /// depend on the process that produced it, and holds no address from
+    /// inside the compiler.
+    ///
+    /// For every fixture that lowers, two separate runs of `--backend=validate`
+    /// print the same module, and the validator — which now includes the
+    /// address-constant rule — reports none. Two processes, not two calls in
+    /// one: the thing being ruled out is a value that differs between
+    /// processes, and before M1.1 every string literal carried one.
+    #[test]
+    fn ir_is_reproducible_and_holds_no_compiler_address_across_the_corpus() {
+        let binary = cx_binary_path();
+        if !binary.exists() {
+            eprintln!(
+                "SKIP ir_is_reproducible_and_holds_no_compiler_address_across_the_corpus — \
+                 binary not found at {:?}. Build with `cargo build --features jit` then re-run.",
+                binary
+            );
+            return;
+        }
+        let dump = |fixture: &TestFixture| -> String {
+            let output = Command::new(&binary)
+                .arg("--backend=validate")
+                .arg(&fixture.path)
+                .env("NO_COLOR", "1")
+                .output()
+                .unwrap_or_else(|e| panic!("failed to run {:?} on {}: {}", binary, fixture.name, e));
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        };
+
+        let mut lowered = 0usize;
+        let mut with_data = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+        for fixture in collect_matrix_tests() {
+            let first = dump(&fixture);
+            // The dump starts with the module line when lowering succeeded,
+            // whether or not the standalone validator then accepted it.
+            if !first.lines().any(|line| line.starts_with("module ")) {
+                continue;
+            }
+            lowered += 1;
+            if first.lines().any(|line| line.starts_with("data @d")) {
+                with_data += 1;
+            }
+            let second = dump(&fixture);
+            if first != second {
+                let differing = first.lines().zip(second.lines()).filter(|(a, b)| a != b).count();
+                failures.push(format!("{}: two dumps differ in {} line(s)", fixture.name, differing));
+            }
+            if first.contains("AddressConstant") {
+                failures.push(format!("{}: the module turns a constant into a pointer", fixture.name));
+            }
+        }
+
+        // Guards against the test passing because it looked at nothing.
+        assert!(lowered >= 400, "only {lowered} fixtures lowered — the dump detection is broken");
+        assert!(with_data >= 50, "only {with_data} fixtures have string data — the data section is not being printed");
+        assert!(
+            failures.is_empty(),
+            "{} of {} lowered fixtures are not reproducible or hold an address:\n{}",
+            failures.len(),
+            lowered,
+            failures.join("\n")
+        );
+        eprintln!(
+            "ir_is_reproducible: {} fixtures lowered ({} with string data), all identical across two processes, no address constants",
+            lowered, with_data
+        );
+    }
 }

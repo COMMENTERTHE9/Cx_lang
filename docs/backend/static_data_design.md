@@ -1,9 +1,15 @@
 # Static data in the IR — design for M1.1
 
-**Status: PROPOSED. Not implemented. Awaiting owner approval.**
+**Status: approved by the owner on 2026-11-18, including the JIT-path check of
+§3.5, and IMPLEMENTED on `backend/m1.1-static-data` (four commits). Not
+reviewed independently yet, and not integrated. §11 says what was built, what
+was measured, and where the result differs from this design — one of its own
+performance criteria is not met.**
 
 - Date: 2026-11-18
-- Base: `submain` @ `d4b2c06` plus the M0 fixes (`backend/m0-lowering-divergences`)
+- Base as designed: `submain` @ `d4b2c06` plus the M0 fixes. Base as built: the
+  PR #476 revision (`backend/result-content-equality`), which changed string
+  equality and so two premises of §4 — see §11.
 - Scope: one packet. The other M1 parts (runtime library, validator in the JIT
   path, symbol naming, target description) stay separate and are listed in §9.
 
@@ -193,8 +199,15 @@ Mirrors what the backend already does for `IrGlobal`:
    `global_value`.
 
 All objects are declared first and defined second, so a descriptor can refer to
-a bytes object regardless of order. The data belongs to the `JITModule` and is
-released with it, which also ends the per-lowering leak.
+a bytes object regardless of order. The data belongs to the `JITModule`, which
+ends the per-lowering leak.
+
+*(Correction, on implementation: this paragraph first said the data "is
+released with" the module. It is not. Cranelift's `JITModule` leaves its code
+and data mapped when dropped unless `free_memory` is called, and this backend
+does not call it — true before this packet for code and globals, and unchanged
+by it. One program runs per process, so nothing accumulates; what the packet
+removes is the leak in LOWERING, which did accumulate.)*
 
 ## 4. Why behaviour does not change
 
@@ -356,3 +369,90 @@ Kept as separate tasks, in the order I would take them:
 1. Approve implementing this packet as designed.
 2. Confirm the minimal JIT-path check in §3.5 may land here, ahead of the full
    validator work in M1.2. The alternative is to do M1.2 first.
+
+## 11. As built (2026-11-18)
+
+Branch `backend/m1.1-static-data`, four commits, in the order of §7:
+
+| Commit | Content |
+|---|---|
+| 1 | `IrData`, `IrDataReloc`, `IrInst::DataAddr`, printer, validator checks, `find_address_constants`; 22 unit tests |
+| 2 | Cranelift JIT support; the data rules as `validate::data_errors`, run by the JIT before anything is placed; 8 tests on hand-built IR |
+| 3 | `construct_static_str` produces data objects; the address-constant rule is on in the validator and on the JIT path; 6 lowering tests and a leak measurement |
+| 4 | The corpus test; this section; `docs/known_issues.md` §71 |
+
+### What changed from the design
+
+- **§4.1 and §4.3 are out of date, harmlessly.** They say a descriptor's address
+  is observable through `assert_eq` on two `Result`s, and keep one descriptor
+  per literal site so as not to change that. The owner has since decided
+  equality is by content (`docs/backend/value_equality.md`), and nothing can
+  observe a descriptor's address any more. The rule was kept anyway — one
+  descriptor per site, bytes shared — because it was the approved design and
+  merging descriptors is now a pure optimisation that can be made on its own.
+- **§3.5.** The data rules had to be callable without the rest of the
+  validator, because the JIT must not place data it has not checked: a
+  relocation outside its object is a write outside an allocation. They are
+  `validate::data_errors`, used by both.
+- **§3.6**, corrected in place above.
+- **§5 predicted test fallout that did not happen.** No existing test asserted
+  the address-constant instruction pair, so none changed. The 166 hand-built
+  `IrModule` literals gained `data: vec![]` as predicted.
+
+### Requirements of §6
+
+| Requirement | Result |
+|---|---|
+| `cargo test` / `--features jit` pass, count rises only by new tests | 359 / 546 at commit 3 (1 ignored each); see the commit messages for each step |
+| Parity: same PASS and SKIP sets, 0 PARITY_FAIL | 631 PASS / 55 SKIP / 0 at commits 1–3, identical to the base |
+| Replay, zero differences in exit code or stdout | 730 programs (686 fixtures, examples, benchmarks), both backends, before and after commit 3: none, stderr included |
+| No address constants, enforced and tested | JIT path refuses (exit 127); `ir_is_reproducible_and_holds_no_compiler_address_across_the_corpus` |
+| Reproducible IR | Same test: 469 fixtures lower, 71 with string data, each identical across two processes. Before the switch a one-string program's two dumps differed |
+| Data validity, one accepting and one rejecting test per rule | `validate::data_tests` |
+| Round trip through the JIT: relocations, order, identity, empty string, alignment, repeated compilation, invalid references | `module_data_tests`; fifteen kinds of damage each refused without a panic |
+| Leak removed | No `leak()` in lowering. 4000 lowerings of a 60-literal program: 39,060 KB grown before, 232 KB after |
+| String loop's peak memory does not grow with iteration count | 15 MB at 20 million iterations, before and after |
+| Benchmarks no more than 10% slower | The eight `bench/` programs: unchanged |
+| **A loop that binds and compares a string, no more than 10% slower** | **Not met in every variant — see below** |
+| Independent review before integration | **Not done yet** |
+
+### The performance result
+
+Optimized build, Cranelift JIT, a loop whose body binds a string and compares
+it, one billion iterations, six variants that differ only in what precedes the
+loop (which moves the loop's machine code by a few bytes):
+
+| Variant | Before | After |
+|---|---|---|
+| as is | 3.18 ns | 3.43 ns |
+| one addition before | 2.77 | 3.17 |
+| two additions before | 2.68 | 3.04 |
+| three additions before | 2.99 | 3.17 |
+| a multiplication before | 2.92 | 3.38 |
+| an array before | 3.63 | 3.33 |
+
+Slower in five (+6% to +16%), faster in one (−8%), +7.5% taken together; a
+second run of the same six gave +10.9%. That is about one CPU cycle per
+comparison on a loop of about ten, on top of position effects of ±15% that the
+variants show by themselves.
+
+What it is not, each measured:
+
+- the instruction that materialises the address — emitting it as an absolute
+  immediate, the form the constants used, gives the same times;
+- memory protection — placing the data in writable memory gives the same times;
+- the stack — thirteen frame sizes give the same times;
+- the debug-build figure — a debug build cannot show an effect this small: the
+  same code measures 19.8–20.8 ns per iteration in two builds and 23.7–24.3 in a
+  third that differs only in unrelated compiler code, and builds that still use
+  address constants range from 19.2 to 23.3.
+
+What is left is where the data is: beside the code in the JIT's memory rather
+than on the heap. The cause is not identified.
+
+**This needs the owner's decision, not more tuning.** The criterion was written
+before the measurement and one kind of program misses it by a few percent. The
+alternative to data objects is the address constants this packet exists to
+remove; an object file cannot hold them. An optimizing backend (M3) places data
+itself, so the figure is a property of the unoptimized JIT.
+

@@ -93,6 +93,14 @@ Three-state value: true (1), false (0), unknown (2).
 
 ### String Layout — OPEN
 - `str` at C boundary is `(*const u8, u32)` — pointer + length, no null termination. LOCKED per frontend dev.
+- *What is implemented today is not that, and is not a C boundary.* Inside
+  compiled code a `str` value is the address of a two-word descriptor,
+  `{i64 byte_ptr, i64 byte_len}`, held in the module's read-only data
+  (`docs/backend/static_data_design.md`). That is the representation between
+  compiled functions and the runtime's string functions. Nothing yet passes a
+  string across a C boundary, so the locked layout above has no implementation;
+  the two differ in the length's width and in being a pointer to a pair rather
+  than a pair, and that has to be reconciled when FFI is built.
 - Arena ownership in JIT mode: does the JIT call into the interpreter's RunTime arena, maintain its own arena, or heap-allocate?
 - `strref` escape rules depend on arena ownership decision.
 

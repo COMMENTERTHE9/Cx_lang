@@ -4906,3 +4906,51 @@ values" for `t_try_early_return_exit_path`; it is eight differing lines. §59
 also says a guard that uses `?` has no compiled-code fixture; it has one now
 (§64). The commit for §61 states no gate numbers; they were 322 default / 501
 with `--features jit`, parity 613 / 52 / 0 over 665 fixtures.
+
+## 71. Compiled programs contained addresses from inside the compiler
+
+*(Found 2026-11-18 by the readiness audit; fixed by milestone M1.1 on
+`backend/m1.1-static-data`, design and results in
+`docs/backend/static_data_design.md`. §62–§70 are on
+`backend/result-content-equality` and `backend/m0-followup-correctness`.)*
+
+Every string literal in a compiled program — and every piece of text the
+compiler prints on the program's behalf: enum names, `Ok(`, `Err(`, the `?` of
+an unknown bool, the chunks of an interpolated string — was lowered by leaking
+its bytes and a `{pointer, length}` descriptor for the life of the compiler
+process and writing the descriptor's address into the IR as a number:
+
+```
+v10 = const i64 139947281560512
+v11 = cast i64 v10 -> ptr
+call cx_print_str(v11)
+```
+
+Three consequences. The IR could not be written to an object file, by Cranelift
+or by LLVM, because the number means nothing outside the process that produced
+it. The IR was not reproducible: two dumps of one program differed in that
+constant, so the 0.1 determinism statement did not hold for any program with a
+string. And each lowering leaked.
+
+A literal is now two read-only data objects of the module — its bytes, and the
+same descriptor with the pointer as a relocation — and the instruction
+`data_addr`:
+
+```
+data @d0 align 1 bytes "hello"
+data @d1 align 8 { addr @d0, i64 5 }
+...
+v11 = data_addr @d1
+```
+
+No program's behaviour changed: 730 programs replayed on both backends before
+and after give the same exit codes and output. A `Cast` of a constant to a
+pointer is now rejected by the validator and refused by the JIT, so the pattern
+cannot come back unnoticed, and a corpus test checks that 469 fixtures each
+print the same IR from two separate processes.
+
+**Open.** A loop that does nothing but compare strings is a few percent slower
+in an optimized build — about one CPU cycle per comparison, cause not
+identified — which misses the design's own "no more than 10%" in some variants.
+The benchmark programs are unchanged. `static_data_design.md` §11 has the
+measurements and what was ruled out; it is a decision for the owner.
