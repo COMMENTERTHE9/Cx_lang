@@ -128,10 +128,15 @@ with the answer was changed after review (known-issues §70):
   memory are not followed.
 - A constant payload — `Ok(5)`, `Ok(1 + 2)` — is recorded at the narrowest
   width that holds its value, so it can be read where a `Result<t8>` is
-  declared and `Ok(300)` cannot. This holds where the `Ok(..)` is used
-  directly or through an untyped variable. A constant that reaches the
-  declaration through an `if`/`when` value or a generic constructor has the
-  static type `Result<t64>` by then, and is refused like any other `t64`. A
+  declared and `Ok(300)` cannot. A plain literal has no declared width, and
+  keeps its value's width through an untyped variable, an `if`/`when` value
+  and a forwarding function: `x: Result<t8> = if c { Ok(3) } else { Ok(1) }`
+  is accepted. A constant written as arithmetic has the static type
+  `Result<t64>`; used directly, its value's width is still found, but once it
+  has passed through an `if`/`when` value or a function that type is what is
+  recorded, and `if c { Ok(1 + 2) } else { Ok(1) }` is refused like any other
+  `t64`. So is a generic constructor — `wrap(5)` with
+  `fnc: Result<T> <T> wrap(x: T)` — which infers `t64` for the literal. A
   number with no declared width that is computed at run time is the whole
   word.
 
