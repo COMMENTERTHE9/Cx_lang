@@ -797,6 +797,9 @@ struct LoweringCtx {
     module_bindings: ModuleBindings,
     /// The function being lowered, for diagnostics.
     function_name: String,
+    /// How many operator left operands have been copied in this function
+    /// (`operator_operand_copy`); each copy gets a binding of its own.
+    operand_copies: u32,
     /// The current function's `.copy` parameters, for a return that does not go
     /// through `finish_return`: `?` on an `Err` leaves from inside an
     /// expression, where no `FunctionLoweringSpec` is in reach.
@@ -914,6 +917,7 @@ impl LoweringCtx {
             top_level_bindings: HashSet::new(),
             module_bindings: HashMap::new(),
             function_name: String::new(),
+            operand_copies: 0,
             early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
@@ -2080,11 +2084,13 @@ fn lower_stmt_inner(
             // lower_void_call so the receiver lowers through the existing
             // VarRef→Ptr path. Mirrors the Call arm above; same fall-through
             // to lower_expr for non-void.
-            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, .. } = &expr.kind {
+            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, .. } = &expr.kind {
                 // Same receiver choice as the value-position arm above.
-                let recv_arg = SemanticCallArg::Expr(match receiver_expr {
-                    Some(rx) => (**rx).clone(),
-                    None => SemanticExpr {
+                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, &mut current)?;
+                let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
+                    (_, Some(copy)) => copy.clone(),
+                    (Some(rx), None) => (**rx).clone(),
+                    (None, None) => SemanticExpr {
                         ty: SemanticType::Struct(struct_name.clone()),
                         kind: SemanticExprKind::VarRef {
                             binding: *instance_binding,
@@ -2100,8 +2106,12 @@ fn lower_stmt_inner(
                     .map(|s| (s.return_ty.clone(), s.param_types.clone()));
                 if let Some((None, param_types)) = sig_info {
                     lower_void_call(&callee, &full_args, &param_types, ctx, &mut current)?;
+                    drop_operand_copy(&operand, &mut current);
                     return Ok(Some(current));
                 }
+                // Not a void call: the value-position arm lowers it, and
+                // takes its own copy there.
+                drop_operand_copy(&operand, &mut current);
             }
             let _ = lower_expr(expr, ctx, &mut current)?;
             Ok(Some(current))
@@ -3488,7 +3498,7 @@ fn lower_expr_inner(
         SemanticExprKind::Index { target, index, .. } => {
             lower_index(target, index, &expr.ty, IndexUse::Read, ctx, active)
         }
-        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, pos: _ } => {
+        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, pos: _ } => {
             // Synthesize an equivalent Call and recurse into the existing Call
             // arm (which has the proven signature_table lookup, void-in-value-
             // position rejection, arity check, per-arg ensure_type_match, and
@@ -3501,9 +3511,11 @@ fn lower_expr_inner(
             // synthesizes the `VarRef` it always did. Either way the receiver
             // occupies argument 0 and is evaluated there, so no evaluation
             // order changes and no new lowering machinery is involved.
-            let recv_arg = SemanticCallArg::Expr(match receiver_expr {
-                Some(rx) => (**rx).clone(),
-                None => SemanticExpr {
+            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, active)?;
+            let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
+                (_, Some(copy)) => copy.clone(),
+                (Some(rx), None) => (**rx).clone(),
+                (None, None) => SemanticExpr {
                     ty: SemanticType::Struct(struct_name.clone()),
                     kind: SemanticExprKind::VarRef {
                         binding: *instance_binding,
@@ -3526,7 +3538,9 @@ fn lower_expr_inner(
                     type_args: Vec::new(),
                 },
             };
-            lower_expr(&synthetic, ctx, active)
+            let result = lower_expr(&synthetic, ctx, active);
+            drop_operand_copy(&operand, active);
+            result
         }
         // Struct literal lowering strategy
         //
@@ -6100,6 +6114,60 @@ fn lower_array_lit(
         value: ptr,
         ty: IrType::Ptr,
     })
+}
+
+/// The left operand of a dispatched operator, when the right operand can
+/// change it: `a + f(a.copy)` on a type with a user `+`.
+///
+/// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
+/// method takes its receiver by address, so handing it `a` itself would let it
+/// see what evaluating B did to `a`. Instead `a` is copied before the
+/// arguments are lowered and the method is given the copy. Returns the
+/// expression that names the copy, or `None` when no copy is needed — an
+/// ordinary method call, an expression receiver, or a right operand that
+/// cannot change the variable — and the call is lowered exactly as before.
+#[allow(clippy::too_many_arguments)]
+fn operator_operand_copy(
+    operator: bool,
+    receiver_expr: &Option<Box<SemanticExpr>>,
+    instance: &str,
+    instance_binding: BindingId,
+    struct_name: &str,
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<Option<SemanticExpr>, LoweringError> {
+    if !operator || receiver_expr.is_some() || !args_may_write(args, instance_binding) {
+        return Ok(None);
+    }
+    let ty = SemanticType::Struct(struct_name.to_string());
+    let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
+        LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("an operator whose right operand changes its left operand, for a left operand ({struct_name}) compiled code cannot copy"),
+        }
+    })?;
+    let original = lower_expr(
+        &SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
+        ctx,
+        active,
+    )?;
+    ensure_type_match("operator left operand", IrType::Ptr, original.ty)?;
+    let copy = ctx.fresh_value();
+    active.emit(IrInst::Alloca { dst: copy, size, align })?;
+    copy_parts(original.value, 0, copy, 0, &parts, ctx, active)?;
+    // The copy needs a name for the call's receiver argument to refer to. It
+    // gets a binding no source variable can have, for the length of the call.
+    ctx.operand_copies += 1;
+    let binding = BindingId(u32::MAX - ctx.operand_copies);
+    active.bindings.insert(binding, LoweredValue { value: copy, ty: IrType::Ptr });
+    Ok(Some(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name: instance.to_string() } }))
+}
+
+/// Forget the binding `operator_operand_copy` made, once its call is lowered.
+fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
+    if let Some(SemanticExpr { kind: SemanticExprKind::VarRef { binding, .. }, .. }) = operand {
+        active.bindings.remove(binding);
+    }
 }
 
 /// Whether evaluating `expr` may change the variable `scan`. Three things can:
@@ -11273,6 +11341,7 @@ mod tests {
                     kind: SemanticExprKind::MethodCall {
                         instance: "obj".to_string(),
                         receiver_expr: None,
+                        operator: false,
                         method: "foo".to_string(),
                         args: vec![],
                         instance_binding: BindingId(u32::MAX),
