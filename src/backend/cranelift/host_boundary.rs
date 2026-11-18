@@ -854,7 +854,16 @@ impl HostBoundary {
         }
         for data in &ir.data {
             let mut description = cranelift_module::DataDescription::new();
-            description.define(data.bytes.clone().into_boxed_slice());
+            // An object of no bytes — the bytes of "" — is placed as one zero
+            // byte. Cranelift gives a size-0 object no memory and the address
+            // `align`; a descriptor could hold that, but code taking the
+            // object's address reaches it relative to itself and the distance
+            // overflowed (abort in debug, panic in release), and the runtime's
+            // comparison read from an unmapped page under fault suppression
+            // on every empty string. Nothing reads the byte: lengths come
+            // from the descriptor.
+            let contents = if data.bytes.is_empty() { vec![0u8] } else { data.bytes.clone() };
+            description.define(contents.into_boxed_slice());
             description.set_align(data.align as u64);
             for reloc in &data.relocs {
                 let target = module.declare_data_in_data(rodata_ids[&reloc.target], &mut description);
@@ -10308,6 +10317,33 @@ mod module_data_tests {
             ValueId(10),
         );
         // length * 10 + (address != 0)
+        assert_eq!(run(&ir), 1);
+    }
+
+    /// The address of an object of no bytes can be taken, and is a place in
+    /// memory like any other object's: readable, and not the small number an
+    /// unplaced object would have. Taking it used to bring the process down.
+    #[test]
+    fn the_address_of_an_empty_object_is_a_place_in_memory() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), Vec::new()), IrData::string_bytes(DataId(1), Vec::new())],
+            vec![
+                IrInst::DataAddr { dst: ValueId(0), data: DataId(0) },
+                IrInst::DataAddr { dst: ValueId(1), data: DataId(1) },
+                // Read the placeholder byte of each: a fault here is the bug.
+                IrInst::Load { dst: ValueId(2), ty: IrType::I8, ptr: ValueId(0) },
+                IrInst::Load { dst: ValueId(3), ty: IrType::I8, ptr: ValueId(1) },
+                IrInst::Cast { dst: ValueId(4), from: IrType::I8, to: IrType::I32, value: ValueId(2) },
+                IrInst::Cast { dst: ValueId(5), from: IrType::I8, to: IrType::I32, value: ValueId(3) },
+                IrInst::Binary { dst: ValueId(6), op: BinaryOp::Add, ty: IrType::I32, lhs: ValueId(4), rhs: ValueId(5) },
+                // Two objects, two places.
+                IrInst::Compare { dst: ValueId(7), op: CompareOp::Ne, lhs: ValueId(0), rhs: ValueId(1) },
+                IrInst::Cast { dst: ValueId(8), from: IrType::Bool, to: IrType::I32, value: ValueId(7) },
+                IrInst::Binary { dst: ValueId(9), op: BinaryOp::Add, ty: IrType::I32, lhs: ValueId(6), rhs: ValueId(8) },
+            ],
+            ValueId(9),
+        );
+        // byte + byte + (the two addresses differ)
         assert_eq!(run(&ir), 1);
     }
 

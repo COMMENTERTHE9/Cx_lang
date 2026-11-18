@@ -200,7 +200,9 @@ pub struct IrDataReloc {
 
 impl IrData {
     /// The bytes of a string, as an object of their own. An empty string is an
-    /// object of no bytes: it still has an address for a descriptor to hold.
+    /// object of no bytes: it still has an address for a descriptor to hold,
+    /// and a backend must give it one that is a real place (the JIT places it
+    /// as a single unread byte).
     pub fn string_bytes(id: DataId, bytes: Vec<u8>) -> Self {
         IrData { id, align: 1, bytes, relocs: Vec::new() }
     }

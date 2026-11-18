@@ -5451,4 +5451,26 @@ agreed on. Its 418 earlier probes: 128 refused, 193 agreeing, 97 failing alike
 on both; refused that the base agreed on, the same 15 narrowings as §70c.
 Corpus replay, 694 programs on both backends, against the build before this
 entry: identical.
+## 73. Findings of the independent review of M1.1 (§71), and what was done
 
+*(2026-11-18. The four commits of M1.1 were reviewed independently before
+being proposed for integration. No blocking finding; behaviour is preserved on
+everything the review ran — 743 corpus programs, 1,000 generated string-heavy
+programs and 29 scale programs, exit code, output and error text, both
+backends; and the IR is the old IR with the address constant replaced, over
+908 programs that lower. Four findings it rated "should fix", all addressed
+below.)*
+
+**b. Taking the address of an object of no bytes brought the process down.**
+Valid IR, accepted by the validator: `data @d0 align 1 bytes ""` and
+`v0 = data_addr @d0`. Cranelift gives a size-0 object the address `align` and
+no memory; code reaches data relative to itself and the distance overflowed —
+an abort in a debug build, a panic in an optimized one. Not reachable from Cx
+source: lowering takes the address of descriptors only, never of bytes. Fixed
+by placing an object of no bytes as a single unread byte.
+
+That also removes a cost older than M1.1. The bytes of `""` had the address 1
+(a dangling pointer before, Cranelift's placeholder after), and the C
+library's comparison, handed it, took a suppressed fault each time: 20 million
+comparisons of `""` took 2.0 s against 0.45 s for `"a"`, on `submain` as well.
+Now 0.45 s.
