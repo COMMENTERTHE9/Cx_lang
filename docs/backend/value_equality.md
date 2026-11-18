@@ -116,13 +116,24 @@ with the answer was changed after review (known-issues §70):
 - So that this does not refuse ordinary programs, a function that can only
   return some of its own arguments unchanged, or an `Err`, is followed through
   the call: `second(Err("x"), Err("y"))` holds whatever its arguments hold.
-  That covers a statement before the `return`, a branch between two arguments,
-  a function returning another such function's result, and recursion. A
-  function that builds, fetches or reassigns what it returns is not followed.
+  That covers a statement before the `return`, a branch between two arguments
+  (written with `return` or as an `if`/`when` value), a function returning
+  another such function's result, and recursion. A function that builds or
+  fetches what it returns, reassigns a parameter, or carries one through a
+  local is not followed.
+- What is still refused for want of a proof, though the value would have been
+  fine: an element of an untyped array of `Err`s — an error table — returned
+  or assigned where a kind is declared, and the result of a forwarder of the
+  kind just excluded (known-issues §72j). Values that pass through local
+  memory are not followed.
 - A constant payload — `Ok(5)`, `Ok(1 + 2)` — is recorded at the narrowest
   width that holds its value, so it can be read where a `Result<t8>` is
-  declared and `Ok(300)` cannot. A number with no declared width that is
-  computed at run time is the whole word.
+  declared and `Ok(300)` cannot. This holds where the `Ok(..)` is used
+  directly or through an untyped variable. A constant that reaches the
+  declaration through an `if`/`when` value or a generic constructor has the
+  static type `Result<t64>` by then, and is refused like any other `t64`. A
+  number with no declared width that is computed at run time is the whole
+  word.
 
 ## 4. Not decided
 

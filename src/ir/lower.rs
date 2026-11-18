@@ -431,8 +431,10 @@ fn instantiate_struct_layout(
 /// `Err`, which is covered. A returned call counts when the callee is itself
 /// such a function and the arguments it may return are, in turn, parameters
 /// here or an `Err` (`known` holds what is established so far; see
-/// `settle_result_sources`). Anything else — a field, a value built in the
-/// body, a `return` inside an `if`/`when` value — gives `None`.
+/// `settle_result_sources`). A returned `if`/`when` value counts when every
+/// branch ends in one of those. Anything else — a local, a field, an element,
+/// a value built in the body, a `return` inside an `if`/`when` value — gives
+/// `None`, and the call is then something the caller's graph cannot see into.
 fn result_sources(
     function: &crate::frontend::semantic_types::SemanticFunction,
     known: &HashMap<String, Option<Vec<usize>>>,
@@ -482,6 +484,32 @@ fn returned_origins(
                 _ => false,
             })
         }
+        // An `if` or a `when` used as a value is whichever branch ran, and a
+        // branch's value is the expression it ends in (`lower_branch_value`).
+        // `fnc: T <T> pick(c: bool, a: T, b: T) { if c { a } else { b } }` is
+        // the usual way to write a function that chooses between two
+        // arguments. What the branch does before its last expression cannot
+        // change a returned parameter: the caller of this function has
+        // already required that nothing in the body can.
+        SemanticExprKind::If { then_body, else_body, .. } => {
+            [then_body, else_body].into_iter().all(|body| branch_origins(body, function, known, sources))
+        }
+        SemanticExprKind::When { arms, .. } => {
+            arms.iter().all(|arm| branch_origins(&arm.body, function, known, sources))
+        }
+        _ => false,
+    }
+}
+
+/// `returned_origins` for the value of one branch of an `if`/`when` value.
+fn branch_origins(
+    body: &[SemanticStmt],
+    function: &crate::frontend::semantic_types::SemanticFunction,
+    known: &HashMap<String, Option<Vec<usize>>>,
+    sources: &mut Vec<usize>,
+) -> bool {
+    match body.last() {
+        Some(SemanticStmt::ExprStmt { expr, .. }) => returned_origins(expr, function, known, sources),
         _ => false,
     }
 }
@@ -14853,6 +14881,14 @@ mod divergence_shape_tests {
              fnc: T <T> pick(c: bool, a: T, b: T) {\n if c { return a }\n return b\n}\n\
              fnc: T <T> wrap(x: T) { return second(x, x) }\n\
              fnc: T <T> later(x: T, n: t64) {\n if n == 0 { return x }\n return later(x, n - 1)\n}\n\
+             fnc: T <T> choose(c: bool, a: T, b: T) { if c { a } else { b } }\n\
+             fnc: T <T> choose2(c: bool, a: T, b: T) { return if c { a } else { b } }\n\
+             fnc: T <T> nth(n: t64, a: T, b: T) { return when n { 0 => a, _ => b } }\n\
+             fnc: Result<t64> below(n: t64) { return choose(n < -10, Err(\"far below\"), Err(\"below\")) }\n\
+             c1: Result<t64> = choose(false, Err(\"l\"), Err(\"r\"))\n\
+             c2: Result<t64> = choose2(true, Err(\"l\"), Err(\"r\"))\n\
+             c3: Result<str> = nth(1, Err(\"l\"), Err(\"r\"))\n\
+             print(c1)\nprint(c2)\nprint(c3)\nprint(below(-3))\n\
              r: Result<t64> = second(Err(\"x\"), Err(\"y\"))\n\
              p: Result<t64> = pick(true, Err(\"l\"), Err(\"r\"))\n\
              w: Result<str> = wrap(Err(\"deep\"))\n\

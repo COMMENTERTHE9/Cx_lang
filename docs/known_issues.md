@@ -5330,10 +5330,10 @@ returns another such function's result, and recursion
 (`result_sources`, `settle_result_sources`). With that the graph finds the
 `Ok(5)` above and refuses by proof rather than by doubt.
 
-What this refuses that `submain` ran and agreed on: a generic function that
-does more than forward — `fnc: T <T> swap(a: T, b: T) { a = b; return a }` —
-called with `Err(..)` arguments and assigned to a declared `Result`. None of
-the review's 1,709 probes or 12,000 generated programs has that shape.
+What this refuses that `submain` ran and agreed on — see (j) for the full
+list, which this paragraph first gave as one item: a value typed
+`Result<unknown>` that reaches a declared kind through something the graph
+cannot see into.
 
 **b. A narrowing the first fix did not see (§70c).**
 
@@ -5440,6 +5440,74 @@ stops — but it is the reference rejecting a correct program. Not fixed here: i
 is outside what these reviews covered, it changes the interpreter, and it
 deserves its own fixture set (a `T` local given a number, a string, a struct,
 an array, a `Result`).
+
+**j. From the review of these fixes (the seventh), which found nothing
+blocking.** It attacked the payload proofs with about 30,000 generated
+programs and some 900 written ones and could not make compiled code read a
+payload as the wrong kind, crash, or print something else than the
+interpreter. What it did find is that (a) refuses more than it said.
+
+Refused now, where `submain` and the build before (a) both ran the program
+and agreed:
+
+```cx
+// 1. A forwarder that carries its argument through a local, or reassigns it.
+fnc: T <T> dflt(a: T, b: T) {
+    let r
+    r = a
+    if true { r = b }
+    return r
+}
+t: Result<t64> = dflt(Err("x"), Err("y"))
+
+// 2. An element of an untyped array of errors, where a kind is declared.
+fnc: Result<t64> lookup(i: t64) {
+    let errs
+    errs = [Err("a"), Err("b")]
+    return errs:[i]
+}
+
+// 3. An element of an untyped array of small numbers, read narrower.
+let a
+a = [Ok(5), Ok(7)]
+n: Result<t8> = a:[0]
+```
+
+In each the value passes through memory or a local that the value graph does
+not follow, and its static type promises nothing — the same position as the
+`Ok(5)` of (a), which is why they are refused and not trusted. (2) is the one
+a real program is likely to contain. They are refusals, not wrong answers,
+and are left as they are: following values through local memory is a larger
+piece of work than a review fix, and the gap in analysis that makes it
+necessary (`value_equality.md` §4 item 7) is the owner's to close or keep.
+
+One shape the review found is fixed, because it is the ordinary way to write
+such a function:
+
+```cx
+fnc: T <T> pick(c: bool, a: T, b: T) { if c { a } else { b } }
+r: Result<t64> = pick(false, Err("l"), Err("r"))      // refused by (a); runs again
+```
+
+A forwarder was followed through `if c { return a } return b` and not through
+the same choice written as an `if` or `when` value. Both are followed now.
+
+Two statements were wrong and are corrected here, since the commit message
+that makes them cannot be amended. (a)'s message names one newly refused
+shape; the list above is the fuller one. And (b) says it accepts
+`c: Result<t8> = Ok(1 + 2)`, which it does — but only where the `Ok(..)` is
+used directly. The same constant reaching a `Result<t8>` through an `if`/`when`
+value (`if c { Ok(1 + 2) } else { Ok(1) }`) or through a generic constructor
+(`wrap(5)` with `fnc: Result<T> <T> wrap(x: T)`) is still refused, as it has
+been since §70c: there the value's static type is `Result<t64>`, which is
+taken at its word.
+
+On the review's own two generators — written to stress exactly these shapes,
+with helpers that swap, reassign and store their arguments through arrays —
+programs refused now that `submain` and the build before (a) both ran and
+agreed on: 562 of 12,000 and 578 of 8,000 before the `if`/`when` fix, 485 and
+502 after it. Disagreements between the backends, crashes or exit mismatches
+in those 20,000: none, before or after.
 
 **Measured.** The review's 1,709 probe programs, interpreter against compiled
 code, `submain` → before this entry → now: crashes 13 → 5 → 0; exit mismatches

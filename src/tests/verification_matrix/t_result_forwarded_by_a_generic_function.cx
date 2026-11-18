@@ -1,9 +1,9 @@
 // A function generic in `T` that hands back one of its arguments returns a
 // Result whose payload kind no declaration names. Compiled code follows the
 // argument through the call — through a statement before the return, a branch
-// that picks between two arguments, a function that returns another's result,
-// and one that calls itself — so the value can be used where a kind is
-// declared.
+// that picks between two arguments (written with `return`, or as an `if` or
+// `when` value), a function that returns another's result, and one that calls
+// itself — so the value can be used where a kind is declared.
 fnc: T <T> second(a: T, b: T) { print("second"); return b }
 fnc: T <T> pick(c: bool, a: T, b: T) {
     if c { return a }
@@ -13,6 +13,15 @@ fnc: T <T> wrap(x: T) { return second(x, x) }
 fnc: T <T> later(x: T, n: t64) {
     if n == 0 { return x }
     return later(x, n - 1)
+}
+fnc: T <T> choose(c: bool, a: T, b: T) { if c { a } else { b } }
+fnc: T <T> choose_explicitly(c: bool, a: T, b: T) { return if c { a } else { b } }
+fnc: T <T> nth(n: t64, a: T, b: T, c: T) {
+    return when n { 0 => a, 1 => b, _ => c }
+}
+fnc: Result<t64> below(n: t64) {
+    if n >= 0 { return Ok(n) }
+    return choose(n < -10, Err("far below"), Err("below"))
 }
 
 r: Result<t64> = second(Err("x"), Err("y"))
@@ -33,6 +42,18 @@ print(w)
 
 l: Result<t64> = later(Err("after three"), 3)
 print(l)
+
+c1: Result<t64> = choose(false, Err("left"), Err("right"))
+print(c1)
+c2: Result<t64> = choose_explicitly(true, Err("left"), Err("right"))
+print(c2)
+c3: Result<str> = nth(1, Err("zero"), Err("one"), Err("many"))
+print(c3)
+c3 = nth(7, Err("zero"), Err("one"), Err("many"))
+print(c3)
+print(below(5))
+print(below(-3))
+print(below(-30))
 
 // The same value compared by content: the kind is known, so this is allowed.
 assert_eq(second(Err("x"), Err("y")), Err("y"))
