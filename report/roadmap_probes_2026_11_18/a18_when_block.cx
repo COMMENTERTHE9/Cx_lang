@@ -1,0 +1,12 @@
+fnc: do_something() { print(22) }
+x: t64 = 2
+when x {
+    1 => print(1),
+    2 => {
+        print(2)
+        do_something()
+    },
+    _ => print(0),
+}
+v: t64 = when x { 1 => 10, 2 => 20, _ => 0 }
+print(v)

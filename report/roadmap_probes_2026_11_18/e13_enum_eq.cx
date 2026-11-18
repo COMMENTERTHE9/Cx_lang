@@ -1,0 +1,4 @@
+enum C { R, G }
+a: C = C::R
+if a == C::R { print(1) } else { print(0) }
+print(a)

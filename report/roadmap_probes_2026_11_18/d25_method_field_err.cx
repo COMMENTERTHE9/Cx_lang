@@ -1,0 +1,3 @@
+struct P { x: t64 }
+p: P = P { x: 1 }
+print(p.nope)

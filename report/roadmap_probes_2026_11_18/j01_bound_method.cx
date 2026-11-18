@@ -1,0 +1,14 @@
+struct V { x: t64 }
+phen Add (v: V) {
+    fnc: Self add(rhs: Self) {
+        made: Self = V { x: v.x + rhs.x }
+        made
+    }
+}
+fnc: T <T: Add> sum(a: T, b: T) {
+    a.add(b)
+}
+p: V = V { x: 1 }
+q: V = V { x: 2 }
+r: V = sum(p, q)
+print(r.x)

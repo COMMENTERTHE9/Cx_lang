@@ -1,0 +1,6 @@
+struct Pair<T> { first: T, second: T, }
+p: Pair = Pair<f64> { first: 1.5, second: 2.5 }
+print(p.second)
+fnc: T <T> idt(x: T) { x }
+print(idt(3))
+print(idt(2.5))

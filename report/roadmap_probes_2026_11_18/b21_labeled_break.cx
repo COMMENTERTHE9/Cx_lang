@@ -1,0 +1,8 @@
+n: t64 = 0
+'outer: loop {
+    loop {
+        n += 1
+        if n > 3 { break 'outer }
+    }
+}
+print(n)

@@ -1,0 +1,14 @@
+struct Player { health: t32 }
+gene Damageable {
+    fnc take_damage(amount: t32)
+    fnc is_alive() -> bool
+}
+phen Damageable (p: Player) {
+    fnc: take_damage(amount: t32) { p.health -= amount }
+    fnc: bool is_alive() { p.health > 0 }
+}
+fnc: bool <T: Damageable> alive(t: T) { t.is_alive() }
+pl: Player = Player { health: 10 }
+pl.take_damage(3)
+print(pl.health)
+print(alive(pl))

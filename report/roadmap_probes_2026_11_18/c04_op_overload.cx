@@ -1,0 +1,13 @@
+struct Vec3 { x: f64, y: f64, z: f64 }
+phen Add (v: Vec3) {
+    fnc: Self add(rhs: Self) {
+        made: Self = Vec3 { x: v.x + rhs.x, y: v.y + rhs.y, z: v.z + rhs.z }
+        made
+    }
+}
+a: Vec3 = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+b: Vec3 = Vec3 { x: 10.0, y: 20.0, z: 30.0 }
+c: Vec3 = a + b
+d: Vec3 = (a + b) + a
+print(c.x)
+print(d.z)

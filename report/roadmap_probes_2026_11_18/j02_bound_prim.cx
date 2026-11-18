@@ -1,0 +1,6 @@
+fnc: T <T: Add> sum(a: T, b: T) {
+    a.add(b)
+}
+x: t64 = 1
+y: t64 = 2
+print(sum(x, y))

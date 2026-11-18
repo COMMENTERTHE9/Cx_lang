@@ -1,0 +1,2 @@
+pub const LIMIT: t32 = 7
+print(LIMIT)

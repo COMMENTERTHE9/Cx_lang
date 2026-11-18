@@ -1,0 +1,4 @@
+pub const LIMIT: t32 = 7
+pub fnc: t32 lim() {
+    LIMIT
+}

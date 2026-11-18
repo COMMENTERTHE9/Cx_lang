@@ -1,0 +1,2 @@
+const A: t64 = 2 + 3
+print(A)

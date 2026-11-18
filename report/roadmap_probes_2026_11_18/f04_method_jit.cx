@@ -1,0 +1,8 @@
+struct P { x: t64 }
+m: impl (p: P) {
+    fnc: t64 twice() { p.x * 2 }
+    fnc: bump() { p.x += 1 }
+}
+q: P = P { x: 4 }
+q.bump()
+print(q.twice())

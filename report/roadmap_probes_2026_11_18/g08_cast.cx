@@ -1,0 +1,3 @@
+x: t64 = 300
+y: t8 = x as t8
+print(y)

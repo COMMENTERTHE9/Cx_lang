@@ -1,0 +1,4 @@
+struct P { x: t64 }
+h: Handle<P> = Handle.new(P { x: 1 })
+print(1)
+h.drop()

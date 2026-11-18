@@ -1,0 +1,5 @@
+world = hashweb [
+    "player"  <=> "inventory" ::inv,
+    "items"   =>  player.inv,
+]
+print(1)

@@ -1,0 +1,9 @@
+fnc: greet(n: str) { print(n) }
+fnc: run_all() {
+    greet("a")
+    greet("b")
+    x: t64 = 1
+    x + 1
+    greet("c")
+}
+run_all()

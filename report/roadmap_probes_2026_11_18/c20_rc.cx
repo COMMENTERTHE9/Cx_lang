@@ -1,0 +1,2 @@
+r: rc<t64> = rc.new(1)
+print(1)

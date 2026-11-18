@@ -1,0 +1,3 @@
+#![imports]
+m: use "./no_such"
+print(1)

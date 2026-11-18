@@ -1,0 +1,3 @@
+#[test]
+fnc: t_one() { print(5) }
+t_one()

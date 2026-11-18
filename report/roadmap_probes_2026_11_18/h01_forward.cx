@@ -1,0 +1,2 @@
+print(later(2))
+fnc: t64 later(n: t64) { n * 3 }

@@ -1,0 +1,4 @@
+fnc: T <T: Numeric> dbl(a: T) {
+    a + a
+}
+print(dbl(2))

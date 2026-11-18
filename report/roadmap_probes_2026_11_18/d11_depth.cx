@@ -1,0 +1,6 @@
+fnc: t64 down(n: t64) {
+    if n == 0 { return 0 }
+    return 1 + down(n - 1)
+}
+print(down(200))
+print(down(300))

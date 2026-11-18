@@ -1,0 +1,2 @@
+async fnc: t64 f() { 1 }
+print(1)

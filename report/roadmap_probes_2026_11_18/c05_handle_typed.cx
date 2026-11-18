@@ -1,0 +1,6 @@
+h: Handle<t64> = Handle.new(99)
+v: t64 = h.val
+print(v)
+h.drop()
+h.drop()
+print(1)

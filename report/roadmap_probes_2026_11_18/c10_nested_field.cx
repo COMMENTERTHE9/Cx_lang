@@ -1,0 +1,4 @@
+struct V { x: t64 }
+struct B { pos: V }
+b: B = B { pos: V { x: 3 } }
+print(b.pos.x)

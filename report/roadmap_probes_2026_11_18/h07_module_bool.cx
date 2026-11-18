@@ -1,0 +1,5 @@
+flag: bool = true
+fnc: t64 f() {
+    if flag { 1 } else { 0 }
+}
+print(f())

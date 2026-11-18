@@ -1,0 +1,3 @@
+s: str = "hello"
+r: strref = s
+print(r)

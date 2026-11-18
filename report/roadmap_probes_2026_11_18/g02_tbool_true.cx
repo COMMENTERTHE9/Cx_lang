@@ -1,0 +1,2 @@
+x: tbool = true
+when x { true => print(1), false => print(2), unknown => print(3), }

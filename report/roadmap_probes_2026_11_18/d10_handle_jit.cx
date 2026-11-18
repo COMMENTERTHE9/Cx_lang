@@ -1,0 +1,11 @@
+fnc: Handle<t128> mk(n: t32) {
+    return Handle.new(n);
+}
+let h;
+h = mk(7)
+let e: t128;
+e = 7
+assert_eq(h.val, e)
+h.drop()
+h.drop()
+print("ok")

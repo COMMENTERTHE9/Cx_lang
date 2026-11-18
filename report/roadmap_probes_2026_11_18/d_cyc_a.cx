@@ -1,0 +1,3 @@
+#![imports]
+b: use "./d_cyc_b"
+pub fnc: t32 fa() { 1 }

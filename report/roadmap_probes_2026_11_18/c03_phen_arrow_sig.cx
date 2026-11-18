@@ -1,0 +1,8 @@
+struct Player { health: t32 }
+gene Damageable {
+    fnc is_alive() -> bool
+}
+phen Damageable (p: Player) {
+    fnc is_alive() -> bool { p.health > 0 }
+}
+print(1)

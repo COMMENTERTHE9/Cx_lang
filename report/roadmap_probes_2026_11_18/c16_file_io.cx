@@ -1,0 +1,2 @@
+f = open("x.txt")
+print(1)

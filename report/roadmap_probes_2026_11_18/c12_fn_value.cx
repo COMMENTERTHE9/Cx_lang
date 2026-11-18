@@ -1,0 +1,3 @@
+fnc: t64 inc(x: t64) { x + 1 }
+g = inc
+print(g(1))

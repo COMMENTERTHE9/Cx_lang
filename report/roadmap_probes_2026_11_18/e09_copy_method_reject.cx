@@ -1,0 +1,5 @@
+struct P { x: t64 }
+m: impl (p: P) {
+    fnc: bump(n.copy: t64) { n = n + 1 }
+}
+print(1)

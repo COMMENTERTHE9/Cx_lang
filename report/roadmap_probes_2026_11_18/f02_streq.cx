@@ -1,0 +1,2 @@
+fnc: bool same(a: str, b: str) { a == b }
+print(same("x", "x"))

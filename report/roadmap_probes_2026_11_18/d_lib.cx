@@ -1,0 +1,6 @@
+pub fnc: t32 add(a: t32, b: t32) {
+    a + b
+}
+fnc: t32 hidden(a: t32) {
+    a
+}

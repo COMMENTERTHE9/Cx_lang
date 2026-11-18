@@ -1,0 +1,6 @@
+fnc: t64 outer() {
+    fnc: t64 inner() { 5 }
+    inner()
+}
+print(outer())
+print(inner())

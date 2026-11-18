@@ -1,0 +1,3 @@
+#![imports]
+a: use "./d_cyc_a"
+print(a.fa())

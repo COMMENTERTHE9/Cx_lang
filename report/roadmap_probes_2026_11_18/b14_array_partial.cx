@@ -1,0 +1,5 @@
+arr: [5: t64] = [1, 2]
+print(arr:[0])
+print(is_known(arr:[4]))
+arr:[4] = 9
+print(arr:[4])

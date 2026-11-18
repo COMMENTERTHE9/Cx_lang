@@ -1,0 +1,6 @@
+enum C { R, G }
+c: C = C::R
+when c {
+    C::R => print(1),
+    C::G => print(2),
+}

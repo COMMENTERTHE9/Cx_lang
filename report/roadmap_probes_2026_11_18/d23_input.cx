@@ -1,0 +1,3 @@
+name: str = ""
+input("p> ", name)
+print(name)

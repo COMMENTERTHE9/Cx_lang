@@ -4165,7 +4165,12 @@ this shape.
 ## 54. `while` on an unknown condition: one backend skipped the loop, the other entered it
 
 *(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
-this entry. Changes interpreter behaviour — read the ruling below.)*
+this entry. Changes interpreter behaviour — read the ruling below.
+**Ruling confirmed by the owner on 2026-11-18**: both backends refuse a `while`
+whose condition is unknown, including one that becomes unknown after earlier
+iterations. This is a correction of behaviour that was inconsistent before —
+the two backends disagreed, and neither followed the rule `if` already had — not
+a new language feature.)*
 
 ```cx
 flag: bool = ?
@@ -4218,7 +4223,8 @@ next evaluation.
 
 **What the independent review added.**
 
-- *This is a ruling, and it needs the owner's confirmation.* The principle
+- *This is a ruling, and it needed the owner's confirmation* — given on
+  2026-11-18, see the top of this entry. The principle
   existed; the run-time rule for `while` did not. #026 was scoped to the `if`
   condition site, and the README stated the rule for `if` only (it now says
   `if` or `while`). Skipping the loop came from a catch-all `_ => break`, not
@@ -4303,7 +4309,7 @@ unknown number, and a `Result` assigned to a `Result` of a narrower payload type
 refuses, so none is a case of two answers. (For the last one that became true
 only with §70: the first version compiled it, and `?` then gave two answers.)
 
-## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
+## 56. Findings from the PR #476 review — four defects on `submain`, since fixed (§58–§61)
 
 *(Found 2026-11-18 by the independent review of PR #476 and reproduced on the M0
 build. Recorded so they are not rediscovered; each needs its own packet.)*

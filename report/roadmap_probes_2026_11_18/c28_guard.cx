@@ -1,0 +1,5 @@
+n: t64 = 7
+when n {
+    _ if n > 5 => print(1),
+    _ => print(0),
+}
