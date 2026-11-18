@@ -2706,6 +2706,15 @@ fn lower_while(
     ctx.seal_block(current)?;
 
     let cond_val = lower_expr(cond, ctx, &mut header)?;
+    // An unknown condition cannot decide whether the loop runs. Analysis
+    // already rejects a condition it can type as unknown ("control-critical
+    // context"); this is the same rule for a `bool` that holds the unknown
+    // state at run time, and the same guard `if` uses (#026). Without it the
+    // branch below tested the three-state wire value for non-zero, so unknown
+    // (2) ENTERED the loop (`docs/known_issues.md` §54). The guard runs in the
+    // header, so it re-checks on every backedge. A definite Bool condition is
+    // returned unchanged with no IR emitted.
+    let cond_val = guard_unknown_condition(cond_val, ctx, &mut header)?;
 
     let body_block = ctx.start_block(vec![], header_bindings.clone());
     let body_id = body_block.id();

@@ -113,6 +113,15 @@ pub enum RuntimeError {
     UnknownCondition {
         pos: usize,
     },
+    /// A `while` condition evaluated to the unknown state. The loop form of
+    /// `UnknownCondition`: an unknown value cannot decide whether the loop
+    /// runs, so silently treating it as false — skipping the loop — throws the
+    /// third state away exactly as taking `else` did. Analysis rejects a
+    /// condition it can type as unknown; this is the run-time half of that rule
+    /// for a `bool` that only holds the unknown state when the program runs.
+    UnknownLoopCondition {
+        pos: usize,
+    },
     // `index` is i64 because Cx permits negative indices and the diagnostic
     // should echo the actual value the user wrote; `length` is usize because an
     // array length is non-negative; `pos` preserves the source location of the

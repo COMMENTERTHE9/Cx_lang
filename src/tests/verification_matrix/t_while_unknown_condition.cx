@@ -1,0 +1,12 @@
+// A `while` whose condition is the unknown state cannot decide whether the
+// loop runs: it is an error, the same rule `if` applies (#026). Analysis
+// rejects a condition it can type as unknown; this is a `bool` that only holds
+// the unknown state at run time. Skipping the loop (reading unknown as false)
+// or entering it (reading it as true) would both exit 0.
+flag: bool = ?
+n: t64 = 0
+while (flag) {
+    n += 1
+    if n >= 3 { break }
+}
+print(n)

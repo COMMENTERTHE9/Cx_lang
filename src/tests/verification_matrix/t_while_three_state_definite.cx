@@ -1,0 +1,17 @@
+// A three-state condition that holds a DEFINITE value loops normally: the
+// unknown-condition rule refuses only the unknown state. `u || true` is true
+// and `u && false` is false whatever `u` is, so neither is unknown even though
+// both are computed from an unknown operand.
+u: bool = ?
+yes: bool = u || true
+no: bool = u && false
+n: t64 = 0
+while (yes) {
+    n += 1
+    if n >= 3 { break }
+}
+print(n)
+while (no) {
+    print(999)
+}
+print(0)

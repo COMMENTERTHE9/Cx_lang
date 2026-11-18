@@ -4161,3 +4161,57 @@ refuses it (exit 127) rather than pass a non-string to `cx_str_eq`; before this
 fix it compared an integer with an address and happened to print the same thing.
 By the enforcement-layers principle this is analysis's to reject. No fixture has
 this shape.
+
+## 54. `while` on an unknown condition: one backend skipped the loop, the other entered it
+
+*(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
+this entry. Changes interpreter behaviour — read the ruling below.)*
+
+```cx
+flag: bool = ?
+n: t64 = 0
+while (flag) { n += 1; if n >= 3 { break } }
+print(n)       // interpreter 0, JIT 3 — both exit 0
+```
+
+The interpreter's `While` matched true and false and sent everything else to
+`break`, so an unknown condition silently ended the loop. The JIT branched on the
+three-state wire value being non-zero, so unknown (2) entered it; with no `break`
+in the body it never terminated.
+
+**Neither was the language's rule, so this is not a case of making the JIT match
+the interpreter.** The rule already exists in two places:
+
+- Analysis rejects a loop condition it can type as unknown: *"Unknown value
+  cannot be used as a loop condition -- control-critical context"*
+  (`semantic.rs`, `Stmt::While`).
+- `if` raises `UnknownCondition` at run time for the case analysis cannot see, a
+  `bool` holding the unknown state (#026): *an unknown value cannot choose a
+  branch — silently taking `else` would throw away the third state.*
+
+`while` had the static half and not the run-time half. Reading unknown as false
+is the same silent choice #026 removed from `if`. Both backends now refuse:
+
+- interpreter: `RuntimeError::UnknownLoopCondition`, exit 1, a diagnostic naming
+  `while` and pointing at `when`;
+- JIT: `guard_unknown_condition` — the guard `if` already uses — in the loop
+  header, so it runs on every evaluation of the condition, exit 126.
+
+A definite condition is untouched: a plain `Bool` emits no new IR, and a
+three-state value that is definitely true or false (`u || true`, `u && false`)
+loops or does not loop as before.
+
+Fixtures: `t_while_unknown_condition` and `t_while_unknown_after_iterations`
+(both `interp=diagnostic jit=trap`, the pair `t_if_unknown_condition` records),
+`t_while_definite_bool`, `t_while_three_state_definite`. The second one becomes
+unknown on its third evaluation; the unfixed interpreter ran it to completion and
+the unfixed JIT looped until killed.
+
+No existing fixture, example or benchmark changed: replaying all 694 on both
+backends against the pre-fix build gave identical output and exit codes.
+
+**Not covered.** A `bool` variable that is definite when the loop starts and is
+assigned an unknown value inside it cannot be tested on the JIT, because
+compiled code refuses the assignment itself ("assign type mismatch: expected
+Bool, got TBool"). The interpreter handles that shape and now refuses it at the
+next evaluation.

@@ -150,12 +150,21 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                 self.pop_scope();
                 Ok(())
             }
-            SemanticStmt::While { label, cond, body, .. } => {
+            SemanticStmt::While { label, cond, body, pos } => {
                 loop {
                     let cv = self.eval_semantic_expr(cond)?;
                     match cv {
                         Value::Bool(false) | Value::TBool(0) => break,
                         Value::Bool(true) | Value::TBool(1) => {}
+                        // An unknown condition can't decide whether the loop
+                        // runs — error instead of silently ending the loop, the
+                        // same rule `if` applies (#026). Analysis rejects a
+                        // condition typed as unknown; this is the case it
+                        // cannot see, a `bool` holding the unknown state at
+                        // run time (`docs/known_issues.md` §54).
+                        Value::TBool(2) | Value::Unknown(_) => {
+                            return Err(RuntimeError::UnknownLoopCondition { pos: *pos });
+                        }
                         _ => break,
                     }
                     self.push_scope();
