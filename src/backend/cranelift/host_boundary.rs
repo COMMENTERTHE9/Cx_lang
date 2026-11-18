@@ -10307,12 +10307,20 @@ mod module_data_tests {
     /// program takes, before anything is placed or run — not only by the
     /// standalone validator. Without this the rule could be unwired from the
     /// JIT and every default test stay green (the review did exactly that).
+    ///
+    /// The constant is a real address — a static of this test — which is the
+    /// very thing the rule exists to stop: a number that works in the process
+    /// that wrote it. So if the refusal were unwired the program would run and
+    /// return 7, and this test would say so, rather than fault and take the
+    /// whole test run down with it.
     #[test]
     fn a_constant_turned_into_a_pointer_is_refused_before_anything_runs() {
+        static IN_THIS_PROCESS: i32 = 7;
+        let address = &IN_THIS_PROCESS as *const i32 as usize as i128;
         let ir = main_returning(
             vec![],
             vec![
-                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 0x7000_0000_1000 },
+                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: address },
                 IrInst::Cast { dst: ValueId(1), from: IrType::I64, to: IrType::Ptr, value: ValueId(0) },
                 IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(1) },
             ],

@@ -14728,8 +14728,9 @@ mod divergence_shape_tests {
     /// M1.1: the guard for the same thing that runs every time. The
     /// measurement above is ignored by default, so with it alone a leak could
     /// come back and every default run stay green (the review put one back
-    /// and nothing failed). The IR sources name none of the ways to hand
-    /// memory to the process for good.
+    /// and nothing failed). The IR sources — every file of this module — name
+    /// none of the ways to hand memory to the process for good. It looks for
+    /// the spelled primitives and nothing cleverer.
     #[test]
     fn the_ir_sources_name_no_way_to_leak() {
         // Spelled in pieces so that this test does not find itself.
@@ -14745,6 +14746,11 @@ mod divergence_shape_tests {
             ("types.rs", include_str!("types.rs")),
             ("validate.rs", include_str!("validate.rs")),
             ("printer.rs", include_str!("printer.rs")),
+            ("builder.rs", include_str!("builder.rs")),
+            ("instr.rs", include_str!("instr.rs")),
+            ("monomorphize.rs", include_str!("monomorphize.rs")),
+            ("call_shapes.rs", include_str!("call_shapes.rs")),
+            ("mod.rs", include_str!("mod.rs")),
         ];
         for (name, source) in sources {
             for way in &ways {
