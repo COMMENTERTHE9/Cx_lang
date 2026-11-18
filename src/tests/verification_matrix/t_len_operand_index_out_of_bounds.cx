@@ -1,0 +1,8 @@
+// `len` of an element still reads the element: an index out of bounds is an
+// error, not a length.
+grid: [2:[3:t64]] = [[1, 2, 3], [4, 5, 6]]
+i: t64 = 1
+print(len(grid:[i]))
+i = 5
+print(len(grid:[i]))
+print("unreachable")

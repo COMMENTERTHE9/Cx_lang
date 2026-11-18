@@ -1,0 +1,11 @@
+// `len` of an array is known without looking at the array, but its operand is
+// still evaluated: a call inside it runs, and a name does not need to.
+arr: [3:t64] = [1, 2, 3]
+fnc: t64 count() { return len(arr) }
+fnc: [3:t64] make() {
+    print("called")
+    return [4, 5, 6]
+}
+print(count())
+print(len(make()))
+print(len(arr))

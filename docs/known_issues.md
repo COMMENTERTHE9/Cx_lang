@@ -4589,3 +4589,37 @@ a literal written in a different order, a nested struct, a generic struct, an
 array of structs and a `Result` holding one. A compiled-code SKIP, because
 compiled code refuses to print a struct.
 
+## 62. `len` of an array did not evaluate its operand in compiled code
+
+*(Found by PR #476 and fixed there; the fix is taken from it, narrowed, by the
+commit that introduces this entry.)*
+
+The length of an array is part of its type, so compiled code folds `len(x)` to a
+constant. It folded without evaluating `x`. The interpreter evaluates it.
+
+```cx
+fnc: [3:t64] make() {
+    print("called")
+    return [4, 5, 6]
+}
+print(len(make()))      // interpreter: called 3     JIT: 3        (both exit 0)
+
+grid: [2:[3:t64]] = [[1, 2, 3], [4, 5, 6]]
+i: t64 = 5
+print(len(grid:[i]))    // interpreter: index out of bounds      JIT: 3, exit 0
+```
+
+PR #476 lowers the operand always. That fixed both programs and broke a third,
+which worked before: `len(arr)` inside a function, where `arr` is a top-level
+array, was refused, because compiled code cannot yet read a top-level array from
+a function — and the fold never needed to.
+
+The operand is now lowered unless evaluating it cannot be observed: a literal, a
+name, a field of a name, or an array literal made of those. Anything else — a
+call, an index — is evaluated and its value discarded.
+
+Fixtures: `t_len_evaluates_its_operand` (the top-level array inside a function,
+a call, a plain name) and `t_len_operand_index_out_of_bounds`
+(`interp=diagnostic jit=trap`). Unit tests
+`len_of_a_top_level_array_inside_a_function_lowers` and
+`len_still_evaluates_a_call_operand`.

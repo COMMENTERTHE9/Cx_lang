@@ -3149,9 +3149,28 @@ fn try_fold_len(
             _ => return Ok(None),
         },
     };
+    // The length is known without the operand, but evaluating the operand can
+    // still do something: call a function, trap on an index. A name, a field
+    // or a literal can do neither, and lowering one here would only bring its
+    // restrictions along (a top-level array read inside a function is refused)
+    // for a value nothing uses.
+    if !len_operand_is_inert(arg) {
+        let _ = lower_expr(arg, ctx, active)?;
+    }
     let dst = ctx.fresh_value();
     active.emit(IrInst::ConstInt { dst, ty: IrType::I64, value: n })?;
     Ok(Some(LoweredValue { value: dst, ty: IrType::I64 }))
+}
+
+/// Whether evaluating `expr` can be skipped without anyone noticing: it calls
+/// nothing and cannot trap. Only what `len` is commonly given — a literal, a
+/// name, a field of a name.
+fn len_operand_is_inert(expr: &SemanticExpr) -> bool {
+    match &expr.kind {
+        SemanticExprKind::Value(_) | SemanticExprKind::VarRef { .. } | SemanticExprKind::DotAccess { .. } => true,
+        SemanticExprKind::ArrayLit { elements, .. } => elements.iter().all(len_operand_is_inert),
+        _ => false,
+    }
 }
 
 fn lower_expr(
@@ -13334,5 +13353,29 @@ mod divergence_shape_tests {
              print(n)\n",
         );
         assert_eq!(traps(function(&ir, "main")), 0);
+    }
+
+    /// PR #476 regression: `len` of an array is folded, and a name as its
+    /// operand is not lowered — reading a top-level array inside a function is
+    /// refused, and the length does not need the array.
+    #[test]
+    fn len_of_a_top_level_array_inside_a_function_lowers() {
+        let ir = lowered(
+            "arr: [3: t64] = [1, 2, 3]\n\
+             fnc: t64 count() { return len(arr) }\n\
+             print(count())\n",
+        );
+        let count = function(&ir, "count");
+        assert!(count.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::ConstInt { value: 3, .. })));
+    }
+
+    /// ...while an operand that can do something is still evaluated.
+    #[test]
+    fn len_still_evaluates_a_call_operand() {
+        let ir = lowered(
+            "fnc: [3: t64] make() { r: [3: t64] = [1, 2, 3]\n r }\n\
+             print(len(make()))\n",
+        );
+        assert_eq!(calls_to(function(&ir, "main"), "make"), 1);
     }
 }

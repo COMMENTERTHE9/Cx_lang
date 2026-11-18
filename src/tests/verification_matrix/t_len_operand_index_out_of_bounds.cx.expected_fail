@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+grid has 2 rows; index 5 is out of bounds even though every row's length is 3.
