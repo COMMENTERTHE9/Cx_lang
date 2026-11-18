@@ -1,0 +1,11 @@
+// `a` is given a value on every path, so `len(a)` is 3. Compiled code cannot
+// yet read a variable first assigned inside both branches of an `if`, and it
+// does not fold the length without knowing the variable was assigned: on a
+// path where it was not, the interpreter stops (t_len_... fixtures).
+fnc: t64 f(c: bool) {
+    let a
+    if c { a = [1, 2, 3] } else { a = [4, 5, 6] }
+    return len(a)
+}
+print(f(true))
+print(f(false))

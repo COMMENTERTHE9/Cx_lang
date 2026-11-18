@@ -5328,3 +5328,73 @@ without being reserved.
 `Result`. The interpreter fails `assert` on anything but `true` and a non-zero
 number; compiled code passed it for any enum variant but the first and any
 live handle. Present on `submain`. Refused now.
+
+**f. `t_assert_eq_handle` pinned an ending, not an answer.** Its equal pair is
+followed by an unequal one, so it is an `expected_fail` fixture and its output
+is not compared; it passed on the build where `assert_eq(h, h)` failed.
+`t_assert_eq_handle_is_itself` runs to the end and fails there.
+
+**g. Not changed: `len` of a variable first assigned in both branches of an
+`if` is refused (§70b).**
+
+```cx
+let a
+if c { a = [1, 2, 3] } else { a = [4, 5, 6] }
+return len(a)             // submain: 3 / 3.  Now: 3 / refused
+```
+
+The review counts this as a new refusal, and it is. On `submain` compiled code
+folded `len(a)` from the type without asking whether `a` had a value, so the
+same program with the `else` removed printed 3 where the interpreter stops
+("declared but never assigned"). Compiled code cannot tell the two programs
+apart: it does not track a variable first assigned inside both branches at
+all — reading `a:[0]` there is refused on `submain` too. Folding again would
+bring the wrong answer back for the one-branch program in exchange for the
+length of an array that cannot otherwise be used. Kept as a refusal;
+`t_len_of_a_variable_assigned_in_both_branches` pins the interpreter's answer
+and will start passing in compiled code when such variables can be read.
+
+**h. Corrections to earlier text.** §70a: "it goes by the declared type, as it
+always did" — see (a). §70c: "Compiled code now refuses to read a `Result` at a
+narrower whole-number type" — not through an untyped literal, until (b). §70e's
+list of reserved names: add `__cx_fmod`. §70f: "A `when` arm of another kind
+than its scrutinee … never matched" — for a literal arm; ranges and `unknown`
+with (c). `value_equality.md` is corrected in the same places and gains two
+entries in its "not decided" list: a `Result<unknown>` is accepted wherever a
+`Result` is declared, and `assert` on a value that is not a condition.
+
+**i. Found, not fixed: a local declared with a type parameter fails on the
+interpreter.**
+
+```cx
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+print(id(5))      // interpreter: type mismatch — expected 'typeparam("t")'
+                  //              but got 't128' (exit 1).  Compiled: 5
+```
+
+Present on `submain`, in every generic function that declares a local of type
+`T`. The interpreter runs a generic function as written rather than a copy per
+type, and its check of a declared local's type (`value_matches_type`) has no
+case for a type parameter. It is not a silent difference — the interpreter
+stops — but it is the reference rejecting a correct program. Not fixed here: it
+is outside what these reviews covered, it changes the interpreter, and it
+deserves its own fixture set (a `T` local given a number, a string, a struct,
+an array, a `Result`).
+
+**Measured.** The review's 1,709 probe programs, interpreter against compiled
+code, `submain` → before this entry → now: crashes 13 → 5 → 0; exit mismatches
+81 → 46 → 1; silent differences 196 → 105 → 9; agreeing 757 → 1,165 → 1,377.
+The ten that remain are (i) and the nine open cases of §69a and §69d, all
+present on `submain`. No program that agreed before this entry disagrees now;
+two that agreed are refused (a user `__cx_fmod`, and the narrowing of (b)
+followed by a print).
+The review's generator, both modes, 12,000 programs: no disagreement between
+the backends, and none refused that the build before this branch ran and
+agreed on. Its 418 earlier probes: 128 refused, 193 agreeing, 97 failing alike
+on both; refused that the base agreed on, the same 15 narrowings as §70c.
+Corpus replay, 694 programs on both backends, against the build before this
+entry: identical.
+
