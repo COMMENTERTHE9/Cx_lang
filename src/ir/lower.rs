@@ -5134,6 +5134,58 @@ fn lower_when_stmt(
 /// lowering (stmt's fallthrough vs expr's value-merge) — only the judgment is
 /// shared, the mechanism stays local. Catchall is caller-handled (its control
 /// flow differs between the two forms) and never reaches here.
+/// Whether a literal `when` pattern is of a different kind from the scrutinee,
+/// going by the scrutinee's type. Only a definite mismatch answers yes: a
+/// scrutinee whose type is not known here is compared as it always was.
+fn when_literal_never_matches(value: &SemanticValue, scrutinee: &SemanticType) -> bool {
+    let whole_number = |ty: &SemanticType| ty.int_width().is_some() || *ty == SemanticType::Numeric;
+    let definite = !matches!(scrutinee, SemanticType::Unknown | SemanticType::TypeParam(_));
+    definite
+        && match value {
+            // A float scrutinee against a whole-number arm is left to the
+            // comparison below, as before.
+            SemanticValue::Num(_) => !(whole_number(scrutinee) || *scrutinee == SemanticType::F64),
+            SemanticValue::Float(_) => !(*scrutinee == SemanticType::F64 || whole_number(scrutinee)),
+            SemanticValue::Bool(_) => *scrutinee != SemanticType::Bool,
+            SemanticValue::Char(_) => *scrutinee != SemanticType::Char,
+            SemanticValue::Str(_) | SemanticValue::EnumVariant { .. } | SemanticValue::Unknown => false,
+        }
+}
+
+/// The same for an enum-variant pattern: it matches only a scrutinee of its
+/// own enum.
+fn when_variant_never_matches(enum_name: &str, scrutinee: &SemanticType) -> bool {
+    match scrutinee {
+        SemanticType::Unknown | SemanticType::TypeParam(_) => false,
+        SemanticType::Enum(name) => name != enum_name,
+        _ => true,
+    }
+}
+
+/// An arm that cannot match: fall through to the next arm, keeping the arm's
+/// body block reachable in shape (a branch on a constant false) so the control
+/// flow built around it is the same as for any other arm.
+fn emit_never_matching_arm(
+    body_id: crate::ir::types::BlockId,
+    incoming: &BindingMap,
+    mut current: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<ActiveBlock, LoweringError> {
+    let never = ctx.fresh_value();
+    current.emit(IrInst::ConstInt { dst: never, ty: IrType::Bool, value: 0 })?;
+    let next_block = ctx.start_block(vec![], incoming.clone());
+    let next_id = next_block.id();
+    current.terminate(IrTerminator::Branch {
+        cond: never,
+        then_block: body_id,
+        then_args: vec![],
+        else_block: next_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(current)?;
+    Ok(next_block)
+}
+
 fn emit_when_arm_match(
     pattern: &SemanticWhenPattern,
     scrutinee: &SemanticExpr,
@@ -5175,6 +5227,16 @@ fn emit_when_arm_match(
             })?;
             ctx.seal_block(current)?;
             Ok(next_block)
+        }
+        // A literal of one kind never matches a scrutinee of another: the
+        // number 1 is not `Color::Green`, though that is what Green's tag is,
+        // and it is not `true`. The interpreter compares them as unequal;
+        // comparing the bits would take the arm (known-issues §70).
+        SemanticWhenPattern::Literal(value) if when_literal_never_matches(value, &scrutinee.ty) => {
+            emit_never_matching_arm(body_id, incoming, current, ctx)
+        }
+        SemanticWhenPattern::EnumVariant { enum_name, .. } if when_variant_never_matches(enum_name, &scrutinee.ty) => {
+            emit_never_matching_arm(body_id, incoming, current, ctx)
         }
         SemanticWhenPattern::Literal(value) => {
             let pat_value = if scrutinee_val.ty == IrType::TBool {
@@ -8082,6 +8144,11 @@ fn lower_assert_stmt(
         }
     };
 
+    // A Result is not a condition. The interpreter fails `assert(r)`; the
+    // packed word is never zero for an Err, so coercing it passed.
+    if matches!(cond_expr.ty, SemanticType::Result(_)) {
+        unsupported!("assert on a Result value has no reference implementation");
+    }
     let cond = lower_expr(cond_expr, ctx, &mut current)?;
 
     // Coerce the condition to Bool (IrType::Bool is the required Branch type).
@@ -8284,12 +8351,14 @@ fn lower_assert_eq_stmt(
 
     // An enum value is equal only to a value of the same enum. Its tag is an I8
     // like any small number, so the comparison below would otherwise call a
-    // variant equal to whatever number its tag happens to be.
+    // variant equal to whatever number its tag happens to be. A handle is the
+    // same story: it is equal to a handle, never to the number its word is.
     match (&lhs_expr.ty, &rhs_expr.ty) {
         (SemanticType::Enum(a), SemanticType::Enum(b)) if a == b => {}
-        (SemanticType::Enum(_), other) | (other, SemanticType::Enum(_)) => {
+        (SemanticType::Handle(_), SemanticType::Handle(_)) => {}
+        (SemanticType::Enum(_) | SemanticType::Handle(_), other) | (other, SemanticType::Enum(_) | SemanticType::Handle(_)) => {
             if matches!(other, SemanticType::Unknown | SemanticType::TypeParam(_)) {
-                unsupported!("assert_eq of an enum against a value whose type is not known here");
+                unsupported!("assert_eq of an enum or a handle against a value whose type is not known here");
             }
             let failed = ctx.fresh_value();
             current.emit(IrInst::ConstInt { dst: failed, ty: IrType::Bool, value: 0 })?;
@@ -14113,5 +14182,20 @@ mod divergence_shape_tests {
         let width = function(&ir, "width");
         assert_eq!(traps(width), 1, "the bounds check");
         assert!(!width.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { .. } | IrInst::GlobalAddr { .. })));
+    }
+
+    /// §70: a `when` arm of another kind than the scrutinee cannot match, so
+    /// no comparison of the two is emitted for it.
+    #[test]
+    fn a_when_arm_of_another_kind_is_not_compared() {
+        let compares = |src: &str| {
+            let ir = lowered(src);
+            function(&ir, "main").blocks.iter().flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, IrInst::Compare { .. })).count()
+        };
+        let prelude = "enum Color { Red, Green }\nc: Color = Color::Green\n";
+        assert_eq!(compares(&format!("{prelude}print(when c {{ 1 => 1, _ => 2 }})\n")), 0, "a number arm on an enum");
+        assert_eq!(compares(&format!("{prelude}print(when c {{ Color::Green => 1, _ => 2 }})\n")), 1, "a variant arm on its enum");
+        assert_eq!(compares("b: bool = true\nprint(when b { 1 => 1, _ => 2 })\n"), 0, "a number arm on a bool");
     }
 }

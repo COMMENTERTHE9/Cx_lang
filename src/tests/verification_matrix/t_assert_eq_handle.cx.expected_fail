@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Two handles made from equal values are two handles: assert_eq(h, g) fails.

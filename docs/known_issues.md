@@ -4296,11 +4296,12 @@ preserve it.
   failed on the interpreter. It is now decided from the types: never equal.
 
 Fixtures and measurements are listed in `docs/backend/value_equality.md` §5.
-Four neighbouring questions are deliberately **not** decided by this change —
-top-level structs and arrays, three-state bools, an integer against a float, and
-a `Result` assigned to a `Result` of a narrower payload type — and are written
-down in §4 of that document. In each of them compiled code refuses, so none is a
-case of two answers.
+Neighbouring questions are deliberately **not** decided by this change —
+top-level structs and arrays, three-state bools, an integer against a float, an
+unknown number, and a `Result` assigned to a `Result` of a narrower payload type
+— and are written down in §4 of that document. In each of them compiled code
+refuses, so none is a case of two answers. (For the last one that became true
+only with §70: the first version compiled it, and `?` then gave two answers.)
 
 ## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
 
@@ -4707,7 +4708,7 @@ on that premise.
 | Regression | Status |
 |---|---|
 | unbounded memory and a 140× slowdown for string-binding loops | gone — no allocation is made |
-| `len(arr)` of a top-level array inside a function refused | gone — §62 |
+| `len(arr)` of a top-level array inside a function refused | gone — §62. The first fix covered a plain name only; `len(grid:[0])` stayed refused until §70 |
 | `?` in a bare `when` arm with a `.copy` parameter: interpreter 2, JIT 1 | gone — the interpreter leaked a scope; §59 |
 | a user function named `cx_str_copy`, `cx_value_copy` or `cx_str_identity_eq` refused | gone — those runtime symbols do not exist |
 | `Ok(<generic struct>)` refused | stays refused, on purpose — §60 |
@@ -5075,4 +5076,112 @@ and no fixture covers; compiled code refuses that shape with the misleading
 text "top-level Return". The cost §66 names is real: the review measured
 reading `g.items:[g.here()]` from a 3000-element array field in a 20,000-pass
 loop at 0.35 s before and 1.8 s after on the JIT.
+
+## 70. Findings of the independent review of the PR #476 revision, and their fixes
+
+*(2026-11-18. The revision — §55, §62, §63 — was reviewed independently before
+being proposed for integration, as the owner required. The review rated its
+first commit blocking. Everything below is fixed by the two commits that
+introduce this entry unless it says otherwise.)*
+
+**a. Blocking: the payload checks refused ordinary programs.** §63 took PR
+#476's payload proofs "as written". They refused any use of a `Result` whose
+payload kind the value graph could not establish, and it could not for:
+
+```cx
+fnc: Result<t64> run(p: Result<t64>, n: t64) {
+    i: t64 = 0
+    while (i < n) { i = i + 1 }      // the loop re-binds p before it is read
+    return p
+}
+
+fnc: Result<t64> cp(r.copy: Result<t64>) { return r }
+v: Result<t64> = Ok(1)
+print(cp(v.copy))
+print(cp(v.copy))                    // v was reloaded from memory after the first call
+
+fnc: T <T> second(a: T, b: T) { print("second"); return b }
+r: Result<t64> = second(Err("x"), Err("y"))   // a Result type that names no payload
+```
+
+Each ran correctly on the base and was refused (127). The review's fuzzer: 358
+of 3000 function-body programs. The corpus replay did not see it because no
+tracked program has these shapes.
+
+Fixed in two parts. The graph is given the facts it lacked: a parameter
+declared `Result<T>`, and a value reloaded after a `.copy` call to one, hold a
+T payload. And an unproven kind is no longer a refusal for a use that existed
+before kinds were tracked — it goes by the declared type, as it always did. A
+proven mismatch is still refused everywhere; an unproven kind is still refused
+for content equality, which is new and dereferences the payload. Same fuzzer,
+both modes: 0 of 3000 refused that the base ran.
+
+**b. `len(grid:[0])` of a top-level array inside a function was refused**
+(§62's fix handled a plain name only). `len` now evaluates its operand for
+effects only: the index is evaluated and bounds-checked, the element is not
+read. This also closes a hole older than this work — `len(a)` of a variable
+never assigned printed a length in compiled code where the interpreter stops.
+
+**c. A `Result` read at a narrower integer type** — older than this work, and
+described as agreeing in the first version of `value_equality.md`:
+
+```cx
+large: Result<t64> = Ok(300)
+narrow: Result<t8> = large
+v: t8 = narrow?
+print(v)              // interpreter 300, JIT 44 — both exit 0
+```
+
+Compiled code now refuses to read a `Result` at a narrower whole-number type
+or a whole number as a float. The interpreter still accepts the program;
+whether the second line should be a type error is the open question recorded in
+`value_equality.md` §4. Cost: 15 of the review's 428 probes of this shape that
+only *printed* the narrowed value, and so agreed, are refused too.
+
+**d. `-r` on a `Result` crashed compiled code** (exit 134; older than this
+work). Refused.
+
+**e. A user function named `cx_str_eq` replaced the runtime's.** Older than
+this work for `==`, where it was a silent wrong answer; the revision made
+`Result` equality depend on the same symbol. `cx_str_eq`, `cx_handle_new`,
+`cx_handle_val`, `cx_handle_drop`, `cx_trap`, `cx_depth_enter` and
+`cx_depth_exit` are now reserved names in compiled code, like the print
+intrinsics already were.
+
+**f. Three older disagreements of the kind §55 fixed for enums.**
+`assert_eq(h, h)` on a handle failed on the interpreter and passed in compiled
+code; `assert_eq(h, zero)` against a number passed in compiled code. A `when`
+arm of another kind than its scrutinee — `when c { 1 => .. }` on an enum —
+never matched on the interpreter and matched by bit pattern in compiled code,
+both exiting 0. `assert(r)` on a `Result` failed on the interpreter and passed
+in compiled code. All three now agree, the last by refusal.
+
+**g. Documentation.** `value_equality.md` said `assert_eq(1, 1.0)` fails (two
+literals pass; the typed form fails); that compiled code refuses every case in
+its "not decided" list (not the narrowing one, until (c)); omitted handles,
+unknown numbers and the fact that its gaps apply inside a `Result` too; and
+omitted a fifth change to the interpreter (a string inside an aggregate
+payload). All corrected there. The commit message of 815784a says a small
+integer "may be read as a Result of a wider one"; the code it describes also
+allowed narrower and float, until (c). That message cannot be amended; this is
+the correction.
+
+**h. Fixtures.** Seven of the eight unequal-case fixtures would pass with the
+fix removed, for the reason now stated in `value_equality.md` §5; the first
+commit of the revision had no fixture that failed without it, and a refusal is
+a SKIP, so nothing pinned (a). Added: `t_result_reaches_its_use_indirectly` and
+`t_len_of_an_element_does_not_read_it` (both pass on the base and were refused
+by the revision), `t_assert_eq_str_in_result_aggregate`,
+`t_when_arm_of_another_kind_never_matches`, `t_assert_eq_handle`,
+`t_assert_eq_handle_not_a_number`, `t_assert_on_a_result`,
+`t_unary_minus_on_a_result`, `t_user_function_named_like_the_runtime`.
+
+**On the review's 428 probe programs**, base → now: crashes 3 → 0, exit
+mismatches 21 → 0, silent divergences 17 → 0, agreeing 162 → 190. Refused that
+the base ran and agreed on: the 15 of (c).
+
+**Corpus.** The review counts 714 tracked `.cx` files on the base; the replay
+used throughout covers the 694 under `src/tests/verification_matrix`,
+`examples` and `bench`. On those, against the build before this branch: no exit
+code or output changes.
 

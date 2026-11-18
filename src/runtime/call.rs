@@ -143,6 +143,7 @@ impl RunTime {
                             | (Value::Char(_), Value::Char(_))
                             | (Value::Str(..), Value::Str(..))
                             | (Value::EnumVariant(..), Value::EnumVariant(..))
+                            | (Value::Handle(_), Value::Handle(_))
                             | (Value::ResultOk(_), Value::ResultOk(_))
                             | (Value::ResultErr(_), Value::ResultErr(_))
                     );

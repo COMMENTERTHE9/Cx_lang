@@ -1,0 +1,11 @@
+// A program may define a function with a name the runtime uses. Compiled code
+// must not call the program's function where it means the runtime's: with
+// this `cx_str_eq`, two different strings would compare equal.
+fnc: bool cx_str_eq(a: str, b: str) { return true }
+x: str = "a"
+if x == "b" { print("equal") } else { print("differ") }
+when x {
+    "b" => print("matched b"),
+    _ => print("no match"),
+}
+print(cx_str_eq("p", "q"))
