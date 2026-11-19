@@ -204,6 +204,12 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
                 .to_string(),
             *pos,
         ),
+        RuntimeError::UnknownLoopCondition { pos } => (
+            "`while` condition is unknown; an unknown TBool can't decide whether the loop \
+             runs — use `when` to handle true, false, and unknown explicitly"
+                .to_string(),
+            *pos,
+        ),
         RuntimeError::IndexOutOfBounds { pos, index, length } => (
             format!("array index {} out of bounds for array of length {}", index, length),
             *pos,

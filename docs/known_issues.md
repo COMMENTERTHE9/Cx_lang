@@ -4094,3 +4094,304 @@ array elements and indices. Both builds passed: 314 default / 493 JIT tests,
 682 prior fixtures/examples recovered 15 former SKIPs, kept all 612 previously
 supported native outputs/exits, and left 55 unsupported; no disagreements or
 timeouts. Standard JIT clippy passed with the existing 111 warnings.
+
+## 52. A field assignment evaluated its right-hand side twice in compiled code
+
+*(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
+this entry. The same one-line fix and its fixture were first written in PR #476,
+which also carries unrelated string work that has not landed — see §55.)*
+
+`p.x = next()` ran `next()` twice on the JIT and once on the interpreter. Both
+exited 0. The second call's result was the one stored, so a right-hand side with
+a side effect printed twice, counted twice, and left the field holding the wrong
+value:
+
+```cx
+calls: t64 = 0
+fnc: t64 next() { calls += 1; return calls * 10 }
+p.x = next()
+print(p.x)     // interpreter 10, JIT 20
+print(calls)   // interpreter 1,  JIT 2
+```
+
+`lower_stmt_inner`'s `Assign` arm lowers the right-hand side once, before it
+looks at the target, and the `DotAccess` arm then lowered it again into a
+variable of the same name. The binding and index arms used the first value; only
+a field target used the second. The aggregate copy path (`h.row = make()`) went
+through the same arm and doubled as well.
+
+Fixed by removing the second lowering. Fixtures: `t_field_assignment_rhs_once`
+(from PR #476, unchanged) and `t_field_assign_rhs_once_shapes`, which covers a
+scalar field, an array field, a struct-valued field and a method-call right-hand
+side, each printing from inside the call so a second evaluation is visible in
+the output as well as in the count. On the unfixed JIT that fixture prints 19
+lines where the interpreter prints 15.
+
+## 53. `when` on a string never matched a literal arm in compiled code
+
+*(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
+this entry.)*
+
+```cx
+fnc: t64 code(s: str) {
+    when s { "alpha" => 1, "beta" => 2, _ => 0 }
+}
+print(code("alpha"))   // interpreter 1, JIT 0
+```
+
+Every string arm fell through to the catch-all on the JIT, with exit 0. The
+interpreter matches a string pattern by content (`run_semantic_when` resolves
+both sides and compares the text). `emit_when_arm_match` lowered the pattern to
+its own descriptor and emitted the pointer `Compare` it uses for every other
+literal; the scrutinee and the pattern are different descriptors, so the compare
+was never true. `==` and `assert_eq` on strings already went through `cx_str_eq`;
+`when` was the one string comparison that did not.
+
+Fixed: a string pattern now lowers to a `cx_str_eq` call, in both the statement
+and the expression form (they share the arm-match function). Fixture:
+`t_when_str_content` — scrutinees from a parameter, a typed variable, a struct
+field, an array element and a function result; patterns include the empty string
+and a pair where one is a prefix of the other. The unfixed JIT printed the
+catch-all value for every case.
+
+**Boundary, still open.** A string pattern against a scrutinee that analysis has
+not typed as a string (`x: t64 = 5; when x { "five" => … }`) is accepted by
+analysis and runs on the interpreter, where it can never match. Compiled code now
+refuses it (exit 127) rather than pass a non-string to `cx_str_eq`; before this
+fix it compared an integer with an address and happened to print the same thing.
+By the enforcement-layers principle this is analysis's to reject. No fixture has
+this shape.
+
+## 54. `while` on an unknown condition: one backend skipped the loop, the other entered it
+
+*(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
+this entry. Changes interpreter behaviour — read the ruling below.)*
+
+```cx
+flag: bool = ?
+n: t64 = 0
+while (flag) { n += 1; if n >= 3 { break } }
+print(n)       // interpreter 0, JIT 3 — both exit 0
+```
+
+The interpreter's `While` matched true and false and sent everything else to
+`break`, so an unknown condition silently ended the loop. The JIT branched on the
+three-state wire value being non-zero, so unknown (2) entered it; with no `break`
+in the body it never terminated.
+
+**Neither was the language's rule, so this is not a case of making the JIT match
+the interpreter.** The rule already exists in two places:
+
+- Analysis rejects a loop condition it can type as unknown: *"Unknown value
+  cannot be used as a loop condition -- control-critical context"*
+  (`semantic.rs`, `Stmt::While`).
+- `if` raises `UnknownCondition` at run time for the case analysis cannot see, a
+  `bool` holding the unknown state (#026): *an unknown value cannot choose a
+  branch — silently taking `else` would throw away the third state.*
+
+`while` had the static half and not the run-time half. Reading unknown as false
+is the same silent choice #026 removed from `if`. Both backends now refuse:
+
+- interpreter: `RuntimeError::UnknownLoopCondition`, exit 1, a diagnostic naming
+  `while` and pointing at `when`;
+- JIT: `guard_unknown_condition` — the guard `if` already uses — in the loop
+  header, so it runs on every evaluation of the condition, exit 126.
+
+A definite condition is untouched: a plain `Bool` emits no new IR, and a
+three-state value that is definitely true or false (`u || true`, `u && false`)
+loops or does not loop as before.
+
+Fixtures: `t_while_unknown_condition` and `t_while_unknown_after_iterations`
+(both `interp=diagnostic jit=trap`, the pair `t_if_unknown_condition` records),
+`t_while_definite_bool`, `t_while_three_state_definite`. The second one becomes
+unknown on its third evaluation; the unfixed interpreter ran it to completion and
+the unfixed JIT looped until killed.
+
+No existing fixture, example or benchmark changed: replaying all 694 on both
+backends against the pre-fix build gave identical output and exit codes.
+
+**Not covered.** A `bool` variable that is definite when the loop starts and is
+assigned an unknown value inside it cannot be tested on the JIT, because
+compiled code refuses the assignment itself ("assign type mismatch: expected
+Bool, got TBool"). The interpreter handles that shape and now refuses it at the
+next evaluation.
+
+**What the independent review added.**
+
+- *This is a ruling, and it needs the owner's confirmation.* The principle
+  existed; the run-time rule for `while` did not. #026 was scoped to the `if`
+  condition site, and the README stated the rule for `if` only (it now says
+  `if` or `while`). Skipping the loop came from a catch-all `_ => break`, not
+  from a decision. Reversing the ruling means reverting the interpreter half of
+  this commit and making compiled code skip the loop instead.
+- *The reach is one step wider than a `bool` holding `?`.* A comparison on an
+  unknown number is itself unknown, so `x: t64 = ?` followed by `while (x < 5)`
+  is refused by the interpreter too (it used to skip the loop). `if x < 5`
+  already behaved this way. Compiled code refuses the program earlier, at the
+  untyped unknown.
+- *`t_while_unknown_after_iterations` does not assert its output.* The harness
+  checks only the exit shape of an `expected_fail` fixture, so "runs twice, then
+  refused" is not pinned by it. `t_while_three_state_break_before_unknown` pins
+  the first half — the same loop, leaving before the third evaluation, must run
+  to completion — and the unit test
+  `while_on_a_three_state_condition_guards_unknown_in_the_loop_header` pins that
+  the guard is in the header.
+
+## 55. `assert_eq` compares strings inside a `Result` by where they are stored, and never accepts two enums
+
+*(Found 2026-11-18 while reviewing PR #476. **Open — needs an owner ruling.**
+Not fixed here.)*
+
+The interpreter's `assert_eq` compares two strings by content, but compares two
+`Result` values with the derived `Value` equality, which compares an embedded
+string by its arena offset and length. Everything it does not name falls to
+`_ => false`:
+
+```cx
+assert_eq("same", "same")              // passes
+assert_eq(Ok("same"), Ok("same"))      // fails: "assert_eq failed: Ok(same) != Ok(same)"
+assert_eq(parse(false), Err("bad"))    // fails: "Err(bad) != Err(bad)"
+assert_eq(Color::Red, Color::Red)      // fails: "Color::Red != Color::Red"
+```
+
+Whether two `Ok("")` values are equal depends on whether another string literal
+was evaluated between them, because an empty string does not advance the arena.
+`==` on two `Result` values is a semantic error, so `assert_eq` is the only place
+this is observable.
+
+The JIT differs: it compares the packed word, so two results from one literal
+site are equal and two from different sites are not; two equal enums pass.
+
+PR #476 resolves the string half by making compiled code reproduce the
+interpreter — an execution-scoped table that assigns each string evaluation a
+simulated arena offset — and pins it with five `expected_fail` fixtures asserting
+that `assert_eq(Ok("same"), Ok("same"))` must fail. Measured cost: a loop that
+binds and compares a string 20 million times goes from 0.48 s and 15 MB to 57.6 s
+and 7.05 GB on the JIT, because every string evaluation allocates and nothing is
+released until the program ends.
+
+The alternative is to treat this as an interpreter defect — the error text
+contradicts itself, and ordinary string equality is by content everywhere else —
+and make both backends compare `Result` payloads by content. That changes what
+the reference prints for the four lines above, so it is recorded here rather than
+decided in passing.
+
+## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
+
+*(Found 2026-11-18 by the independent review of PR #476 and reproduced on the M0
+build. Recorded so they are not rediscovered; each needs its own packet.)*
+
+**a. A compound field assignment loses its store when the right-hand side
+changes the same struct through `.copy`.** Both backends exit 0.
+
+```cx
+struct C { v: t64, w: t64 }
+fnc: t64 bump(c.copy: C) { c.v += 100; return c.v }
+let c
+c = C { v: 1, w: 2 }
+c.v += bump(c.copy)
+print(c.v)        // interpreter 102, JIT 101
+```
+
+The interpreter reads the field (1), evaluates the call (which writes 101 back
+into `c`), and stores 1 + 101. Compiled code ends with the value the call wrote
+back, so its own store is overwritten. The plain `=` form agrees since §52.
+Both backends exit 0 and print different things; §57 records two more cases of
+that kind.
+
+**b. The interpreter leaks a function scope when `?` returns early from a bare
+expression `when` arm.** `run_semantic_when` evaluates the arm with `?` and
+returns without popping the scope it pushed.
+
+```cx
+fnc: Result<t64> fail() { return Err("bad") }
+fnc: Result<t64> run(n: t64) {
+    local: t64 = 5
+    y: t64 = when n { 1 => fail()?, _ => 2 }
+    return Ok(y + local)
+}
+print(run(1))
+local: t64 = 9     // interpreter: "variable 'local' was already declared"; JIT prints 9
+```
+
+The same early return skips `.copy` write-back on the interpreter. Compiled code
+agrees with it today only because it also skips write-back on an early `Err`;
+PR #476 corrects the compiled side, which turns this into an output difference.
+The fix belongs in the interpreter.
+
+**c. Printing a `Result` that holds a struct crashes compiled code.**
+
+```cx
+struct P { x: t64, y: t64 }
+r: Result<P> = Ok(P { x: 1, y: 2 })
+print(r)          // JIT: segfault (139), or abort (134) when the value comes from a call
+```
+
+The payload is a struct pointer and the print path reads it as a string
+descriptor. PR #476 turns this into a clean refusal.
+
+**d. The interpreter prints a struct's fields in a different order on different
+runs.** Six runs of one three-field program gave four orderings
+(`P { x: 1, y: 2, z: 3 }`, `P { z: 3, x: 1, y: 2 }`, …). The fields are held in
+a hash map. Compiled code refuses to print a struct, so there is no parity
+failure, but a reference that is not reproducible cannot be matched by any
+backend, and no fixture can pin this output.
+
+## 57. Open findings from the review of the M0 fixes — conditions and guards
+
+*(Found 2026-11-18 by the independent review of §52–§54 and reproduced on the
+unfixed and the fixed build alike. (a) is closed on the compiled side by the
+commit that introduces this entry; (b) and (c) are open.)*
+
+**a. A condition that is not a bool.** `while (n)` on an integer: the
+interpreter ends the loop for anything that is not true, compiled code branched
+on non-zero. Both exited 0.
+
+```cx
+n: t64 = 1
+while (n) {
+    print(7)
+    n = 0
+}
+print(8)          // interpreter: 8      JIT: 7 8
+```
+
+Compiled code now refuses the shape (exit 127), with the same check `if`
+already makes — `if n { .. }` has always been refused there. **Still open on
+the interpreter**, which is inconsistent with itself: a number is false as a
+`while` condition and true-if-non-zero as an `if` condition, and analysis accepts
+both. What a number means as a condition is a language question.
+
+**b. A `.copy` write-back made while evaluating a condition is lost in compiled
+code.** The branch's bindings are captured before the condition is lowered, so
+the body reads the value from before the call. Both exit 0.
+
+```cx
+i: t64 = 0
+fnc: bool step(n.copy: t64) {
+    n = n + 1
+    return n < 4
+}
+if step(i.copy) { print(i) } else { print(100 + i) }
+print(i)          // interpreter: 1 1    JIT: 0 0
+```
+
+The same happens in a `while` condition and a `when` scrutinee.
+
+**c. A guarded catch-all followed by another arm drops the later arms in
+compiled code.** Both exit 0; the expression form traps instead.
+
+```cx
+n: t64 = 3
+when n {
+    _ if n == 9 => print(4),
+    _ => print(0),
+}
+print(5)          // interpreter: 0 5    JIT: 5
+```
+
+**The count.** After §52–§54 and (a), three cases are known where both backends
+exit 0 and print different things: §56a, §57b and §57c. Each was found by
+writing a program aimed at one construct. The reviewer's 900 random programs and
+a replay of every tracked `.cx` file found none, which says the generated
+programs do not reach these shapes, not that there are no more.

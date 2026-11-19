@@ -1,0 +1,34 @@
+// The unknown-condition rule must not disturb loops whose condition is
+// definite. A plain bool flag, a comparison, a flag cleared inside the loop,
+// and a `bool` that is declared from a function result all loop normally.
+fnc: bool below(i: t64, limit: t64) {
+    return i < limit
+}
+
+run: bool = true
+count: t64 = 0
+while (run) {
+    count += 1
+    if count >= 3 { run = false }
+}
+print(count)
+
+j: t64 = 0
+while (below(j, 4)) {
+    j += 1
+}
+print(j)
+
+more: bool = below(0, 2)
+k: t64 = 0
+while (more) {
+    k += 1
+    more = below(k, 2)
+}
+print(k)
+
+off: bool = false
+while (off) {
+    print(999)
+}
+print(0)

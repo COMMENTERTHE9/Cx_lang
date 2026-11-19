@@ -1926,7 +1926,6 @@ fn lower_stmt_inner(
                     Ok(Some(current))
                 }
                 SemanticLValue::DotAccess { binding, container, field, ty, struct_name } => {
-                    let lowered = lower_expr(expr, ctx, &mut current)?;
                     let (field_ptr, field_ir_ty) = resolve_field_ptr(
                         binding, container, field, struct_name, ty, ctx, &mut current,
                     )?;
@@ -2707,6 +2706,22 @@ fn lower_while(
     ctx.seal_block(current)?;
 
     let cond_val = lower_expr(cond, ctx, &mut header)?;
+    // An unknown condition cannot decide whether the loop runs. Analysis
+    // already rejects a condition it can type as unknown ("control-critical
+    // context"); this is the same rule for a `bool` that holds the unknown
+    // state at run time, and the same guard `if` uses (#026). Without it the
+    // branch below tested the three-state wire value for non-zero, so unknown
+    // (2) ENTERED the loop (`docs/known_issues.md` §54). The guard runs in the
+    // header, so it re-checks on every backedge. A definite Bool condition is
+    // returned unchanged with no IR emitted.
+    let cond_val = guard_unknown_condition(cond_val, ctx, &mut header)?;
+    // The same check `if` makes. Without it a condition that is not a bool —
+    // `while (n)` on an integer — was branched on as "non-zero", while the
+    // interpreter ends the loop for anything that is not true: both exit 0 with
+    // different output (`docs/known_issues.md` §57a). Compiled code refuses the
+    // shape, as it already does for `if n { .. }`; what a number should MEAN as
+    // a condition is not decided here.
+    ensure_type_match("while condition", IrType::Bool, cond_val.ty.clone())?;
 
     let body_block = ctx.start_block(vec![], header_bindings.clone());
     let body_id = body_block.id();
@@ -4753,6 +4768,38 @@ fn emit_when_arm_match(
     ctx: &mut LoweringCtx,
 ) -> Result<ActiveBlock, LoweringError> {
     match pattern {
+        // A string pattern matches by CONTENT, as the interpreter does
+        // (`run_semantic_when` resolves both sides and compares the text). The
+        // scrutinee and the pattern are two different descriptors, so the
+        // pointer `Compare` every other literal uses below can never be true
+        // for them: every string arm fell through to the catch-all, with exit 0
+        // (`docs/known_issues.md` §53). Route through `cx_str_eq`, the same
+        // call `==` and `assert_eq` use. Only a scrutinee analysis has typed as
+        // a string qualifies — anything else is refused rather than handed to a
+        // function that would read it as a descriptor.
+        SemanticWhenPattern::Literal(value @ SemanticValue::Str(_)) => {
+            if !matches!(scrutinee.ty, SemanticType::Str | SemanticType::StrRef)
+                || scrutinee_val.ty != IrType::Ptr
+            {
+                unsupported!(
+                    "string when-pattern against a scrutinee that is not typed as a string"
+                );
+            }
+            let pat = lower_value(value, &scrutinee.ty, ctx, &mut current)?;
+            let matched =
+                lower_str_eq(Op::EqEq, scrutinee_val.value, pat.value, ctx, &mut current)?;
+            let next_block = ctx.start_block(vec![], incoming.clone());
+            let next_id = next_block.id();
+            current.terminate(IrTerminator::Branch {
+                cond: matched.value,
+                then_block: body_id,
+                then_args: vec![],
+                else_block: next_id,
+                else_args: vec![],
+            })?;
+            ctx.seal_block(current)?;
+            Ok(next_block)
+        }
         SemanticWhenPattern::Literal(value) => {
             let pat_value = if scrutinee_val.ty == IrType::TBool {
                 // D2.x-A1: a three-state TBool scrutinee (a `bool = ?` unknown)
@@ -12745,5 +12792,150 @@ mod module_state_tests {
         assert_eq!(bindings.len(), 2);
         let ir = lower_program(&program).expect("same spelling does not merge bindings");
         crate::ir::validate::validate_module(&ir).expect("global names remain unique");
+    }
+}
+
+/// The lowered shape of the three divergences fixed in M0
+/// (`docs/known_issues.md` §52–§54). The fixtures prove both backends agree on
+/// the output; these pin what the IR says, so a second backend that consumes
+/// this IR inherits the same guarantees without re-deriving them.
+#[cfg(test)]
+mod divergence_shape_tests {
+    use super::*;
+    use crate::frontend::{resolver, semantic};
+
+    fn lowered(src: &str) -> IrModule {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis succeeds");
+        lower_program(&analyzed).expect("lowers")
+    }
+
+    fn function<'a>(ir: &'a IrModule, name: &str) -> &'a IrFunction {
+        ir.functions.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no function '{name}'"))
+    }
+
+    fn calls_to(function: &IrFunction, callee: &str) -> usize {
+        function.blocks.iter().flat_map(|b| &b.insts)
+            .filter(|i| matches!(i, IrInst::Call { callee: c, .. } if c == callee))
+            .count()
+    }
+
+    fn traps(function: &IrFunction) -> usize {
+        function.blocks.iter().filter(|b| b.term == IrTerminator::Trap).count()
+    }
+
+    /// §52: the right-hand side of a field assignment is lowered once. Two
+    /// calls here is the bug — the stored value came from the second.
+    #[test]
+    fn field_assignment_lowers_its_right_hand_side_once() {
+        let ir = lowered(
+            "struct P { x: t64, row: [2: t64] }\n\
+             fnc: t64 next() { return 7 }\n\
+             fnc: [2: t64] pair() { r: [2: t64] = [1, 2]\n r }\n\
+             p: P = P { x: 0, row: [0, 0] }\n\
+             p.x = next()\n\
+             p.row = pair()\n",
+        );
+        let main = function(&ir, "main");
+        assert_eq!(calls_to(main, "next"), 1, "scalar field target");
+        assert_eq!(calls_to(main, "pair"), 1, "aggregate field target");
+    }
+
+    /// §53: a string `when` arm is a content comparison — one `cx_str_eq` per
+    /// string arm, in the statement form and in the expression form.
+    #[test]
+    fn string_when_arms_compare_content() {
+        let ir = lowered(
+            "fnc: t64 code(s: str) {\n\
+                 when s { \"alpha\" => 1, \"beta\" => 2, _ => 0 }\n\
+             }\n\
+             word: str = \"beta\"\n\
+             when word {\n\
+                 \"alpha\" => print(1),\n\
+                 _ => print(0),\n\
+             }\n\
+             print(code(word))\n",
+        );
+        assert_eq!(calls_to(function(&ir, "code"), "cx_str_eq"), 2, "expression form");
+        assert_eq!(calls_to(function(&ir, "main"), "cx_str_eq"), 1, "statement form");
+    }
+
+    /// §53, the boundary: a string pattern against a scrutinee analysis did not
+    /// type as a string is refused, not handed to `cx_str_eq`.
+    #[test]
+    fn string_when_arm_against_a_non_string_scrutinee_is_refused() {
+        let id = resolver::ModuleId(0);
+        let src = "x: t64 = 5\nwhen x {\n    \"five\" => print(1),\n    _ => print(0),\n}\n";
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape today");
+        let error = lower_program(&analyzed).expect_err("a non-string must not reach cx_str_eq");
+        assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+            if construct.contains("string when-pattern")), "{error:?}");
+    }
+
+    /// §54: a `while` over a three-state condition carries the unknown guard,
+    /// and carries it in the loop header — the block the backedge returns to —
+    /// so it runs on every evaluation, not only on entry.
+    #[test]
+    fn while_on_a_three_state_condition_guards_unknown_in_the_loop_header() {
+        let ir = lowered(
+            "flag: bool = ?\n\
+             n: t64 = 0\n\
+             while (flag) {\n\
+                 n += 1\n\
+                 if n >= 3 { break }\n\
+             }\n\
+             print(n)\n",
+        );
+        let main = function(&ir, "main");
+        assert_eq!(traps(main), 1, "exactly one trap block: the unknown-condition guard");
+        let trap_id = main.blocks.iter().find(|b| b.term == IrTerminator::Trap).unwrap().id;
+        // The header is the only block with parameters that some later block
+        // jumps back to; the guard is the branch that ends it.
+        let header = main.blocks.iter()
+            .find(|b| matches!(&b.term, IrTerminator::Branch { then_block, .. } if *then_block == trap_id))
+            .expect("a block branches to the trap");
+        assert!(!header.params.is_empty(), "the guard sits in the loop header, which carries the loop's bindings");
+        let backedges = main.blocks.iter()
+            .filter(|b| matches!(&b.term, IrTerminator::Jump { target, .. } if *target == header.id))
+            .count();
+        assert!(backedges >= 2, "entry and backedge both reach the guarded header, found {backedges}");
+    }
+
+    /// §57a: a `while` condition that is not a bool is refused, as `if` already
+    /// refuses it, instead of being branched on as "non-zero".
+    #[test]
+    fn while_on_a_non_bool_condition_is_refused() {
+        let id = resolver::ModuleId(0);
+        let src = "n: t64 = 1\nwhile (n) {\n    print(7)\n    n = 0\n}\nprint(8)\n";
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape today");
+        let error = lower_program(&analyzed).expect_err("an integer is not a loop condition compiled code can branch on");
+        assert!(matches!(error, LoweringError::InternalInvariantViolation { ref detail }
+            if detail.contains("while condition")), "{error:?}");
+    }
+
+    /// §54, the other half: a definite `bool` condition lowers exactly as it did
+    /// — no guard, no trap block.
+    #[test]
+    fn while_on_a_definite_condition_emits_no_guard() {
+        let ir = lowered(
+            "run: bool = true\n\
+             n: t64 = 0\n\
+             while (run) {\n\
+                 n += 1\n\
+                 if n >= 3 { run = false }\n\
+             }\n\
+             while (n < 10) { n += 1 }\n\
+             print(n)\n",
+        );
+        assert_eq!(traps(function(&ir, "main")), 0);
     }
 }

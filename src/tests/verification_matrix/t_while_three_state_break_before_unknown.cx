@@ -1,0 +1,15 @@
+// A three-state condition is refused only on the evaluation where it is
+// actually unknown. `u || i < 2` is true on its first two evaluations and would
+// be unknown on the third; this loop leaves before the third, so it must run to
+// completion and print. A guard that refused as soon as it saw a three-state
+// condition, rather than an unknown value, would stop this program.
+// (`t_while_unknown_after_iterations` is the same loop without the break; its
+// output before the refusal is not asserted, so this fixture carries that half.)
+u: bool = ?
+i: t64 = 0
+while (u || i < 2) {
+    i += 1
+    print(i)
+    if i == 2 { break }
+}
+print(99)

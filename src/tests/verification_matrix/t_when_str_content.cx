@@ -1,0 +1,67 @@
+// `when` on a string matches by content. The scrutinee and each pattern are
+// separate string values, so comparing where they are stored (rather than what
+// they say) makes every arm fall through to the catch-all. Each case below
+// would print its catch-all value if that happened.
+//
+// Scrutinee sources: a typed variable, a function parameter, a struct field, an
+// array element, a function result. Patterns include the empty string and a
+// pair where one is a prefix of the other, so a length-only or prefix-only
+// comparison shows up too.
+struct Named { name: str, id: t64 }
+
+fnc: t64 code(s: str) {
+    when s {
+        "alpha" => 1,
+        "beta" => 2,
+        "" => 3,
+        "al" => 4,
+        _ => 0,
+    }
+}
+
+fnc: str pick(n: t64) {
+    when n {
+        1 => "alpha",
+        2 => "beta",
+        _ => "other",
+    }
+}
+
+// Expression form, parameter scrutinee.
+print(code("alpha"))
+print(code("beta"))
+print(code(""))
+print(code("al"))
+print(code("alp"))
+print(code("gamma"))
+
+// Statement form, typed variable scrutinee.
+word: str = "beta"
+when word {
+    "alpha" => print(11),
+    "beta" => print(12),
+    _ => print(10),
+}
+
+// Struct field scrutinee.
+n: Named = Named { name: "alpha", id: 7 }
+when n.name {
+    "alpha" => print(21),
+    "beta" => print(22),
+    _ => print(20),
+}
+
+// Array element scrutinee.
+words: [3: str] = ["gamma", "beta", "alpha"]
+for i in 0..3 {
+    when words:[i] {
+        "alpha" => print(31),
+        "beta" => print(32),
+        _ => print(30),
+    }
+}
+
+// A string that came back from a function, matched in a second `when`.
+print(code(pick(1)))
+print(code(pick(2)))
+print(code(pick(9)))

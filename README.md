@@ -225,7 +225,7 @@ Two rules for the value form: it must have an `else` (a consumed `if` always pro
 
 ### Three-state `bool` and the `?` unknown literal
 
-`bool` is three-state: `true`, `false`, and **unknown**, written with the literal `?`. Because an unknown value cannot choose a branch, using it as an `if` condition is an error that directs you to `when`. See `examples/tbool_uncertainty.cx`.
+`bool` is three-state: `true`, `false`, and **unknown**, written with the literal `?`. Because an unknown value cannot choose a branch, using it as an `if` or `while` condition is an error that directs you to `when`. See `examples/tbool_uncertainty.cx`.
 
 ```cx
 let x;

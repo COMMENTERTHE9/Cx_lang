@@ -1,0 +1,62 @@
+// A field assignment evaluates its right-hand side exactly once, whatever the
+// field holds. Each right-hand side is a call that prints and counts, so a
+// second evaluation shows up twice: as a repeated line and as a wrong count.
+// Covers a scalar field, an array field (the aggregate copy path), a
+// struct-valued field, and a method call on the right-hand side.
+struct Inner { a: t64, b: t64 }
+struct Box { n: t64, row: [3: t64], inner: Inner }
+struct Counter { step: t64 }
+
+calls: t64 = 0
+
+fnc: t64 scalar() {
+    calls += 1
+    print(100 + calls)
+    return calls * 10
+}
+
+fnc: [3: t64] row() {
+    calls += 1
+    print(200 + calls)
+    r: [3: t64] = [calls, calls + 1, calls + 2]
+    r
+}
+
+fnc: Inner inner() {
+    calls += 1
+    print(300 + calls)
+    made: Inner = Inner { a: calls, b: calls * 2 }
+    made
+}
+
+bump: impl (c: Counter) {
+    fnc: t64 next() {
+        calls += 1
+        print(400 + calls)
+        c.step += 5
+        return c.step
+    }
+}
+
+b: Box = Box { n: 0, row: [0, 0, 0], inner: Inner { a: 0, b: 0 } }
+c: Counter = Counter { step: 0 }
+
+b.n = scalar()
+print(b.n)
+print(calls)
+
+b.row = row()
+print(b.row:[0])
+print(b.row:[2])
+print(calls)
+
+b.inner = inner()
+got: Inner = b.inner
+print(got.a)
+print(got.b)
+print(calls)
+
+b.n = c.next()
+print(b.n)
+print(c.step)
+print(calls)

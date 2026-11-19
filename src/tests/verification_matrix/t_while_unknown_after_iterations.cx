@@ -1,0 +1,12 @@
+// The unknown-condition rule is checked every time the condition is evaluated,
+// not only on the way in. `u || i < 2` is true for two iterations (unknown OR
+// true is true) and unknown on the third (unknown OR false is unknown), so the
+// loop must run twice and then be refused. A check made only before the first
+// iteration would let it run on; reading unknown as false would let it finish.
+u: bool = ?
+i: t64 = 0
+while (u || i < 2) {
+    i += 1
+    print(i)
+}
+print(99)
