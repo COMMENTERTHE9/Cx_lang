@@ -1,0 +1,3 @@
+#![imports]
+m: use "./e_constlib"
+print(m.lim())

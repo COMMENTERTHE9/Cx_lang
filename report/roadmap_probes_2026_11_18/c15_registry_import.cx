@@ -1,0 +1,3 @@
+#![imports]
+m: use "ricey/math"
+print(1)

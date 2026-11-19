@@ -1,0 +1,3 @@
+#![imports]
+math: use "std/math"
+print(math.sqrt(4.0))

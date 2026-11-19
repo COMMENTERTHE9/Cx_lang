@@ -1,0 +1,3 @@
+n: t64 = 0
+read(n)
+print(n + 1)

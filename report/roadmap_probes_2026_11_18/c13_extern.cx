@@ -1,0 +1,2 @@
+extern fnc: t64 abs(x: t64)
+print(abs(1))

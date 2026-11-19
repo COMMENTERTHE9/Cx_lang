@@ -1,0 +1,2 @@
+enum Shape { Circle(t64), Square }
+print(1)

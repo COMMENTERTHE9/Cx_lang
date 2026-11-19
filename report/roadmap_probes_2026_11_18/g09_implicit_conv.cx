@@ -1,0 +1,5 @@
+x: t32 = 7
+y: f64 = x
+z: t64 = 2.9
+print(y)
+print(z)

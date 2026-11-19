@@ -1,0 +1,5 @@
+struct Player { health: t64 }
+impl Player {
+    fnc: t64 hp() { self.health }
+}
+print(1)

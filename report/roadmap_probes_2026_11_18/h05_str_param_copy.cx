@@ -1,0 +1,7 @@
+fnc: str shout(s: str) {
+    s
+}
+a: str = "abc"
+b: str = shout(a)
+print(b == a)
+print(len(b))

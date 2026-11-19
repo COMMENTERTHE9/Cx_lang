@@ -1,9 +1,15 @@
 # Static data in the IR — design for M1.1
 
-**Status: PROPOSED. Not implemented. Awaiting owner approval.**
+**Status: approved by the owner on 2026-11-18, including the JIT-path check of
+§3.5, and IMPLEMENTED on `backend/m1.1-static-data` (four commits). Not
+reviewed independently yet, and not integrated. §11 says what was built, what
+was measured, and where the result differs from this design — one of its own
+performance criteria is not met.**
 
 - Date: 2026-11-18
-- Base: `submain` @ `d4b2c06` plus the M0 fixes (`backend/m0-lowering-divergences`)
+- Base as designed: `submain` @ `d4b2c06` plus the M0 fixes. Base as built: the
+  PR #476 revision (`backend/result-content-equality`), which changed string
+  equality and so two premises of §4 — see §11.
 - Scope: one packet. The other M1 parts (runtime library, validator in the JIT
   path, symbol naming, target description) stay separate and are listed in §9.
 
@@ -170,8 +176,15 @@ New checks:
 | **No address constants:** a `Cast` from `I64` to `Ptr` whose operand is defined by a `ConstInt` | The pattern this packet removes |
 
 The last rule is narrow on purpose. Lowering legitimately casts a *run-time*
-word to a pointer in three places — each unpacking a `Result` payload — and
-those operands come from a load, never from a constant.
+word to a pointer in four places — each unpacking a `Result` payload — and
+those operands are the payload half of the packed word, never a constant.
+
+*(Correction, from the independent review: this said "three places … from a
+load". And the rule is exactly as narrow as the table row: it looks at the
+instruction that defines the cast's operand and no further. A constant that
+reaches the cast through a bind, through arithmetic, or by narrowing a wider
+constant is not found. Lowering emits none of those; hand-built IR of that
+shape passes.)*
 
 The standalone validator still does not know `cx_str_eq` or `cx_handle_*`, so it
 rejects programs the JIT runs. Fixing that is M1.2. To make the guarantee real
@@ -193,8 +206,18 @@ Mirrors what the backend already does for `IrGlobal`:
    `global_value`.
 
 All objects are declared first and defined second, so a descriptor can refer to
-a bytes object regardless of order. The data belongs to the `JITModule` and is
-released with it, which also ends the per-lowering leak.
+a bytes object regardless of order. The data belongs to the `JITModule`, which
+ends the per-lowering leak.
+
+*(Correction, on implementation: this paragraph first said the data "is
+released with" the module. It is not. Cranelift's `JITModule` leaves its code
+and data mapped when dropped unless `free_memory` is called, and this backend
+does not call it — true before this packet for code, and unchanged by it. (The
+review read Cranelift's source more closely: code and read-only data stay
+mapped once definitions are finalized; the current chunk of *writable* memory,
+where globals live, is freed on drop. That does not concern this packet's
+data.) One program runs per process, so nothing accumulates; what the packet
+removes is the leak in LOWERING, which did accumulate.)*
 
 ## 4. Why behaviour does not change
 
@@ -356,3 +379,143 @@ Kept as separate tasks, in the order I would take them:
 1. Approve implementing this packet as designed.
 2. Confirm the minimal JIT-path check in §3.5 may land here, ahead of the full
    validator work in M1.2. The alternative is to do M1.2 first.
+
+## 11. As built (2026-11-18)
+
+Branch `backend/m1.1-static-data`, four commits, in the order of §7:
+
+| Commit | Content |
+|---|---|
+| 1 | `IrData`, `IrDataReloc`, `IrInst::DataAddr`, printer, validator checks, `find_address_constants`; 22 unit tests |
+| 2 | Cranelift JIT support; the data rules as `validate::data_errors`, run by the JIT before anything is placed; 8 tests on hand-built IR |
+| 3 | `construct_static_str` produces data objects; the address-constant rule is on in the validator and on the JIT path; 6 lowering tests and a leak measurement |
+| 4 | The corpus test; this section; `docs/known_issues.md` §71 |
+
+### What changed from the design
+
+- **§4.1 and §4.3 are out of date, harmlessly.** They say a descriptor's address
+  is observable through `assert_eq` on two `Result`s, and keep one descriptor
+  per literal site so as not to change that. The owner has since decided
+  equality is by content (`docs/backend/value_equality.md`), and nothing can
+  observe a descriptor's address any more. The rule was kept anyway — one
+  descriptor per site, bytes shared — because it was the approved design and
+  merging descriptors is now a pure optimisation that can be made on its own.
+- **§3.5.** The data rules had to be callable without the rest of the
+  validator, because the JIT must not place data it has not checked: a
+  relocation outside its object is a write outside an allocation. They are
+  `validate::data_errors`, used by both.
+- **§3.6**, corrected in place above.
+- **§3.3.** The table is not passed by `&mut`. Each function's `LoweringCtx`
+  holds an `Rc<RefCell<StaticData>>` that `lower_program_inner` assigns, so
+  that the many lowering functions that already take the context need no new
+  parameter. A context built without the assignment would number into a
+  private, empty table; both places that build one for real assign it.
+- **An object of no bytes is placed as one byte** (after review). Cranelift
+  gives a size-0 object no memory and the address `align`. A descriptor could
+  hold that, which is all lowering does with the bytes of `""` — but taking
+  the object's address in code brought the process down, and the runtime's
+  comparison, handed the address 1, paid a suppressed fault on every empty
+  string: 2.0 s for 20 million comparisons of `""` against 0.45 s for `"a"`,
+  before this packet and after it. Placed as one unread byte: 0.45 s.
+- **§5 predicted test fallout that did not happen.** No existing test asserted
+  the address-constant instruction pair, so none changed. The 166 hand-built
+  `IrModule` literals gained `data: vec![]` as predicted.
+
+### Requirements of §6
+
+| Requirement | Result |
+|---|---|
+| `cargo test` / `--features jit` pass, count rises only by new tests | 359 / 546 at commit 3 (1 ignored each); see the commit messages for each step |
+| Parity: same PASS and SKIP sets, 0 PARITY_FAIL | 631 PASS / 55 SKIP / 0 at commits 1–3, identical to the base |
+| Replay, zero differences in exit code or stdout | 730 programs (686 fixtures, examples, benchmarks), both backends, before and after commit 3: none, stderr included |
+| No address constants, enforced and tested | JIT path refuses (exit 127), tested by `a_constant_turned_into_a_pointer_is_refused_before_anything_runs` (added after review: until then only the rule itself was tested, not that the JIT runs it); `ir_is_reproducible_and_holds_no_compiler_address_across_the_corpus`, which now fails rather than skips when there is no binary to run |
+| Reproducible IR | Same test: 469 fixtures lower, 71 with string data, each identical across two processes. Before the switch a one-string program's two dumps differed |
+| Data validity, one accepting and one rejecting test per rule | `validate::data_tests` |
+| Round trip through the JIT: relocations, order, identity, empty string, alignment, repeated compilation, invalid references | `module_data_tests`; fifteen kinds of damage each refused without a panic |
+| Leak removed | No `leak()` in lowering. 4000 lowerings of a 60-literal program: 39,060 KB grown before, 232 KB after. That measurement is ignored by default (it measures the whole process); `the_ir_sources_name_no_way_to_leak` is the guard that runs every time, added after review |
+| String loop's peak memory does not grow with iteration count | 15 MB at 20 million iterations, before and after |
+| Benchmarks no more than 10% slower | The eight `bench/` programs: unchanged — which says nothing about strings: seven contain none and the eighth is refused by the JIT. The next row is the string measurement |
+| **A loop that binds and compares a string, no more than 10% slower** | **Met: the data's placement costs 0 to 2%. The larger differences first reported here belong to the build, not to this packet — see below** |
+| Independent review before integration | Done; no blocking finding. Its findings and what was done about each are in `docs/known_issues.md` §73 |
+
+### The performance result
+
+Optimized build, Cranelift JIT, a loop whose body binds a string and compares
+it, one billion iterations, six variants that differ only in what precedes the
+loop (which moves the loop's machine code by a few bytes):
+
+| Variant | Before | After |
+|---|---|---|
+| as is | 3.18 ns | 3.43 ns |
+| one addition before | 2.77 | 3.17 |
+| two additions before | 2.68 | 3.04 |
+| three additions before | 2.99 | 3.17 |
+| a multiplication before | 2.92 | 3.38 |
+| an array before | 3.63 | 3.33 |
+
+Slower in five (+6% to +16%), faster in one (−8%), +7.5% taken together; a
+second run of the same six gave +10.9%. That is about one CPU cycle per
+comparison on a loop of about ten, on top of position effects of ±15% that the
+variants show by themselves.
+
+What it is not, each measured:
+
+- the instruction that materialises the address — emitting it as an absolute
+  immediate, the form the constants used, gives the same times;
+- memory protection — placing the data in writable memory gives the same times;
+- the stack — thirteen frame sizes give the same times;
+- the debug-build figure — a debug build cannot show an effect this small: the
+  same code measures 19.8–20.8 ns per iteration in two builds and 23.7–24.3 in a
+  third that differs only in unrelated compiler code, and builds that still use
+  address constants range from 19.2 to 23.3.
+
+**What it is — found by the independent review, and reproduced.** The first
+version of this section ended: "What is left is where the data is … The cause
+is not identified. This needs the owner's decision." That was wrong. The
+difference is where the runtime's own string comparison, `cx_str_eq`, lands in
+the *compiler's* binary. It is 36 bytes of machine code. In the build before
+the switch it begins 16 bytes into a 64-byte cache line and fits; in the build
+after, which differs in unrelated code elsewhere, it begins 48 bytes in and
+runs across the line boundary.
+
+The review built one binary that can choose, at run time, between the old
+address constants and the new data objects, and between byte-identical copies
+of `cx_str_eq` at four positions in a line. Sum over the six variants, ns per
+iteration:
+
+| `cx_str_eq` begins at | Address constants | Data objects |
+|---|---|---|
+| 0 bytes into a line (fits) | 17.34 | 17.34 |
+| 16 (fits) | 17.55 | 17.57 |
+| 32 (crosses) | 19.03 | 18.92 |
+| 48 (crosses) | 19.16 | 19.02 |
+
+Crossing the line costs about 9.5% whichever way the data is placed. The
+placement costs nothing measurable. Re-run here on three of the variants with
+that binary: 8.61 against 8.79 at 16 bytes and 9.46 against 9.60 at 48 — the
+same picture, with placement at +1.5 to +2%.
+
+So the criterion is met, and nothing here needs a decision. What it does show
+is that a string comparison in the JIT is sensitive, by about a tenth, to an
+accident of how the compiler binary is laid out — any commit that moves host
+code can flip it either way — and that the debug-build timings used elsewhere
+in this work cannot resolve differences of that size.
+
+## 12. What an object-file backend still needs from this representation
+
+From the independent review; none of it is a defect in what M1.1 set out to
+do, and all of it is M1.2 or later.
+
+- A relocation has no addend: nothing can point into the middle of an object.
+- A relocation's target can only be another data object — not a function, not
+  a global.
+- Objects have no names, no linkage and no section. A descriptor holds a
+  relocation, so in a position-independent executable it belongs in
+  relocated-read-only data and each literal site costs a load-time relocation;
+  that is the argument for merging descriptors, which §4.3 left open.
+- Pointer size (8) and the little-endian length are fixed at lowering.
+  Alignment is capped at 16. A self-reference is rejected. Strings have no
+  terminator.
+- The JIT reaches data relative to the code, so the two must be within 2 GB.
+  They are (12 KB to 95 MB apart in what was observed); Cranelift panics rather
+  than reporting an error otherwise.

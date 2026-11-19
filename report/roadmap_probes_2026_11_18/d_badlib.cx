@@ -1,0 +1,2 @@
+pub fnc: t32 ok() { 1 }
+fnc: t32 unused_bad() { undefined_thing }

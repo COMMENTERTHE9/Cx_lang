@@ -67,8 +67,10 @@ This is a storage/identity implementation, not an allocator redesign. Cranelift
 0.115 deliberately retains allocated memory on ordinary drop unless its explicit
 freeing API is called. Existing host comments claiming drop frees all JIT memory
 are inaccurate; reclamation remains follow-up work. AOT also needs actual module
-data emission and relocations. Existing static string lowering still embeds
-process-specific addresses and is not solved by numeric globals.
+data emission and relocations. Static string lowering embedded
+process-specific addresses when this was written and was not solved by numeric
+globals; it is now read-only module data with relocations
+(`static_data_design.md`, milestone M1.1).
 
 ## Scope and remaining limits
 

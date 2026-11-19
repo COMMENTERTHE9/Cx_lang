@@ -1,0 +1,6 @@
+fnc: show(r: strref) {
+    print(r)
+}
+s: str = "hello"
+show(s)
+show("lit")

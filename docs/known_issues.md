@@ -4165,7 +4165,12 @@ this shape.
 ## 54. `while` on an unknown condition: one backend skipped the loop, the other entered it
 
 *(Found 2026-11-18 by the readiness audit; fixed by the commit that introduces
-this entry. Changes interpreter behaviour — read the ruling below.)*
+this entry. Changes interpreter behaviour — read the ruling below.
+**Ruling confirmed by the owner on 2026-11-18**: both backends refuse a `while`
+whose condition is unknown, including one that becomes unknown after earlier
+iterations. This is a correction of behaviour that was inconsistent before —
+the two backends disagreed, and neither followed the rule `if` already had — not
+a new language feature.)*
 
 ```cx
 flag: bool = ?
@@ -4218,7 +4223,8 @@ next evaluation.
 
 **What the independent review added.**
 
-- *This is a ruling, and it needs the owner's confirmation.* The principle
+- *This is a ruling, and it needed the owner's confirmation* — given on
+  2026-11-18, see the top of this entry. The principle
   existed; the run-time rule for `while` did not. #026 was scoped to the `if`
   condition site, and the README stated the rule for `if` only (it now says
   `if` or `while`). Skipping the loop came from a catch-all `_ => break`, not
@@ -4303,7 +4309,7 @@ unknown number, and a `Result` assigned to a `Result` of a narrower payload type
 refuses, so none is a case of two answers. (For the last one that became true
 only with §70: the first version compiled it, and `?` then gave two answers.)
 
-## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
+## 56. Findings from the PR #476 review — four defects on `submain`, since fixed (§58–§61)
 
 *(Found 2026-11-18 by the independent review of PR #476 and reproduced on the M0
 build. Recorded so they are not rediscovered; each needs its own packet.)*
@@ -5225,6 +5231,57 @@ used throughout covers the 694 under `src/tests/verification_matrix`,
 `examples` and `bench`. On those, against the build before this branch: no exit
 code or output changes.
 
+## 71. Compiled programs contained addresses from inside the compiler
+
+*(Found 2026-11-18 by the readiness audit; fixed by milestone M1.1 on
+`backend/m1.1-static-data`, design and results in
+`docs/backend/static_data_design.md`. §62–§70 are on
+`backend/result-content-equality` and `backend/m0-followup-correctness`.)*
+
+Every string literal in a compiled program — and every piece of text the
+compiler prints on the program's behalf: enum names, `Ok(`, `Err(`, the `?` of
+an unknown bool, the chunks of an interpolated string — was lowered by leaking
+its bytes and a `{pointer, length}` descriptor for the life of the compiler
+process and writing the descriptor's address into the IR as a number:
+
+```
+v10 = const i64 139947281560512
+v11 = cast i64 v10 -> ptr
+call cx_print_str(v11)
+```
+
+Three consequences. The IR could not be written to an object file, by Cranelift
+or by LLVM, because the number means nothing outside the process that produced
+it. The IR was not reproducible: two dumps of one program differed in that
+constant, so the 0.1 determinism statement did not hold for any program with a
+string. And each lowering leaked.
+
+A literal is now two read-only data objects of the module — its bytes, and the
+same descriptor with the pointer as a relocation — and the instruction
+`data_addr`:
+
+```
+data @d0 align 1 bytes "hello"
+data @d1 align 8 { addr @d0, i64 5 }
+...
+v11 = data_addr @d1
+```
+
+No program's behaviour changed: 730 programs replayed on both backends before
+and after give the same exit codes and output. A `Cast` of a constant to a
+pointer is now rejected by the validator and refused by the JIT, so the pattern
+cannot come back unnoticed, and a corpus test checks that 469 fixtures each
+print the same IR from two separate processes.
+
+**Open.** A loop that does nothing but compare strings is a few percent slower
+in an optimized build — about one CPU cycle per comparison, cause not
+identified — which misses the design's own "no more than 10%" in some variants.
+The benchmark programs are unchanged. `static_data_design.md` §11 has the
+measurements and what was ruled out; it is a decision for the owner.
+
+*(Superseded by §73a: the cause was identified by the independent review and
+is not this change. Nothing is open here.)*
+
 ## 72. Findings of the confirmation review of §68–§70's fixes, and their fixes
 
 *(2026-11-18. The fixes for the two previous reviews were themselves reviewed
@@ -5474,4 +5531,83 @@ agreed on. Its 418 earlier probes: 128 refused, 193 agreeing, 97 failing alike
 on both; refused that the base agreed on, the same 15 narrowings as §70c.
 Corpus replay, 694 programs on both backends, against the build before this
 entry: identical.
+
+## 73. Findings of the independent review of M1.1 (§71), and what was done
+
+*(2026-11-18. The four commits of M1.1 were reviewed independently before
+being proposed for integration. No blocking finding; behaviour is preserved on
+everything the review ran — 743 corpus programs, 1,000 generated string-heavy
+programs and 29 scale programs, exit code, output and error text, both
+backends; and the IR is the old IR with the address constant replaced, over
+908 programs that lower. Four findings it rated "should fix", all addressed
+below.)*
+
+**a. The slowdown reported in §71 is not caused by M1.1.** §71 and the design
+document said a string-comparing loop was a few percent slower, cause not
+identified, and asked for the owner's decision. The cause is where the
+runtime's string comparison lands in the compiler's own binary: 36 bytes of
+code that fit inside a 64-byte cache line in the build before the change and
+cross a line boundary in the build after, because unrelated code moved. With
+that held fixed, in one binary that can do either: address constants 17.55 ns,
+data objects 17.57 ns (sum over six loop variants). Crossing the boundary
+costs about 9.5% whichever is used. Reproduced here on three of the variants.
+The design document's §11 is corrected; the criterion is met; there is nothing
+to decide. What remains true is that any commit which moves host code can
+shift a string-comparison benchmark by a tenth.
+
+**b. Taking the address of an object of no bytes brought the process down.**
+Valid IR, accepted by the validator: `data @d0 align 1 bytes ""` and
+`v0 = data_addr @d0`. Cranelift gives a size-0 object the address `align` and
+no memory; code reaches data relative to itself and the distance overflowed —
+an abort in a debug build, a panic in an optimized one. Not reachable from Cx
+source: lowering takes the address of descriptors only, never of bytes. Fixed
+by placing an object of no bytes as a single unread byte.
+
+That also removes a cost older than M1.1. The bytes of `""` had the address 1
+(a dangling pointer before, Cranelift's placeholder after), and the C
+library's comparison, handed it, took a suppressed fault each time: 20 million
+comparisons of `""` took 2.0 s against 0.45 s for `"a"`, on `submain` as well.
+Now 0.45 s.
+
+**c. The corpus test passed without looking at anything when there was no
+binary.** It printed SKIP and returned `ok`, while the parity gate beside it
+refuses to. It now refuses too, and is built with the `jit` feature like the
+parity gate, so that plain `cargo test` does not depend on a build having been
+made first. Like the parity gate it tests the binary on disk, which
+`cargo test` does not rebuild.
+
+**d. Two claims were not held by any test that runs by default.** The review
+removed the JIT's address-constant refusal and put a leak back into lowering;
+nothing failed for either. Added:
+`a_constant_turned_into_a_pointer_is_refused_before_anything_runs` (the JIT
+itself, on hand-built IR) and `the_ir_sources_name_no_way_to_leak` (the
+measurement of the leak stays ignored by default, because it measures the
+whole process; this one names the primitives a leak would need). And
+`two_descriptors_of_one_string_are_distinct_and_share_its_bytes` passed with
+every relocation written eight bytes off, because it compared two slots with
+each other; it now compares them with the bytes object's address.
+
+**e. The address-constant rule is narrower than it was described.** It finds a
+constant cast directly to a pointer. A constant that reaches the cast through
+a bind, through arithmetic or by narrowing is not found, and such hand-built
+IR runs. §71's "cannot come back unnoticed" overstated it: the direct shape
+cannot; the corpus test would show any other by the IR differing between two
+processes. The owner asked for a narrow rule, and it is left narrow; the
+descriptions are corrected (`validate.rs`, the design's §3.5). The one
+constant-to-pointer cast lowering still emitted from source — the `unknown`
+arm of a `when` on a string, refused by the JIT — is gone with §72c.
+
+**f. Comments and documents that said something untrue**, each corrected: that
+the data's memory "goes when" the JIT module does (it stays mapped); that the
+pointer cast materialises "a baked string-descriptor address"; that the
+validator rejects a data object with a tail shorter than a word (it does not);
+"three places … from a load" for the four places a `Result` payload is cast;
+the `IrData` description attached to `DataId`; `module_state.md` still saying
+string lowering embeds addresses; and the design saying the table is passed by
+`&mut` where the code shares it by reference count.
+
+**g. Recorded, not changed.** What an object-file backend still needs from
+this representation (no addend, data-only targets, no names or sections, fixed
+pointer size) is the design's new §12. `printing_a_module_with_data_twice_…`
+can only fail if the printer consults addresses, which it never did.
 

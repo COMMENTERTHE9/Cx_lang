@@ -1,0 +1,10 @@
+#[test]
+fnc: t_one() {
+    assert(1 == 1)
+    assert_eq(2, 2)
+}
+#[test]
+fnc: t_two() {
+    assert_eq(1, 2)
+}
+print(99)

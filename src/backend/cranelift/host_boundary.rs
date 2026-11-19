@@ -296,12 +296,14 @@ extern "C" fn cx_print_bool(b: i8) {
 /// `{byte_ptr: i64, byte_len: i64}` descriptor (string rep (a), storage (ii));
 /// this reads both fields and writes the raw bytes followed by a newline,
 /// matching the interpreter's `print_value` for a string byte-for-byte (no
-/// quotes, no escaping). The descriptor and its bytes are leaked `&'static` at
-/// lowering, so the address is valid for the process lifetime (JIT-only).
+/// quotes, no escaping). The descriptor and its bytes are read-only data
+/// objects of the compiled module (`IrData`), valid for as long as the module
+/// is in memory.
 extern "C" fn cx_print_str(descriptor: *const i64) {
     use std::io::{self, Write};
-    // SAFETY: `descriptor` points at a leaked `&'static [i64; 2]` whose first
-    // slot is the (also leaked) byte pointer and second is the byte length.
+    // SAFETY: `descriptor` is the address of a two-word descriptor in the
+    // module's read-only data: the address of the bytes object, then the byte
+    // length. The data section is checked before the module is placed.
     let (ptr, len) = unsafe { (*descriptor as *const u8, *descriptor.add(1) as usize) };
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let mut stdout = io::stdout().lock();
@@ -318,7 +320,7 @@ extern "C" fn cx_print_str(descriptor: *const i64) {
 /// 1 iff the lengths match and the bytes are equal (length-check then memcmp),
 /// matching the interpreter's content equality. Returns an i8 Bool (0/1).
 extern "C" fn cx_str_eq(a: *const i64, b: *const i64) -> i8 {
-    // SAFETY: both args are leaked `&'static` descriptors (see cx_print_str).
+    // SAFETY: both args are descriptors in module data (see cx_print_str).
     let (pa, la) = unsafe { (*a as *const u8, *a.add(1) as usize) };
     let (pb, lb) = unsafe { (*b as *const u8, *b.add(1) as usize) };
     if la != lb {
@@ -337,7 +339,7 @@ extern "C" fn cx_str_eq(a: *const i64, b: *const i64) -> i8 {
 
 extern "C" fn cx_print_str_inline(descriptor: *const i64) {
     use std::io::{self, Write};
-    // SAFETY: leaked `&'static` descriptor (see cx_print_str).
+    // SAFETY: a descriptor in module data (see cx_print_str).
     let (ptr, len) = unsafe { (*descriptor as *const u8, *descriptor.add(1) as usize) };
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let _ = io::stdout().lock().write_all(bytes);
@@ -822,6 +824,56 @@ impl HostBoundary {
             data_ids.insert(global.id, id);
         }
 
+        // No address constants. A number cast to a pointer can only be an
+        // address the compiler wrote down, which this process may happen to be
+        // able to use and no other can. Refused here, on the one path every
+        // compiled program takes, until the full validator runs on it (M1.2).
+        if let Some(crate::ir::validate::IrValidationError::AddressConstant { function, block, value }) =
+            crate::ir::validate::find_address_constants(ir).into_iter().next()
+        {
+            return Err(JitExecutionError::UnsupportedConstruct {
+                construct: format!(
+                    "function '{function}' block {block:?} turns the constant {value:?} into a pointer — compiled code may not contain an address from inside the compiler"
+                ),
+            });
+        }
+
+        // Read-only data (string bytes and their descriptors). Checked before
+        // anything is placed: a relocation outside its object would be a write
+        // outside an allocation. Then every object is declared before any is
+        // defined, so a descriptor can name bytes that are listed after it.
+        // The memory is the JITModule's; this code never frees it, and the
+        // module's own drop does not unmap it (static_data_design.md §3.6).
+        if let Some(error) = crate::ir::validate::data_errors(ir).into_iter().next() {
+            return Err(JitExecutionError::CodegenFailure { detail: format!("invalid module data: {:?}", error) });
+        }
+        let mut rodata_ids = HashMap::new();
+        for data in &ir.data {
+            let id = module.declare_anonymous_data(false, false)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+            rodata_ids.insert(data.id, id);
+        }
+        for data in &ir.data {
+            let mut description = cranelift_module::DataDescription::new();
+            // An object of no bytes — the bytes of "" — is placed as one zero
+            // byte. Cranelift gives a size-0 object no memory and the address
+            // `align`; a descriptor could hold that, but code taking the
+            // object's address reaches it relative to itself and the distance
+            // overflowed (abort in debug, panic in release), and the runtime's
+            // comparison read from an unmapped page under fault suppression
+            // on every empty string. Nothing reads the byte: lengths come
+            // from the descriptor.
+            let contents = if data.bytes.is_empty() { vec![0u8] } else { data.bytes.clone() };
+            description.define(contents.into_boxed_slice());
+            description.set_align(data.align as u64);
+            for reloc in &data.relocs {
+                let target = module.declare_data_in_data(rodata_ids[&reloc.target], &mut description);
+                description.write_data_addr(reloc.offset as u32, target, 0);
+            }
+            module.define_data(rodata_ids[&data.id], &description)
+                .map_err(|e| JitExecutionError::CodegenFailure { detail: e.to_string() })?;
+        }
+
 
         // Pre-declare runtime intrinsics as imported symbols.
         {
@@ -1060,7 +1112,7 @@ impl HostBoundary {
                 let mut fbc = cranelift_frontend::FunctionBuilderContext::new();
                 let mut builder =
                     cranelift_frontend::FunctionBuilder::new(&mut cl_func, &mut fbc);
-                compile_ir_function(&mut builder, ir_func, &func_id_map, &data_ids, &mut module, &can_recurse)?;
+                compile_ir_function(&mut builder, ir_func, &func_id_map, &data_ids, &rodata_ids, &mut module, &can_recurse)?;
                 builder.finalize();
             }
 
@@ -1238,6 +1290,7 @@ fn compile_ir_function(
     ir_func: &crate::ir::types::IrFunction,
     func_id_map: &std::collections::HashMap<String, cranelift_module::FuncId>,
     data_ids: &std::collections::HashMap<crate::ir::types::GlobalId, cranelift_module::DataId>,
+    rodata_ids: &std::collections::HashMap<crate::ir::types::DataId, cranelift_module::DataId>,
     module: &mut cranelift_jit::JITModule,
     can_recurse: &std::collections::HashSet<String>,
 ) -> Result<(), JitExecutionError> {
@@ -1319,6 +1372,15 @@ fn compile_ir_function(
                         detail: format!("undefined module global {:?}", global),
                     })?;
                     let reference = module.declare_data_in_func(*data, builder.func);
+                    let ptr_ty = module.target_config().pointer_type();
+                    let address = builder.ins().global_value(ptr_ty, reference);
+                    val_map.insert(*dst, address);
+                }
+                IrInst::DataAddr { dst, data } => {
+                    let id = rodata_ids.get(data).ok_or_else(|| JitExecutionError::CodegenFailure {
+                        detail: format!("undefined module data {:?}", data),
+                    })?;
+                    let reference = module.declare_data_in_func(*id, builder.func);
                     let ptr_ty = module.target_config().pointer_type();
                     let address = builder.ins().global_value(ptr_ty, reference);
                     val_map.insert(*dst, address);
@@ -1608,8 +1670,10 @@ fn compile_ir_function(
                     // Reject Ptr and Void — neither has a meaningful scalar cast path.
                     match (from, to) {
                         // D2.3b: I64 ↔ Ptr is a no-op reinterpret — both map to
-                        // cranelift `types::I64`, so this materializes a baked
-                        // string-descriptor address as a Ptr (string rep (a)). It
+                        // cranelift `types::I64`. Since M1.1 the only I64 that
+                        // lowering turns into a Ptr is a `Result`'s payload word
+                        // holding a string descriptor's address; a constant is
+                        // refused before this point (`find_address_constants`). It
                         // falls through to the `from_cl == to_cl` alias path below.
                         // All other Ptr casts stay unsupported (no scalar equivalent).
                         (IrType::I64, IrType::Ptr) | (IrType::Ptr, IrType::I64) => {}
@@ -1882,6 +1946,7 @@ mod tests {
         IrModule {
             debug_name: "test".into(),
             globals: vec![],
+            data: vec![],
             functions: edges
                 .iter()
                 .map(|(name, callees)| IrFunction {
@@ -2034,6 +2099,7 @@ mod tests {
         let ir = IrModule {
             debug_name: "test_module".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![],
         };
         let result = boundary.execute(&ir);
@@ -2064,6 +2130,7 @@ mod jit_tests {
         IrModule {
             debug_name: "test_const".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2114,6 +2181,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2147,6 +2215,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2180,6 +2249,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2213,6 +2283,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2246,6 +2317,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2278,6 +2350,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "no_main".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![],
         };
         let result = HostBoundary::new().execute(&module);
@@ -2301,6 +2374,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_void_main".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "helper".to_string(),
@@ -2351,6 +2425,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_unsupported".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2392,6 +2467,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_store_load_i32".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2434,6 +2510,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_i8_align".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2470,6 +2547,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_overwrite".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2508,6 +2586,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_alloca_two_slots".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2557,6 +2636,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_jump".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2608,6 +2688,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_jump_noarg".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2671,6 +2752,7 @@ mod jit_tests {
         IrModule {
             debug_name: "test_compare_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2822,6 +2904,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_trap_dead".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2878,6 +2961,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_assert_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -2946,6 +3030,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_branch_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3003,6 +3088,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_accepted".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3042,6 +3128,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3113,6 +3200,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_slot".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3180,6 +3268,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_i128_large".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3260,6 +3349,7 @@ mod jit_tests {
         IrModule {
             debug_name: "test_fcmp_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3318,6 +3408,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_const_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3452,6 +3543,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_back_edge_loop".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3546,6 +3638,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_void_func".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 // Void-return helper — compiled but never called in this test.
                 IrFunction {
@@ -3601,6 +3694,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_ptr_offset_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3640,6 +3734,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_ptr_offset_nonzero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3682,6 +3777,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_ptr_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3732,6 +3828,7 @@ mod jit_tests {
         IrModule {
             debug_name: format!("tbool_param_{}", raw_value),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "pass_tbool_as_i32".to_string(),
@@ -3823,6 +3920,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3858,6 +3956,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_nested_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3901,6 +4000,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_gt".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3940,6 +4040,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -3974,6 +4075,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4009,6 +4111,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_lt".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4049,6 +4152,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_le".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4089,6 +4193,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_ge".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4130,6 +4235,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_ne".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4171,6 +4277,7 @@ mod jit_tests {
         let module = IrModule {
             debug_name: "test_eval_order_compare_eq".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4288,6 +4395,7 @@ mod determinism_tests {
         IrModule {
             debug_name: "det_fcmp_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4347,6 +4455,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_const_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4372,6 +4481,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_const_42".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4399,6 +4509,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4430,6 +4541,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4461,6 +4573,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4492,6 +4605,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4523,6 +4637,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4557,6 +4672,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_neg_int".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4590,6 +4706,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_neg_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4624,6 +4741,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_bool_not_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4657,6 +4775,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_bool_not_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4695,6 +4814,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_alloca".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4723,6 +4843,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_branch_eq_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4781,6 +4902,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_branch_eq_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4839,6 +4961,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_branch_lt".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4916,6 +5039,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_assert_pass".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -4992,6 +5116,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_assert_abort".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5047,6 +5172,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_jump".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5101,6 +5227,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_back_edge_loop".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5198,6 +5325,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_loop_break".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5296,6 +5424,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_loop_continue".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5418,6 +5547,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_nested_loops".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5576,6 +5706,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_loop_accum".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5698,6 +5829,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_excl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5797,6 +5929,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_incl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -5891,6 +6024,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6000,6 +6134,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_for_carried".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6120,6 +6255,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_excl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6241,6 +6377,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_incl".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6357,6 +6494,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6490,6 +6628,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_in_carried".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6639,6 +6778,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6736,6 +6876,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_while_accum".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -6834,6 +6975,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_two_fn".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "helper".to_string(),
@@ -6882,6 +7024,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_ret".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_val".to_string(),
@@ -6929,6 +7072,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "noop".to_string(),
@@ -6980,6 +7124,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "sink".to_string(),
@@ -7036,6 +7181,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void_multi".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "noop_a".to_string(),
@@ -7103,6 +7249,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_void_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "side_effect".to_string(),
@@ -7182,6 +7329,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_void_main".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7207,6 +7355,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add".to_string(),
@@ -7268,6 +7417,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_chain".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "inner".to_string(),
@@ -7336,6 +7486,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_branch".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_val".to_string(),
@@ -7417,6 +7568,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_multi".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add_one".to_string(),
@@ -7484,6 +7636,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_i64_ret".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_i64".to_string(),
@@ -7539,6 +7692,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_i64_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add64".to_string(),
@@ -7629,6 +7783,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_and_true_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7709,6 +7864,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_and_sc_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7799,6 +7955,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_or_false_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7896,6 +8053,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_logical_or_sc_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -7972,6 +8130,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_ssabind".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8010,6 +8169,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cx_printn".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8052,6 +8212,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cx_printn_computed".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8094,6 +8255,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8128,6 +8290,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8162,6 +8325,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8196,6 +8360,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8230,6 +8395,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8269,6 +8435,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_f64_rem_overflow".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8315,6 +8482,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_sextend".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8342,6 +8510,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_ireduce".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8368,6 +8537,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_int_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8397,6 +8567,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_sextend_neg".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8423,6 +8594,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "test_cast_ptr_reject".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8463,6 +8635,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_if_else_merge_true".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8546,6 +8719,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_if_else_merge_false".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8639,6 +8813,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_dot".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8696,6 +8871,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_index".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8747,6 +8923,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_ptr_offset_zero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8784,6 +8961,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_ptr_offset_nonzero".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8823,6 +9001,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_array_alloca".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8864,6 +9043,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_array_alloca_offset".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8901,6 +9081,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_sextend".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8938,6 +9119,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_ireduce".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -8970,6 +9152,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_int_float".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9007,6 +9190,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_cast_sextend_neg".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9042,6 +9226,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_f64_ret".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_float".to_string(),
@@ -9094,6 +9279,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_call_f64_args".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "add_floats".to_string(),
@@ -9157,6 +9343,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9194,6 +9381,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9231,6 +9419,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9268,6 +9457,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_div".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9305,6 +9495,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_f64_rem".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9363,6 +9554,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_struct_two_fields".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9411,6 +9603,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_struct_field_isolation".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9466,6 +9659,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "probe_ptr_arg_mutation".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "set_field".to_string(),
@@ -9556,6 +9750,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "probe_ptr_arg_read".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "get_field".to_string(),
@@ -9626,6 +9821,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_assign_add".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9662,6 +9858,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_assign_sub".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9698,6 +9895,7 @@ mod determinism_tests {
         let module = IrModule {
             debug_name: "det_compound_assign_mul".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -9748,6 +9946,7 @@ mod determinism_tests {
         IrModule {
             debug_name: format!("det_tbool_call_{}", raw_value),
             globals: vec![],
+            data: vec![],
             functions: vec![
                 IrFunction {
                     name: "pass_tbool_as_i32".to_string(),
@@ -9929,6 +10128,7 @@ mod module_global_tests {
         IrModule {
             debug_name: "global_counter".into(),
             globals: vec![IrGlobal { id: GlobalId(0), name: "counter".into(), size: 8, align: 8 }],
+            data: vec![],
             functions: vec![
                 IrFunction { name: "bump".into(), params: vec![], return_ty: Some(IrType::I64),
                     blocks: vec![IrBlock { id: BlockId(0), params: vec![], insts: vec![
@@ -9985,5 +10185,308 @@ mod module_global_tests {
         assert!(HostBoundary::new().execute(&missing).is_err());
         let mut duplicate = counter_module(); duplicate.globals.push(duplicate.globals[0].clone());
         assert!(HostBoundary::new().execute(&duplicate).is_err());
+    }
+}
+
+
+#[cfg(all(test, feature = "jit"))]
+mod module_data_tests {
+    //! Read-only data through the JIT, on hand-built IR: nothing in lowering
+    //! produces data yet, so these are the only programs that reach it.
+    //! Each `main` returns a number computed from what it read, and the test
+    //! asserts that number.
+    use super::*;
+    use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
+    use crate::ir::types::*;
+
+    fn main_returning(data: Vec<IrData>, insts: Vec<IrInst>, result: ValueId) -> IrModule {
+        IrModule {
+            debug_name: "data".into(),
+            globals: vec![],
+            data,
+            functions: vec![IrFunction {
+                name: "main".into(), params: vec![], return_ty: Some(IrType::I32),
+                blocks: vec![IrBlock { id: BlockId(0), params: vec![], insts,
+                    term: IrTerminator::Return { value: Some(result) } }],
+            }],
+        }
+    }
+
+    fn run(ir: &IrModule) -> i32 {
+        crate::ir::validate::validate_module(ir).expect("the test module is valid IR");
+        HostBoundary::new().execute(ir).expect("compiles and runs").exit_code.raw()
+    }
+
+    /// `main` for a descriptor `@d1`: first byte + last byte + length of the
+    /// string it describes, read through the descriptor's address slot.
+    fn read_string_through_descriptor(len: usize) -> Vec<IrInst> {
+        vec![
+            IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+            IrInst::Load { dst: ValueId(1), ty: IrType::Ptr, ptr: ValueId(0) },
+            IrInst::PtrOffset { dst: ValueId(2), base: ValueId(0), offset: 8 },
+            IrInst::Load { dst: ValueId(3), ty: IrType::I64, ptr: ValueId(2) },
+            IrInst::Load { dst: ValueId(4), ty: IrType::I8, ptr: ValueId(1) },
+            IrInst::PtrOffset { dst: ValueId(5), base: ValueId(1), offset: len - 1 },
+            IrInst::Load { dst: ValueId(6), ty: IrType::I8, ptr: ValueId(5) },
+            IrInst::Cast { dst: ValueId(7), from: IrType::I8, to: IrType::I64, value: ValueId(4) },
+            IrInst::Cast { dst: ValueId(8), from: IrType::I8, to: IrType::I64, value: ValueId(6) },
+            IrInst::Binary { dst: ValueId(9), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(7), rhs: ValueId(8) },
+            IrInst::Binary { dst: ValueId(10), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(9), rhs: ValueId(3) },
+            IrInst::Cast { dst: ValueId(11), from: IrType::I64, to: IrType::I32, value: ValueId(10) },
+        ]
+    }
+
+    const HELLO: i32 = b'h' as i32 + b'o' as i32 + 5;
+
+    /// The relocation: a descriptor's first word is the address of its bytes.
+    #[test]
+    fn a_string_is_read_back_through_its_descriptor() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), b"hello".to_vec()), IrData::string_descriptor(DataId(1), DataId(0), 5)],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        assert_eq!(run(&ir), HELLO);
+    }
+
+    /// Every object is declared before any is defined, so order does not matter.
+    #[test]
+    fn a_descriptor_may_be_listed_before_its_bytes() {
+        let ir = main_returning(
+            vec![IrData::string_descriptor(DataId(1), DataId(0), 5), IrData::string_bytes(DataId(0), b"hello".to_vec())],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        assert_eq!(run(&ir), HELLO);
+    }
+
+    /// Descriptor identity: two descriptors of one bytes object are two
+    /// addresses holding one bytes address — the address of the bytes object
+    /// itself, not merely the same wrong one twice — and one descriptor asked
+    /// for twice is one address.
+    #[test]
+    fn two_descriptors_of_one_string_are_distinct_and_share_its_bytes() {
+        let bit = |dst: u32, op: CompareOp, lhs: u32, rhs: u32, weight: i128| vec![
+            IrInst::Compare { dst: ValueId(dst), op, lhs: ValueId(lhs), rhs: ValueId(rhs) },
+            IrInst::Cast { dst: ValueId(dst + 1), from: IrType::Bool, to: IrType::I64, value: ValueId(dst) },
+            IrInst::ConstInt { dst: ValueId(dst + 2), ty: IrType::I64, value: weight },
+            IrInst::Binary { dst: ValueId(dst + 3), op: BinaryOp::Mul, ty: IrType::I64, lhs: ValueId(dst + 1), rhs: ValueId(dst + 2) },
+        ];
+        let mut insts = vec![
+            IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+            IrInst::DataAddr { dst: ValueId(1), data: DataId(2) },
+            IrInst::DataAddr { dst: ValueId(2), data: DataId(1) },
+            IrInst::Cast { dst: ValueId(3), from: IrType::Ptr, to: IrType::I64, value: ValueId(0) },
+            IrInst::Cast { dst: ValueId(4), from: IrType::Ptr, to: IrType::I64, value: ValueId(1) },
+            IrInst::Cast { dst: ValueId(5), from: IrType::Ptr, to: IrType::I64, value: ValueId(2) },
+            IrInst::Load { dst: ValueId(6), ty: IrType::I64, ptr: ValueId(0) },
+            IrInst::Load { dst: ValueId(7), ty: IrType::I64, ptr: ValueId(1) },
+            IrInst::DataAddr { dst: ValueId(8), data: DataId(0) },
+            IrInst::Cast { dst: ValueId(9), from: IrType::Ptr, to: IrType::I64, value: ValueId(8) },
+        ];
+        insts.extend(bit(10, CompareOp::Ne, 3, 4, 1));   // the two descriptors differ
+        insts.extend(bit(20, CompareOp::Eq, 6, 7, 2));   // their bytes addresses agree
+        insts.extend(bit(30, CompareOp::Eq, 3, 5, 4));   // one descriptor is one address
+        insts.extend(bit(50, CompareOp::Eq, 6, 9, 8));   // and that address is the bytes object's
+        insts.extend([
+            IrInst::Binary { dst: ValueId(40), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(13), rhs: ValueId(23) },
+            IrInst::Binary { dst: ValueId(41), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(40), rhs: ValueId(33) },
+            IrInst::Binary { dst: ValueId(43), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(41), rhs: ValueId(53) },
+            IrInst::Cast { dst: ValueId(42), from: IrType::I64, to: IrType::I32, value: ValueId(43) },
+        ]);
+        let ir = main_returning(
+            vec![
+                IrData::string_bytes(DataId(0), b"same".to_vec()),
+                IrData::string_descriptor(DataId(1), DataId(0), 4),
+                IrData::string_descriptor(DataId(2), DataId(0), 4),
+            ],
+            insts, ValueId(42),
+        );
+        assert_eq!(run(&ir), 1 + 2 + 4 + 8);
+    }
+
+    /// A number turned into a pointer is refused on the path every compiled
+    /// program takes, before anything is placed or run — not only by the
+    /// standalone validator. Without this the rule could be unwired from the
+    /// JIT and every default test stay green (the review did exactly that).
+    ///
+    /// The constant is a real address — a static of this test — which is the
+    /// very thing the rule exists to stop: a number that works in the process
+    /// that wrote it. So if the refusal were unwired the program would run and
+    /// return 7, and this test would say so, rather than fault and take the
+    /// whole test run down with it.
+    #[test]
+    fn a_constant_turned_into_a_pointer_is_refused_before_anything_runs() {
+        static IN_THIS_PROCESS: i32 = 7;
+        let address = &IN_THIS_PROCESS as *const i32 as usize as i128;
+        let ir = main_returning(
+            vec![],
+            vec![
+                IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: address },
+                IrInst::Cast { dst: ValueId(1), from: IrType::I64, to: IrType::Ptr, value: ValueId(0) },
+                IrInst::Load { dst: ValueId(2), ty: IrType::I32, ptr: ValueId(1) },
+            ],
+            ValueId(2),
+        );
+        match HostBoundary::new().execute(&ir) {
+            Err(JitExecutionError::UnsupportedConstruct { construct }) => {
+                assert!(construct.contains("address from inside the compiler"), "{construct}");
+            }
+            other => panic!("expected the address constant to be refused, got {other:?}"),
+        }
+    }
+
+    /// An empty string: no bytes, a length of zero, and an address that is
+    /// still something a slice may be built from.
+    #[test]
+    fn an_empty_string_has_length_zero_and_a_non_null_address() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), Vec::new()), IrData::string_descriptor(DataId(1), DataId(0), 0)],
+            vec![
+                IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+                IrInst::Load { dst: ValueId(1), ty: IrType::I64, ptr: ValueId(0) },
+                IrInst::PtrOffset { dst: ValueId(2), base: ValueId(0), offset: 8 },
+                IrInst::Load { dst: ValueId(3), ty: IrType::I64, ptr: ValueId(2) },
+                IrInst::ConstInt { dst: ValueId(4), ty: IrType::I64, value: 0 },
+                IrInst::Compare { dst: ValueId(5), op: CompareOp::Ne, lhs: ValueId(1), rhs: ValueId(4) },
+                IrInst::Cast { dst: ValueId(6), from: IrType::Bool, to: IrType::I64, value: ValueId(5) },
+                IrInst::ConstInt { dst: ValueId(7), ty: IrType::I64, value: 10 },
+                IrInst::Binary { dst: ValueId(8), op: BinaryOp::Mul, ty: IrType::I64, lhs: ValueId(3), rhs: ValueId(7) },
+                IrInst::Binary { dst: ValueId(9), op: BinaryOp::Add, ty: IrType::I64, lhs: ValueId(8), rhs: ValueId(6) },
+                IrInst::Cast { dst: ValueId(10), from: IrType::I64, to: IrType::I32, value: ValueId(9) },
+            ],
+            ValueId(10),
+        );
+        // length * 10 + (address != 0)
+        assert_eq!(run(&ir), 1);
+    }
+
+    /// The address of an object of no bytes can be taken, and is a place in
+    /// memory like any other object's: readable, and not the small number an
+    /// unplaced object would have. Taking it used to bring the process down.
+    #[test]
+    fn the_address_of_an_empty_object_is_a_place_in_memory() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), Vec::new()), IrData::string_bytes(DataId(1), Vec::new())],
+            vec![
+                IrInst::DataAddr { dst: ValueId(0), data: DataId(0) },
+                IrInst::DataAddr { dst: ValueId(1), data: DataId(1) },
+                // Read the placeholder byte of each: a fault here is the bug.
+                IrInst::Load { dst: ValueId(2), ty: IrType::I8, ptr: ValueId(0) },
+                IrInst::Load { dst: ValueId(3), ty: IrType::I8, ptr: ValueId(1) },
+                IrInst::Cast { dst: ValueId(4), from: IrType::I8, to: IrType::I32, value: ValueId(2) },
+                IrInst::Cast { dst: ValueId(5), from: IrType::I8, to: IrType::I32, value: ValueId(3) },
+                IrInst::Binary { dst: ValueId(6), op: BinaryOp::Add, ty: IrType::I32, lhs: ValueId(4), rhs: ValueId(5) },
+                // Two objects, two places.
+                IrInst::Compare { dst: ValueId(7), op: CompareOp::Ne, lhs: ValueId(0), rhs: ValueId(1) },
+                IrInst::Cast { dst: ValueId(8), from: IrType::Bool, to: IrType::I32, value: ValueId(7) },
+                IrInst::Binary { dst: ValueId(9), op: BinaryOp::Add, ty: IrType::I32, lhs: ValueId(6), rhs: ValueId(8) },
+            ],
+            ValueId(9),
+        );
+        // byte + byte + (the two addresses differ)
+        assert_eq!(run(&ir), 1);
+    }
+
+    /// The runtime's string functions read what the data holds: two strings
+    /// with the same bytes in two bytes objects are equal, and a different
+    /// string is not.
+    #[test]
+    fn the_runtime_compares_strings_held_in_data() {
+        let compare = |right: &[u8]| {
+            let ir = main_returning(
+                vec![
+                    IrData::string_bytes(DataId(0), b"same".to_vec()),
+                    IrData::string_descriptor(DataId(1), DataId(0), 4),
+                    IrData::string_bytes(DataId(2), right.to_vec()),
+                    IrData::string_descriptor(DataId(3), DataId(2), right.len()),
+                ],
+                vec![
+                    IrInst::DataAddr { dst: ValueId(0), data: DataId(1) },
+                    IrInst::DataAddr { dst: ValueId(1), data: DataId(3) },
+                    IrInst::Call { dst: Some(ValueId(2)), callee: "cx_str_eq".into(), args: vec![ValueId(0), ValueId(1)], return_ty: Some(IrType::Bool) },
+                    IrInst::Cast { dst: ValueId(3), from: IrType::Bool, to: IrType::I32, value: ValueId(2) },
+                ],
+                ValueId(3),
+            );
+            // The standalone validator does not know `cx_str_eq` yet (M1.2),
+            // so this module goes to the backend without it.
+            HostBoundary::new().execute(&ir).expect("compiles and runs").exit_code.raw()
+        };
+        assert_eq!(compare(b"same"), 1);
+        assert_eq!(compare(b"sane"), 0);
+        assert_eq!(compare(b"sam"), 0);
+        assert_eq!(compare(b""), 0);
+    }
+
+    /// Alignment: an object is placed at a multiple of its alignment whatever
+    /// was placed before it.
+    #[test]
+    fn data_is_placed_at_its_alignment() {
+        let aligned = |id: u32, align: usize| IrData { id: DataId(id), align, bytes: vec![0xAB; align], relocs: vec![] };
+        let odd = |id: u32| IrData::string_bytes(DataId(id), b"x".to_vec());
+        let data = vec![odd(0), aligned(1, 16), odd(2), aligned(3, 8), odd(4), aligned(5, 4), odd(6), aligned(7, 2)];
+        // Sum of (address % alignment) over the four aligned objects, plus 1.
+        let mut insts = vec![IrInst::ConstInt { dst: ValueId(0), ty: IrType::I64, value: 1 }];
+        let mut total = ValueId(0);
+        for (n, (id, align)) in [(1u32, 16i128), (3, 8), (5, 4), (7, 2)].into_iter().enumerate() {
+            let base = 10 + n as u32 * 10;
+            insts.extend([
+                IrInst::DataAddr { dst: ValueId(base), data: DataId(id) },
+                IrInst::Cast { dst: ValueId(base + 1), from: IrType::Ptr, to: IrType::I64, value: ValueId(base) },
+                IrInst::ConstInt { dst: ValueId(base + 2), ty: IrType::I64, value: align },
+                IrInst::Binary { dst: ValueId(base + 3), op: BinaryOp::Rem, ty: IrType::I64, lhs: ValueId(base + 1), rhs: ValueId(base + 2) },
+                IrInst::Binary { dst: ValueId(base + 4), op: BinaryOp::Add, ty: IrType::I64, lhs: total, rhs: ValueId(base + 3) },
+            ]);
+            total = ValueId(base + 4);
+        }
+        insts.push(IrInst::Cast { dst: ValueId(99), from: IrType::I64, to: IrType::I32, value: total });
+        assert_eq!(run(&main_returning(data, insts, ValueId(99))), 1);
+    }
+
+    /// Repeated compilation: one module compiled and run many times gives the
+    /// same answer every time, each in a fresh JIT module.
+    #[test]
+    fn a_module_with_data_compiles_and_runs_repeatedly() {
+        let ir = main_returning(
+            vec![IrData::string_bytes(DataId(0), b"hello".to_vec()), IrData::string_descriptor(DataId(1), DataId(0), 5)],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        for round in 0..40 {
+            assert_eq!(run(&ir), HELLO, "round {round}");
+        }
+    }
+
+    /// Invalid references are errors, never a write outside an object and never
+    /// a panic. Each case is one defect in an otherwise valid module.
+    #[test]
+    fn malformed_data_is_refused_before_anything_is_placed() {
+        let valid = || main_returning(
+            vec![IrData::string_bytes(DataId(0), b"hello".to_vec()), IrData::string_descriptor(DataId(1), DataId(0), 5)],
+            read_string_through_descriptor(5), ValueId(11),
+        );
+        assert_eq!(run(&valid()), HELLO);
+
+        let cases: Vec<(&str, Box<dyn Fn(&mut IrModule)>)> = vec![
+            ("address slot past the end", Box::new(|ir| ir.data[1].relocs[0].offset = 16)),
+            ("address slot far past the end", Box::new(|ir| ir.data[1].relocs[0].offset = 1 << 40)),
+            ("address slot straddling the end", Box::new(|ir| ir.data[1].relocs[0].offset = 12)),
+            ("address slot off its boundary", Box::new(|ir| { ir.data[1].bytes = vec![0; 24]; ir.data[1].relocs[0].offset = 4 })),
+            ("address slot naming no object", Box::new(|ir| ir.data[1].relocs[0].target = DataId(77))),
+            ("address slot naming its own object", Box::new(|ir| ir.data[1].relocs[0].target = DataId(1))),
+            ("address slot with contents", Box::new(|ir| ir.data[1].bytes[0] = 1)),
+            ("two address slots in one place", Box::new(|ir| { let again = ir.data[1].relocs[0].clone(); ir.data[1].relocs.push(again) })),
+            ("descriptor not aligned for an address", Box::new(|ir| ir.data[1].align = 1)),
+            ("alignment zero", Box::new(|ir| ir.data[0].align = 0)),
+            ("alignment not a power of two", Box::new(|ir| ir.data[0].align = 3)),
+            ("alignment larger than supported", Box::new(|ir| ir.data[0].align = 8192)),
+            ("two objects with one id", Box::new(|ir| { let again = ir.data[0].clone(); ir.data.push(again) })),
+            ("code naming no object", Box::new(|ir| ir.functions[0].blocks[0].insts[0] = IrInst::DataAddr { dst: ValueId(0), data: DataId(9) })),
+            ("no data at all", Box::new(|ir| ir.data.clear())),
+        ];
+        for (what, damage) in cases {
+            let mut ir = valid();
+            damage(&mut ir);
+            let outcome = HostBoundary::new().execute(&ir);
+            assert!(outcome.is_err(), "{what}: expected a refusal, got {outcome:?}");
+        }
     }
 }

@@ -1,0 +1,5 @@
+#[inline]
+fnc: t64 a() { 1 }
+#[deprecated]
+fnc: t64 b() { 2 }
+print(a() + b())

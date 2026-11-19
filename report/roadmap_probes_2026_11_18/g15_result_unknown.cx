@@ -1,0 +1,2 @@
+fnc: Result<t64> f() { return Ok(?) }
+print(f())

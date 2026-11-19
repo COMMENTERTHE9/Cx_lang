@@ -1,0 +1,4 @@
+fnc identity<T>(x: T) -> T {
+    x
+}
+print(identity(1))

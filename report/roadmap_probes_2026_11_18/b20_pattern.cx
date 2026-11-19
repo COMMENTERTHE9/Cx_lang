@@ -1,0 +1,13 @@
+enum Shape { Circle, Square, Tri }
+fnc: t64 f(n: t64) {
+    when n {
+        k if k > 5 => 1,
+        _ => 0,
+    }
+}
+print(f(7))
+s: Shape = Shape::Square
+when s {
+    Shape::Square as v => print(2),
+    _ => print(0),
+}

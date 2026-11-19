@@ -1,0 +1,11 @@
+fnc: Result<t64> half(n: t64) {
+    if n % 2 != 0 { return Err("odd") }
+    return Ok(n / 2)
+}
+fnc: Result<t64> quarter(n: t64) {
+    let h;
+    h = half(n)?
+    return half(h)
+}
+print(quarter(8))
+print(quarter(6))

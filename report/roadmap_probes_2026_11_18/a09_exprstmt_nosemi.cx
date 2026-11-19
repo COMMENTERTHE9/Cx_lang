@@ -1,0 +1,8 @@
+fnc: t64 f() {
+    print(7)
+    3
+}
+x: t64 = 1
+f()
+x + 1
+print(x)

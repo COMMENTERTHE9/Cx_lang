@@ -1,0 +1,3 @@
+#![imports]
+m: use "./d_badlib"
+print(m.ok())

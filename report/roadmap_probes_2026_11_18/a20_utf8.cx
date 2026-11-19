@@ -1,0 +1,3 @@
+s: str = "héllo ✓"
+print(s)
+print(len(s))

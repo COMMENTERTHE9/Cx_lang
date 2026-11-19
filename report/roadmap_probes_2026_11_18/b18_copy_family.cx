@@ -1,0 +1,11 @@
+fnc: bump(n.copy: t64) {
+    n = n + 1
+}
+fnc: nobleed(n.copy.free: t64) {
+    n = n + 100
+}
+x: t64 = 1
+bump(x.copy)
+print(x)
+nobleed(x.copy.free)
+print(x)

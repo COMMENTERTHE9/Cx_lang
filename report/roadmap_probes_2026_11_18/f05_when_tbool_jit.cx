@@ -1,0 +1,3 @@
+b: bool = ?
+v: t64 = when b { true => 1, false => 2, unknown => 3 }
+print(v)

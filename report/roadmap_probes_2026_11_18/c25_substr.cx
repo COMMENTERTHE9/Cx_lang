@@ -1,0 +1,2 @@
+s: str = "hello"
+print(s:[0])

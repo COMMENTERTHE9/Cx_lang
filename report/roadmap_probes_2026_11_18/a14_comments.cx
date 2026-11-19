@@ -1,0 +1,4 @@
+/# block
+   comment #/
+x: t64 = 1 // line comment
+print(x)

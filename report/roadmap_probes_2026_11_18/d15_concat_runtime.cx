@@ -1,0 +1,4 @@
+fnc: str greet(n: str) {
+    "hi " + n
+}
+print(greet("bob"))

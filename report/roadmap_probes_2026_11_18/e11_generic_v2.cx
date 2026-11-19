@@ -1,0 +1,4 @@
+fnc: A <A, B> first(a: A, b: B) {
+    a
+}
+print(first(1, true))

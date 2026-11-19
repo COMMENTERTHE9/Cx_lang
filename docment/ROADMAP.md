@@ -318,6 +318,48 @@ remaining blockers folded into 0.4.
 
 ---
 
+## Proposed changes to the version sequence — provisionally approved, not applied
+
+*(Added 2026-11-18. The sequence above is the established commitment and is
+left as written. This section records each change proposed to it, so that
+nothing is replaced without being documented first. The owner approved the
+proposal provisionally on 2026-11-18; it becomes the sequence only when the
+owner says so, at which point the section above is edited and this one is
+folded into it.)*
+
+**Why a change is proposed.** 0.4 as written holds standard library v1,
+Cranelift AOT, Ricey v0, LLVM AOT, bootstrapping, and the math layer. The
+readiness audit (`report/tsg_llvm_readiness_2026_11_18.md`) found that the
+LLVM backend does not exist and that neither AOT path can be built until
+compiled programs stop containing addresses from the compiler process. The
+proposal narrows 0.4 to what the work actually reaches first.
+
+| Version | Established (above) | Proposed | What changes |
+|---|---|---|---|
+| **0.4** | Stdlib v1, Cranelift AOT / Ricey v0, LLVM AOT, bootstrapping begins/completes, math layer; remaining lowering blockers; multidimensional-array design gate | **First standalone native executables through Cranelift AOT**, for the programs the JIT already runs, on Windows and Linux. The lowering blockers already listed as open. Multidimensional arrays, which have landed | **Narrowed.** Leaves 0.4: LLVM AOT, Ricey v0, stdlib v1 beyond the runtime library an executable needs, bootstrapping, the math layer |
+| **0.5** | Multidimensional arrays landed, or actively completing | **LLVM AOT correctness, then optimized builds**; the next language milestones (place expressions; the math-layer design gate, then the math layer) | **Re-scoped.** Arrays are already done; 0.5 takes LLVM and the math layer |
+| **Before 1.0, no number yet** | — | Memory and collections, FFI, standard library v1, Ricey v0, bootstrapping | **No version numbers are invented.** Each gets one when it is scoped |
+| **1.0** | First stable release | unchanged | — |
+| **1.0+ … 2029+** | Graphics (Vulkan/DX12 bindings), renderer, physics, audio, networking / NOD Protocol, TSG playable | unchanged | Subject to `report/tsg_requirements_reconciliation_2026_11_18.md`: these lines have no supporting specification in either repository |
+
+**Conditions the owner attached.**
+
+1. No unfinished LLVM functionality goes into a 0.4 release. LLVM prototyping
+   may begin after the first validated Cranelift executable; it ships when it
+   is correct, which the proposal places in 0.5.
+2. Clang 18 is the proposed minimum for the LLVM path, **subject to real
+   testing on Windows and Linux**. It has been run on Linux (18.1.3). LLVM 19
+   and 20 — the Windows CI runners ship 20.1.8 — have not been run, and the
+   owner's Windows machine has not been checked.
+3. Every change above stays a proposal until this section is folded into the
+   sequence. Nothing else in this document has been edited.
+
+**Still to decide.** "Bootstrapping begins/completes" is one line in the
+established sequence. The proposal keeps "begins" before 1.0 and gives
+"completes" no date until memory, collections and FFI exist.
+
+---
+
 ## Multidimensional Arrays — 0.4 design gate, 0.5 delivery
 
 **Scheduled, not aspirational.** 2D and 3D are **first-class**, not a stepping

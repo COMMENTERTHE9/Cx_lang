@@ -1,0 +1,3 @@
+#![imports]
+m: use "./d_lib"
+print(m.add(1, 2))

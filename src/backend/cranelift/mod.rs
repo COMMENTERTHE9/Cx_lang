@@ -134,6 +134,9 @@ fn lower_instruction(inst: &IrInst) -> Result<(), CraneliftLoweringError> {
         IrInst::GlobalAddr { dst, global } => Err(CraneliftLoweringError::UnsupportedInstruction {
             inst: "GlobalAddr".into(), context: format!("dst={dst:?} global={global:?}"),
         }),
+        IrInst::DataAddr { dst, data } => Err(CraneliftLoweringError::UnsupportedInstruction {
+            inst: "DataAddr".into(), context: format!("dst={dst:?} data={data:?}"),
+        }),
         IrInst::ConstInt { dst, ty, value } => {
             Err(CraneliftLoweringError::UnsupportedInstruction {
                 inst: "ConstInt".to_string(),
@@ -334,6 +337,7 @@ mod tests {
         let module = IrModule {
             debug_name: "test_unsupported".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -365,6 +369,7 @@ mod tests {
         let module = IrModule {
             debug_name: "test_exit42".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],
@@ -396,6 +401,7 @@ mod tests {
         let module = IrModule {
             debug_name: "test_exit0".to_string(),
             globals: vec![],
+            data: vec![],
             functions: vec![IrFunction {
                 name: "main".to_string(),
                 params: vec![],

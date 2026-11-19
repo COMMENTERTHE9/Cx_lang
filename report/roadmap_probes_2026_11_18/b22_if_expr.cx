@@ -1,0 +1,2 @@
+x: t64 = if 3 > 2 { 10 } else { 20 }
+print(x)

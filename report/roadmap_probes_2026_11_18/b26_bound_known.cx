@@ -1,0 +1,4 @@
+fnc: T <T: Known> idt(a: T) {
+    a
+}
+print(idt(2))

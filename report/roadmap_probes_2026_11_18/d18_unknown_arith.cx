@@ -1,0 +1,5 @@
+let x;
+x = ?
+y: t64 = 5
+z = x + y
+print(is_known(z))

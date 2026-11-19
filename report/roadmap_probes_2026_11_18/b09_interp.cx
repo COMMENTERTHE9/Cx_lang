@@ -1,0 +1,3 @@
+name: str = "Cx"
+age: t64 = 3
+print("name: {name} age: {age}")

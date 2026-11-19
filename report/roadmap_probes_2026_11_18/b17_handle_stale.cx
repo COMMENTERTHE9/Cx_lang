@@ -1,0 +1,4 @@
+let h;
+h = Handle.new(99)
+h.drop()
+print(h.val)

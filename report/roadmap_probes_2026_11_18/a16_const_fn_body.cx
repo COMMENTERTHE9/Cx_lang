@@ -1,0 +1,5 @@
+fnc: t64 f() {
+    const K: t64 = 5
+    K
+}
+print(f())

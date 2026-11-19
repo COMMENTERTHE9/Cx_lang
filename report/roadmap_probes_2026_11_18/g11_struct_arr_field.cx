@@ -1,0 +1,3 @@
+struct V { x: f64, y: f64 }
+ps: [2: V] = [V { x: 1.0, y: 2.0 }, V { x: 3.0, y: 4.0 }]
+print(ps:[1].x)

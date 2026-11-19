@@ -1,0 +1,2 @@
+w = open_window(640, 480)
+print(1)

@@ -1,0 +1,10 @@
+enum EntityState {
+    group ::alive [ Running, Walking, Idle, ],
+    group ::combat [ Attacking, Blocking, Stunned, ],
+}
+let e;
+e = EntityState::Attacking
+when e {
+    alive    => print(1),
+    combat   => print(2),
+}

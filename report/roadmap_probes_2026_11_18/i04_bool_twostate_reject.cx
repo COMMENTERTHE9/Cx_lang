@@ -1,0 +1,3 @@
+b: bool = true
+b = ?
+when b { true => print(1), false => print(2), unknown => print(3), }

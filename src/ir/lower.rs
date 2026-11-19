@@ -13,8 +13,8 @@ use crate::frontend::semantic_types::{
 use crate::ir::builder::IrBuilder;
 use crate::ir::instr::{BinaryOp, CompareOp, IrInst, IrTerminator};
 use crate::ir::types::{
-    compute_array_layout, BlockId, BlockParam, GlobalId, IrGlobal, IrBlock, IrFunction, IrModule,
-    IrParam, IrType, StructLayout, ValueId,
+    compute_array_layout, BlockId, BlockParam, DataId, GlobalId, IrBlock, IrData, IrFunction,
+    IrGlobal, IrModule, IrParam, IrType, StructLayout, ValueId,
 };
 
 macro_rules! unsupported {
@@ -1032,6 +1032,48 @@ struct ModuleBinding {
 
 type ModuleBindings = HashMap<BindingId, ModuleBinding>;
 
+/// The read-only data a module's functions refer to — string bytes and their
+/// descriptors — collected while the functions are lowered one after another
+/// (docs/backend/static_data_design.md).
+///
+/// Ids are handed out in the order lowering first needs each object. Lowering
+/// visits functions and statements in program order, so the same program
+/// always gets the same ids and the same data section.
+#[derive(Default)]
+struct StaticData {
+    objects: Vec<IrData>,
+    /// One bytes object per distinct string, however many places use it.
+    bytes_by_content: HashMap<Vec<u8>, DataId>,
+}
+
+impl StaticData {
+    fn next_id(&self) -> DataId {
+        DataId(self.objects.len() as u32)
+    }
+
+    /// The descriptor for one use of the string `s`.
+    ///
+    /// The bytes are shared with every other use of the same text. The
+    /// descriptor is this use's own: each place a literal is lowered gets one
+    /// descriptor object, as it always has. Nothing in the language can tell
+    /// two descriptors of equal strings apart (docs/backend/value_equality.md),
+    /// so merging them would be an optimisation, and is left as one.
+    fn string(&mut self, s: &str) -> DataId {
+        let bytes = match self.bytes_by_content.get(s.as_bytes()) {
+            Some(id) => *id,
+            None => {
+                let id = self.next_id();
+                self.objects.push(IrData::string_bytes(id, s.as_bytes().to_vec()));
+                self.bytes_by_content.insert(s.as_bytes().to_vec(), id);
+                id
+            }
+        };
+        let descriptor = self.next_id();
+        self.objects.push(IrData::string_descriptor(descriptor, bytes, s.len()));
+        descriptor
+    }
+}
+
 /// One use of a Result that depends on what its payload word holds, to be
 /// decided once the function's whole value graph exists.
 struct ResultCheck {
@@ -1060,6 +1102,8 @@ enum Unproven {
 
 struct LoweringCtx {
     builder: IrBuilder,
+    /// The module's read-only data, shared by every function's context.
+    static_data: std::rc::Rc<std::cell::RefCell<StaticData>>,
     finished_blocks: Vec<IrBlock>,
     /// All top-level bindings, for refusing representations not yet supported
     /// in shared storage. Numeric/enum captures use `module_bindings`; uncaptured
@@ -1201,6 +1245,7 @@ impl LoweringCtx {
             top_level_bindings: HashSet::new(),
             module_bindings: HashMap::new(),
             function_name: String::new(),
+            static_data: Default::default(),
             result_types: HashMap::new(),
             result_checks: Vec::new(),
             result_flows: Vec::new(),
@@ -1612,6 +1657,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let mut module = IrModule {
         debug_name: "cxir_v0".into(),
         globals: vec![],
+        data: vec![],
         functions: vec![],
     };
     let mut top_level_stmts = Vec::new();
@@ -1624,6 +1670,9 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
     let (planned_globals, module_bindings) = module_storage_plan(program)?;
     let struct_table = build_struct_table(program);
     let generic_structs = build_generic_struct_templates(program);
+    // One table for the whole module: every function's strings go into it, in
+    // the order the functions are lowered.
+    let static_data: std::rc::Rc<std::cell::RefCell<StaticData>> = Default::default();
 
     for stmt in &program.stmts {
         match stmt {
@@ -1647,7 +1696,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                 if function.name == "main" {
                     has_real_main = true;
                 }
-                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, trace, target, &enum_variants)?);
+                module.functions.push(lower_semantic_function(function, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, &static_data, trace, target, &enum_variants)?);
             }
             // Struct definitions are pre-processed into the struct_table before
             // code lowering begins (see build_struct_table).  They carry no
@@ -1698,7 +1747,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, trace, target, &enum_variants)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, &static_data, trace, target, &enum_variants)?);
                 }
             }
             // 0.3.4 slice 5: phen methods emit exactly like impl methods —
@@ -1742,7 +1791,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
                         is_test: method.is_test,
                         pos: method.pos,
                     };
-                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, trace, target, &enum_variants)?);
+                    module.functions.push(lower_semantic_function(&reconstructed, &signature_table, &struct_table, &generic_structs, &top_level, &module_bindings, &static_data, trace, target, &enum_variants)?);
                 }
             }
             other => top_level_stmts.push(other),
@@ -1771,7 +1820,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
         module
             .functions
-            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, &captured, trace, target, &enum_variants)?);
+            .push(lower_top_level_main(&top_level_stmts, &signature_table, &struct_table, &generic_structs, &captured, &static_data, trace, target, &enum_variants)?);
     }
 
     // Two definitions of one function name — two modules each implementing a
@@ -1789,6 +1838,7 @@ fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModul
         }
     }
 
+    module.data = std::mem::take(&mut static_data.borrow_mut().objects);
     Ok(module)
 }
 
@@ -1811,7 +1861,7 @@ fn positional_type_params(ty: &SemanticType, params: &[String]) -> SemanticType 
     }
 }
 
-fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, module_bindings: &ModuleBindings, trace: bool, target: TargetConfig, enum_variants: &EnumVariantNames) -> Result<IrFunction, LoweringError> {
+fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<String, FunctionSignature>, struct_table: &HashMap<String, StructLayoutInfo>, generic_structs: &GenericStructTemplates, module_bindings: &ModuleBindings, static_data: &std::rc::Rc<std::cell::RefCell<StaticData>>, trace: bool, target: TargetConfig, enum_variants: &EnumVariantNames) -> Result<IrFunction, LoweringError> {
     let spec = FunctionLoweringSpec {
         name: "main".to_string(),
         return_ty: None,
@@ -1821,6 +1871,7 @@ fn lower_top_level_main(stmts: &[&SemanticStmt], signature_table: &HashMap<Strin
         copy_writebacks: Vec::new(),
     };
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
+    ctx.static_data = static_data.clone();
     ctx.module_bindings = module_bindings.clone();
     for &stmt in stmts {
         collect_binding_print_types_stmt(stmt, &mut ctx.binding_print_types);
@@ -1854,6 +1905,7 @@ fn lower_semantic_function(
     generic_structs: &GenericStructTemplates,
     top_level: &HashSet<BindingId>,
     module_bindings: &ModuleBindings,
+    static_data: &std::rc::Rc<std::cell::RefCell<StaticData>>,
     trace: bool,
     target: TargetConfig,
     enum_variants: &EnumVariantNames,
@@ -1874,6 +1926,7 @@ fn lower_semantic_function(
     };
 
     let mut ctx = LoweringCtx::new(signature_table.clone(), struct_table.clone(), generic_structs.clone(), trace, target, enum_variants.clone());
+    ctx.static_data = static_data.clone();
     ctx.module_bindings = module_bindings.clone();
     ctx.top_level_bindings = top_level.clone();
     ctx.function_name = function.name.clone();
@@ -4237,11 +4290,16 @@ fn lower_value(
 //
 // Exception: Op::And and Op::Or use short-circuit evaluation and are
 // dispatched to lower_logical before any operand is evaluated.
-/// Build a static string VALUE (string rep (a), D2.3b): leak `s`'s bytes and a
-/// {byte_ptr, byte_len} descriptor to `&'static`, then materialize the descriptor
-/// address as a Ptr (ConstInt(I64) + the no-op Cast(I64->Ptr)). Shared by the
-/// literal construct (lower_value) and the D2.3c concat fold. Interpolation
-/// (`{…}`) defers to D2.3d — a brace-containing result stays SKIP.
+/// Build a static string VALUE (string rep (a), D2.3b): put `s`'s bytes and a
+/// {byte_ptr, byte_len} descriptor in the module's read-only data, and yield
+/// the descriptor's address (`DataAddr`). Shared by the literal construct
+/// (lower_value) and the D2.3c concat fold. Interpolation (`{…}`) defers to
+/// D2.3d — a brace-containing result stays SKIP.
+///
+/// The address is a reference to a data object, not a number: it exists once
+/// the module is placed in memory or linked, so the same IR can be run by the
+/// JIT or written to an object file, and prints the same every time
+/// (docs/backend/static_data_design.md).
 ///
 /// A string has no identity: two strings are the same string when their bytes
 /// are (docs/backend/value_equality.md). So nothing here, or anywhere a string
@@ -4257,16 +4315,9 @@ fn construct_static_str(
             construct: "string interpolation '{...}' not yet lowered (tracker D2.3d)".to_string(),
         });
     }
-    // JIT-only / non-AOT (R6): the leaked address is process-specific and baked
-    // into the IR; the bytes outlive the program, so the descriptor never dangles.
-    let bytes: &'static [u8] = s.to_owned().into_bytes().leak();
-    let descriptor: &'static [i64] =
-        vec![bytes.as_ptr() as usize as i64, bytes.len() as i64].leak();
-    let desc_addr = descriptor.as_ptr() as usize as i128;
-    let addr = ctx.fresh_value();
-    active.emit(IrInst::ConstInt { dst: addr, ty: IrType::I64, value: desc_addr })?;
+    let data = ctx.static_data.borrow_mut().string(s);
     let ptr = ctx.fresh_value();
-    active.emit(IrInst::Cast { dst: ptr, from: IrType::I64, to: IrType::Ptr, value: addr })?;
+    active.emit(IrInst::DataAddr { dst: ptr, data })?;
     Ok(LoweredValue { value: ptr, ty: IrType::Ptr })
 }
 
@@ -14518,6 +14569,198 @@ mod divergence_shape_tests {
         let by_value_first = array_slots("i: t64 = pick(arr)\nprint(arr:[i])\n");
         let by_value_in_index = array_slots("print(arr:[pick(arr)])\n");
         assert_eq!(by_value_in_index, by_value_first, "a call that cannot change the array costs no copy");
+    }
+
+    fn string_objects(ir: &IrModule) -> (Vec<&IrData>, Vec<&IrData>) {
+        ir.data.iter().partition(|d| d.relocs.is_empty())
+    }
+
+    fn data_addresses(function: &IrFunction) -> Vec<DataId> {
+        function.blocks.iter().flat_map(|b| &b.insts)
+            .filter_map(|i| match i { IrInst::DataAddr { data, .. } => Some(*data), _ => None })
+            .collect()
+    }
+
+    /// M1.1: a string literal is two data objects and one `DataAddr` — its
+    /// bytes, and a descriptor holding the bytes' address and the length.
+    #[test]
+    fn a_string_literal_lowers_to_bytes_a_descriptor_and_its_address() {
+        let ir = lowered("print(\"hello\")\n");
+        assert_eq!(ir.data, vec![
+            IrData::string_bytes(DataId(0), b"hello".to_vec()),
+            IrData::string_descriptor(DataId(1), DataId(0), 5),
+        ]);
+        assert_eq!(data_addresses(function(&ir, "main")), vec![DataId(1)]);
+        assert_eq!(crate::ir::validate::data_errors(&ir), vec![]);
+    }
+
+    /// M1.1: no compiled program contains an address from inside the compiler.
+    /// The pattern that carried one — a constant cast to a pointer — is gone
+    /// from everything a string can lower to.
+    #[test]
+    fn strings_lower_without_address_constants() {
+        let ir = lowered(
+            "enum Color { Red, Green }\n\
+             fnc: Result<str> make(f: bool) { if f { return Ok(\"yes\") } return Err(\"no\") }\n\
+             s: str = \"a\" + \"b\"\n\
+             x: t64 = 3\n\
+             u: bool = ?\n\
+             c: Color = Color::Green\n\
+             print(s)\n\
+             print(\"x is {x}\")\n\
+             print(make(true))\n\
+             print(c)\n\
+             print(u)\n\
+             when s { \"ab\" => print(1), _ => print(0) }\n\
+             assert_eq(make(false), Err(\"no\"))\n",
+        );
+        assert_eq!(crate::ir::validate::find_address_constants(&ir), vec![]);
+        assert!(!ir.data.is_empty());
+        assert_eq!(crate::ir::validate::data_errors(&ir), vec![]);
+    }
+
+    /// M1.1: equal text in two places is one bytes object and two descriptors;
+    /// one place evaluated many times is one descriptor.
+    #[test]
+    fn equal_strings_share_their_bytes_and_each_site_keeps_its_descriptor() {
+        let ir = lowered(
+            "a: str = \"same\"\n\
+             b: str = \"same\"\n\
+             i: t64 = 0\n\
+             while (i < 3) {\n\
+                 c: str = \"other\"\n\
+                 print(c)\n\
+                 i += 1\n\
+             }\n\
+             print(a)\n\
+             print(b)\n",
+        );
+        let (bytes, descriptors) = string_objects(&ir);
+        let texts: Vec<&[u8]> = bytes.iter().map(|d| d.bytes.as_slice()).collect();
+        assert_eq!(texts, vec![b"same".as_slice(), b"other".as_slice()], "one bytes object per distinct string");
+        assert_eq!(descriptors.len(), 3, "two sites of \"same\", one site of \"other\"");
+        let same = bytes[0].id;
+        assert_eq!(descriptors.iter().filter(|d| d.relocs[0].target == same).count(), 2);
+        // The loop's literal is one site however often it runs.
+        let other = bytes[1].id;
+        assert_eq!(descriptors.iter().filter(|d| d.relocs[0].target == other).count(), 1);
+    }
+
+    /// M1.1: the empty string is a bytes object of no bytes and a descriptor
+    /// of length zero.
+    #[test]
+    fn an_empty_string_lowers_to_an_empty_bytes_object() {
+        let ir = lowered("e: str = \"\"\nprint(e)\n");
+        assert_eq!(ir.data, vec![
+            IrData::string_bytes(DataId(0), Vec::new()),
+            IrData::string_descriptor(DataId(1), DataId(0), 0),
+        ]);
+    }
+
+    /// M1.1: strings used in several functions go into one module-wide table,
+    /// with ids in the order lowering first needed them.
+    #[test]
+    fn functions_share_one_data_table_with_ids_in_first_use_order() {
+        let ir = lowered(
+            "fnc: greet() { print(\"hi\") }\n\
+             fnc: part() { print(\"bye\") }\n\
+             greet()\n\
+             part()\n\
+             print(\"hi\")\n",
+        );
+        let ids: Vec<u32> = ir.data.iter().map(|d| d.id.0).collect();
+        assert_eq!(ids, (0..ir.data.len() as u32).collect::<Vec<_>>(), "ids are dense and in order");
+        let (bytes, descriptors) = string_objects(&ir);
+        let texts: Vec<&[u8]> = bytes.iter().map(|d| d.bytes.as_slice()).collect();
+        assert_eq!(texts, vec![b"hi".as_slice(), b"bye".as_slice()]);
+        assert_eq!(descriptors.len(), 3);
+        assert_eq!(data_addresses(function(&ir, "greet")).len(), 1);
+        assert_eq!(data_addresses(function(&ir, "main")).len(), 1);
+    }
+
+    /// M1.1: lowering one program twice gives the same module, text for text —
+    /// nothing in it depends on where the compiler's own memory happened to be.
+    #[test]
+    fn lowering_a_program_with_strings_twice_gives_identical_ir() {
+        let src = "enum Color { Red, Green }\n\
+                   fnc: Result<str> make(f: bool) { if f { return Ok(\"yes\") } return Err(\"no\") }\n\
+                   s: str = \"hello\"\n\
+                   x: t64 = 3\n\
+                   print(\"x is {x} and s is {s}\")\n\
+                   print(make(true))\n\
+                   print(Color::Green)\n";
+        let first = lowered(src);
+        let second = lowered(src);
+        assert_eq!(first, second);
+        assert_eq!(crate::ir::printer::print_module(&first), crate::ir::printer::print_module(&second));
+    }
+
+    /// M1.1: lowering does not leak. Each lowering of this program used to
+    /// leak every string's bytes and descriptor for the life of the process.
+    /// Run alone (`--ignored --test-threads=1`): it measures the process, and
+    /// other tests running beside it would be measured too.
+    #[test]
+    #[ignore = "measures process memory; run alone with --ignored --test-threads=1"]
+    #[cfg(target_os = "linux")]
+    fn lowering_repeatedly_does_not_grow_memory() {
+        fn resident_kb() -> u64 {
+            let status = std::fs::read_to_string("/proc/self/status").expect("/proc/self/status");
+            status.lines().find_map(|l| l.strip_prefix("VmRSS:"))
+                .and_then(|v| v.split_whitespace().next()?.parse().ok())
+                .expect("VmRSS")
+        }
+        let mut src = String::new();
+        for i in 0..60 {
+            src.push_str(&format!("print(\"a string literal number {i}, long enough to be worth leaking\")\n"));
+        }
+        // Warm up: let the allocator reach its steady state first.
+        for _ in 0..200 { let _ = lowered(&src); }
+        let before = resident_kb();
+        for _ in 0..4000 { let _ = lowered(&src); }
+        let after = resident_kb();
+        let grown = after.saturating_sub(before);
+        println!("resident memory: {before} KB before, {after} KB after 4000 lowerings ({grown} KB grown)");
+        // 4000 lowerings x 60 strings x (bytes + descriptor) leaked was more
+        // than 20 MB. Anything near that is the leak back.
+        assert!(grown < 4096, "lowering grew resident memory by {grown} KB over 4000 runs");
+    }
+
+    /// M1.1: the guard for the same thing that runs every time. The
+    /// measurement above is ignored by default, so with it alone a leak could
+    /// come back and every default run stay green (the review put one back
+    /// and nothing failed). The IR sources — every file of this module — name
+    /// none of the ways to hand memory to the process for good. It looks for
+    /// the spelled primitives and nothing cleverer.
+    #[test]
+    fn the_ir_sources_name_no_way_to_leak() {
+        // Spelled in pieces so that this test does not find itself.
+        let ways = [
+            ["Box::", "leak"].concat(),
+            [".le", "ak("].concat(),
+            ["into_", "raw("].concat(),
+            ["mem::", "forget"].concat(),
+            ["Manually", "Drop"].concat(),
+        ];
+        let sources = [
+            ("lower.rs", include_str!("lower.rs")),
+            ("types.rs", include_str!("types.rs")),
+            ("validate.rs", include_str!("validate.rs")),
+            ("printer.rs", include_str!("printer.rs")),
+            ("builder.rs", include_str!("builder.rs")),
+            ("instr.rs", include_str!("instr.rs")),
+            ("monomorphize.rs", include_str!("monomorphize.rs")),
+            ("call_shapes.rs", include_str!("call_shapes.rs")),
+            ("mod.rs", include_str!("mod.rs")),
+        ];
+        for (name, source) in sources {
+            for way in &ways {
+                let lines: Vec<usize> = source.lines().enumerate()
+                    .filter(|(_, line)| line.contains(way.as_str()))
+                    .map(|(index, _)| index + 1)
+                    .collect();
+                assert!(lines.is_empty(), "{name} uses `{way}` on line(s) {lines:?}");
+            }
+        }
     }
 
     /// §68: on the way to a store an index is a place. `rows:[h(rows.copy)]:[1]

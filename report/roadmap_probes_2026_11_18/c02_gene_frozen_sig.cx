@@ -1,0 +1,4 @@
+gene Damageable {
+    fnc: bool is_alive()
+}
+print(1)

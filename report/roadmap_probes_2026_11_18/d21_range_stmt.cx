@@ -1,0 +1,4 @@
+for i in 0..=3 { printn(i) }
+print("")
+for i in 3..0 { printn(i) }
+print("x")

@@ -1,0 +1,2 @@
+p: NullPoint<t64> = ?
+print(1)

@@ -1,0 +1,3 @@
+h: Handle<t64> = Handle.new(1)
+h.drop(fence)
+print(1)

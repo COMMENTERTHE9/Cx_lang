@@ -1,0 +1,6 @@
+struct P { x: t64, y: t64 }
+p: P = P { x: 1, y: 2 }
+when p {
+    P { x: 1, y } => print(y),
+    _ => print(0),
+}
