@@ -199,6 +199,8 @@ on nested Handles. Needs its own scoping audit before scheduling.
 
 ## Working Notes
 
+**2026-11-19:** 48 non-merge commits across four stacked branches (`backend/m0-lowering-divergences`, `backend/m0-followup-correctness`, `backend/result-content-equality`, `backend/m1.1-static-data`), all pushed, none merged to `main` or `submain`. Work covers: M0 correctness follow-up (13 JIT lowering fixes + 3 interpreter behavior changes), Result content equality revision (supersedes PR #476; payload proof system, content `assert_eq`, reserved names), and M1.1 static data (string literals as data objects, not compiler addresses — prerequisite for AOT). Seven independent reviews conducted; 59 new fixtures added; parity at branch tip 645/64/0 on 709 fixtures. Test counts at `m1.1-static-data` tip: `cargo test` 372, `--features jit` 563. Proposed version sequence narrows 0.4 to Cranelift AOT, moves LLVM to 0.5 (provisionally approved by owner). Seven owner decisions pending before integration. Full status in `report/correctness_followup_and_m1_1_status_2026_11_18.md` (on `backend/m1.1-static-data`).
+
 **2026-05-18:** PR #268 merged `train/backend-determinism` → submain (host_boundary expansion, IR lowering fixes, 23 new parity fixtures including CX-228 t159–t177). CX-233 implements while-in loop source-to-IR lowering on `stokowski/CX-233` (branch-local, not yet merged) — WhileLoop parity moves to 8/0. Submain 171 commits ahead of main.
 
 **2026-05-09:** 9 PRs merged to submain. CX-74 (exit-code propagation), CX-48/73 (assert lowering), CX-52 (float cmp), CX-53 (void return), CX-67 (CodeRabbit), CX-70/71 (review fixes), CX-54/55. 10 new branches (CX-56–66) expanding JIT instruction coverage. Submain 40 commits ahead of main. JIT: 243 tests, 0 parity failures.
