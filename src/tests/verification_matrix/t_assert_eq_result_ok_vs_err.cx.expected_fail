@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Ok("same") and Err("same") are different variants; the shared string does not make them equal.

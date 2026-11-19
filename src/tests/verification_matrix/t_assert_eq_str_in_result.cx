@@ -1,0 +1,56 @@
+// assert_eq compares strings by their bytes, at the top level and inside a
+// Result, Ok or Err. Where a string is stored never decides it.
+//
+// Each block builds the two sides by a different route. These are the routes
+// that give two strings with the same bytes in two different places — the
+// program shapes of PR #476's identity fixtures, with the decided result:
+// every pair below is equal.
+
+// Two literals.
+a: Result<str> = Ok("same")
+b: Result<str> = Ok("same")
+assert_eq(a, b)
+assert_eq(Ok("same"), Ok("same"))
+assert_eq(Err("bad"), Err("bad"))
+print("literals")
+
+// Two calls of one function.
+fnc: Result<str> make_ok() { return Ok("same") }
+fnc: Result<t64> make_err() { return Err("same") }
+let first
+first = make_ok()
+let second
+second = make_ok()
+assert_eq(first, second)
+assert_eq(make_err(), make_err())
+assert_eq(make_err(), Err("same"))
+print("calls")
+
+// A string that went through a parameter, and one that did not.
+fnc: Result<str> wrap(value: str) { return Ok(value) }
+fnc: Result<str> wrap_copy(value.copy: str) { return Ok(value) }
+fnc: Result<str> forward(value: Result<str>) { return value }
+s: str = "same"
+assert_eq(Ok(s), wrap(s))
+assert_eq(Ok(s), wrap_copy(s.copy))
+assert_eq(a, forward(a))
+print("parameters")
+
+// Empty strings, with other strings made in between.
+let before
+before = Ok("")
+assert_eq(len("padding"), 7)
+x: t64 = 3
+print("{x}")
+let after
+after = Ok("")
+assert_eq(before, after)
+print("empty")
+
+// One Err, read as a Result of two different payload types.
+let error
+error = Err("bad")
+number: Result<t64> = error
+text: Result<str> = error
+assert_eq(number, text)
+print(number)

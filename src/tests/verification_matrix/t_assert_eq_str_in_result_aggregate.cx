@@ -1,0 +1,19 @@
+// Equality of two Results is by content all the way down: a string inside a
+// struct or an array inside a Result is compared by its bytes too. The two
+// "label" literals below are two separate strings.
+struct Pair { label: str, numbers: [2:t64] }
+first: Result<Pair> = Ok(Pair { label: "label", numbers: [3, 4] })
+second: Result<Pair> = Ok(Pair { label: "label", numbers: [3, 4] })
+assert_eq(first, second)
+print("struct payload")
+
+names_a: Result<[2:str]> = Ok(["x", "y"])
+names_b: Result<[2:str]> = Ok(["x", "y"])
+assert_eq(names_a, names_b)
+print("array payload")
+
+fnc: Result<t64> inner(f: bool) { if f { return Ok(1) } return Err("no") }
+nested_a: Result<Result<t64>> = Ok(inner(false))
+nested_b: Result<Result<t64>> = Ok(inner(false))
+assert_eq(nested_a, nested_b)
+print("nested payload")

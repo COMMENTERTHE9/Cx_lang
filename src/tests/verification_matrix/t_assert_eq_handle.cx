@@ -1,0 +1,10 @@
+// A handle is equal to itself, and not to another handle — also one made from
+// an equal value.
+let h
+h = Handle.new(5)
+assert_eq(h, h)
+print("same handle")
+let g
+g = Handle.new(5)
+assert_eq(h, g)
+print("unreachable")

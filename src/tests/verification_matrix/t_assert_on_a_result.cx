@@ -1,0 +1,5 @@
+// `assert` takes a condition. A Result is not one, Ok or Err.
+fnc: Result<t64> make() { return Ok(1) }
+print("before")
+assert(make())
+print("unreachable")

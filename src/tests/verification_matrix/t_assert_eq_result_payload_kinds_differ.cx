@@ -1,0 +1,9 @@
+// Two Ok payloads of different kinds are not equal: the number 1 is not the
+// string "1".
+fnc: Result<t64> number() { return Ok(1) }
+fnc: Result<str> text() { return Ok("1") }
+assert_eq(number(), Ok(1))
+assert_eq(text(), Ok("1"))
+print("equal")
+assert_eq(number(), text())
+print("unreachable")

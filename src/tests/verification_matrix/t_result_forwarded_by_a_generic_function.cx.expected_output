@@ -1,0 +1,17 @@
+second
+Err(y)
+Err(left)
+Err(no)
+Ok(1)
+second
+Err(deep)
+Err(after three)
+Err(right)
+Err(left)
+Err(one)
+Err(many)
+Ok(5)
+Err(below)
+Err(far below)
+second
+done

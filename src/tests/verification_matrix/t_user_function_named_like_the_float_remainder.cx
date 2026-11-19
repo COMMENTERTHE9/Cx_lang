@@ -1,0 +1,8 @@
+// `%` on floats is done by a runtime function. A program's own function of
+// that name must not be called in its place: with this one, 7.5 % 2.0 would
+// be 99.
+fnc: f64 __cx_fmod(a: f64, b: f64) { return 99.0 }
+f: f64 = 7.5
+g: f64 = 2.0
+print(f % g)
+print(__cx_fmod(f, g))

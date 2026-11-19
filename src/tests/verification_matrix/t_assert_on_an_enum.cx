@@ -1,0 +1,7 @@
+// `assert` takes a condition. An enum value is not one — not even a variant
+// compiled code happens to keep as a non-zero number.
+enum C { R, G }
+x: C = C::G
+print("before")
+assert(x)
+print("unreachable")

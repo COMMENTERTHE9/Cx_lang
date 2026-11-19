@@ -1,0 +1,6 @@
+// Two Ok strings of the same length that differ in one byte are not equal.
+fnc: Result<str> make(f: bool) { if f { return Ok("same") } return Ok("sane") }
+assert_eq(make(true), make(true))
+print("equal")
+assert_eq(make(true), make(false))
+print("unreachable")

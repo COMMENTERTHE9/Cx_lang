@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Color::Red and Shape::Circle are values of different enums.

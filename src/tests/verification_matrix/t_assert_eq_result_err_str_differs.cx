@@ -1,0 +1,6 @@
+// Two Err messages where one is a prefix of the other are not equal.
+fnc: Result<t64> parse(f: bool) { if f { return Err("bad") } return Err("bad input") }
+assert_eq(parse(true), Err("bad"))
+print("equal")
+assert_eq(parse(true), parse(false))
+print("unreachable")

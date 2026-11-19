@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+Ok(Color::Green) is not Ok(Color::Red).

@@ -1,0 +1,27 @@
+// A `when` arm matches a value of its own kind. The number 1 is not
+// `Color::Green`, though compiled code keeps Green as a 1, and it is not
+// `true`; a variant of one enum is not a number or a variant of another.
+enum Color { Red, Green }
+enum Shape { Circle, Square }
+
+c: Color = Color::Green
+print(when c { 1 => 1, _ => 2 })
+print(when c { Color::Green => 1, _ => 2 })
+
+r: Color = Color::Red
+print(when r { 0 => 1, _ => 2 })
+
+n: t8 = 1
+print(when n { Color::Green => 1, _ => 2 })
+print(when n { 1 => 1, _ => 2 })
+
+b: bool = true
+print(when b { 1 => 1, _ => 2 })
+print(when b { true => 1, _ => 2 })
+
+print(when c { Shape::Square => 1, _ => 2 })
+
+fnc: t64 <T> zero_arm(x: T) { return when x { 0 => 1, _ => 2 } }
+print(zero_arm(Color::Red))
+z: t8 = 0
+print(zero_arm(z))

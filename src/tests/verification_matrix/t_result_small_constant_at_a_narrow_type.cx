@@ -1,0 +1,41 @@
+// A whole-number constant in `Ok(..)` is as wide as its value needs. Typed
+// nowhere, `Ok(5)` can still be read as a `Result<t8>`: 5 fits. (`Ok(300)`
+// cannot, and compiled code refuses that — the interpreter does not convert
+// the number and `?` would; see docs/backend/value_equality.md.)
+fnc: t64 take8(p: Result<t8>) { print(p); return 0 }
+fnc: T <T> same(x: T) { return x }
+fnc: Result<t64> run() {
+    let lit
+    lit = Ok(5)
+    narrow: Result<t8> = lit
+    v: t8 = narrow?
+    print(v)
+
+    a: Result<t8> = Ok(100 + 27)
+    print(a?)
+    b: Result<t8> = Ok(-(100 + 28))
+    print(b?)
+    c: Result<t16> = Ok(200 * 100)
+    print(c?)
+    d: Result<t8> = Ok(2 - 5)
+    print(d?)
+
+    let u
+    u = Ok(12)
+    print(take8(u))
+    wide: Result<t64> = u
+    print(wide)
+
+    // The same variable seen through a loop and through an `if` value.
+    n: Result<t8> = u
+    i: t64 = 0
+    while (i < 3) {
+        if i == 2 { n = lit }
+        i = i + 1
+    }
+    print(n)
+    m: Result<t8> = if i == 3 { u } else { same(u) }
+    print(m)
+    return Ok(0)
+}
+print(run())

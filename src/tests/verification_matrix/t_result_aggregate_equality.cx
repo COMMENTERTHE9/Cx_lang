@@ -1,0 +1,17 @@
+a: Result<[2:t64]> = Ok([1, 2])
+b: Result<[2:t64]> = a
+c: Result<[2:t64]> = Ok([1, 2])
+assert_eq(a, b)
+assert_eq(a, c)
+let raw
+raw = Ok([1, 2])
+typed: Result<[2:t64]> = raw
+assert_eq(raw, raw)
+assert_eq(typed, typed)
+assert_eq(a, raw)
+struct Pair { label: str, numbers: [2:t64] }
+s: str = "label"
+first: Result<Pair> = Ok(Pair { label: s, numbers: [3, 4] })
+second: Result<Pair> = Ok(Pair { label: s, numbers: [3, 4] })
+assert_eq(first, second)
+print("result-equality-ok")

@@ -1,0 +1,14 @@
+r: Result<t64> = if true { Err("a") } else { Err("b") }
+print(r)
+let state
+state = Err("first")
+if true { state = Err("second") }
+number: Result<t64> = state
+print(number)
+while (false) { print(0) }
+after_loop: Result<t64> = state
+print(after_loop)
+let w
+w = when 1 { 1 => Err("chosen"), _ => Err("other") }
+other: Result<str> = w
+print(other)

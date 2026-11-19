@@ -131,17 +131,23 @@ impl RunTime {
                     let right = if let Some(SemanticCallArg::Expr(e)) = iter.next() {
                         self.eval_semantic_expr(e)?
                     } else { return Ok(Value::Num(0)); };
-                    let equal = match (&left, &right) {
-                        (Value::Num(a), Value::Num(b)) => a == b,
-                        (Value::Bool(a), Value::Bool(b)) => a == b,
-                        (Value::Float(a), Value::Float(b)) => a == b,
-                        (Value::Str(ao, al), Value::Str(bo, bl)) => {
-                            self.resolve_str(*ao, *al) == self.resolve_str(*bo, *bl)
-                        }
-                        (Value::ResultOk(a), Value::ResultOk(b)) => a == b,
-                        (Value::ResultErr(a), Value::ResultErr(b)) => a == b,
-                        _ => false,
-                    };
+                    // Which pairs `assert_eq` compares at all. A pair it does
+                    // not (two structs, two arrays, an unknown bool) fails, as
+                    // it always has; whether those should compare is not
+                    // decided (docs/backend/value_equality.md).
+                    let comparable = matches!(
+                        (&left, &right),
+                        (Value::Num(_), Value::Num(_))
+                            | (Value::Bool(_), Value::Bool(_))
+                            | (Value::Float(_), Value::Float(_))
+                            | (Value::Char(_), Value::Char(_))
+                            | (Value::Str(..), Value::Str(..))
+                            | (Value::EnumVariant(..), Value::EnumVariant(..))
+                            | (Value::Handle(_), Value::Handle(_))
+                            | (Value::ResultOk(_), Value::ResultOk(_))
+                            | (Value::ResultErr(_), Value::ResultErr(_))
+                    );
+                    let equal = comparable && self.values_equal(&left, &right);
                     if !equal {
                         return Err(RuntimeError::AssertionFailed {
                             msg: format!("assert_eq failed: {} != {}",

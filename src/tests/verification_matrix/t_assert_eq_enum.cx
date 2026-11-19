@@ -1,0 +1,22 @@
+// An enum value is equal to a value of the same enum with the same variant —
+// through a binding, a call, a struct field, and inside a Result.
+enum Color { Red, Green }
+struct Pixel { c: Color, n: t64 }
+fnc: Color pick(f: bool) { if f { return Color::Green } return Color::Red }
+fnc: Result<Color> find(f: bool) { if f { return Ok(Color::Green) } return Err("none") }
+
+a: Color = Color::Red
+b: Color = Color::Red
+assert_eq(a, b)
+let c
+c = Color::Green
+assert_eq(c, Color::Green)
+assert_eq(pick(true), Color::Green)
+assert_eq(pick(false), Color::Red)
+p: Pixel = Pixel { c: Color::Green, n: 1 }
+assert_eq(p.c, Color::Green)
+print("enum")
+
+assert_eq(find(true), Ok(Color::Green))
+assert_eq(find(false), Err("none"))
+print("enum in Result")

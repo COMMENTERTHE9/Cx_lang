@@ -1,0 +1,10 @@
+// A variant of one enum is not equal to a variant of another, whatever
+// position each has in its own enum.
+enum Color { Red, Green }
+enum Shape { Circle, Square }
+a: Color = Color::Red
+b: Shape = Shape::Circle
+assert_eq(a, Color::Red)
+print("equal")
+assert_eq(a, b)
+print("unreachable")

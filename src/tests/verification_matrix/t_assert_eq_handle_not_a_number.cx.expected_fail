@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+The first handle is not the number 0.

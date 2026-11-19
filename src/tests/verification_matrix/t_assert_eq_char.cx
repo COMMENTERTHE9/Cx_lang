@@ -1,0 +1,6 @@
+// A char is equal to a char with the same value.
+a: char = 'x'
+b: char = 'x'
+assert_eq(a, b)
+assert_eq(a, 'x')
+print("char")

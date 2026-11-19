@@ -4239,10 +4239,12 @@ next evaluation.
 
 ## 55. `assert_eq` compares strings inside a `Result` by where they are stored, and never accepts two enums
 
-*(Found 2026-11-18 while reviewing PR #476. **Open — needs an owner ruling.**
-Not fixed here.)*
+*(Found 2026-11-18 while reviewing PR #476. **Decided by the owner on
+2026-11-18: equality is by content. Fixed on both backends** by the commit that
+rewrites this entry. The rule is `docs/backend/value_equality.md`; what follows
+is the history, then the resolution.)*
 
-The interpreter's `assert_eq` compares two strings by content, but compares two
+The interpreter's `assert_eq` compared two strings by content, but compares two
 `Result` values with the derived `Value` equality, which compares an embedded
 string by its arena offset and length. Everything it does not name falls to
 `_ => false`:
@@ -4275,6 +4277,31 @@ contradicts itself, and ordinary string equality is by content everywhere else �
 and make both backends compare `Result` payloads by content. That changes what
 the reference prints for the four lines above, so it is recorded here rather than
 decided in passing.
+
+**Resolution.** The owner chose the alternative: a string is equal by its bytes
+wherever it is, a `Result` is equal when its variant and its payload are, and an
+enum is equal by its enum and variant. This corrects the reference; it does not
+preserve it.
+
+- *Interpreter.* `assert_eq` goes through one recursive rule,
+  `RunTime::values_equal`, in place of `Value`'s derived equality. It also
+  accepts two enums and two chars, which fell to `_ => false`.
+- *Compiled code.* Two `Result`s are compared by tag, then by payload: `Err`
+  messages and `Ok` strings through `cx_str_eq`, numbers and enum tags as words,
+  payloads of two different kinds never equal. A payload whose kind is not
+  proven is refused. Nothing allocates when a string is bound, passed or
+  stored — the arena emulation PR #476 added for this is not taken (§63).
+- *Found on the way.* Compiled code compared an enum with a number by their
+  bytes, so `assert_eq(Color::Red, zero)` with `zero: t8 = 0` passed there and
+  failed on the interpreter. It is now decided from the types: never equal.
+
+Fixtures and measurements are listed in `docs/backend/value_equality.md` §5.
+Neighbouring questions are deliberately **not** decided by this change —
+top-level structs and arrays, three-state bools, an integer against a float, an
+unknown number, and a `Result` assigned to a `Result` of a narrower payload type
+— and are written down in §4 of that document. In each of them compiled code
+refuses, so none is a case of two answers. (For the last one that became true
+only with §70: the first version compiled it, and `?` then gave two answers.)
 
 ## 56. Open findings from the PR #476 review — four defects on `submain`, none fixed
 
@@ -4589,6 +4616,106 @@ a literal written in a different order, a nested struct, a generic struct, an
 array of structs and a `Result` holding one. A compiled-code SKIP, because
 compiled code refuses to print a struct.
 
+
+## 62. `len` of an array did not evaluate its operand in compiled code
+
+*(Found by PR #476 and fixed there; the fix is taken from it, narrowed, by the
+commit that introduces this entry.)*
+
+The length of an array is part of its type, so compiled code folds `len(x)` to a
+constant. It folded without evaluating `x`. The interpreter evaluates it.
+
+```cx
+fnc: [3:t64] make() {
+    print("called")
+    return [4, 5, 6]
+}
+print(len(make()))      // interpreter: called 3     JIT: 3        (both exit 0)
+
+grid: [2:[3:t64]] = [[1, 2, 3], [4, 5, 6]]
+i: t64 = 5
+print(len(grid:[i]))    // interpreter: index out of bounds      JIT: 3, exit 0
+```
+
+PR #476 lowers the operand always. That fixed both programs and broke a third,
+which worked before: `len(arr)` inside a function, where `arr` is a top-level
+array, was refused, because compiled code cannot yet read a top-level array from
+a function — and the fold never needed to.
+
+The operand is now lowered unless evaluating it cannot be observed: a literal, a
+name, a field of a name, or an array literal made of those. Anything else — a
+call, an index — is evaluated and its value discarded.
+
+Fixtures: `t_len_evaluates_its_operand` (the top-level array inside a function,
+a call, a plain name) and `t_len_operand_index_out_of_bounds`
+(`interp=diagnostic jit=trap`). Unit tests
+`len_of_a_top_level_array_inside_a_function_lowers` and
+`len_still_evaluates_a_call_operand`.
+
+## 63. PR #476 — what was taken, what was not, and why
+
+*(2026-11-18. PR #476, `codex/runtime-string-identity` at 2a68658, is open and
+unmerged. This entry is the record of its revision on
+`backend/result-content-equality`; nothing was pushed to the PR's own branch.)*
+
+PR #476 set out to make compiled code agree with the interpreter about `Result`
+values. Its premise for strings — that two strings are the same string when they
+occupy the same arena position — was the interpreter's behaviour at the time and
+is no longer the language's rule (§55). The revision keeps what does not depend
+on that premise.
+
+**Taken, as written:**
+
+- *Payload kind proofs.* A `Result`'s payload word is a number, an enum tag or a
+  string's address, and compiled code used to act on the word without knowing
+  which. The PR tracks the kind of every `Result` it produces, checks it at each
+  typed boundary and proves it across merges and loops; a consumer of an
+  unproven word is refused (`docs/backend/value_equality.md` §3).
+- *An `Err` passing through a merge* — `if`/`when`/reassignment producing `Err`
+  on every path — fixture `t_result_err_phi`.
+- *Binary operators on two `Result`s are refused* rather than applied to the
+  packed words.
+- *The field-assignment fix* (§52) and *`.copy` write-back on an early `?`
+  return* (§59) — landed earlier, with the PR's fixtures.
+- *`len` evaluates its operand* (§62), narrowed to keep `len(arr)` working.
+
+**Not taken:**
+
+- *String identity.* The PR gave every evaluation, binding and parameter pass of
+  a string a fresh allocation and a simulated arena offset
+  (`cx_str_copy`, `cx_str_identity_eq`), released only when the program ends.
+  A loop binding a string 20 million times went from 0.45 s and 15 MB to 64.5 s
+  and 7,054 MB. With equality by content there is nothing for it to reproduce.
+- *Aggregate `Result` payloads.* The PR stored a struct or array payload in an
+  allocation owned by the whole execution and copied it again at each `?`
+  (`cx_value_copy`). That is memory-safe only because nothing is ever freed.
+  Giving a `Result` an owned aggregate payload needs a decision about ownership
+  and about the `Result` ABI, so compiled code refuses these payloads (§60) and
+  the feature is deferred to that decision. The PR's two fixtures for it,
+  `t_result_aggregate_equality` and `t_result_aggregate_snapshot`, are kept:
+  they pass on the interpreter and are a compiled-code SKIP.
+- *Five fixtures asserting that equal strings must compare unequal*
+  (`t_result_string_factory_identity`, `t_result_error_factory_identity`,
+  `t_result_empty_identity_len`, `t_result_empty_identity_print`,
+  `t_string_parameter_identity`). They pin the rule §55 replaced. Their program
+  shapes are kept, with the decided expectation, in `t_assert_eq_str_in_result`.
+- *`t_result_numeric_alias`* pinned a `Result<t8>` printing `Ok(300)` as
+  expected output. The widening half is kept as `t_result_numeric_widen`; the
+  rest is an open question (`docs/backend/value_equality.md` §4, item 4).
+
+**Regressions the PR introduced, and where each stands:**
+
+| Regression | Status |
+|---|---|
+| unbounded memory and a 140× slowdown for string-binding loops | gone — no allocation is made |
+| `len(arr)` of a top-level array inside a function refused | gone — §62. The first fix covered a plain name only; `len(grid:[0])` stayed refused until §70 |
+| `?` in a bare `when` arm with a `.copy` parameter: interpreter 2, JIT 1 | gone — the interpreter leaked a scope; §59 |
+| a user function named `cx_str_copy`, `cx_value_copy` or `cx_str_identity_eq` refused | gone — those runtime symbols do not exist |
+| `Ok(<generic struct>)` refused | stays refused, on purpose — §60 |
+
+**Verification.** Replaying all 694 tracked programs on both backends against
+the build before this change gives identical exit codes and output; the only
+difference is the wording of the refusal for two nested-`Result` programs.
 
 ## 64. `?` in a function's trailing expression returned from the caller as well
 
@@ -4989,4 +5116,362 @@ at 0.13 s → 0.30 s on a 3000-element array).
 compiled code reads an indexed element after the call. The review could not
 observe that — the element read agrees; what differs is the variable
 afterwards (§69d) — and the sentence is removed.
+
+## 70. Findings of the independent review of the PR #476 revision, and their fixes
+
+*(2026-11-18. The revision — §55, §62, §63 — was reviewed independently before
+being proposed for integration, as the owner required. The review rated its
+first commit blocking. Everything below is fixed by the two commits that
+introduce this entry unless it says otherwise.)*
+
+**a. Blocking: the payload checks refused ordinary programs.** §63 took PR
+#476's payload proofs "as written". They refused any use of a `Result` whose
+payload kind the value graph could not establish, and it could not for:
+
+```cx
+fnc: Result<t64> run(p: Result<t64>, n: t64) {
+    i: t64 = 0
+    while (i < n) { i = i + 1 }      // the loop re-binds p before it is read
+    return p
+}
+
+fnc: Result<t64> cp(r.copy: Result<t64>) { return r }
+v: Result<t64> = Ok(1)
+print(cp(v.copy))
+print(cp(v.copy))                    // v was reloaded from memory after the first call
+
+fnc: T <T> second(a: T, b: T) { print("second"); return b }
+r: Result<t64> = second(Err("x"), Err("y"))   // a Result type that names no payload
+```
+
+Each ran correctly on the base and was refused (127). The review's fuzzer: 358
+of 3000 function-body programs. The corpus replay did not see it because no
+tracked program has these shapes.
+
+Fixed in two parts. The graph is given the facts it lacked: a parameter
+declared `Result<T>`, and a value reloaded after a `.copy` call to one, hold a
+T payload. And an unproven kind is no longer a refusal for a use that existed
+before kinds were tracked — it goes by the declared type, as it always did. A
+proven mismatch is still refused everywhere; an unproven kind is still refused
+for content equality, which is new and dereferences the payload. Same fuzzer,
+both modes: 0 of 3000 refused that the base ran.
+
+**b. `len(grid:[0])` of a top-level array inside a function was refused**
+(§62's fix handled a plain name only). `len` now evaluates its operand for
+effects only: the index is evaluated and bounds-checked, the element is not
+read. This also closes a hole older than this work — `len(a)` of a variable
+never assigned printed a length in compiled code where the interpreter stops.
+
+**c. A `Result` read at a narrower integer type** — older than this work, and
+described as agreeing in the first version of `value_equality.md`:
+
+```cx
+large: Result<t64> = Ok(300)
+narrow: Result<t8> = large
+v: t8 = narrow?
+print(v)              // interpreter 300, JIT 44 — both exit 0
+```
+
+Compiled code now refuses to read a `Result` at a narrower whole-number type
+or a whole number as a float. The interpreter still accepts the program;
+whether the second line should be a type error is the open question recorded in
+`value_equality.md` §4. Cost: 15 of the review's 428 probes of this shape that
+only *printed* the narrowed value, and so agreed, are refused too.
+
+**d. `-r` on a `Result` crashed compiled code** (exit 134; older than this
+work). Refused.
+
+**e. A user function named `cx_str_eq` replaced the runtime's.** Older than
+this work for `==`, where it was a silent wrong answer; the revision made
+`Result` equality depend on the same symbol. `cx_str_eq`, `cx_handle_new`,
+`cx_handle_val`, `cx_handle_drop`, `cx_trap`, `cx_depth_enter` and
+`cx_depth_exit` are now reserved names in compiled code, like the print
+intrinsics already were.
+
+**f. Three older disagreements of the kind §55 fixed for enums.**
+`assert_eq(h, h)` on a handle failed on the interpreter and passed in compiled
+code; `assert_eq(h, zero)` against a number passed in compiled code. A `when`
+arm of another kind than its scrutinee — `when c { 1 => .. }` on an enum —
+never matched on the interpreter and matched by bit pattern in compiled code,
+both exiting 0. `assert(r)` on a `Result` failed on the interpreter and passed
+in compiled code. All three now agree, the last by refusal.
+
+**g. Documentation.** `value_equality.md` said `assert_eq(1, 1.0)` fails (two
+literals pass; the typed form fails); that compiled code refuses every case in
+its "not decided" list (not the narrowing one, until (c)); omitted handles,
+unknown numbers and the fact that its gaps apply inside a `Result` too; and
+omitted a fifth change to the interpreter (a string inside an aggregate
+payload). All corrected there. The commit message of 815784a says a small
+integer "may be read as a Result of a wider one"; the code it describes also
+allowed narrower and float, until (c). That message cannot be amended; this is
+the correction.
+
+**h. Fixtures.** Seven of the eight unequal-case fixtures would pass with the
+fix removed, for the reason now stated in `value_equality.md` §5; the first
+commit of the revision had no fixture that failed without it, and a refusal is
+a SKIP, so nothing pinned (a). Added: `t_result_reaches_its_use_indirectly` and
+`t_len_of_an_element_does_not_read_it` (both pass on the base and were refused
+by the revision), `t_assert_eq_str_in_result_aggregate`,
+`t_when_arm_of_another_kind_never_matches`, `t_assert_eq_handle`,
+`t_assert_eq_handle_not_a_number`, `t_assert_on_a_result`,
+`t_unary_minus_on_a_result`, `t_user_function_named_like_the_runtime`.
+
+**On the review's 428 probe programs**, base → now: crashes 3 → 0, exit
+mismatches 21 → 0, silent divergences 17 → 0, agreeing 162 → 190. Refused that
+the base ran and agreed on: the 15 of (c).
+
+**Corpus.** The review counts 714 tracked `.cx` files on the base; the replay
+used throughout covers the 694 under `src/tests/verification_matrix`,
+`examples` and `bench`. On those, against the build before this branch: no exit
+code or output changes.
+
+## 72. Findings of the confirmation review of §68–§70's fixes, and their fixes
+
+*(2026-11-18. The fixes for the two previous reviews were themselves reviewed
+before anything was proposed for integration. This entry is numbered 72 because
+71 is taken on the static-data branch, which is merged on top of this one. One
+finding was blocking; (g) is deliberately not changed; (i) is found and not
+fixed.)*
+
+**a. Blocking: an unproven payload kind was taken on trust (§70a).** §70a made
+a use "go by the declared type" when the value graph could not say what a
+`Result` held. The declared type it went by was the *use's*. That is sound when
+the value has a declared kind of its own, which analysis has checked against
+the use. It is not when the value's type is `Result<unknown>` — an untyped
+variable that started as an `Err`, the result of a function generic in `T` —
+because analysis accepts that wherever a `Result` is declared, whatever it
+holds:
+
+```cx
+fnc: T <T> id(x: T) { return x }
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok("a")); return 0 }
+fnc: t64 run(c: bool) {
+    let e
+    e = Err("x")
+    if c { x: t64 = fill(e.copy) }     // e now holds Ok(5)
+    print(cmp(id(e)))                  // interpreter: Ok(5) != Ok(a), exit 1
+    return 0                           // compiled: read 5 as a string, exit 134
+}
+```
+
+New with §70a: on `submain` this trapped (126). The same route printed
+`Ok()` for a `Result<Color>` that held another enum's variant, where the
+interpreter prints `Ok(Shape::Square)` — both exit 0, also new; `submain`
+refused it. Printing the value as a `Result<str>` crashed, and reading it as a
+`Result<t8>` gave 44 for 300: both as on `submain`, both refused by the first
+version of the revision and reopened by §70a. An array literal `[e, e]`
+laundered the value the same way.
+
+Fixed: the declared type is trusted only when the value's own static type
+names a payload kind. Otherwise the graph must prove the kind or the use is
+refused. So that this does not bring back §70a's refusals, a function that can
+only return some of its own arguments unchanged, or an `Err`, is now followed
+through the call — the value of `id(e)` is whatever `e` is — including a
+statement before the `return`, a branch between two arguments, a function that
+returns another such function's result, and recursion
+(`result_sources`, `settle_result_sources`). With that the graph finds the
+`Ok(5)` above and refuses by proof rather than by doubt.
+
+What this refuses that `submain` ran and agreed on — see (j) for the full
+list, which this paragraph first gave as one item: a value typed
+`Result<unknown>` that reaches a declared kind through something the graph
+cannot see into.
+
+**b. A narrowing the first fix did not see (§70c).**
+
+```cx
+let lit
+lit = Ok(300)
+narrow: Result<t8> = lit
+v: t8 = narrow?
+print(v)                  // interpreter 300, compiled 44 — both exit 0
+```
+
+§70c recorded an untyped literal as "a number of no particular width", which
+fits any declaration. A constant payload is now recorded at the narrowest
+width that holds its value (`Ok(5)` → 8 bits, `Ok(300)` → 16, `Ok(1 + 2)` →
+8), and a number with no declared width that is computed at run time is the
+whole word. Present on `submain`. The same through a loop, an `if` value, a
+`.copy` parameter and a generic forwarder is refused as well; each was a
+silent 300/44 on `submain`.
+
+This also *accepts* shapes §70c refused that are sound: `c: Result<t8> =
+Ok(1 + 2)`, and an untyped `Ok(5)` passed where a `Result<t8>` is declared.
+
+**c. Range arms, `unknown` arms, and whole numbers against floats (§70f).**
+§70f made a literal arm of another kind never match. A range arm and an
+`unknown` arm still compared bits:
+
+```cx
+c: Color = Color::Green
+print(when c { 0..5 => 1, _ => 2 })      // interpreter 2, compiled 1
+n: t64 = 2
+print(when n { unknown => 1, _ => 2 })   // interpreter 2, compiled 1
+x: f64 = 1.0
+print(when x { 1 => 1, _ => 2 })         // interpreter 2; compiled code stopped
+                                         // inside Cranelift's verifier (exit 2)
+```
+
+All present on `submain`. A range arm now matches only a whole-number
+scrutinee, `unknown` only a bool, and a whole-number arm never matches a float
+or the reverse — which is what the interpreter does in each case.
+
+**d. `__cx_fmod` was not reserved (§70e).** The list of runtime names written
+for §70e left out the one `%` on floats calls. A program's own function of that
+name was called in its place: `7.5 % 2.0` printed 99. Present on `submain`.
+Reserved now, and a test beside the JIT's registrations
+(`every_registered_runtime_symbol_is_reserved`) fails if a symbol is registered
+without being reserved.
+
+**e. `assert` on an enum or a handle (§70f).** §70f refused `assert(r)` on a
+`Result`. The interpreter fails `assert` on anything but `true` and a non-zero
+number; compiled code passed it for any enum variant but the first and any
+live handle. Present on `submain`. Refused now.
+
+**f. `t_assert_eq_handle` pinned an ending, not an answer.** Its equal pair is
+followed by an unequal one, so it is an `expected_fail` fixture and its output
+is not compared; it passed on the build where `assert_eq(h, h)` failed.
+`t_assert_eq_handle_is_itself` runs to the end and fails there.
+
+**g. Not changed: `len` of a variable first assigned in both branches of an
+`if` is refused (§70b).**
+
+```cx
+let a
+if c { a = [1, 2, 3] } else { a = [4, 5, 6] }
+return len(a)             // submain: 3 / 3.  Now: 3 / refused
+```
+
+The review counts this as a new refusal, and it is. On `submain` compiled code
+folded `len(a)` from the type without asking whether `a` had a value, so the
+same program with the `else` removed printed 3 where the interpreter stops
+("declared but never assigned"). Compiled code cannot tell the two programs
+apart: it does not track a variable first assigned inside both branches at
+all — reading `a:[0]` there is refused on `submain` too. Folding again would
+bring the wrong answer back for the one-branch program in exchange for the
+length of an array that cannot otherwise be used. Kept as a refusal;
+`t_len_of_a_variable_assigned_in_both_branches` pins the interpreter's answer
+and will start passing in compiled code when such variables can be read.
+
+**h. Corrections to earlier text.** §70a: "it goes by the declared type, as it
+always did" — see (a). §70c: "Compiled code now refuses to read a `Result` at a
+narrower whole-number type" — not through an untyped literal, until (b). §70e's
+list of reserved names: add `__cx_fmod`. §70f: "A `when` arm of another kind
+than its scrutinee … never matched" — for a literal arm; ranges and `unknown`
+with (c). `value_equality.md` is corrected in the same places and gains two
+entries in its "not decided" list: a `Result<unknown>` is accepted wherever a
+`Result` is declared, and `assert` on a value that is not a condition.
+
+**i. Found, not fixed: a local declared with a type parameter fails on the
+interpreter.**
+
+```cx
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+print(id(5))      // interpreter: type mismatch — expected 'typeparam("t")'
+                  //              but got 't128' (exit 1).  Compiled: 5
+```
+
+Present on `submain`, in every generic function that declares a local of type
+`T`. The interpreter runs a generic function as written rather than a copy per
+type, and its check of a declared local's type (`value_matches_type`) has no
+case for a type parameter. It is not a silent difference — the interpreter
+stops — but it is the reference rejecting a correct program. Not fixed here: it
+is outside what these reviews covered, it changes the interpreter, and it
+deserves its own fixture set (a `T` local given a number, a string, a struct,
+an array, a `Result`).
+
+**j. From the review of these fixes (the seventh), which found nothing
+blocking.** It attacked the payload proofs with about 30,000 generated
+programs and some 900 written ones and could not make compiled code read a
+payload as the wrong kind, crash, or print something else than the
+interpreter. What it did find is that (a) refuses more than it said.
+
+Refused now, where `submain` and the build before (a) both ran the program
+and agreed:
+
+```cx
+// 1. A forwarder that carries its argument through a local, or reassigns it.
+fnc: T <T> dflt(a: T, b: T) {
+    let r
+    r = a
+    if true { r = b }
+    return r
+}
+t: Result<t64> = dflt(Err("x"), Err("y"))
+
+// 2. An element of an untyped array of errors, where a kind is declared.
+fnc: Result<t64> lookup(i: t64) {
+    let errs
+    errs = [Err("a"), Err("b")]
+    return errs:[i]
+}
+
+// 3. An element of an untyped array of small numbers, read narrower.
+let a
+a = [Ok(5), Ok(7)]
+n: Result<t8> = a:[0]
+```
+
+In each the value passes through memory or a local that the value graph does
+not follow, and its static type promises nothing — the same position as the
+`Ok(5)` of (a), which is why they are refused and not trusted. (2) is the one
+a real program is likely to contain. They are refusals, not wrong answers,
+and are left as they are: following values through local memory is a larger
+piece of work than a review fix, and the gap in analysis that makes it
+necessary (`value_equality.md` §4 item 7) is the owner's to close or keep.
+
+One shape the review found is fixed, because it is the ordinary way to write
+such a function:
+
+```cx
+fnc: T <T> pick(c: bool, a: T, b: T) { if c { a } else { b } }
+r: Result<t64> = pick(false, Err("l"), Err("r"))      // refused by (a); runs again
+```
+
+A forwarder was followed through `if c { return a } return b` and not through
+the same choice written as an `if` or `when` value. Both are followed now.
+
+Two statements were wrong and are corrected here, since the commit message
+that makes them cannot be amended. (a)'s message names one newly refused
+shape; the list above is the fuller one. And (b) says it accepts
+`c: Result<t8> = Ok(1 + 2)`, which it does — but only where the `Ok(..)` is
+used directly. The same constant reaching a `Result<t8>` through an `if`/`when`
+value (`if c { Ok(1 + 2) } else { Ok(1) }`) or through a generic constructor
+(`wrap(5)` with `fnc: Result<T> <T> wrap(x: T)`) is still refused, as it has
+been since §70c: there the value's static type is `Result<t64>`, which is
+taken at its word.
+
+On the review's own two generators — written to stress exactly these shapes,
+with helpers that swap, reassign and store their arguments through arrays —
+programs refused now that `submain` and the build before (a) both ran and
+agreed on: 608 of 12,000 and 615 of 8,000 before the `if`/`when` fix, 530 and
+540 after it. Disagreements between the backends, crashes or exit mismatches
+in those 20,000: none, before or after. (The message of the commit that makes
+the fix gives 562, 578, 485 and 502. Those were read off summaries that list
+only the commonest reasons; the figures here count every program.)
+
+The fix itself went back to the same reviewer, who found it sound: 464
+written probes and 8,000 generated programs ending in `if`/`when` values with
+side effects in the branches, none disagreeing; every program that the fix
+newly accepts agrees with the interpreter. A variant of that generator that
+also puts `.copy` calls in conditions found 32 disagreements — all of them
+§57b, which is open and on `submain`, and has nothing to do with payloads.
+
+**Measured.** The review's 1,709 probe programs, interpreter against compiled
+code, `submain` → before this entry → now: crashes 13 → 5 → 0; exit mismatches
+81 → 46 → 1; silent differences 196 → 105 → 9; agreeing 757 → 1,165 → 1,377.
+The ten that remain are (i) and the nine open cases of §69a and §69d, all
+present on `submain`. No program that agreed before this entry disagrees now;
+two that agreed are refused (a user `__cx_fmod`, and the narrowing of (b)
+followed by a print).
+The review's generator, both modes, 12,000 programs: no disagreement between
+the backends, and none refused that the build before this branch ran and
+agreed on. Its 418 earlier probes: 128 refused, 193 agreeing, 97 failing alike
+on both; refused that the base agreed on, the same 15 narrowings as §70c.
+Corpus replay, 694 programs on both backends, against the build before this
+entry: identical.
 

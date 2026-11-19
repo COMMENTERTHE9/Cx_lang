@@ -1,0 +1,7 @@
+// Two variants of one enum are not equal.
+enum Color { Red, Green }
+fnc: Color pick(f: bool) { if f { return Color::Green } return Color::Red }
+assert_eq(pick(true), Color::Green)
+print("equal")
+assert_eq(pick(true), pick(false))
+print("unreachable")

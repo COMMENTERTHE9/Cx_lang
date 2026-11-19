@@ -135,6 +135,39 @@ impl RunTime {
         std::str::from_utf8(bytes).expect("arena string was not valid utf8")
     }
 
+    /// Whether two values are equal by content — the equality `assert_eq`
+    /// observes (docs/backend/value_equality.md).
+    ///
+    /// A string is its bytes: two strings with the same bytes are equal wherever
+    /// each happens to sit in the arena. That is why this is a method and not
+    /// `Value`'s `==`, which sees only an arena position and so tells two
+    /// strings apart by where they were allocated. Everything that can hold a
+    /// string — a Result, a struct, an array — compares its parts by this same
+    /// rule. A number, bool or char is equal by value, an enum by its enum and
+    /// variant, a handle by which handle it is.
+    pub fn values_equal(&self, left: &Value, right: &Value) -> bool {
+        match (left, right) {
+            (Value::Str(a_off, a_len), Value::Str(b_off, b_len)) => {
+                self.resolve_str(*a_off, *a_len) == self.resolve_str(*b_off, *b_len)
+            }
+            (Value::ResultOk(a), Value::ResultOk(b)) | (Value::ResultErr(a), Value::ResultErr(b)) => {
+                self.values_equal(a, b)
+            }
+            (Value::Array(a), Value::Array(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|(x, y)| self.values_equal(x, y))
+            }
+            (Value::Struct(a_name, a), Value::Struct(b_name, b)) => a_name == b_name && self.fields_equal(a, b),
+            (Value::Container(a), Value::Container(b)) => self.fields_equal(a, b),
+            // No string inside: `Value`'s own equality is already by content.
+            _ => left == right,
+        }
+    }
+
+    fn fields_equal(&self, left: &HashMap<String, Value>, right: &HashMap<String, Value>) -> bool {
+        left.len() == right.len()
+            && left.iter().all(|(name, value)| right.get(name).is_some_and(|other| self.values_equal(value, other)))
+    }
+
     pub fn new() -> Self {
         Self {
             string_arena: Vec::new(),

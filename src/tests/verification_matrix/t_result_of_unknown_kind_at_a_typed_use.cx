@@ -1,0 +1,17 @@
+// `e` is declared without a type and starts as an Err, so analysis types it
+// `Result<unknown>` and accepts it wherever a Result is declared. After
+// `fill` it holds `Ok(5)`. Passing it — through a function generic in `T` —
+// to a parameter declared `Result<str>` and comparing it with `Ok("a")` must
+// fail the comparison, not read 5 as the address of a string.
+fnc: T <T> id(x: T) { return x }
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok("a")); return 0 }
+fnc: t64 run(c: bool) {
+    let e
+    e = Err("x")
+    if c { x: t64 = fill(e.copy) }
+    print("before")
+    print(cmp(id(e)))
+    return 0
+}
+print(run(true))
