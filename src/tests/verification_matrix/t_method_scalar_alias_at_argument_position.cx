@@ -1,0 +1,45 @@
+// A further alias that is a number, a bool or a string is passed by value from
+// where it stands in the argument list: a later argument that changes the
+// variable does not change what the method was given.
+//
+// What the variable holds AFTER such a call is not pinned here: the two
+// backends disagree about it and always have (known-issues §69b).
+struct P { n: t64 }
+num: impl (p: P, k: t64) {
+    fnc: t64 total(z: t64) { return p.n * 1000 + k + z }
+}
+flag: impl (p: P, k: bool) {
+    fnc: t64 pick(z: t64) {
+        if k { return 100 + z }
+        return z
+    }
+}
+text: impl (p: P, k: str) {
+    fnc: t64 show(z: t64) {
+        print(k)
+        return p.n + z
+    }
+}
+fnc: t64 inc(v.copy: t64) {
+    v += 7
+    return 1
+}
+fnc: t64 flip(v.copy: bool) {
+    v = !v
+    return 1
+}
+fnc: t64 rename(v.copy: str) {
+    v = "new"
+    return 1
+}
+fnc: t64 run() {
+    q: P = P { n: 1 }
+    m: t64 = 5
+    print(q.total(m, inc(m.copy)))
+    b: bool = false
+    print(q.pick(b, flip(b.copy)))
+    s: str = "old"
+    print(q.show(s, rename(s.copy)))
+    return 0
+}
+print(run())

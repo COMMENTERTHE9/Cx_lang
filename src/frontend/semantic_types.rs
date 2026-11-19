@@ -182,6 +182,15 @@ pub enum SemanticExprKind {
         /// `MethodCall(String, ...)` is name-bound, and `(expr).method()` does
         /// not parse.
         receiver_expr: Option<Box<SemanticExpr>>,
+        /// This call is a dispatched operator — `a + b` on a type with a user
+        /// `+` — rather than `a.method(b)` as written.
+        ///
+        /// The difference is what the receiver is. A method's receiver is an
+        /// alias of its variable: the method runs on the variable as the
+        /// arguments left it. An operator's left operand is an operand:
+        /// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md), so the
+        /// method must be given `a` as it was before `b` was evaluated.
+        operator: bool,
         pos: usize,
     },
     StructInstance {

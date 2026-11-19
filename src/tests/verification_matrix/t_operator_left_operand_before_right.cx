@@ -1,0 +1,65 @@
+// `A + B` evaluates A, then B — also when the operator is a user method. The
+// left operand is read before the right one is evaluated, so a right operand
+// that changes the left operand's variable does not change what the operator
+// is given.
+//
+// Only results are printed. What the left operand's variable holds afterwards
+// is not pinned here: the two backends disagree about it and always have
+// (known-issues §69).
+struct V { x: t64 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+phen Eq (v: V) {
+    fnc: bool eq(rhs: V) { v.x == rhs.x }
+}
+vm: impl (s: V) {
+    fnc: V grow() {
+        s.x += 1000
+        return V { x: 1 }
+    }
+}
+fnc: V bumpv(k.copy: V) {
+    k.x += 100
+    return V { x: 1 }
+}
+fnc: t64 bumpn(k.copy: t64) {
+    k += 100
+    return 1
+}
+fnc: t64 run() {
+    // The right operand changes the left through `.copy`.
+    a: V = V { x: 1 }
+    r: V = a + bumpv(a.copy)
+    print(r.x)
+
+    // The right operand is a method on the left's variable.
+    b: V = V { x: 1 }
+    r2: V = b + b.grow()
+    print(r2.x)
+
+    // A left operand that is itself an expression.
+    c: V = V { x: 1 }
+    z: V = V { x: 0 }
+    r3: V = (c + z) + bumpv(c.copy)
+    print(r3.x)
+
+    // A comparison operator, in a condition.
+    e: V = V { x: 1 }
+    if e == bumpv(e.copy) { print(1) } else { print(0) }
+
+    // In a loop, the result assigned back each time.
+    acc: V = V { x: 0 }
+    i: t64 = 0
+    while (i < 3) {
+        acc = acc + bumpv(acc.copy)
+        i += 1
+    }
+    print(acc.x)
+
+    // A built-in operator, for comparison.
+    n: t64 = 1
+    print(n + bumpn(n.copy))
+    return 0
+}
+print(run())

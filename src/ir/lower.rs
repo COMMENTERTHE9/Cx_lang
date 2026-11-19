@@ -797,6 +797,13 @@ struct LoweringCtx {
     module_bindings: ModuleBindings,
     /// The function being lowered, for diagnostics.
     function_name: String,
+    /// How many operator left operands have been copied in this function
+    /// (`operator_operand_copy`); each copy gets a binding of its own.
+    operand_copies: u32,
+    /// The current function's `.copy` parameters, for a return that does not go
+    /// through `finish_return`: `?` on an `Err` leaves from inside an
+    /// expression, where no `FunctionLoweringSpec` is in reach.
+    early_copy_writebacks: Vec<CopyWriteback>,
     signature_table: HashMap<String, FunctionSignature>,
     struct_table: HashMap<String, StructLayoutInfo>,
     trace: bool,
@@ -910,6 +917,8 @@ impl LoweringCtx {
             top_level_bindings: HashSet::new(),
             module_bindings: HashMap::new(),
             function_name: String::new(),
+            operand_copies: 0,
+            early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
             binding_decl_types: HashMap::new(),
@@ -1706,6 +1715,7 @@ fn lower_semantic_function(
         }
     }
     let spec = FunctionLoweringSpec { copy_writebacks: copy_writebacks.clone(), ..spec };
+    ctx.early_copy_writebacks = copy_writebacks;
     // Model B, the callee half: an aggregate parameter names storage the caller
     // still owns, so the callee gets its own. `ret_slot_plan` supplies the size,
     // alignment and parts — the same authority the return slot and the bind copy
@@ -2074,11 +2084,13 @@ fn lower_stmt_inner(
             // lower_void_call so the receiver lowers through the existing
             // VarRef→Ptr path. Mirrors the Call arm above; same fall-through
             // to lower_expr for non-void.
-            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, .. } = &expr.kind {
+            if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, .. } = &expr.kind {
                 // Same receiver choice as the value-position arm above.
-                let recv_arg = SemanticCallArg::Expr(match receiver_expr {
-                    Some(rx) => (**rx).clone(),
-                    None => SemanticExpr {
+                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, &mut current)?;
+                let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
+                    (_, Some(copy)) => copy.clone(),
+                    (Some(rx), None) => (**rx).clone(),
+                    (None, None) => SemanticExpr {
                         ty: SemanticType::Struct(struct_name.clone()),
                         kind: SemanticExprKind::VarRef {
                             binding: *instance_binding,
@@ -2094,8 +2106,12 @@ fn lower_stmt_inner(
                     .map(|s| (s.return_ty.clone(), s.param_types.clone()));
                 if let Some((None, param_types)) = sig_info {
                     lower_void_call(&callee, &full_args, &param_types, ctx, &mut current)?;
+                    drop_operand_copy(&operand, &mut current);
                     return Ok(Some(current));
                 }
+                // Not a void call: the value-position arm lowers it, and
+                // takes its own copy there.
+                drop_operand_copy(&operand, &mut current);
             }
             let _ = lower_expr(expr, ctx, &mut current)?;
             Ok(Some(current))
@@ -3480,9 +3496,9 @@ fn lower_expr_inner(
             lower_array_lit(elements, &expr.ty, ctx, active)
         }
         SemanticExprKind::Index { target, index, .. } => {
-            lower_index(target, index, &expr.ty, ctx, active)
+            lower_index(target, index, &expr.ty, IndexUse::Read, ctx, active)
         }
-        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, pos: _ } => {
+        SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, pos: _ } => {
             // Synthesize an equivalent Call and recurse into the existing Call
             // arm (which has the proven signature_table lookup, void-in-value-
             // position rejection, arity check, per-arg ensure_type_match, and
@@ -3495,9 +3511,11 @@ fn lower_expr_inner(
             // synthesizes the `VarRef` it always did. Either way the receiver
             // occupies argument 0 and is evaluated there, so no evaluation
             // order changes and no new lowering machinery is involved.
-            let recv_arg = SemanticCallArg::Expr(match receiver_expr {
-                Some(rx) => (**rx).clone(),
-                None => SemanticExpr {
+            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, active)?;
+            let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
+                (_, Some(copy)) => copy.clone(),
+                (Some(rx), None) => (**rx).clone(),
+                (None, None) => SemanticExpr {
                     ty: SemanticType::Struct(struct_name.clone()),
                     kind: SemanticExprKind::VarRef {
                         binding: *instance_binding,
@@ -3520,7 +3538,9 @@ fn lower_expr_inner(
                     type_args: Vec::new(),
                 },
             };
-            lower_expr(&synthetic, ctx, active)
+            let result = lower_expr(&synthetic, ctx, active);
+            drop_operand_copy(&operand, active);
+            result
         }
         // Struct literal lowering strategy
         //
@@ -5401,6 +5421,7 @@ fn lower_try(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    refuse_aggregate_result_payload("`?` on a Result", result_ty)?;
     // Word-payload fence (R7): unwrapping a NESTED Result (T is itself a Result,
     // so lower_type(T) == I128) exceeds the word payload — stays SKIP, exactly as
     // the D2.4a construct does. Scalar/str `?` is the target.
@@ -5448,7 +5469,13 @@ fn lower_try(
     let old = std::mem::replace(active, cont_block);
     ctx.seal_block(old)?;
 
-    // Err: early-return the whole original Result i128, unchanged.
+    // Err: early-return the whole original Result i128, unchanged — through
+    // the same copy-out an explicit return performs. Without it a `.copy`
+    // parameter the function had already changed kept its old value in the
+    // caller whenever the function left through `?`
+    // (`docs/known_issues.md` §59).
+    let writebacks = ctx.early_copy_writebacks.clone();
+    emit_copy_writebacks(&writebacks, ctx, &mut err_block)?;
     err_block.terminate(IrTerminator::Return { value: Some(result.value) })?;
     ctx.seal_block(err_block)?;
 
@@ -5749,8 +5776,9 @@ fn resolve_array_element_ptr(
         ..compute_array_layout(&elem_ir_ty, count)
     };
 
-    // 2. Lower the array target to a base pointer.
-    let base = lower_expr(target, ctx, active)?;
+    // 2. Lower the array target to a base pointer. It is the place the store
+    // goes through, so a nested index in it is lowered as a place as well.
+    let base = lower_place_base(target, ctx, active)?;
     if base.ty != IrType::Ptr {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!(
@@ -6088,6 +6116,233 @@ fn lower_array_lit(
     })
 }
 
+/// The left operand of a dispatched operator, taken before the right operand
+/// is evaluated: `a + f(a.copy)`, `w.inner + g(w.copy)`, `ps:[0] + h(ps.copy)`
+/// on a type with a user `+`.
+///
+/// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
+/// method takes its receiver by address, and a left operand that is a
+/// variable, a field, an element, or an `if`/`when` value yielding one of
+/// those lowers to the address of the thing itself — so the method would see
+/// whatever evaluating B did to it. When B calls anything at all, the left
+/// operand is copied first and the method is given the copy.
+///
+/// The test is "B contains a call", not "B can change A". Which variable a
+/// left operand ends up naming is not always readable from the expression
+/// (an `if` value), and a call can change a variable through a chain of
+/// aliases this function cannot follow; a call is the one thing every such
+/// case has. `a + b` on two names copies nothing.
+///
+/// Returns the expression that names the copy, or `None` when none is needed
+/// — a written method call, a right operand without a call, or a left operand
+/// that is already a fresh value — and the call is lowered exactly as before.
+#[allow(clippy::too_many_arguments)]
+fn operator_operand_copy(
+    operator: bool,
+    receiver_expr: &Option<Box<SemanticExpr>>,
+    instance: &str,
+    instance_binding: BindingId,
+    struct_name: &str,
+    args: &[SemanticCallArg],
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<Option<SemanticExpr>, LoweringError> {
+    if !operator || !args_may_write(args, Scan::AnyCall) {
+        return Ok(None);
+    }
+    let ty = SemanticType::Struct(struct_name.to_string());
+    let operand = match receiver_expr {
+        // The result of a call or a literal is a value nothing else names.
+        Some(rx) if matches!(
+            rx.kind,
+            SemanticExprKind::Call { .. } | SemanticExprKind::MethodCall { .. } | SemanticExprKind::StructInstance { .. }
+        ) => return Ok(None),
+        Some(rx) => (**rx).clone(),
+        None => SemanticExpr { ty: ty.clone(), kind: SemanticExprKind::VarRef { binding: instance_binding, name: instance.to_string() } },
+    };
+    let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
+        LoweringError::UnsupportedSemanticConstruct {
+            construct: format!("an operator whose right operand makes a call, for a left operand ({struct_name}) compiled code cannot copy"),
+        }
+    })?;
+    let original = lower_expr(&operand, ctx, active)?;
+    ensure_type_match("operator left operand", IrType::Ptr, original.ty)?;
+    let copy = ctx.fresh_value();
+    active.emit(IrInst::Alloca { dst: copy, size, align })?;
+    copy_parts(original.value, 0, copy, 0, &parts, ctx, active)?;
+    // The copy needs a name for the call's receiver argument to refer to. It
+    // gets a binding no source variable can have, for the length of the call.
+    ctx.operand_copies += 1;
+    let binding = BindingId(u32::MAX - ctx.operand_copies);
+    active.bindings.insert(binding, LoweredValue { value: copy, ty: IrType::Ptr });
+    Ok(Some(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name: instance.to_string() } }))
+}
+
+/// Forget the binding `operator_operand_copy` made, once its call is lowered.
+fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
+    if let Some(SemanticExpr { kind: SemanticExprKind::VarRef { binding, .. }, .. }) = operand {
+        active.bindings.remove(binding);
+    }
+}
+
+/// What a walk over an expression is looking for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    /// Anything that may change this variable.
+    Writes(BindingId),
+    /// Any call at all — a function or a method, whatever it is given.
+    AnyCall,
+}
+
+impl Scan {
+    fn names(self, binding: BindingId) -> bool {
+        self == Scan::Writes(binding)
+    }
+}
+
+/// Whether a value of this type is handed to a method as a value. Everything
+/// that is not known to be is treated as a possible reference.
+fn passed_by_value(ty: &SemanticType) -> bool {
+    ty.int_width().is_some()
+        || matches!(
+            ty,
+            SemanticType::Numeric
+                | SemanticType::F64
+                | SemanticType::Bool
+                | SemanticType::Char
+                | SemanticType::Str
+                | SemanticType::StrRef
+                | SemanticType::Enum(_)
+        )
+}
+
+/// Whether evaluating `expr` may change the variable `scan`. Three things can:
+/// passing it as `.copy` (copy-out writes it back when the call returns);
+/// calling a method on it (the receiver is an alias, so the method may change
+/// it); and passing it to a method as an argument, because a further alias of a
+/// multi-alias `impl` is a leading argument and is an alias too. Which of a
+/// method's arguments are aliases depends on the `impl`, so any argument that
+/// names the variable counts — answering "may" for one that is in fact passed
+/// by value costs a copy and nothing else.
+///
+/// Looks through every nested expression and statement, so an `if`/`when`
+/// value is not a blind spot.
+fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
+    let any = |e: &SemanticExpr| expr_may_write(e, scan);
+    match &expr.kind {
+        SemanticExprKind::Value(_)
+        | SemanticExprKind::VarRef { .. }
+        | SemanticExprKind::DotAccess { .. }
+        | SemanticExprKind::HandleVal { .. }
+        | SemanticExprKind::HandleDrop { .. } => false,
+        SemanticExprKind::HandleNew { value: e, .. }
+        | SemanticExprKind::Unary { expr: e, .. }
+        | SemanticExprKind::Cast { expr: e, .. }
+        | SemanticExprKind::ResultOk { expr: e }
+        | SemanticExprKind::ResultErr { expr: e }
+        | SemanticExprKind::Try { expr: e, .. } => any(e),
+        SemanticExprKind::Range { start, end, .. } => any(start) || any(end),
+        SemanticExprKind::Binary { lhs, rhs, .. } => any(lhs) || any(rhs),
+        SemanticExprKind::Index { target, index, .. } => any(target) || any(index),
+        SemanticExprKind::ArrayLit { elements } => elements.iter().any(any),
+        SemanticExprKind::StructInstance { fields, .. } => fields.iter().any(|(_, e)| any(e)),
+        SemanticExprKind::Call { args, .. } => scan == Scan::AnyCall || args_may_write(args, scan),
+        SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
+            let on_it = match receiver_expr {
+                // An expression receiver that is a place in the variable is
+                // passed by address, exactly as a named one is.
+                Some(receiver) => root_binding(receiver).is_some_and(|b| scan.names(b)) || any(receiver),
+                None => scan.names(*instance_binding),
+            };
+            // Only a struct or an array is passed by reference; a number,
+            // bool, string or enum argument is a value wherever it came from.
+            let as_alias = args.iter().any(|arg| {
+                matches!(arg, SemanticCallArg::Expr(e)
+                    if !passed_by_value(&e.ty) && root_binding(e).is_some_and(|b| scan.names(b)))
+            });
+            scan == Scan::AnyCall || on_it || as_alias || args_may_write(args, scan)
+        }
+        SemanticExprKind::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
+        SemanticExprKind::If { condition, then_body, else_body, .. } => {
+            any(condition) || stmts_may_write(then_body, scan) || stmts_may_write(else_body, scan)
+        }
+    }
+}
+
+fn args_may_write(args: &[SemanticCallArg], scan: Scan) -> bool {
+    args.iter().any(|arg| match arg {
+        SemanticCallArg::Expr(e) => expr_may_write(e, scan),
+        SemanticCallArg::Copy { binding, .. } | SemanticCallArg::CopyFree { binding, .. } => scan.names(*binding),
+        SemanticCallArg::CopyInto(bindings) => bindings.iter().any(|b| scan.names(b.binding)),
+    })
+}
+
+fn arms_may_write(arms: &[SemanticWhenArm], scan: Scan) -> bool {
+    arms.iter().any(|arm| {
+        arm.guard.as_ref().is_some_and(|g| expr_may_write(g, scan)) || stmts_may_write(&arm.body, scan)
+    })
+}
+
+fn stmts_may_write(stmts: &[SemanticStmt], scan: Scan) -> bool {
+    let any = |e: &SemanticExpr| expr_may_write(e, scan);
+    // An assignment to the variable itself is the plainest write there is.
+    let target_may = |target: &SemanticLValue| match target {
+        SemanticLValue::Index { target, index, .. } => {
+            root_binding(target).is_some_and(|b| scan.names(b)) || any(target) || any(index)
+        }
+        SemanticLValue::Binding { binding, .. } => scan.names(*binding),
+        SemanticLValue::DotAccess { binding, .. } => binding.is_some_and(|b| scan.names(b)),
+    };
+    stmts.iter().any(|stmt| match stmt {
+        SemanticStmt::Assign { target, expr, .. } => target_may(target) || any(expr),
+        SemanticStmt::CompoundAssign { target, operand, .. } => target_may(target) || any(operand),
+        SemanticStmt::TypedAssign { expr, .. }
+        | SemanticStmt::ExprStmt { expr, .. }
+        | SemanticStmt::ConstDecl { value: expr, .. } => any(expr),
+        SemanticStmt::Return { expr, .. } => expr.as_ref().is_some_and(any),
+        SemanticStmt::Block { stmts, .. } | SemanticStmt::Loop { body: stmts, .. } => stmts_may_write(stmts, scan),
+        SemanticStmt::While { cond, body, .. } => any(cond) || stmts_may_write(body, scan),
+        SemanticStmt::For { start, end, body, .. } => any(start) || any(end) || stmts_may_write(body, scan),
+        SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
+            any(condition)
+                || stmts_may_write(then_body, scan)
+                || else_ifs.iter().any(|(c, body)| any(c) || stmts_may_write(body, scan))
+                || else_body.as_ref().is_some_and(|body| stmts_may_write(body, scan))
+        }
+        SemanticStmt::WhileIn { range_start, range_end, body, then_chains, result, .. } => {
+            any(range_start)
+                || any(range_end)
+                || stmts_may_write(body, scan)
+                || then_chains.iter().any(|c| any(&c.range_start) || any(&c.range_end) || stmts_may_write(&c.body, scan))
+                || result.as_ref().is_some_and(any)
+        }
+        SemanticStmt::When { expr, arms, .. } => any(expr) || arms_may_write(arms, scan),
+        // Declarations and definitions evaluate nothing here.
+        SemanticStmt::Noop
+        | SemanticStmt::ModuleNames { .. }
+        | SemanticStmt::EnumDef { .. }
+        | SemanticStmt::GeneDef { .. }
+        | SemanticStmt::PhenDef { .. }
+        | SemanticStmt::Decl { .. }
+        | SemanticStmt::FuncDef(_)
+        | SemanticStmt::Break { .. }
+        | SemanticStmt::Continue { .. }
+        | SemanticStmt::StructDef { .. }
+        | SemanticStmt::ImplBlock { .. } => false,
+    })
+}
+
+/// The variable an aggregate expression is ultimately stored in: `a`, `a.f`,
+/// `a:[i]`, `a.f:[i]:[j]` are all rooted at `a`. `None` for a temporary.
+fn root_binding(expr: &SemanticExpr) -> Option<BindingId> {
+    match &expr.kind {
+        SemanticExprKind::VarRef { binding, .. } => Some(*binding),
+        SemanticExprKind::DotAccess { binding, .. } => *binding,
+        SemanticExprKind::Index { target, .. } => root_binding(target),
+        _ => None,
+    }
+}
+
 // Array element read lowering strategy
 //
 // An index expression `arr[i]` where `arr: Array(N, ElemTy)` is lowered to:
@@ -6107,10 +6362,36 @@ fn lower_array_lit(
 // The runtime-constant stride is folded into the multiply operand; a later
 // constant-folding pass may eliminate the ConstInt + Binary pair when the
 // index expression is itself a literal.
+/// What an index expression is being lowered for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IndexUse {
+    /// Its value is wanted: `x = a:[i]`, `a:[i]:[j]` on the right of anything.
+    Read,
+    /// It is on the way to a store: the `a:[i]` of `a:[i]:[j] = v`. The store
+    /// has to reach `a`'s own storage, so nothing here may be a copy.
+    Place,
+}
+
+/// The base a store goes through. An index in it is a place, at every level:
+/// in `a:[i]:[j]:[k] = v` both `a:[i]` and `a:[i]:[j]` are.
+fn lower_place_base(
+    expr: &SemanticExpr,
+    ctx: &mut LoweringCtx,
+    active: &mut ActiveBlock,
+) -> Result<LoweredValue, LoweringError> {
+    match &expr.kind {
+        SemanticExprKind::Index { target, index, .. } => {
+            lower_index(target, index, &expr.ty, IndexUse::Place, ctx, active)
+        }
+        _ => lower_expr(expr, ctx, active),
+    }
+}
+
 fn lower_index(
     target: &SemanticExpr,
     index: &SemanticExpr,
     elem_sem_ty: &SemanticType,
+    index_use: IndexUse,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
@@ -6163,12 +6444,39 @@ fn lower_index(
     }
 
     // 1. Lower the array target to get the base pointer.
-    let base = lower_expr(target, ctx, active)?;
+    let base = match index_use {
+        IndexUse::Read => lower_expr(target, ctx, active)?,
+        IndexUse::Place => lower_place_base(target, ctx, active)?,
+    };
     if base.ty != IrType::Ptr {
         return Err(LoweringError::InternalInvariantViolation {
             detail: format!("Index target must lower to Ptr, got {:?}", base.ty),
         });
     }
+
+    // 1b. An index read takes the array's VALUE, then evaluates the index
+    // (docs/backend/cx_eval_order.md, "Index read"). Holding the array's
+    // address instead is the same thing unless evaluating the index changes
+    // the array — it is passed as `.copy` in there, or a method is called on
+    // it. Then the element has to come from the array as it was, so read from
+    // a copy taken now.
+    //
+    // Only for a read. On the way to a store the array is a place, and a copy
+    // here would receive the store instead of the array (known-issues §68).
+    let base = match root_binding(target) {
+        Some(root) if index_use == IndexUse::Read && expr_may_write(index, Scan::Writes(root)) => {
+            let (size, align, parts) = ret_slot_plan(&target.ty, &ctx.struct_table).ok_or_else(|| {
+                LoweringError::UnsupportedSemanticConstruct {
+                    construct: "an index whose index expression changes the indexed array, for an array compiled code cannot copy".to_string(),
+                }
+            })?;
+            let snapshot = ctx.fresh_value();
+            active.emit(IrInst::Alloca { dst: snapshot, size, align })?;
+            copy_parts(base.value, 0, snapshot, 0, &parts, ctx, active)?;
+            LoweredValue { value: snapshot, ty: IrType::Ptr }
+        }
+        _ => base,
+    };
 
     // 2. Lower the index expression; cast to I64 if it isn't already.
     let idx = lower_expr(index, ctx, active)?;
@@ -6314,7 +6622,19 @@ fn finish_return(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<Option<ValueId>, LoweringError> {
-    for (slot, binding, sem_ty) in spec.copy_writebacks.clone() {
+    emit_copy_writebacks(&spec.copy_writebacks, ctx, active)?;
+    match value {
+        Some(v) => Ok(Some(emit_return_through_slot(spec, v, ctx, active)?)),
+        None => Ok(None),
+    }
+}
+
+/// Write every `.copy` parameter's current contents back through the address
+/// it arrived on. Every way out of a function runs this: an explicit or
+/// trailing return through `finish_return`, and the early return of `?` on an
+/// `Err` directly from `lower_try`.
+fn emit_copy_writebacks(writebacks: &[CopyWriteback], ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
+    for (slot, binding, sem_ty) in writebacks.iter().cloned() {
         let Some(current) = active.bindings.get(&binding).cloned() else {
             continue;
         };
@@ -6330,10 +6650,7 @@ fn finish_return(
             }
         }
     }
-    match value {
-        Some(v) => Ok(Some(emit_return_through_slot(spec, v, ctx, active)?)),
-        None => Ok(None),
-    }
+    Ok(())
 }
 
 fn emit_return_through_slot(
@@ -7155,13 +7472,57 @@ fn result_pack(
 /// D2.4a: lower `Ok(x)` (tag 0) / `Err("...")` (tag 1) — lower the payload, widen
 /// to the i64 word, pack. Err's str payload is the static D2.3 descriptor Ptr, so
 /// nothing runtime-allocated escapes (R7-clean).
+/// Whether `ty` is a struct or an array — a value that lives in memory and is
+/// reached through a pointer in compiled code.
+fn is_aggregate_payload(ty: &SemanticType) -> bool {
+    matches!(ty, SemanticType::Struct(_) | SemanticType::Array(_, _))
+}
+
+/// Refuse a `Result` whose payload is a struct or an array.
+///
+/// A `Result` is a packed (tag, word) pair, and the word for an aggregate would
+/// be a POINTER to it. Nothing owns storage for that pointee:
+///
+/// - it pointed at the source, so the Result changed when the source did
+///   (`r = Ok(p); p.x = 50` — interpreter `Ok(1)`, compiled code `Ok(50)`);
+/// - returned from a function it pointed into a frame that no longer existed;
+/// - printing it read the struct as a string descriptor and crashed.
+///
+/// The interpreter snapshots the payload, so it is right in all three. Giving
+/// compiled code an owner for the snapshot is a storage-model decision, not a
+/// lowering fix, so the shape is refused until that is made
+/// (`docs/known_issues.md` §60).
+fn refuse_aggregate_result_payload(context: &str, ty: &SemanticType) -> Result<(), LoweringError> {
+    if is_aggregate_payload(ty) {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "{context}: a Result whose payload is a struct or array ({}) — compiled code has no storage for the payload that lasts as long as the Result",
+                crate::frontend::semantic::type_name(ty)
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn lower_result_construct(
     tag: i128,
     payload_expr: &SemanticExpr,
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
+    refuse_aggregate_result_payload("Result construction", &payload_expr.ty)?;
     let payload = lower_expr(payload_expr, ctx, active)?;
+    // A payload that lowers to a pointer must be a string descriptor. Anything
+    // else that reaches here as a pointer — a generic struct whose semantic
+    // type was not the aggregate it is — is the same unowned pointee.
+    if payload.ty == IrType::Ptr && !matches!(payload_expr.ty, SemanticType::Str | SemanticType::StrRef) {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "Result construction: a Result whose payload is a struct or array ({}) — compiled code has no storage for the payload that lasts as long as the Result",
+                crate::frontend::semantic::type_name(&payload_expr.ty)
+            ),
+        });
+    }
     let payload_i64 = widen_payload_to_i64(&payload, ctx, active)?;
     result_pack(tag, payload_i64, ctx, active)
 }
@@ -7218,6 +7579,7 @@ fn emit_ok_payload(
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<(), LoweringError> {
+    refuse_aggregate_result_payload("print of a Result", ok_ty)?;
     match lower_type(ok_ty)? {
         IrType::I8 | IrType::I16 | IrType::I32 | IrType::I64 => {
             active.emit(IrInst::Call {
@@ -7227,7 +7589,10 @@ fn emit_ok_payload(
                 return_ty: None,
             })?;
         }
-        IrType::Ptr => {
+        // Only a string is printed through its descriptor. A struct or array
+        // payload also lowers to a pointer, and used to take this arm: the
+        // print read the aggregate as a descriptor and crashed (§60).
+        IrType::Ptr if matches!(ok_ty, SemanticType::Str | SemanticType::StrRef) => {
             let p = ctx.fresh_value();
             active.emit(IrInst::Cast { dst: p, from: IrType::I64, to: IrType::Ptr, value: payload })?;
             active.emit(IrInst::Call {
@@ -7657,11 +8022,23 @@ fn prepare_call_args(
 fn reload_call_copies(copy_reloads: CopyReloads, ctx: &mut LoweringCtx, active: &mut ActiveBlock) -> Result<(), LoweringError> {
     for (binding, slot, sem_ty) in copy_reloads {
         match ret_slot_plan(&sem_ty, &ctx.struct_table) {
-            Some(_) => {
-                active.bindings.insert(
-                    binding,
-                    LoweredValue { value: slot, ty: IrType::Ptr },
-                );
+            // Copy the callee's result back INTO the binding's own storage.
+            // This used to re-point the binding at the slot instead, which
+            // saved the copy and moved the aggregate: every address taken
+            // before the call then named dead storage. A compound assignment
+            // had already resolved its field or element, so its store was lost
+            // (`c.v += bump(c.copy)`), and a method that passed its receiver as
+            // `.copy` stopped writing to the caller's struct from that point on
+            // (`docs/known_issues.md` §58). The storage an aggregate binding
+            // names does not change because it was an argument.
+            Some((_, _, parts)) => {
+                let target = active.bindings.get(&binding).cloned().ok_or_else(|| {
+                    LoweringError::UnresolvedSemanticArtifact {
+                        artifact: format!("`.copy` write-back target {:?}", binding),
+                    }
+                })?;
+                ensure_type_match("copy write-back target", IrType::Ptr, target.ty)?;
+                copy_parts(slot, 0, target.value, 0, &parts, ctx, active)?;
             }
             None => {
                 let ty = lower_type(&sem_ty)?;
@@ -11013,6 +11390,7 @@ mod tests {
                     kind: SemanticExprKind::MethodCall {
                         instance: "obj".to_string(),
                         receiver_expr: None,
+                        operator: false,
                         method: "foo".to_string(),
                         args: vec![],
                         instance_binding: BindingId(u32::MAX),
@@ -12813,6 +13191,15 @@ mod divergence_shape_tests {
         lower_program(&analyzed).expect("lowers")
     }
 
+    fn lowering_error(src: &str) -> LoweringError {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape");
+        lower_program(&analyzed).expect_err("compiled code must refuse this shape")
+    }
+
     fn function<'a>(ir: &'a IrModule, name: &str) -> &'a IrFunction {
         ir.functions.iter().find(|f| f.name == name).unwrap_or_else(|| panic!("no function '{name}'"))
     }
@@ -12907,6 +13294,35 @@ mod divergence_shape_tests {
         assert!(backedges >= 2, "entry and backedge both reach the guarded header, found {backedges}");
     }
 
+    /// §60: a Result whose payload is a struct or an array is refused wherever
+    /// compiled code would have to create, unwrap or print one. Its payload word
+    /// would be a pointer nothing owns.
+    #[test]
+    fn a_result_with_an_aggregate_payload_is_refused() {
+        for (what, src) in [
+            ("construct a struct payload", "struct P { x: t64 }\nr: Result<P> = Ok(P { x: 1 })\nprint(1)\n"),
+            ("construct an array payload", "fnc: Result<[2: t64]> mk() { return Ok([1, 2]) }\nprint(1)\n"),
+            ("unwrap a struct payload", "struct P { x: t64 }\nfnc: Result<t64> f(q: Result<P>) {\n    let v;\n    v = q?\n    return Ok(v.x)\n}\nprint(1)\n"),
+        ] {
+            let error = lowering_error(src);
+            assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
+                if construct.contains("a Result whose payload is a struct or array")), "{what}: {error:?}");
+        }
+    }
+
+    /// §60, the control: number, string and error payloads are a word that
+    /// needs no owner, and lower as before.
+    #[test]
+    fn a_result_with_a_word_payload_still_lowers() {
+        let ir = lowered(
+            "fnc: Result<t64> n() { return Ok(7) }\n\
+             fnc: Result<str> s() { return Ok(\"x\") }\n\
+             fnc: Result<t64> e() { return Err(\"bad\") }\n\
+             print(n())\nprint(s())\nprint(e())\n",
+        );
+        for name in ["n", "s", "e"] { function(&ir, name); }
+    }
+
     /// §57a: a `while` condition that is not a bool is refused, as `if` already
     /// refuses it, instead of being branched on as "non-zero".
     #[test]
@@ -12937,5 +13353,49 @@ mod divergence_shape_tests {
              print(n)\n",
         );
         assert_eq!(traps(function(&ir, "main")), 0);
+    }
+    /// §66: an index read copies the array before evaluating its index only
+    /// when the index expression can change the array — and then exactly once.
+    #[test]
+    fn index_read_copies_the_array_only_when_its_index_can_change_it() {
+        let array_slots = |body: &str| {
+            let src = format!(
+                "fnc: t64 idx(a.copy: [3: t64]) {{ a:[1] += 50\n return 1 }}\n\
+                 fnc: t64 pick(a: [3: t64]) {{ return 1 }}\n\
+                 arr: [3: t64] = [0, 10, 20]\n{body}"
+            );
+            let ir = lowered(&src);
+            function(&ir, "main").blocks.iter().flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, IrInst::Alloca { size: 24, .. }))
+                .count()
+        };
+        let call_first = array_slots("i: t64 = idx(arr.copy)\nprint(arr:[i])\n");
+        let call_in_index = array_slots("print(arr:[idx(arr.copy)])\n");
+        assert_eq!(call_in_index, call_first + 1, "one copy of the array, taken before the index");
+
+        let by_value_first = array_slots("i: t64 = pick(arr)\nprint(arr:[i])\n");
+        let by_value_in_index = array_slots("print(arr:[pick(arr)])\n");
+        assert_eq!(by_value_in_index, by_value_first, "a call that cannot change the array costs no copy");
+    }
+
+    /// §68: on the way to a store an index is a place. `rows:[h(rows.copy)]:[1]
+    /// = 5` must write `rows`, so no copy of `rows` is taken for it — a copy
+    /// would receive the store. The same index as a read does take one.
+    #[test]
+    fn a_store_through_a_nested_index_takes_no_copy_of_the_array() {
+        let row_slots = |body: &str| {
+            let src = format!(
+                "fnc: t64 h(r.copy: [2:[2:t64]]) {{ r:[0]:[0] += 1000\n return 1 }}\n\
+                 rows: [2:[2:t64]] = [[1, 2], [3, 4]]\n{body}"
+            );
+            let ir = lowered(&src);
+            function(&ir, "main").blocks.iter().flat_map(|b| &b.insts)
+                .filter(|i| matches!(i, IrInst::Alloca { size: 32, .. }))
+                .count()
+        };
+        let call_first = row_slots("i: t64 = h(rows.copy)\nrows:[i]:[1] = 5\n");
+        assert_eq!(row_slots("rows:[h(rows.copy)]:[1] = 5\n"), call_first, "plain store");
+        assert_eq!(row_slots("rows:[h(rows.copy)]:[1] += 6\n"), call_first, "compound store");
+        assert_eq!(row_slots("print(rows:[h(rows.copy)]:[1])\n"), call_first + 1, "the read still copies");
     }
 }

@@ -176,8 +176,29 @@ pub(crate) fn value_to_string(rt: &RunTime, v: Value) -> String {
         }
         Value::Handle(h) => format!("handle({},{})", h.slot, h.gen),
         Value::Container(map) => format!("{:?}", map),
+        // Fields print in DECLARATION order — the order the struct's layout
+        // uses (`docs/backend/cx_abi_v0.1.md`: "declaration order, no
+        // reordering"). The value holds its fields in a hash map, and printing
+        // in the map's iteration order gave a different line on different runs
+        // of one program (`docs/known_issues.md` §61). A field the declaration
+        // does not list cannot occur; if it ever does it prints last, by name,
+        // so the output stays reproducible rather than hiding it.
         Value::Struct(name, map) => {
-            let parts: Vec<String> = map.iter().map(|(k, v)| format!("{}: {}", k, value_to_string(rt, v.clone()))).collect();
+            let mut parts: Vec<String> = Vec::with_capacity(map.len());
+            let declared = rt.structs.get(&name);
+            for (field, _) in declared.into_iter().flatten() {
+                if let Some(v) = map.get(field) {
+                    parts.push(format!("{}: {}", field, value_to_string(rt, v.clone())));
+                }
+            }
+            let mut undeclared: Vec<&String> = map
+                .keys()
+                .filter(|k| !declared.is_some_and(|fields| fields.iter().any(|(f, _)| f == *k)))
+                .collect();
+            undeclared.sort();
+            for field in undeclared {
+                parts.push(format!("{}: {}", field, value_to_string(rt, map[field].clone())));
+            }
             format!("{} {{ {} }}", name, parts.join(", "))
         }
         Value::ResultOk(v) => format!("Ok({})", value_to_string(rt, *v)),

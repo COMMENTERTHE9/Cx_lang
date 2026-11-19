@@ -1,0 +1,34 @@
+// A method that passes its receiver as `.copy`. The receiver IS the caller's
+// struct — that is the one declared exception to value semantics — so the
+// call's write-back has to reach the caller, and so does every write the
+// method makes afterwards. Compiled code used to move the receiver to a new
+// slot when it came back from the call: the write-back stayed in the slot and
+// the method stopped writing to the caller's struct from that point on.
+struct C { v: t64, w: t64 }
+
+fnc: bump(c.copy: C) {
+    c.v += 100
+}
+
+grow: impl (s: C) {
+    fnc: grow() {
+        bump(s.copy)
+    }
+    fnc: grow_then_touch() {
+        bump(s.copy)
+        s.w += 1
+    }
+    fnc: t64 grow_and_read() {
+        bump(s.copy)
+        return s.v
+    }
+}
+
+x: C = C { v: 1, w: 2 }
+x.grow()
+print(x.v)
+x.grow_then_touch()
+print(x.v)
+print(x.w)
+print(x.grow_and_read())
+print(x.v)

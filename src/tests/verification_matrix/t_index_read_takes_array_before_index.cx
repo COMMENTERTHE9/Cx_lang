@@ -1,0 +1,60 @@
+// An index read takes the array as it is, then evaluates the index. When
+// evaluating the index changes the array — it is passed as `.copy` in there,
+// or a method is called on the variable that holds it — the element read is
+// the one from before, and the change is still there afterwards.
+fnc: t64 idx(a.copy: [3: t64]) {
+    a:[1] += 50
+    return 1
+}
+arr: [3: t64] = [0, 10, 20]
+print(arr:[idx(arr.copy)])
+print(arr:[1])
+
+// The index is an `if` or a `when` value.
+k: t64 = 1
+print(arr:[when k { 1 => idx(arr.copy), _ => 0 }])
+print(arr:[if k == 1 { idx(arr.copy) } else { 0 }])
+print(arr:[1])
+
+// A row of a nested array, and an element of a row.
+fnc: t64 h(r.copy: [2:[2:t64]]) {
+    r:[1]:[0] += 90
+    return 1
+}
+rows: [2:[2:t64]] = [[1, 2], [3, 4]]
+row: [2:t64] = rows:[h(rows.copy)]
+print(row:[0])
+print(rows:[1]:[0])
+print(rows:[1]:[h(rows.copy) - 1])
+print(rows:[1]:[0])
+
+// An array in a struct field: through `.copy`, and through a method.
+struct Ring { items: [4: t64], at: t64 }
+r: impl (s: Ring) {
+    fnc: t64 advance() {
+        s.at = (s.at + 1) % 4
+        s.items:[s.at] += 100
+        return s.at
+    }
+    fnc: t64 here() { return s.at }
+}
+fnc: t64 shift(g.copy: Ring) {
+    g.items:[2] += 7000
+    return 2
+}
+fnc: t64 run() {
+    g: Ring = Ring { items: [1, 2, 3, 4], at: 0 }
+    print(g.items:[g.advance()])
+    print(g.items:[g.here()])
+    print(g.items:[shift(g.copy)])
+    print(g.items:[2])
+    i: t64 = 0
+    total: t64 = 0
+    while (i < 6) {
+        total += g.items:[g.advance()]
+        i += 1
+    }
+    print(total)
+    return g.at
+}
+print(run())

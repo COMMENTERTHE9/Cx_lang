@@ -583,54 +583,68 @@ SemanticStmt::Decl { binding, name, ty, .. } => {
                 SemanticWhenPattern::Catchall => true,
             };
             if matches {
+                // The arm's scope is popped on EVERY way out. The arm used to
+                // evaluate its guard and its bare-expression body with `?`
+                // directly, so an early return travelling out of them — `?` on
+                // an `Err` is a return, not an error — left this scope pushed.
+                // The enclosing call then popped the leaked scope instead of
+                // its own frame: the function's locals outlived the call and
+                // its `.copy` write-back was skipped
+                // (`docs/known_issues.md` §59).
                 self.push_scope();
-                if let SemanticWhenPattern::EnumVariant { binding: Some((binding_id, binding_name)), .. } = &arm.pattern {
-                    self.declare(*binding_id, binding_name.clone(), None, 0)?;
-                    self.set_var_by_id(*binding_id, binding_name, val.clone(), 0)?;
-                }
-                // Guard evaluates only after the pattern already matched, with
-                // the arm's `as v` binding (if any) already in scope above.
-                // Reuses #026's exact if-condition truthiness rule: an unknown
-                // guard is a hard error, never silently coerced to false.
-                let guard_passed = match &arm.guard {
-                    None => true,
-                    Some(guard_expr) => {
-                        let guard_val = self.eval_semantic_expr(guard_expr)?;
-                        match &guard_val {
-                            Value::Bool(b) => *b,
-                            Value::TBool(0) => false,
-                            Value::TBool(1) => true,
-                            Value::TBool(2) | Value::Unknown(_) => {
-                                return Err(RuntimeError::UnknownCondition { pos: arm.pos });
-                            }
-                            Value::Num(n) => *n != 0,
-                            _ => false,
-                        }
-                    }
-                };
-                if !guard_passed {
-                    self.pop_scope();
-                    continue;
-                }
-                let mut last_val = Value::Num(0);
-                for s in &arm.body {
-                    match s {
-                        SemanticStmt::ExprStmt { expr, .. } => {
-                            last_val = self.eval_semantic_expr(expr)?;
-                        }
-                        _ => {
-                            match self.run_semantic_stmt(s) {
-                                Ok(_) => {}
-                                Err(e) => { self.pop_scope(); return Err(e); }
-                            }
-                        }
-                    }
-                }
+                let outcome = self.run_matched_when_arm(arm, &val);
                 self.pop_scope();
-                return Ok(last_val);
+                match outcome? {
+                    Some(value) => return Ok(value),
+                    None => continue,
+                }
             }
         }
         Ok(Value::Num(0))
+    }
+
+    /// Run one `when` arm whose pattern already matched, inside the scope the
+    /// caller pushed for it. `Ok(None)` means the guard was false and matching
+    /// continues with the next arm. This never pushes or pops a scope itself,
+    /// so it can leave with `?` anywhere.
+    fn run_matched_when_arm(&mut self, arm: &SemanticWhenArm, val: &Value) -> Result<Option<Value>, RuntimeError> {
+        if let SemanticWhenPattern::EnumVariant { binding: Some((binding_id, binding_name)), .. } = &arm.pattern {
+            self.declare(*binding_id, binding_name.clone(), None, 0)?;
+            self.set_var_by_id(*binding_id, binding_name, val.clone(), 0)?;
+        }
+        // Guard evaluates only after the pattern already matched, with
+        // the arm's `as v` binding (if any) already in scope above.
+        // Reuses #026's exact if-condition truthiness rule: an unknown
+        // guard is a hard error, never silently coerced to false.
+        let guard_passed = match &arm.guard {
+            None => true,
+            Some(guard_expr) => {
+                let guard_val = self.eval_semantic_expr(guard_expr)?;
+                match &guard_val {
+                    Value::Bool(b) => *b,
+                    Value::TBool(0) => false,
+                    Value::TBool(1) => true,
+                    Value::TBool(2) | Value::Unknown(_) => {
+                        return Err(RuntimeError::UnknownCondition { pos: arm.pos });
+                    }
+                    Value::Num(n) => *n != 0,
+                    _ => false,
+                }
+            }
+        };
+        if !guard_passed {
+            return Ok(None);
+        }
+        let mut last_val = Value::Num(0);
+        for s in &arm.body {
+            match s {
+                SemanticStmt::ExprStmt { expr, .. } => {
+                    last_val = self.eval_semantic_expr(expr)?;
+                }
+                _ => self.run_semantic_stmt(s)?,
+            }
+        }
+        Ok(Some(last_val))
     }
 }
 

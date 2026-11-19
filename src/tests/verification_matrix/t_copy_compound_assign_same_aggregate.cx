@@ -1,0 +1,38 @@
+// A compound assignment whose right-hand side changes the SAME aggregate
+// through `.copy`. The target's old value is read first, the call writes its
+// result back into the aggregate, and then the sum is stored into the target —
+// so the store must land in the aggregate the variable names AFTER the call.
+// Compiled code used to move the aggregate to new storage when it came back
+// from the call, and the store went to the old place and was lost.
+//
+// Field target and array-element target, each followed by a second statement
+// that reads a different field/element, so a store that lands in the wrong
+// place shows up on the next line as well.
+struct C { v: t64, w: t64 }
+
+fnc: t64 bump(c.copy: C) {
+    c.v += 100
+    return c.v
+}
+
+fnc: t64 bump_first(a.copy: [3: t64]) {
+    a:[0] += 100
+    return a:[0]
+}
+
+let c
+c = C { v: 1, w: 2 }
+c.v += bump(c.copy)
+print(c.v)
+print(c.w)
+c.w += bump(c.copy)
+print(c.v)
+print(c.w)
+
+arr: [3: t64] = [1, 2, 3]
+arr:[0] += bump_first(arr.copy)
+print(arr:[0])
+arr:[1] += bump_first(arr.copy)
+print(arr:[0])
+print(arr:[1])
+print(arr:[2])

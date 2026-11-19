@@ -1,0 +1,15 @@
+// Printing a Result that holds a struct. Compiled code used to read the
+// struct as a string descriptor and crash (segfault, or abort when the value
+// came back from a call). It has no owner for an aggregate payload yet, so it
+// now refuses the program cleanly; this fixture is recorded as a compiled-code
+// SKIP and exists so that a crash can never again pass unnoticed — any exit
+// other than "not supported" fails parity.
+struct P { x: t64 }
+
+fnc: Result<P> make(n: t64) {
+    return Ok(P { x: n })
+}
+
+r: Result<P> = Ok(P { x: 1 })
+print(r)
+print(make(2))
