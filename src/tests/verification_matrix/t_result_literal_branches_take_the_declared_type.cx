@@ -1,0 +1,15 @@
+// A literal `Ok` takes the declared payload type in every branch of an
+// `if`/`when` value, in every position a Result type is declared.
+c: bool = false
+x: Result<t8> = if c { Ok(1) } else { Ok(2) }
+print(x)
+y: Result<t8> = when 2 { 1 => Ok(3), _ => Ok(4) }
+print(y)
+fnc: Result<t8> f(c: bool) { if c { Ok(1) } else { Ok(9) } }
+print(f(true))
+print(f(false))
+struct S { r: Result<t8> }
+s: S = S { r: if c { Ok(1) } else { Ok(5) } }
+print(s.r)
+fnc: t64 take(r: Result<t8>) { return 1 }
+print(take(if c { Ok(1) } else { Ok(2) }))

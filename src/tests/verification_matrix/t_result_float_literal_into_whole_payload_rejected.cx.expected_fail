@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A float literal as the Ok payload of a Result<t8>: type mismatch in analysis.

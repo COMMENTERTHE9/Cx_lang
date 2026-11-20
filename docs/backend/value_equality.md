@@ -173,15 +173,17 @@ program.
    fails with `Ok(true) != Ok(true)`, and `Ok(1)` against `Ok(1.0)` with
    `Ok(1) != Ok(1)`: the payloads are compared by the same rule as at the top
    level, so they inherit its gaps. Compiled code refuses both payloads.
-7. *(Decided 2026-11-19 — closed except for one route.)* **A value typed
+7. *(Decided 2026-11-19 — closed in every direct position; the routes that remain, all refused by compiled code, are listed in known-issues §75.)* **A value typed
    `Result<unknown>` holds an Err.** It is still accepted wherever a `Result`
    is declared — that is what lets an `Err(..)` be a `Result` of every type —
    but nothing may put an `Ok` under that type: an `Ok` of a known type cannot
    be assigned to such a variable or element, and such a variable cannot be
    passed `.copy` to a typed parameter, whose write-back was the way in
-   (known-issues §75). The route that remains is a generic function whose body
-   returns something other than its `T` (§74); until it is closed, compiled
-   code keeps refusing a `Result<unknown>` it cannot prove.
+   (known-issues §75). The routes that remain — a generic function whose body
+   returns something other than its `T` (§74), an untyped `.copy` parameter, a
+   generic struct's field and a few smaller ones, all listed in §75 — are each
+   refused by compiled code; until they are closed, it keeps refusing a
+   `Result<unknown>` it cannot prove.
 8. **`assert` on a value that is not a condition.** The interpreter passes
    `assert(x)` for `true` and for a non-zero number, and fails it for
    everything else — an enum, a handle, a `Result`, a string. Compiled code

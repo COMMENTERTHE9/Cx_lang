@@ -347,7 +347,11 @@ impl Analyzer {
             return Ok(());
         };
         let got = binding_type(info, &self.current_type_params);
-        if !same_element_type(expected, &got) || !result_payloads_identical(expected, &got) {
+        // Only `.copy` is written back, so only it needs the variable to be
+        // able to hold whatever the parameter can. `.copy.free` hands the
+        // value over and nothing returns.
+        let written_back = form == ".copy";
+        if !same_element_type(expected, &got) || (written_back && !result_payloads_identical(expected, &got)) {
             return Err(sem_err!(
                 pos,
                 "'{}' argument '{}' is a{} {}, but parameter '{}' is a {} — it is passed by address and written back, so it must have the parameter's type",
@@ -1014,10 +1018,16 @@ impl Analyzer {
             }
             Stmt::Decl { name, ty, pos } => {
                 let binding = self.declare(name, ty.clone(), None, false, *pos)?;
+                // The declared type is read with the enclosing function's type
+                // parameters in scope, as a typed declaration's is. Read
+                // without them, `let y: T` in a generic function declared `y`
+                // as a struct named "T", and the interpreter then refused the
+                // first value assigned to it (known-issues §74).
+                let type_params = self.current_type_params.clone();
                 Ok(SemanticStmt::Decl {
                     binding,
                     name: name.clone(),
-                    ty: ty.clone().map(|t| semantic_type_from_decl(t, &[])),
+                    ty: ty.clone().map(|t| semantic_type_from_decl(t, &type_params)),
                     pos: *pos,
                 })
             }
@@ -2933,8 +2943,32 @@ Expr::Unary(op, inner, pos) => {
                 // against it. Without this `Ok(5)` stayed "a number of no
                 // declared width", which is as wide as a t64 and is not a
                 // `Result<t8>` (`result_payload_compatible`).
+                //
+                // Only where the payload has a declared width or is a float: a
+                // payload "of no declared width" is what the literal already
+                // is, and converting to it changed the literal's type without
+                // changing its value, so a float then passed for a whole
+                // number. And never a float literal into a whole number: that
+                // is the lossy conversion a `Result` does not make —
+                // `r: Result<t8> = Ok(2.5)` used to become `Ok(2)`, and
+                // `Ok(1000.5)` `Ok(127)`.
+                let is_float_literal = |e: &SemanticExpr| {
+                    let float = |e: &SemanticExpr| matches!(e.kind, SemanticExprKind::Value(SemanticValue::Float(_)));
+                    float(e) || matches!(&e.kind, SemanticExprKind::Unary { op: Op::Minus, expr, .. } if float(expr))
+                };
                 let inner_analyzed = match &payload_ty {
-                    Some(payload) if is_number_literal(&inner_analyzed) && is_numeric(payload) => {
+                    Some(payload) if is_float_literal(&inner_analyzed) && whole_number_bits(payload).is_some() => {
+                        return Err(sem_err!(
+                            *pos,
+                            "type mismatch: expected {}, got a float literal — a Result's payload is not converted",
+                            type_name(&SemanticType::Result(Box::new(payload.clone())))
+                        ));
+                    }
+                    Some(payload)
+                        if is_number_literal(&inner_analyzed)
+                            && is_numeric(payload)
+                            && *payload != SemanticType::Numeric =>
+                    {
                         insert_cast_if_needed(inner_analyzed, payload)
                     }
                     _ => inner_analyzed,
@@ -3232,7 +3266,11 @@ Expr::Unary(op, inner, pos) => {
                     if let Some(SemanticType::TypeParam(tname)) = &param.ty {
                         let arg_ty = match arg {
                             CallArg::Expr(expr) => {
-                                let hint = arg_hint(index).cloned();
+                                // What `T` is already bound to is this
+                                // argument's declared type, ahead of the
+                                // call's: in `pick(r8, Ok(5))` the literal is
+                                // a `Result<t8>` because `r8` is.
+                                let hint = type_param_map.get(tname).cloned().or_else(|| arg_hint(index).cloned());
                                 let analyzed = match &hint {
                                     Some(hint) => self.analyze_expr_with_elem_hint(expr, hint)?,
                                     None => self.analyze_expr(expr)?,
@@ -3246,7 +3284,18 @@ Expr::Unary(op, inner, pos) => {
                         };
                         let Some(arg_ty) = arg_ty else { continue };
                         if let Some(existing) = type_param_map.get(tname) {
-                            if !types_compatible(existing, &arg_ty) {
+                            if types_compatible(existing, &arg_ty) {
+                                // fits what `T` is bound to
+                            } else if matches!((existing, &arg_ty), (SemanticType::Result(_), SemanticType::Result(_)))
+                                && types_compatible(&arg_ty, existing)
+                            {
+                                // A `Result` argument that came first may be
+                                // the less specific one: an `Err(..)` is a
+                                // Result of every type, and a narrower whole
+                                // number is usable as a wider one. `T` is the
+                                // type that takes both.
+                                type_param_map.insert(tname.clone(), arg_ty);
+                            } else {
                                 return Err(sem_err!(pos, "type parameter '{}' is bound to {} but argument {} has {}", tname, type_name(existing), index + 1, type_name(&arg_ty)));
                             }
                         } else {
@@ -3975,9 +4024,24 @@ fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usi
 /// nested tail — `if c { if d { 300 } else { 5 } } else { 7 }` — is covered too. A
 /// branch whose last statement is not a value-producing expression (or an empty
 /// body) contributes no literal to check.
+///
+/// A branch is also checked against a declared `Result` type. An `if`/`when`
+/// value is typed by its first branch (#046), so the type check every caller
+/// makes sees that branch only: `x: Result<t8> = if c { Err("no") } else { big }`
+/// with a `Result<t64>` `big` passed, and the interpreter then held 300 in a
+/// `Result<t8>`. A `Result`'s payload is never converted, so here each branch
+/// must itself be usable where the type is declared (known-issues §75).
 fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
     if let Some(SemanticStmt::ExprStmt { expr, .. }) = body.last() {
         check_semantic_num_fits(expr, expected, pos)?;
+        if matches!(expected, SemanticType::Result(_)) && !types_compatible(expected, &expr.ty) {
+            return Err(sem_err!(
+                pos,
+                "type mismatch: a branch of this if/when yields {}, where {} is declared",
+                type_name(&expr.ty),
+                type_name(expected)
+            ));
+        }
     }
     Ok(())
 }
@@ -7021,6 +7085,52 @@ print(result + result2)
                 panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
             }
         }
+    }
+
+    /// What the independent review of the Result rule found (known-issues
+    /// §75): a later branch of an `if`/`when` value was not checked; a float
+    /// literal was cut to fit a whole-number payload; and two things were
+    /// rejected that should not be.
+    #[test]
+    fn every_branch_of_a_result_value_is_checked_and_literals_are_not_cut() {
+        let head = "big: Result<t64> = Ok(300)\nr8: Result<t8> = Ok(1)\nc: bool = false\nfnc: T <T> pick(a: T, b: T) { return b }\n";
+        for (src, wanted) in [
+            ("x: Result<t8> = if c { Err(\"no\") } else { big }", "a branch of this if/when yields Result<t64>"),
+            ("x: Result<str> = when 2 { 1 => Err(\"no\"), _ => big }", "a branch of this if/when yields Result<t64>"),
+            ("x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }", "a branch of this if/when yields"),
+            ("x: Result<t8> = if c { r8 } else { if c { r8 } else { big } }", "a branch of this if/when yields Result<t64>"),
+            ("fnc: Result<t8> f() { if c { Err(\"no\") } else { big } }", "a branch of this if/when yields Result<t64>"),
+            ("fnc: t64 take(r: Result<t8>) { return 1 }\nn: t64 = take(if c { Err(\"no\") } else { big })", "a branch of this if/when yields Result<t64>"),
+            ("x: Result<t8> = Ok(2.5)", "got a float literal"),
+            ("x: Result<t8> = Ok(-1000.5)", "got a float literal"),
+            ("let u\nu = Ok(5)\nu = Ok(2.5)", "got a float literal"),
+        ] {
+            let errors = single_file_errors(&format!("{head}{src}"));
+            assert!(errors.contains(wanted), "{src:?} gave {errors}");
+        }
+        for src in [
+            "x: Result<t8> = if c { Ok(1) } else { Ok(2) }",
+            "x: Result<t8> = when 2 { 1 => Ok(3), 2 => Err(\"e\"), _ => r8 }",
+            "x: Result<t64> = if c { Err(\"no\") } else { r8 }",
+            "x: Result<f64> = Ok(1)",
+            "x: Result<f64> = Ok(2.5)",
+            // A literal beside a bound type parameter takes the binding.
+            "x: Result<t8> = pick(r8, Ok(5))",
+            "x: Result<t64> = pick(r8, Ok(5))",
+            // The less specific argument may come first.
+            "x: Result<t8> = pick(Err(\"x\"), r8)",
+            "x: Result<t64> = pick(r8, big)",
+            // `.copy.free` is not written back.
+            "fnc: t64 look(r.copy.free: Result<t64>) { return 0 }\nlet e\ne = Err(\"x\")\nn: t64 = look(e.copy.free)",
+        ] {
+            let program = crate::frontend::resolver::parse_source(&format!("{head}{src}")).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
+        // `.copy` still needs the variable to hold whatever the parameter can.
+        let copy = "fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }\nlet e\ne = Err(\"x\")\nn: t64 = fill(e.copy)";
+        assert!(single_file_errors(copy).contains("passed by address and written back"));
     }
 
     /// The owner's decision of 2026-11-19: a Result is used where a Result of

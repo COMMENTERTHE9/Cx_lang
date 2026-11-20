@@ -2,6 +2,9 @@
 // it: giving it a value of another kind afterwards is refused. (Analysis
 // accepts this program — it does not check a concrete value against `T` —
 // so the interpreter stops at run time and compiled code refuses.)
+// This fixture also fails on a build without the generic-local fix, at the
+// declaration rather than at the assignment: what it guards against is a fix
+// that accepts any value for a `T` local, which the first attempt did.
 fnc: T <T> id(x: T) {
     y: T = x
     print("declared")

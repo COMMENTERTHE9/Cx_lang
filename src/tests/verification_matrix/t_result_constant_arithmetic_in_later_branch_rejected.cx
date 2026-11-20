@@ -1,0 +1,6 @@
+// `Ok(1 + 2)` is not a literal: it is a Result of a number of no declared
+// width, in whichever branch it stands. In the first branch this was already
+// an error; in a later one compiled code refused the program.
+c: bool = false
+x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }
+print(x)

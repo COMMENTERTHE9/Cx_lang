@@ -34,6 +34,12 @@ code could not tell the two apart.
 
 ### Moved out of this section: no longer legal programs
 
+*(After the independent review of §75: for one shape this was not yet true.
+`x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }` — the constant in a
+**later** branch — was still accepted by analysis and refused by compiled
+code. Each branch of an `if`/`when` value is now checked, so it is a type
+error like the rest.)*
+
 R1–R3 were refusals of a `Result` read at a narrower whole-number type than it
 was made with, when the value happened to fit: directly
 (`e: Result<t8> = d` for a `d: Result<t64>` holding 5), through an `if`/`when`
