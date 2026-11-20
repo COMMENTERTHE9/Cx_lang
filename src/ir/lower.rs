@@ -136,6 +136,10 @@ struct FunctionSignature {
     /// into the callee's dead frame ever escapes (the silent-corruption bug
     /// this convention closes: garbage fields, exit 0, zero prior coverage).
     ret_slot_ty: Option<SemanticType>,
+    /// For a method: whether its body can change its first receiver — see
+    /// `method_may_write_receiver`. `true` for anything that is not a method,
+    /// so that an unknown callee is never taken to be read-only.
+    receiver_writes: bool,
 }
 
 /// The returned struct's name, when a function returns a struct by value.
@@ -707,6 +711,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                 result_sources: None,
                 return_ty,
                 ret_slot_ty,
+                receiver_writes: true,
             });
         }
         // Impl-block methods are registered alongside free functions so calls
@@ -791,6 +796,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         result_sources: returns_only_err(method).then(Vec::new),
                         return_ty,
                         ret_slot_ty,
+                        receiver_writes: method_may_write_receiver(method, method_alias_params.get(i)),
                     },
                 );
             }
@@ -883,6 +889,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         result_sources: returns_only_err(method).then(Vec::new),
                         return_ty,
                         ret_slot_ty,
+                        receiver_writes: method_may_write_receiver(method, method_receiver_params.get(i)),
                     },
                 );
             }
@@ -2446,7 +2453,7 @@ fn lower_stmt_inner(
             // to lower_expr for non-void.
             if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, .. } = &expr.kind {
                 // Same receiver choice as the value-position arm above.
-                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, &mut current)?;
+                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, method, args, ctx, &mut current)?;
                 let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
                     (_, Some(copy)) => copy.clone(),
                     (Some(rx), None) => (**rx).clone(),
@@ -3982,7 +3989,7 @@ fn lower_expr_inner(
             // synthesizes the `VarRef` it always did. Either way the receiver
             // occupies argument 0 and is evaluated there, so no evaluation
             // order changes and no new lowering machinery is involved.
-            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, active)?;
+            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, method, args, ctx, active)?;
             let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
                 (_, Some(copy)) => copy.clone(),
                 (Some(rx), None) => (**rx).clone(),
@@ -6912,26 +6919,34 @@ fn lower_array_lit(
     })
 }
 
-/// The left operand of a dispatched operator, taken before the right operand
-/// is evaluated: `a + f(a.copy)`, `w.inner + g(w.copy)`, `ps:[0] + h(ps.copy)`
-/// on a type with a user `+`.
+/// The left (or only) operand of a dispatched operator, as a value: `a + b`,
+/// `a + f(a.copy)`, `w.inner + b`, `ps:[0] + h(ps.copy)`, `-a` on a type with
+/// a user operator.
 ///
-/// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
-/// method takes its receiver by address, and a left operand that is a
-/// variable, a field, an element, or an `if`/`when` value yielding one of
-/// those lowers to the address of the thing itself — so the method would see
-/// whatever evaluating B did to it. When B calls anything at all, the left
-/// operand is copied first and the method is given the copy.
+/// An operator's operands are values (docs/backend/cx_value_and_alias_semantics.md,
+/// V3): `A + B` evaluates A, then B, the method is given the value A had, and
+/// nothing the method does to it reaches a variable. The method takes its
+/// receiver by address, and a left operand that is a variable, a field, an
+/// element, or an `if`/`when` value yielding one of those lowers to the address
+/// of the thing itself. So unless neither of two things can happen, the operand
+/// is copied first and the method is given the copy:
 ///
-/// The test is "B contains a call", not "B can change A". Which variable a
-/// left operand ends up naming is not always readable from the expression
-/// (an `if` value), and a call can change a variable through a chain of
-/// aliases this function cannot follow; a call is the one thing every such
-/// case has. `a + b` on two names copies nothing.
+/// - **B changes A.** The test is "B contains a call", not "B can change A".
+///   Which variable a left operand ends up naming is not always readable from
+///   the expression (an `if` value), and a call can change a variable through
+///   a chain of aliases this function cannot follow; a call is the one thing
+///   every such case has.
+/// - **The method changes its receiver** (`method_may_write_receiver`). Before
+///   this was checked, a `+` that assigned to its receiver changed the
+///   operand's variable — on both backends for a named operand, and in
+///   compiled code alone for a field or an element (known-issues §69a, §69c).
+///
+/// `a + b` on two names, with a method that only reads its receiver, copies
+/// nothing.
 ///
 /// Returns the expression that names the copy, or `None` when none is needed
-/// — a written method call, a right operand without a call, or a left operand
-/// that is already a fresh value — and the call is lowered exactly as before.
+/// — a written method call, or a left operand that is already a fresh value
+/// or cannot be changed — and the call is lowered exactly as before.
 #[allow(clippy::too_many_arguments)]
 fn operator_operand_copy(
     operator: bool,
@@ -6939,11 +6954,19 @@ fn operator_operand_copy(
     instance: &str,
     instance_binding: BindingId,
     struct_name: &str,
+    method: &str,
     args: &[SemanticCallArg],
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<Option<SemanticExpr>, LoweringError> {
-    if !operator || !args_may_write(args, Scan::AnyCall) {
+    if !operator {
+        return Ok(None);
+    }
+    let method_writes = ctx
+        .signature_table
+        .get(mangle_method(struct_name, method).as_str())
+        .is_none_or(|signature| signature.receiver_writes);
+    if !method_writes && !args_may_write(args, Scan::AnyCall) {
         return Ok(None);
     }
     let ty = SemanticType::Struct(struct_name.to_string());
@@ -6958,7 +6981,7 @@ fn operator_operand_copy(
     };
     let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
         LoweringError::UnsupportedSemanticConstruct {
-            construct: format!("an operator whose right operand makes a call, for a left operand ({struct_name}) compiled code cannot copy"),
+            construct: format!("an operator on a left operand ({struct_name}) compiled code cannot copy"),
         }
     })?;
     let original = lower_expr(&operand, ctx, active)?;
@@ -6972,6 +6995,30 @@ fn operator_operand_copy(
     let binding = BindingId(u32::MAX - ctx.operand_copies);
     active.bindings.insert(binding, LoweredValue { value: copy, ty: IrType::Ptr });
     Ok(Some(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name: instance.to_string() } }))
+}
+
+/// Whether a method's body can change its first receiver, decided from the
+/// text of the body with no analysis of what anything it calls does. It can
+/// if the body or the trailing expression contains an assignment rooted at the
+/// receiver (whole, field or element), the receiver passed as `.copy`, a
+/// method call on it, the receiver given to a method as an argument that is
+/// passed by reference — all of which `Scan::Writes` finds — or a nested
+/// function declaration, which could name it.
+///
+/// "Can" errs towards yes: a wrong yes costs one copy of an operand. An
+/// operator applied to the receiver inside the body is not a write, by the
+/// rule this predicate exists to implement.
+fn method_may_write_receiver(
+    method: &crate::frontend::semantic_types::SemanticFunction,
+    receivers: Option<&Vec<crate::frontend::semantic_types::SemanticParam>>,
+) -> bool {
+    let Some(receiver) = receivers.and_then(|r| r.first()) else {
+        return true;
+    };
+    let scan = Scan::Writes(receiver.binding);
+    stmts_may_write(&method.body, scan)
+        || method.ret_expr.as_ref().is_some_and(|e| expr_may_write(e, scan))
+        || method.body.iter().any(|stmt| matches!(stmt, SemanticStmt::FuncDef(_)))
 }
 
 /// Forget the binding `operator_operand_copy` made, once its call is lowered.
@@ -7021,6 +7068,9 @@ fn passed_by_value(ty: &SemanticType) -> bool {
 /// names the variable counts — answering "may" for one that is in fact passed
 /// by value costs a copy and nothing else.
 ///
+/// Using it as the operand of a dispatched operator is not one of them: an
+/// operator's operands are values, and its method cannot change them.
+///
 /// Looks through every nested expression and statement, so an `if`/`when`
 /// value is not a blind spot.
 fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
@@ -7045,9 +7095,10 @@ fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
         SemanticExprKind::Call { args, .. } => scan == Scan::AnyCall || args_may_write(args, scan),
         SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
             let on_it = match receiver_expr {
-                // An expression receiver that is a place in the variable is
-                // passed by address, exactly as a named one is.
-                Some(receiver) => root_binding(receiver).is_some_and(|b| scan.names(b)) || any(receiver),
+                // An operator's operand is a value: evaluating it may change
+                // the variable, the operator's method may not
+                // (`operator_operand_copy` sees to that).
+                Some(receiver) => any(receiver),
                 None => scan.names(*instance_binding),
             };
             // Only a struct or an array is passed by reference; a number,

@@ -299,25 +299,23 @@ impl RunTime {
 
     /// Invoke a method.
     ///
-    /// `receiver` is the already-evaluated receiver value when the caller has
-    /// one — an operator dispatched on a non-variable left operand, `(a + b) + c`
-    /// — and `None` when the receiver is the variable `instance`, which is then
-    /// resolved by name exactly as it always was.
+    /// `receiver` is the already-evaluated receiver value when the call is a
+    /// dispatched operator — `a + b`, `(a + b) + c`, `-a` — and `None` when it
+    /// is a written method call, whose receiver is the variable `instance`,
+    /// resolved by name.
     ///
-    /// That same distinction decides the write-back: a named receiver has its
-    /// mutations written back to its name, a temporary has none. Dropping it for
-    /// a temporary is not a lost mutation — a temporary has no name through
-    /// which one could be observed, so there is nothing to write back to.
-    ///
-    /// One function rather than two: the named path is the `None` arm and is
-    /// byte-for-byte the behaviour it had.
+    /// That same distinction decides the write-back. A written method call's
+    /// receiver is its variable: what the method did to it is written back to
+    /// that name. An operator's operand is a value, read where the operand
+    /// stands, before the right operand is evaluated; the method may change
+    /// its copy and nothing is written anywhere
+    /// (docs/backend/cx_value_and_alias_semantics.md, V2 and V3).
     pub(crate) fn call_semantic_method(
         &mut self,
         receiver: Option<Value>,
         instance: &str,
         method: &str,
         args: &[SemanticCallArg],
-        operator: bool,
         pos: usize,
     ) -> Result<Value, RuntimeError> {
         let is_temporary = receiver.is_some();
@@ -386,9 +384,9 @@ impl RunTime {
         // write-back below, overwrite it (known-issues §65).
         //
         // Not for a dispatched operator. Its receiver is the operator's left
-        // operand, and `A + B` evaluates A before B: the value read above,
-        // before the right operand was evaluated, is the one the method gets.
-        if !is_temporary && !operator {
+        // operand, and `A + B` evaluates A before B: the value the caller
+        // evaluated, before the right operand, is the one the method gets.
+        if !is_temporary {
             alias_vals[0].3 = self.get_var(instance, pos)?;
         }
         // The same for each further alias that names a variable and holds a

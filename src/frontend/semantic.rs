@@ -3459,21 +3459,23 @@ Expr::Unary(op, inner, pos) => {
     }
 
     /// 0.3.4 slice 6: operator-gene dispatch. When the left operand is a user
-    /// struct whose type has a phen for the operator's gene, the operator IS
-    /// the gene method (design doc: "no separate operator-overloading syntax
-    /// — it is gene/phen end to end"), rewritten to the same MethodCall node
-    /// a hand-written `a.add(b)` produces — the proven slice 3/5 machinery,
-    /// no new dispatch mechanism.
+    /// struct whose type has a phen for the operator's gene, the operator runs
+    /// the gene's method (design doc: "no separate operator-overloading syntax
+    /// — it is gene/phen end to end"), rewritten to the MethodCall node the
+    /// proven slice 3/5 machinery lowers and runs — no new dispatch mechanism.
+    ///
+    /// It is the same method a hand-written `a.add(b)` runs, on different
+    /// things. A written method call runs on its receiver's variable. An
+    /// operator runs on **values**: its operands are evaluated left to right
+    /// and nothing the method does to them is written back to a variable
+    /// (docs/backend/cx_value_and_alias_semantics.md, V3). So the left operand
+    /// always travels as an expression receiver — a temporary, evaluated in
+    /// place — whether it is a name, a field, an element or a call.
     ///
     /// Returns Ok(None) when this isn't operator-gene territory (no struct
     /// operand, or no phen) — the caller falls through to the existing
     /// built-in behavior: the decision-6 bootstrap intrinsics for primitives,
     /// and every existing rejection for types that don't opt in.
-    ///
-    /// Interim restriction (design doc): the left operand must be a named
-    /// variable — the method machinery is name-based end to end (runtime
-    /// receiver lookup and mutation write-back both key on the variable
-    /// name), so an expression receiver has no representation yet.
     #[allow(clippy::too_many_arguments)]
     fn try_operator_gene_dispatch(
         &mut self,
@@ -3500,25 +3502,21 @@ Expr::Unary(op, inner, pos) => {
                 ));
             }
         }
-        // A named left operand keeps the receiver it always had. Anything else
-        // — `(a + b) + c`, `mk(1) + b` — travels as an expression receiver: a
-        // temporary, evaluated in place, with no write-back. Nothing is
-        // reordered by this: the receiver occupies argument 0 either way, so it
-        // is evaluated exactly where the named form's `VarRef` was.
+        // The left operand is an operand, whatever it is: it is evaluated at
+        // its position — argument 0, exactly where a named receiver's `VarRef`
+        // was — and its value is what the method gets. A named operand used to
+        // travel as a named receiver, so a `+` that changed its receiver
+        // changed the variable, and the interpreter wrote the value it had read
+        // back over whatever the right operand had done to the variable
+        // (known-issues §69a).
         //
-        // Only the LEFT operand ever needed this. The right has always accepted
-        // an arbitrary expression, because it travels as an ordinary call
-        // argument.
-        let (instance, instance_binding, receiver_expr) = match &lhs.kind {
-            SemanticExprKind::VarRef { binding, name } => (name.clone(), *binding, None),
-            _ => (
-                // Diagnostic label only — not resolved by name. See the
-                // `receiver_expr` doc on SemanticExprKind::MethodCall.
-                format!("({})", op_symbol),
-                BindingId(u32::MAX),
-                Some(Box::new(lhs.clone())),
-            ),
+        // `instance` is a label for diagnostics only; it is not resolved by
+        // name. See the `receiver_expr` doc on SemanticExprKind::MethodCall.
+        let (instance, instance_binding) = match &lhs.kind {
+            SemanticExprKind::VarRef { binding, name } => (name.clone(), *binding),
+            _ => (format!("({})", op_symbol), BindingId(u32::MAX)),
         };
+        let receiver_expr = Some(Box::new(lhs.clone()));
         let args = match rhs {
             Some(r) => vec![SemanticCallArg::Expr(r.clone())],
             None => vec![],

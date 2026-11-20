@@ -1,8 +1,14 @@
-// The canary that protects what the design reasoned about. `bump` mutates its
+// The canary that protects what the design reasoned about. `add` changes its
 // receiver AND returns a value, so three things are observable at once:
 //
-//   1. a NAMED receiver still writes back — `a.x` must read 100 after `a + b`.
-//   2. a TEMPORARY receiver must not write back anywhere — the inner `(a + b)`
+//   1. an operator's operand is a VALUE — `a.x` must still read 1 after
+//      `a + b`, although `add` set its receiver's `x` to 100. The method works
+//      on the value `a` had; only a method called by name, `a.add(b)`, runs on
+//      the variable (docs/backend/cx_value_and_alias_semantics.md, V3).
+//      Until 2026-11 this point read "a NAMED receiver still writes back" and
+//      expected 100: the owner decided on 2026-11-19 that operator operands
+//      "must not implicitly write back mutations to their source variables".
+//   2. a TEMPORARY operand must not write back anywhere — the inner `(a + b)`
 //      result is unnamed, so its mutation is unobservable by construction, and
 //      nothing else may be corrupted by an attempt to write it somewhere.
 //   3. evaluation order is unchanged — operands evaluate left to right, so the
@@ -21,12 +27,14 @@ let b
 b = V { x: 2 }
 let c
 c = V { x: 4 }
-// named receiver: a is mutated to 100, result is 100 + 2 = 102
+// named operand: the method's copy of a is set to 100, result is 100 + 2 = 102;
+// a itself is untouched
 s: V = a + b
 print(s.x)
 print(a.x)
-// chained: inner (a + b) -> a is already 100, so 100 + 2 = 102 (temporary),
-// then temporary + c -> temporary mutated to 100 (unobservable), 100 + 4 = 104
+// chained: inner (p + b) -> the method's copy of p is set to 100, 100 + 2 = 102
+// (temporary), then temporary + c -> temporary set to 100 (unobservable),
+// 100 + 4 = 104; p is untouched
 let p
 p = V { x: 1 }
 t: V = (p + b) + c

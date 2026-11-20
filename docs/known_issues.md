@@ -5852,3 +5852,66 @@ Fixtures: `t_one_variable_two_receivers_rejected`,
 `t_parenthesised_name_two_receivers_rejected`, and
 `t_receiver_variable_given_again_by_value` (both backends). Unit test
 `one_variable_is_at_most_one_receiver_of_a_call`.
+
+### c. An operator could change a variable through its operands, and the interpreter undid what the right operand had done (§69a, half of §69c; rule V3)
+
+An operator on a type with a user `+` was rewritten to a method call on the
+left operand's variable. Three things followed.
+
+```cx
+struct V { x: t64 }
+phen Add (v: V) { fnc: V add(rhs: V) { v.x = 100; V { x: v.x + rhs.x } } }
+a: V = V { x: 1 }
+b: V = V { x: 2 }
+s: V = a + b
+print(a.x)                       // 100 / 100 — `+` changed its operand
+ps: [2: V] = [V { x: 1 }, V { x: 2 }]
+t: V = ps:[0] + b
+p0: V = ps:[0]
+print(p0.x)                      // 1 / 100 — in compiled code only, for a
+                                 //           field or an element
+fnc: V bumpv(k.copy: V) { k.x += 100; return V { x: 1 } }
+c: V = V { x: 1 }
+r: V = c + bumpv(c.copy)
+print(c.x)                       // 1 / 101 — the interpreter stored the value
+                                 //           it had read for `c` back over
+                                 //           what `bumpv` wrote
+```
+
+**Now** an operator's operands are values, for every operator a `phen`
+defines — `+ - * / %`, unary `-`, `==`/`!=` and the four orderings. The method
+is given the value the left operand had when it was evaluated; nothing it does
+to its receiver or its parameter reaches a variable, a field or an element;
+and what evaluating the right operand did stays done. The three lines above
+print 1, 1 and 101 on both backends. A method called by name — `a.add(b)` —
+still runs on its receiver's variable.
+
+How: analysis sends an operator's left operand as an expression receiver in
+every case, not only when it is not a name
+(`try_operator_gene_dispatch`). The interpreter evaluates it in place and
+writes nothing back. Compiled code, where a receiver is passed by address,
+gives the method a copy of the operand unless the operand is already a fresh
+value, or the method cannot write its receiver and the right operand makes no
+call (`operator_operand_copy`, `method_may_write_receiver`). "Cannot write" is
+read off the method's body with no analysis of what it calls; when in doubt
+the operand is copied. `a + b` with a method that only reads its receiver
+copies nothing, as before.
+
+**What changes for existing programs.** One tracked fixture:
+`t_op_expr_receiver_mutation`, written as the canary for the operator design,
+pinned that `a.x` is 100 after `a + b` above. Its expected output changes from
+`102 100 104 100 2 4` to `102 1 104 1 2 4`, and its header says why. The texts
+that said `a + b` *is* `a.add(b)` (`README.md`, `gene_phen_design.md`, the
+comment on the dispatch) are amended. This was decided by the owner on
+2026-11-19: operator operands "must not implicitly write back mutations to
+their source variables". No other tracked output changes; two fixtures execute
+`a + f(a.copy)` without reading `a` afterwards.
+
+A generator written for this change (operator methods that write their
+receiver by field, by whole assignment, through a method call or as `.copy`,
+on named, field, element and `if`/`when`-value operands, with every variable
+read after every statement): 1,500 programs, all agreeing.
+
+Fixtures: `t_operator_operands_are_values`,
+`t_operator_keeps_what_its_right_operand_did`, and the changed
+`t_op_expr_receiver_mutation` (both backends).

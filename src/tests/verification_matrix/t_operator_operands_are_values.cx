@@ -1,0 +1,99 @@
+// An operator's operands are values: whatever its method does to its receiver
+// or its parameter reaches no variable, field or element. That holds for every
+// operator a phen defines — arithmetic, unary minus, equality and ordering —
+// and for a named operand as much as for a field or an element. A method
+// called by name runs on its receiver's variable and does change it.
+struct V { x: t64 }
+struct W { inner: V, n: t64 }
+
+phen Add (v: V) {
+    fnc: V add(rhs: V) {
+        v.x += 100
+        rhs.x += 5000
+        V { x: v.x + rhs.x }
+    }
+}
+phen Sub (v: V) {
+    fnc: V sub(rhs: V) {
+        v = V { x: 70 }
+        V { x: v.x - rhs.x }
+    }
+}
+phen Neg (v: V) {
+    fnc: V neg() {
+        v.x += 100
+        V { x: 0 - v.x }
+    }
+}
+phen Eq (v: V) {
+    fnc: bool eq(rhs: V) {
+        v.x += 1000
+        v.x == rhs.x + 1000
+    }
+}
+phen Ord (v: V) {
+    fnc: bool lt(rhs: V) {
+        v.x += 10000
+        v.x < rhs.x + 10000
+    }
+    fnc: bool gt(rhs: V) {
+        v.x += 10000
+        v.x > rhs.x + 10000
+    }
+    fnc: bool le(rhs: V) {
+        v.x += 10000
+        v.x <= rhs.x + 10000
+    }
+    fnc: bool ge(rhs: V) {
+        v.x += 10000
+        v.x >= rhs.x + 10000
+    }
+}
+
+a: V = V { x: 1 }
+b: V = V { x: 2 }
+
+// named operands
+s: V = a + b
+print(s.x)
+print(a.x)
+print(b.x)
+d: V = a - b
+print(d.x)
+print(a.x)
+n: V = -a
+print(n.x)
+print(a.x)
+print(a == a)
+print(a != b)
+print(a.x)
+print(a < b)
+print(a >= b)
+print(a.x)
+
+// a field and an element as operands
+w: W = W { inner: V { x: 3 }, n: 0 }
+ps: [2: V] = [V { x: 4 }, V { x: 5 }]
+f: V = w.inner + b
+print(f.x)
+wi: V = w.inner
+print(wi.x)
+e: V = ps:[0] + ps:[1]
+print(e.x)
+p0: V = ps:[0]
+print(p0.x)
+p1: V = ps:[1]
+print(p1.x)
+m: V = -ps:[1]
+print(m.x)
+p2: V = ps:[1]
+print(p2.x)
+print(ps:[0] == ps:[0])
+p3: V = ps:[0]
+print(p3.x)
+
+// the same method called by name runs on the variable
+c: V = a.add(b)
+print(c.x)
+print(a.x)
+print(b.x)
