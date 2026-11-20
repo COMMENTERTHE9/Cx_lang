@@ -1,0 +1,2 @@
+fnc: Result<t8> narrow(r: Result<t64>) { return r }
+print(narrow(Ok(300)))

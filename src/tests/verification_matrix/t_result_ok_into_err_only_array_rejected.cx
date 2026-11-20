@@ -1,0 +1,6 @@
+// An array of Errs is an array of `Result<unknown>`: each element promises an
+// Err. (Already rejected before the payload rule; pinned with it.)
+let a
+a = [Err("a"), Err("b")]
+a:[0] = Ok(5)
+print(a:[0])

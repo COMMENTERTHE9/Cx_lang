@@ -5676,3 +5676,106 @@ interpreter carries on. Neither is a wrong answer from compiled code. Closing
 it belongs in semantic analysis and is a decision about how strictly a generic
 body is checked; it is recorded here and not changed.
 
+## 75. A `Result` could be used where a `Result` of a narrower or unrelated payload type was declared
+
+*(Recorded as undecided in `docs/backend/value_equality.md` §4, items 4 and 7,
+and worked around in compiled code by refusals (§70 c, §72 a, §72 b). Decided
+by the owner on 2026-11-19: these are analysis errors. Fixed on
+`backend/result-type-analysis`. Present on `submain`.)*
+
+A `Result`'s payload is not converted when the `Result` is bound, passed or
+returned — the interpreter keeps the value it has, and compiled code reads the
+payload word as the declared type. Analysis nevertheless checked a `Result`'s
+payload by the plain-number rule, under which any numeric type stands for any
+other, and accepted an `Err`-only `Result<unknown>` on both sides of a
+write-back:
+
+```cx
+large: Result<t64> = Ok(300)
+narrow: Result<t8> = large        // accepted; the interpreter unwrapped 300
+                                  // from a Result<t8>, compiled code 44
+
+small: Result<t64> = Ok(3)
+f: Result<f64> = small            // accepted; printed the integer
+
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+let e
+e = Err("x")                      // e is a Result<unknown>: it promises an Err
+x: t64 = fill(e.copy)             // accepted; e now holds Ok(5)
+t: Result<str> = e                // accepted; compiled code read 5 as a string
+```
+
+**The rule now** (`result_payload_compatible` in `src/frontend/semantic.rs`).
+Where a `Result<T>` is declared — a variable, a parameter, a return type, a
+field, an element — a `Result` may be used if its payload type is:
+
+- `T` itself;
+- nothing: an `Err(..)` has no `Ok` payload, its type is `Result<unknown>`,
+  and it is a `Result` of every type. This is unchanged, in every position;
+- a whole number no wider than `T`, when `T` is a whole number. The payload
+  word holds it unchanged. A number with no declared width counts as a `t64`,
+  which is how it is stored.
+
+Anything else is a type mismatch: a wider whole number, a whole number as a
+float or the reverse, one enum as another, and an `Ok` of a known type into a
+variable or element whose type is `Result<unknown>`.
+
+Two things follow that are worth stating:
+
+- **A literal takes the declared payload type, and only a literal does.**
+  `r: Result<t8> = Ok(5)`, `take8(Ok(12))` and `return Ok(-128)` are a
+  `Result<t8>`, range-checked. `Ok(1 + 2)` is a `Result<t64>`. An untyped
+  variable given `Ok(5)` is a `Result` of a number of no declared width, and
+  cannot be read as a `Result<t8>`: analysis sees its type, not the 5.
+- **`.copy` needs the same payload type exactly** (`result_payloads_identical`).
+  A `.copy` argument is written back, so an `Err`-only variable cannot be
+  passed to a `Result<t64>` parameter. Declare the variable's type —
+  `v: Result<t64> = Err("not yet")` — and it can.
+
+**What changes for existing programs.** Each of these ran on the interpreter
+before and is now a semantic error on both backends. Compiled code already
+refused the first five (§70 c, §72 a, §72 b); it ran the last when the value
+happened to fit.
+
+| Form | Before | Now |
+|---|---|---|
+| `Result<t64>` where `Result<t8>` is declared (variable, argument, return, field) | accepted; value not converted | error |
+| `Result<t64>` where `Result<f64>` is declared, or the reverse | accepted | error |
+| `Ok(n)` or `Ok(1 + 2)` with a `t64` payload where `Result<t8>` is declared | accepted | error |
+| an `Err`-only variable passed `.copy` to a typed `Result` parameter | accepted | error |
+| a generic `T` bound to `Result<t8>` by one argument and given a `Result<t64>` by another | accepted | error |
+| an untyped variable holding `Ok(5)` where `Result<t8>` is declared | accepted; ran on both backends | error |
+
+Of the 753 tracked programs, two are affected, both fixtures added on
+2026-11-18 to pin what compiled code then accepted:
+`t_result_small_constant_at_a_narrow_type` contained the last form and
+`Ok(100 + 27)` at a `Result<t8>` — it now holds the forms that remain legal —
+and `t_result_of_unknown_kind_at_a_typed_use` reached its `Ok(5)` through the
+`.copy` write-back, which is now the fixture
+`t_result_copy_of_err_only_variable_rejected`; it reaches it through the
+route described next instead. No fixture older than this work changes.
+
+**Compiled code's refusals are kept.** The payload proofs of §70 and §72 still
+run. One route to an `Ok` under the type `Result<unknown>` remains open —
+analysis does not check a generic body against its type parameter (§74), so
+`fnc: T <T> launder(x: T) { return Ok(5) }` returns an `Ok(5)` to a caller for
+whom `T` is `Result<unknown>` — and until that is closed too, compiled code
+may not treat `Result<unknown>` as "certainly an Err". When it is, the
+refusals of §72 j (the error table, a forwarder through a local) can be lifted.
+
+Fixtures. Accepted, both backends: `t_result_payload_types_that_fit`,
+`t_result_small_constant_at_a_narrow_type`. Accepted, interpreter only
+(compiled code does not lower an `if`/`when` value whose branches are a
+`Result<t8>` and an Err): `t_result_value_branch_with_err`. Rejected by
+analysis on both: `t_result_narrower_declaration_rejected`,
+`t_result_whole_number_as_float_rejected`,
+`t_result_untyped_number_narrowed_rejected`,
+`t_result_narrower_parameter_rejected`, `t_result_narrower_return_rejected`,
+`t_result_constant_arithmetic_narrowed_rejected`,
+`t_result_copy_of_err_only_variable_rejected`; and, already rejected before
+and pinned with them, `t_result_copy_narrower_parameter_rejected` and
+`t_result_ok_into_err_only_array_rejected`. Unit tests:
+`a_result_payload_is_never_narrowed_or_reinterpreted`,
+`a_copy_argument_has_exactly_the_parameters_result_type`,
+`result_assignments_are_checked_by_payload_type`.
+

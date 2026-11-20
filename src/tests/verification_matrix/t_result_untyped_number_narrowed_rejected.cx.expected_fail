@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+An untyped Ok(5) held in a variable, where a Result<t8> is declared: type mismatch in analysis.

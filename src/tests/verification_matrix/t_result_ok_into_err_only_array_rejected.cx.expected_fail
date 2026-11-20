@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+An Ok stored into an element typed Result<unknown>: type mismatch in analysis.

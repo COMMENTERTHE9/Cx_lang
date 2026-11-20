@@ -328,7 +328,7 @@ impl Analyzer {
             return Ok(());
         };
         let got = binding_type(info, &self.current_type_params);
-        if !same_element_type(expected, &got) {
+        if !same_element_type(expected, &got) || !result_payloads_identical(expected, &got) {
             return Err(sem_err!(
                 pos,
                 "'{}' argument '{}' is a{} {}, but parameter '{}' is a {} — it is passed by address and written back, so it must have the parameter's type",
@@ -2793,6 +2793,17 @@ Expr::Unary(op, inner, pos) => {
                 if let Some(payload) = &payload_ty {
                     check_semantic_num_fits(&inner_analyzed, payload, *pos)?;
                 }
+                // A number literal written where the payload's type is declared
+                // has that type, as `x: t8 = 5` has: it was just range-checked
+                // against it. Without this `Ok(5)` stayed "a number of no
+                // declared width", which is as wide as a t64 and is not a
+                // `Result<t8>` (`result_payload_compatible`).
+                let inner_analyzed = match &payload_ty {
+                    Some(payload) if is_number_literal(&inner_analyzed) && is_numeric(payload) => {
+                        insert_cast_if_needed(inner_analyzed, payload)
+                    }
+                    _ => inner_analyzed,
+                };
                 let result_ty = SemanticType::Result(Box::new(inner_analyzed.ty.clone()));
                 Ok(SemanticExpr {
                     ty: result_ty,
@@ -4676,9 +4687,91 @@ fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
         (SemanticType::Array(size1, elem1), SemanticType::Array(size2, elem2)) if size1 == size2 => {
             same_element_type(elem1, elem2)
         }
-        (SemanticType::Result(a), SemanticType::Result(b)) => types_compatible(a, b),
+        (SemanticType::Result(a), SemanticType::Result(b)) => result_payload_compatible(a, b),
         (SemanticType::Numeric, other) | (other, SemanticType::Numeric) => is_numeric(other),
         _ => is_numeric(expected) && is_numeric(got),
+    }
+}
+
+/// Whether a `Result` whose `Ok` payload is `got` may be used where a `Result`
+/// of `expected` is declared — the owner's decision of 2026-11-19.
+///
+/// A `Result`'s payload is not converted when the `Result` is bound, passed or
+/// returned: the interpreter keeps the value it has, and compiled code reads
+/// the payload word as the declared type. So the plain-number rule, under
+/// which any numeric type may stand for any other, does not carry over. With
+/// it, `narrow: Result<t8> = large` was accepted for a `large: Result<t64>`
+/// holding 300, and the interpreter unwrapped 300 from a `Result<t8>`; a
+/// `Result<f64>` took a `Result<t64>` and printed the integer
+/// (docs/backend/value_equality.md §4, known-issues §70 c, §75).
+///
+/// What is allowed:
+/// - the same payload type;
+/// - an `Err(..)`, whose type is `Result<unknown>`: it has no `Ok` payload,
+///   so it is a `Result` of every type;
+/// - a whole number where a whole number at least as wide is declared — the
+///   payload word holds it unchanged. A number with no declared width is as
+///   wide as a `t64`, which is how it is stored; where a narrower type is
+///   meant, the literal is written at the declaration (`r: Result<t8> =
+///   Ok(5)`), where it is range-checked.
+///
+/// Never: a narrower whole number, a whole number as a float or the reverse,
+/// one enum as another, anything as a string. And never an `Ok` of a known
+/// type into a variable whose type is `Result<unknown>`: such a variable
+/// promises it holds an `Err`.
+fn result_payload_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
+    if expected == got || *got == SemanticType::Unknown {
+        return true;
+    }
+    // A type parameter is not checked against a concrete type anywhere yet
+    // (known-issues §74); a Result's payload is no stricter than the rest.
+    if matches!(expected, SemanticType::TypeParam(_)) || matches!(got, SemanticType::TypeParam(_)) {
+        return true;
+    }
+    match (whole_number_bits(expected), whole_number_bits(got)) {
+        (Some(declared), Some(held)) => return held <= declared,
+        (Some(_), None) | (None, Some(_)) => return false,
+        (None, None) => {}
+    }
+    match (expected, got) {
+        // Arrays have their own rule: the same element type, no conversion.
+        (SemanticType::Array(..), SemanticType::Array(..)) => types_compatible(expected, got),
+        (SemanticType::Result(a), SemanticType::Result(b)) => result_payload_compatible(a, b),
+        _ => false,
+    }
+}
+
+/// How many bits a whole-number type holds; `None` for anything else. A number
+/// with no declared width is stored as a t64.
+fn whole_number_bits(ty: &SemanticType) -> Option<u32> {
+    match ty {
+        SemanticType::I8 => Some(8),
+        SemanticType::I16 => Some(16),
+        SemanticType::I32 => Some(32),
+        SemanticType::I64 | SemanticType::Numeric => Some(64),
+        SemanticType::I128 => Some(128),
+        _ => None,
+    }
+}
+
+/// Whether every `Result` inside `got` has exactly the payload type of the
+/// one at the same place in `expected` — for a value passed by address and
+/// written back (`.copy`).
+///
+/// Elsewhere an `Err`-only `Result<unknown>` stands for a `Result` of any
+/// type, because the value only travels one way. A `.copy` argument travels
+/// both: the callee may write an `Ok` back. Unchecked, a variable typed
+/// `Result<unknown>` given to a `r.copy: Result<t64>` parameter came back
+/// holding `Ok(5)`, was then accepted as a `Result<str>`, and compiled code
+/// read 5 as the address of a string (known-issues §72 a).
+fn result_payloads_identical(expected: &SemanticType, got: &SemanticType) -> bool {
+    match (expected, got) {
+        (SemanticType::Result(a), SemanticType::Result(b)) => {
+            let unknown = |t: &SemanticType| *t == SemanticType::Unknown;
+            unknown(a) == unknown(b) && (unknown(a) || (same_element_type(a, b) && result_payloads_identical(a, b)))
+        }
+        (SemanticType::Array(_, a), SemanticType::Array(_, b)) => result_payloads_identical(a, b),
+        _ => true,
     }
 }
 
@@ -4703,8 +4796,12 @@ fn same_element_type(expected: &SemanticType, got: &SemanticType) -> bool {
     match (expected, got) {
         (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && same_element_type(a, b),
         // An `Err(...)` element's payload is unknown — `[Err("a"), Err("b")]` is
-        // an array of any `Result`.
-        (SemanticType::Result(a), SemanticType::Result(b)) => same_element_type(a, b),
+        // an array of any `Result`. Not the other way round: an element typed
+        // `Result<unknown>` promises an `Err`, and an `Ok` of a known type
+        // stored there would break the promise.
+        (SemanticType::Result(a), SemanticType::Result(b)) => {
+            **b == SemanticType::Unknown || (**a != SemanticType::Unknown && same_element_type(a, b))
+        }
         (SemanticType::Numeric, SemanticType::I64) | (SemanticType::I64, SemanticType::Numeric) => true,
         _ => false,
     }
@@ -6681,6 +6778,80 @@ print(result + result2)
         analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
+    /// The owner's decision of 2026-11-19: a Result is used where a Result of
+    /// the same payload type, or a whole number at least as wide, is declared
+    /// — and an Err anywhere. Nothing narrower, nothing of another kind.
+    #[test]
+    fn a_result_payload_is_never_narrowed_or_reinterpreted() {
+        use SemanticType::*;
+        let fits = |expected: SemanticType, got: SemanticType| result_payload_compatible(&expected, &got);
+        // The same type, and an Err (no Ok payload) for anything.
+        assert!(fits(I8, I8) && fits(Str, Str) && fits(F64, F64));
+        for declared in [I8, I64, F64, Str, Bool, Enum("Color".into())] {
+            assert!(fits(declared.clone(), Unknown), "an Err is a Result<{declared:?}>");
+        }
+        // Wider, never narrower. A number of no declared width is a t64.
+        assert!(fits(I16, I8) && fits(I64, I8) && fits(I64, I32) && fits(I128, I64));
+        assert!(fits(I64, Numeric) && fits(Numeric, I64) && fits(Numeric, I8));
+        assert!(!fits(I8, I16) && !fits(I8, I64) && !fits(I32, I64) && !fits(I64, I128));
+        assert!(!fits(I8, Numeric) && !fits(I32, Numeric));
+        // One kind is never another.
+        assert!(!fits(F64, I64) && !fits(I64, F64) && !fits(F64, Numeric));
+        assert!(!fits(Str, I64) && !fits(I64, Str) && !fits(Bool, I8));
+        assert!(!fits(Enum("Color".into()), Enum("Shape".into())) && !fits(Enum("Color".into()), I8));
+        // A variable typed Result<unknown> promises an Err.
+        assert!(!fits(Unknown, I64) && !fits(Unknown, Str));
+    }
+
+    /// `.copy` travels both ways, so the payload types must be the same one —
+    /// an Err-only `Result<unknown>` is not a `Result<t64>` here.
+    #[test]
+    fn a_copy_argument_has_exactly_the_parameters_result_type() {
+        use SemanticType::*;
+        let result = |inner: SemanticType| Result(Box::new(inner));
+        assert!(result_payloads_identical(&result(I64), &result(I64)));
+        assert!(result_payloads_identical(&result(I64), &result(Numeric)));
+        assert!(result_payloads_identical(&result(Unknown), &result(Unknown)));
+        assert!(!result_payloads_identical(&result(I64), &result(Unknown)));
+        assert!(!result_payloads_identical(&result(Unknown), &result(I64)));
+        assert!(!result_payloads_identical(&result(I64), &result(I8)));
+        // Inside an array as well; other types are not this function's concern.
+        assert!(!result_payloads_identical(&Array(2, Box::new(result(I64))), &Array(2, Box::new(result(Unknown)))));
+        assert!(result_payloads_identical(&I64, &I8));
+    }
+
+    /// The same rule through whole programs: each rejected form names both
+    /// types, and the forms that must keep working do.
+    #[test]
+    fn result_assignments_are_checked_by_payload_type() {
+        let rejected = [
+            ("large: Result<t64> = Ok(300)\nnarrow: Result<t8> = large\n", "expected Result<t8>, got Result<t64>"),
+            ("small: Result<t64> = Ok(3)\nf: Result<f64> = small\n", "expected Result<f64>, got Result<t64>"),
+            ("let u\nu = Ok(5)\nn: Result<t8> = u\n", "expected Result<t8>, got Result<integer>"),
+            ("c: Result<t8> = Ok(1 + 2)\n", "expected Result<t8>, got Result<t64>"),
+            ("fnc: t64 take8(p: Result<t8>) { return 0 }\nbig: Result<t64> = Ok(300)\nprint(take8(big))\n", "expected Result<t8>, got Result<t64>"),
+            ("fnc: Result<t8> narrow(r: Result<t64>) { return r }\nprint(narrow(Ok(300)))\n", "expected Result<t8>, got Result<t64>"),
+            ("struct H { r: Result<t8> }\nbig: Result<t64> = Ok(300)\nh: H = H { r: big }\n", "Result<t8>"),
+            ("fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5)\n return 0 }\nlet e\ne = Err(\"x\")\nx: t64 = fill(e.copy)\n", "is a Result<unknown>, but parameter 'r' is a Result<t64>"),
+            ("a: Result<t8> = Ok(300)\n", "out of range for t8"),
+        ];
+        for (src, expected) in rejected {
+            let errors = single_file_errors(src);
+            assert!(errors.contains(expected), "{src}\n-> {errors}");
+        }
+        let accepted = [
+            "a: Result<t8> = Ok(127)\nb: Result<t64> = a\nprint(b)\n",
+            "e: Result<t8> = Err(\"e\")\nlet u\nu = Err(\"x\")\ng: Result<t64> = u\nh: Result<str> = u\nprint(g)\n",
+            "let u\nu = Ok(12)\nw: Result<t64> = u\nprint(w)\n",
+            "flag: bool = true\nx: Result<t8> = if flag { Ok(3) } else { Err(\"no\") }\nprint(x)\n",
+            "fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5)\n return 0 }\nv: Result<t64> = Err(\"not yet\")\nx: t64 = fill(v.copy)\nprint(v)\n",
+            "fnc: Result<t8> small() { return Ok(-128) }\nz: Result<t64> = small()\nprint(z)\n",
+        ];
+        for src in accepted {
+            analyze_program(&crate::frontend::resolver::parse_source(src).expect("parses")).unwrap_or_else(|e| panic!("{src}\n-> {e:?}"));
+        }
     }
 
 }

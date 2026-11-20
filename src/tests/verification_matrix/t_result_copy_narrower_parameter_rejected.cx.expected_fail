@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<t64> variable passed .copy to a Result<t8> parameter: rejected in analysis.
