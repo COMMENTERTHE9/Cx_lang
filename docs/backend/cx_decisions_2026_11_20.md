@@ -169,10 +169,27 @@ asked for a conversion only when its safety is established.
 
 ## D4 — A `when` used as a value needs an unguarded `_`
 
-*Owner: "Keep the current rule."* No change. A `when` that produces a value
-is exhaustive only if it has a `_` arm without a guard, or — the one proof
-that is implemented — unguarded arms for `true`, `false` and `unknown` on a
-bool. A `when` statement keeps the lenient rule. Recorded in known-issues §77.
+*Owner: "Keep the current rule. A when expression that produces a value must
+include an unguarded _ fallback unless the compiler has a sound, implemented
+way to prove that every possible case is covered."*
+
+The rule is unchanged: a `when` that produces a value is exhaustive only if
+it has a `_` arm without a guard, or — the one proof that is implemented —
+unguarded arms for `true`, `false` and `unknown` **on a bool**. A `when`
+statement keeps the lenient rule. Recorded in known-issues §77.
+
+One correction to the implementation was needed for the rule to be what it
+says. The three-state proof did not look at the type of the value matched, so
+it was not sound: `x: t64 = when n { true => 1, false => 2, unknown => 3 }`
+with a t64 `n` was accepted, no arm matches a number, the interpreter yielded
+0 and compiled code trapped. The proof now counts only when the value's
+static type is `bool`. No exhaustiveness system is added.
+
+| Program | Before (interpreter / compiled) | After |
+|---|---|---|
+| `when b { true => 1, false => 2, unknown => 3 }` as a value, `b: bool` | agree | unchanged |
+| the same on a t64, a string, an enum, a `Result`, a generic `T` | 0, and carries on / trap | analysis error |
+| the same as a statement | nothing runs, on both | unchanged |
 
 ## D5 — Both Windows CI jobs are permanent
 

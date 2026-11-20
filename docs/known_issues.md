@@ -6410,6 +6410,21 @@ rule — when no arm runs nothing happens, on both backends. No tracked program
 is affected. Fixture `t_when_value_guarded_catch_all_only_rejected`; unit test
 `a_when_value_needs_an_unguarded_catch_all`.
 
+**…and `true`, `false`, `unknown` prove it only for a bool** (found
+2026-11-20 by the independent review of the owner's decisions of that day;
+present on `submain`). The one coverage proof analysis has — unguarded arms
+for the three states of a bool — did not look at what was being matched:
+`x: t64 = when n { true => 1, false => 2, unknown => 3 }` with a t64 `n` was
+accepted, and no arm matches a number. The interpreter yielded 0 and carried
+on; compiled code trapped (126). The same for a string, an enum, a `Result`
+and a generic `T`. The proof now counts, for a `when` used as a value, only
+when the matched value's type is `bool`; anything else needs a `_` arm, and
+the error says so. The owner's decision to keep the current rule (decision 4)
+asks for exactly this: a `_` unless there is a sound proof. A `when`
+statement is unchanged. No tracked program is affected — the four tracked
+value-`when`s that rely on the proof match a bool. Fixture
+`t_when_value_bool_arms_on_a_number_rejected`; the unit test above.
+
 ## 78. A number literal in a generic array literal was narrowed to fit in compiled code
 
 *(Found 2026-11-20 by the independent review of the generic-local fix (§74).

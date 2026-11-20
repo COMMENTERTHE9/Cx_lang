@@ -1,0 +1,12 @@
+// `true`, `false` and `unknown` are every state of a bool, and of nothing
+// else. On a number none of them matches, so this `when` has no value: the
+// interpreter yielded 0 and carried on; compiled code trapped. A `when` used
+// as a value on anything but a bool needs a `_` arm.
+n: t64 = 1
+x: t64 = when n {
+    true => 1,
+    false => 2,
+    unknown => 3,
+}
+print(x)
+print("after")

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A when used as a value with only true/false/unknown arms, on a t64: non-exhaustive, rejected by analysis.

@@ -1386,7 +1386,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         })
                     })
                     .collect::<Result<Vec<_>, SemanticError>>()?;
-                if !when_is_exhaustive(&semantic_arms, false) {
+                if !when_is_exhaustive(&semantic_arms, false, &semantic_expr.ty) {
                     return Err(sem_err!(*pos, "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases"));
                 }
                 Ok(SemanticStmt::When {
@@ -2504,17 +2504,18 @@ Expr::Unary(op, inner, pos) => {
                     }
                     semantic_arms.push(SemanticWhenArm { pattern, guard, body, pos: arm.pos });
                 }
-                if !when_is_exhaustive(&semantic_arms, true) {
-                    let guarded_only = when_is_exhaustive(&semantic_arms, false);
-                    return Err(sem_err!(
-                        *pos,
-                        "non-exhaustive `when`: {}",
-                        if guarded_only {
-                            "a `when` used as a value needs an arm that always matches — its `_` arm has a guard, which can fail; add a `_` arm without one"
-                        } else {
-                            "add a `_` catch-all arm to handle the remaining cases"
-                        }
-                    ));
+                if !when_is_exhaustive(&semantic_arms, true, &semantic_match.ty) {
+                    let reason = if when_is_exhaustive(&semantic_arms, true, &SemanticType::Bool) {
+                        format!(
+                            "`true`, `false` and `unknown` are every state of a bool, and this `when` is on {} — a `when` used as a value needs a `_` arm for a value that is none of them",
+                            type_name(&semantic_match.ty)
+                        )
+                    } else if when_is_exhaustive(&semantic_arms, false, &semantic_match.ty) {
+                        "a `when` used as a value needs an arm that always matches — its `_` arm has a guard, which can fail; add a `_` arm without one".to_string()
+                    } else {
+                        "add a `_` catch-all arm to handle the remaining cases".to_string()
+                    };
+                    return Err(sem_err!(*pos, "non-exhaustive `when`: {}", reason));
                 }
                 Ok(SemanticExpr {
                     ty: result_ty,
@@ -4084,12 +4085,21 @@ fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: u
 /// `for_value`: the `when` is used as a value. Then an arm with a guard does not
 /// count, because its guard can fail: `x = when k { 1 => 5, _ if k > 5 => 6 }`
 /// has no value for `k = 3`. The interpreter yielded 0 for it and compiled code
-/// trapped (known-issues §77). A `when` statement keeps the lenient rule — when
-/// no arm runs, nothing happens, on both backends.
-fn when_is_exhaustive(arms: &[SemanticWhenArm], for_value: bool) -> bool {
+/// trapped (known-issues §77). And the three-state proof counts only when the
+/// value matched — `scrutinee` — is a bool. A `when` statement keeps the
+/// lenient rule — when no arm runs, nothing happens, on both backends.
+fn when_is_exhaustive(arms: &[SemanticWhenArm], for_value: bool, scrutinee: &SemanticType) -> bool {
     let counts = |a: &SemanticWhenArm| !for_value || a.guard.is_none();
     if arms.iter().any(|a| matches!(a.pattern, SemanticWhenPattern::Catchall) && counts(a)) {
         return true;
+    }
+    // `true`, `false` and `unknown` are every state of a bool — and of
+    // nothing else. On a number, a string, an enum or a `T` none of them need
+    // match, so they prove nothing about a `when` that must produce a value:
+    // `x: t64 = when n { true => 1, false => 2, unknown => 3 }` with a t64
+    // `n` yielded 0 on the interpreter and trapped in compiled code.
+    if for_value && *scrutinee != SemanticType::Bool {
+        return false;
     }
     let (mut has_true, mut has_false, mut has_unknown) = (false, false, false);
     for a in arms.iter().filter(|a| counts(a)) {
@@ -7184,11 +7194,28 @@ print(result + result2)
             let errors = single_file_errors(src);
             assert!(errors.contains("its `_` arm has a guard") || errors.contains("non-exhaustive `when`"), "{src:?} gave {errors}");
         }
+        // `true`, `false` and `unknown` cover a bool, and nothing else.
+        for (scrutinee, named) in [
+            ("n: t64 = 1", "t64"),
+            ("n: str = \"a\"", "str"),
+            ("enum C { Red, Green }\nn: C = C::Green", "C"),
+            ("n: Result<t64> = Ok(1)", "Result<t64>"),
+        ] {
+            let errors = single_file_errors(&format!("{scrutinee}\nx: t64 = when n {{\n    true => 1,\n    false => 2,\n    unknown => 3,\n}}"));
+            assert!(
+                errors.contains(&format!("are every state of a bool, and this `when` is on {named}")),
+                "{scrutinee:?} gave {errors}"
+            );
+        }
+        let generic = single_file_errors("fnc: t64 <T> f(v: T) { return when v { true => 1, false => 2, unknown => 3 } }\nprint(f(5))");
+        assert!(generic.contains("this `when` is on T"), "{generic}");
         for src in [
             "k: t64 = 3\nx: t64 = when k {\n    1 => 5,\n    _ if k > 5 => 6,\n    _ => 7,\n}",
             "b: bool = ?\nx: t64 = when b {\n    true => 1,\n    false => 2,\n    unknown => 3,\n}",
             // A statement runs no arm when none matches.
             "k: t64 = 3\nwhen k {\n    1 => print(5),\n    _ if k > 5 => print(6),\n}",
+            "k: t64 = 3\nwhen k {\n    true => print(1),\n    false => print(2),\n    unknown => print(3),\n}",
+            "b: bool = true\nx: t64 = when b {\n    true => 1,\n    false => 2,\n    ? => 3,\n}",
         ] {
             let program = crate::frontend::resolver::parse_source(src).expect("parses");
             if let Err(errs) = analyze_program(&program) {
