@@ -111,3 +111,6 @@ Of the 20 additional SKIPs, 19 are fixtures this work added and one is
   program, which is a language change, not a compiler capability.
 - Pull request descriptions report SKIPs separately from PASSes and name the
   fixtures.
+- The gates are run on Linux **and Windows**. Both Windows CI jobs are
+  permanent by the owner's decision of 2026-11-20; a refusal or a SKIP is
+  never introduced to make one of them pass.
