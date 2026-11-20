@@ -1,3 +1,0 @@
-// Only a literal takes the declared payload type. `1 + 2` is a t64.
-c: Result<t8> = Ok(1 + 2)
-print(c)

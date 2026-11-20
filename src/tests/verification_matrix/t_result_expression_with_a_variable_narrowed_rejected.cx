@@ -1,0 +1,6 @@
+// Only a constant is converted. An expression with a variable in it has the
+// variable's type, and a `Result<t64>` is not a `Result<t8>` — analysis sees
+// the type, not the 4.
+n: t64 = 3
+c: Result<t8> = Ok(n + 1)
+print(c)

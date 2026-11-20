@@ -8364,30 +8364,10 @@ fn literal_payload_type(expr: &SemanticExpr) -> Option<SemanticType> {
     })
 }
 
-/// The value of an expression made only of whole-number literals, unary minus
-/// and `+ - *`, when no step leaves the i64 range (so both backends compute
-/// the same thing). Division is left out: it has its own rules for zero.
+/// The value of a constant whole-number expression — the one definition of
+/// it, in analysis (`constant_whole_number` in `src/frontend/semantic.rs`).
 fn constant_whole_number(expr: &SemanticExpr) -> Option<i128> {
-    let in_range = |v: i128| i64::try_from(v).is_ok().then_some(v);
-    match &expr.kind {
-        SemanticExprKind::Value(SemanticValue::Num(n)) => in_range(*n),
-        SemanticExprKind::Unary { op: Op::Minus, expr: inner, .. } => in_range(constant_whole_number(inner)?.checked_neg()?),
-        // Analysis wraps a literal used at the default width in a cast to it,
-        // which changes nothing about the value.
-        SemanticExprKind::Cast { expr: inner, from: SemanticType::Numeric, to: SemanticType::I64 | SemanticType::Numeric, .. } => {
-            constant_whole_number(inner)
-        }
-        SemanticExprKind::Binary { lhs, op, rhs, .. } => {
-            let (a, b) = (constant_whole_number(lhs)?, constant_whole_number(rhs)?);
-            in_range(match op {
-                Op::Plus => a.checked_add(b)?,
-                Op::Minus => a.checked_sub(b)?,
-                Op::Mul => a.checked_mul(b)?,
-                _ => return None,
-            })
-        }
-        _ => None,
-    }
+    crate::frontend::semantic::constant_whole_number(expr)
 }
 
 /// D2.4a: unpack a Result i128 into (tag, payload_word). Payload is the low half

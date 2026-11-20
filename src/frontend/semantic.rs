@@ -2836,6 +2836,28 @@ Expr::Unary(op, inner, pos) => {
                     {
                         insert_cast_if_needed(inner_analyzed, payload)
                     }
+                    // A constant whole-number expression — `Ok(1 + 2)` — is
+                    // not a literal, but analysis can work out its value. If
+                    // that value fits the declared payload type the payload
+                    // is that value at that type, the conversion an ordinary
+                    // declaration makes (`x: t8 = 1 + 2`). If it does not, it
+                    // is an error rather than a wrapped value: a Result's
+                    // payload is converted only when that is provably safe
+                    // (owner's decision of 2026-11-20; known-issues §75).
+                    Some(payload) if payload.int_width().is_some() => match constant_whole_number(&inner_analyzed) {
+                        Some(value) => {
+                            let facts = payload.int_width().expect("checked by the guard").facts();
+                            if value < facts.min || value > facts.max {
+                                return Err(sem_err!(
+                                    *pos,
+                                    "type mismatch: the constant {} does not fit {}, the payload type declared for this Result (valid range: {}..{})",
+                                    value, facts.name, facts.min, facts.max
+                                ));
+                            }
+                            insert_cast_if_needed(inner_analyzed, payload)
+                        }
+                        None => inner_analyzed,
+                    },
                     _ => inner_analyzed,
                 };
                 let result_ty = SemanticType::Result(Box::new(inner_analyzed.ty.clone()));
@@ -4871,6 +4893,35 @@ fn same_element_type(expected: &SemanticType, got: &SemanticType) -> bool {
     }
 }
 
+/// The value of an expression made only of whole-number literals, unary minus
+/// and `+ - *`, when no step leaves the `t64` range — so that the interpreter
+/// and compiled code, which evaluate it at run time, compute this same value.
+/// Division and remainder are left out (they have their own rules for zero),
+/// and so is anything that is not written as a number: a variable, a `const`,
+/// a call. `None` when the expression is not such a constant.
+pub(crate) fn constant_whole_number(expr: &SemanticExpr) -> Option<i128> {
+    let in_range = |v: i128| i64::try_from(v).is_ok().then_some(v);
+    match &expr.kind {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => in_range(*n),
+        SemanticExprKind::Unary { op: Op::Minus, expr: inner, .. } => in_range(constant_whole_number(inner)?.checked_neg()?),
+        // Analysis wraps a literal used at the default width in a cast to it,
+        // which changes nothing about the value.
+        SemanticExprKind::Cast { expr: inner, from: SemanticType::Numeric, to: SemanticType::I64 | SemanticType::Numeric, .. } => {
+            constant_whole_number(inner)
+        }
+        SemanticExprKind::Binary { lhs, op, rhs, .. } => {
+            let (a, b) = (constant_whole_number(lhs)?, constant_whole_number(rhs)?);
+            in_range(match op {
+                Op::Plus => a.checked_add(b)?,
+                Op::Minus => a.checked_sub(b)?,
+                Op::Mul => a.checked_mul(b)?,
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// A number written as a literal — `5`, `2.5`, `-3` — whose value analysis
 /// knows; a variable or `1 + 1` has only its type.
 fn is_number_literal(e: &SemanticExpr) -> bool {
@@ -6854,7 +6905,8 @@ print(result + result2)
         for (src, wanted) in [
             ("x: Result<t8> = if c { Err(\"no\") } else { big }", "a branch of this if/when yields Result<t64>"),
             ("x: Result<str> = when 2 { 1 => Err(\"no\"), _ => big }", "a branch of this if/when yields Result<t64>"),
-            ("x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }", "a branch of this if/when yields"),
+            // A constant that does not fit, in a later branch.
+            ("x: Result<t8> = if c { Ok(1) } else { Ok(100 + 100) }", "the constant 200 does not fit t8"),
             ("x: Result<t8> = if c { r8 } else { if c { r8 } else { big } }", "a branch of this if/when yields Result<t64>"),
             ("fnc: Result<t8> f() { if c { Err(\"no\") } else { big } }", "a branch of this if/when yields Result<t64>"),
             ("fnc: t64 take(r: Result<t8>) { return 1 }\nn: t64 = take(if c { Err(\"no\") } else { big })", "a branch of this if/when yields Result<t64>"),
@@ -6867,6 +6919,12 @@ print(result + result2)
         }
         for src in [
             "x: Result<t8> = if c { Ok(1) } else { Ok(2) }",
+            // A constant whole-number expression that fits (owner's decision
+            // of 2026-11-20).
+            "x: Result<t8> = Ok(1 + 2)",
+            "x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }",
+            "x: Result<t8> = Ok(-(100 + 28))",
+            "x: Result<t16> = Ok(2 * 3 * 1000 - 1)",
             "x: Result<t8> = when 2 { 1 => Ok(3), 2 => Err(\"e\"), _ => r8 }",
             "x: Result<t64> = if c { Err(\"no\") } else { r8 }",
             "x: Result<f64> = Ok(1)",
@@ -6940,7 +6998,13 @@ print(result + result2)
             ("large: Result<t64> = Ok(300)\nnarrow: Result<t8> = large\n", "expected Result<t8>, got Result<t64>"),
             ("small: Result<t64> = Ok(3)\nf: Result<f64> = small\n", "expected Result<f64>, got Result<t64>"),
             ("let u\nu = Ok(5)\nn: Result<t8> = u\n", "expected Result<t8>, got Result<integer>"),
-            ("c: Result<t8> = Ok(1 + 2)\n", "expected Result<t8>, got Result<t64>"),
+            // A constant expression takes the declared type only when its
+            // value provably fits; anything analysis cannot evaluate is a t64.
+            ("c: Result<t8> = Ok(100 + 100)\n", "the constant 200 does not fit t8"),
+            ("c: Result<t8> = Ok(-(100 + 29))\n", "the constant -129 does not fit t8"),
+            ("c: Result<t8> = Ok(6 / 2)\n", "expected Result<t8>, got Result<t64>"),
+            ("n: t64 = 3\nc: Result<t8> = Ok(n + 1)\n", "expected Result<t8>, got Result<t64>"),
+            ("c: Result<f64> = Ok(1 + 2)\n", "expected Result<f64>, got Result<t64>"),
             ("fnc: t64 take8(p: Result<t8>) { return 0 }\nbig: Result<t64> = Ok(300)\nprint(take8(big))\n", "expected Result<t8>, got Result<t64>"),
             ("fnc: Result<t8> narrow(r: Result<t64>) { return r }\nprint(narrow(Ok(300)))\n", "expected Result<t8>, got Result<t64>"),
             ("struct H { r: Result<t8> }\nbig: Result<t64> = Ok(300)\nh: H = H { r: big }\n", "Result<t8>"),
