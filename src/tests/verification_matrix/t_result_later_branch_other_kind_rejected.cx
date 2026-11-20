@@ -1,0 +1,8 @@
+// The same for a payload of another kind, in a `when` value.
+n: Result<t64> = Ok(5)
+k: t64 = 2
+x: Result<str> = when k {
+    1 => Err("no"),
+    _ => n,
+}
+print(x)

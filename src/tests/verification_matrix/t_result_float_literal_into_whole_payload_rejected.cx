@@ -1,0 +1,5 @@
+// A `Result`'s payload is not converted. A float literal written where a
+// whole-number payload is declared used to be cut to fit: `Ok(2.5)` became
+// `Ok(2)` in a `Result<t8>`, and `Ok(1000.5)` became `Ok(127)`.
+r: Result<t8> = Ok(2.5)
+print(r)

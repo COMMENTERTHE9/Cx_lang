@@ -1,0 +1,9 @@
+// The declared payload type reaches the branches of an `if` or `when` used as
+// a value, so a literal in one branch has the declared type and an `Err` in
+// another fits. The interpreter's answer; compiled code does not yet lower a
+// value whose branches are a `Result<t8>` and an Err, and refuses.
+flag: bool = true
+x: Result<t8> = if flag { Ok(3) } else { Err("no") }
+print(x)
+y: Result<t8> = when 2 { 1 => Err("one"), _ => Ok(-128) }
+print(y)

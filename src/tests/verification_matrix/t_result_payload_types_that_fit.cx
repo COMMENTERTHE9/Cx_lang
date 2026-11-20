@@ -1,0 +1,55 @@
+// What may stand where a `Result<T>` is declared: a Result of the same
+// payload type; an `Err`, which has no Ok payload and is a Result of every
+// type; and a whole number where a whole number at least as wide is declared.
+// In a variable, an argument, a return value, a struct field, an array.
+struct H { r: Result<t8>, s: Result<str> }
+fnc: Result<t8> small(n: t8) {
+    if n < 0 { return Err("neg") }
+    return Ok(n)
+}
+fnc: Result<t64> up(r: Result<t8>) { return r }
+fnc: t64 take64(p: Result<t64>) { print(p); return 0 }
+fnc: t64 take8(p: Result<t8>) { print(p); return 0 }
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+
+// Wider at each step.
+a: Result<t8> = Ok(127)
+b: Result<t16> = a
+c: Result<t32> = b
+d: Result<t64> = c
+print(d)
+print(up(a))
+print(take64(a))
+z: Result<t64> = small(7)
+print(z)
+
+// An Err goes anywhere a Result does.
+e: Result<t8> = Err("e")
+f: Result<str> = Err("f")
+print(e)
+print(f)
+print(take8(Err("no")))
+let untyped
+untyped = Err("x")
+g: Result<t64> = untyped
+h: Result<str> = untyped
+print(g)
+print(h)
+print(small(-1))
+
+// Fields and elements.
+box: H = H { r: Ok(5), s: Err("none") }
+print(box.r)
+box.r = Err("gone")
+print(box.r)
+box.r = a
+print(box.r)
+arr: [2:Result<t8>] = [Ok(1), Err("z")]
+print(arr:[0])
+print(arr:[1])
+
+// `.copy` writes back, so the variable must have the parameter's type
+// exactly. A typed variable that starts as an Err is the usual out-parameter.
+v: Result<t64> = Err("not yet")
+x: t64 = fill(v.copy)
+print(v)

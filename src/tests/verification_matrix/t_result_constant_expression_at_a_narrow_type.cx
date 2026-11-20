@@ -1,0 +1,39 @@
+// A constant whole-number expression written as an `Ok` payload takes the
+// declared payload type when its value provably fits — the conversion an
+// ordinary declaration makes (`x: t8 = 1 + 2`). Analysis works the value out;
+// both backends then compute it and hold it at the declared type. In every
+// position a `Result` type is declared: a variable, a branch of an `if` or
+// `when` value, an argument, a return, a struct field.
+c: bool = false
+a: Result<t8> = Ok(1 + 2)
+print(a)
+b: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }
+print(b)
+d: Result<t8> = Ok(-(100 + 28))
+print(d)
+e: Result<t16> = Ok(2 * 3 * 1000 - 1)
+print(e)
+fnc: t64 take(r: Result<t8>) { return 1 }
+print(take(Ok(60 + 60)))
+fnc: Result<t8> make(c: bool) {
+    if c { return Ok(100 + 27) }
+    Ok(1 - 2)
+}
+print(make(true))
+print(make(false))
+struct S { r: Result<t8> }
+s: S = S { r: Ok(7 * 7) }
+print(s.r)
+w: Result<t8> = when 2 { 1 => Ok(1 + 1), _ => Ok(3 * 3) }
+print(w)
+fnc: Result<t8> plus_one(r: Result<t8>) {
+    v: t8 = r?
+    return Ok(v)
+}
+print(plus_one(Ok(2 * 60)))
+q: Result<t8> = Ok(1000 / 9)
+print(q)
+m: Result<t8> = Ok(-1000 % 300)
+print(m)
+n: Result<t8> = Ok(-7 / 2)
+print(n)

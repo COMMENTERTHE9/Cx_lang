@@ -1,0 +1,15 @@
+// A type parameter bound to a `Result` by one argument is the declared type
+// of the others: a literal `Ok` beside a `Result<t8>` is a `Result<t8>`. And
+// an argument that came first may be the less specific one — an `Err(..)` is
+// a Result of every type — so `T` is the type that takes both.
+fnc: T <T> pick(a: T, b: T) { return b }
+r8: Result<t8> = Ok(1)
+print(pick(r8, Ok(5)))
+y: Result<t64> = pick(r8, Ok(5))
+print(y)
+z: Result<t8> = pick(r8, Ok(6))
+print(z)
+x: Result<t8> = pick(Err("x"), r8)
+print(x)
+v: Result<t8> = pick(r8, Err("y"))
+print(v)

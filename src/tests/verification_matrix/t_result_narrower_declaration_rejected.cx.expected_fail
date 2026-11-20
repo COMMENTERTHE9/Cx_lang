@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<t64> where a Result<t8> is declared: type mismatch in analysis.

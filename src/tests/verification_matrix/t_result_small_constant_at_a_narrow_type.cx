@@ -1,41 +1,31 @@
-// A whole-number constant in `Ok(..)` is as wide as its value needs. Typed
-// nowhere, `Ok(5)` can still be read as a `Result<t8>`: 5 fits. (`Ok(300)`
-// cannot, and compiled code refuses that — the interpreter does not convert
-// the number and `?` would; see docs/backend/value_equality.md.)
+// A whole-number literal written where a `Result`'s payload type is declared
+// has that type, and is range-checked against it — at a declaration, in an
+// argument, in a `return`. A Result made that way can then be read at a type
+// at least as wide. (The reverse — a Result of a wider or an undeclared width
+// read at a narrower type — is rejected by analysis; see the
+// `t_result_*_rejected` fixtures.)
 fnc: t64 take8(p: Result<t8>) { print(p); return 0 }
-fnc: T <T> same(x: T) { return x }
+fnc: Result<t8> smallest() { return Ok(-128) }
 fnc: Result<t64> run() {
-    let lit
-    lit = Ok(5)
-    narrow: Result<t8> = lit
-    v: t8 = narrow?
-    print(v)
-
-    a: Result<t8> = Ok(100 + 27)
+    a: Result<t8> = Ok(127)
     print(a?)
-    b: Result<t8> = Ok(-(100 + 28))
+    b: Result<t16> = Ok(20000)
     print(b?)
-    c: Result<t16> = Ok(200 * 100)
+    c: Result<t8> = Ok(-3)
     print(c?)
-    d: Result<t8> = Ok(2 - 5)
-    print(d?)
+    print(take8(Ok(12)))
+    print(smallest())
 
+    // An untyped variable holding a literal is a number of no declared width,
+    // which is as wide as a t64.
     let u
     u = Ok(12)
-    print(take8(u))
     wide: Result<t64> = u
     print(wide)
 
-    // The same variable seen through a loop and through an `if` value.
-    n: Result<t8> = u
-    i: t64 = 0
-    while (i < 3) {
-        if i == 2 { n = lit }
-        i = i + 1
-    }
-    print(n)
-    m: Result<t8> = if i == 3 { u } else { same(u) }
-    print(m)
+    // A narrow Result read wider.
+    wider: Result<t64> = a
+    print(wider)
     return Ok(0)
 }
 print(run())

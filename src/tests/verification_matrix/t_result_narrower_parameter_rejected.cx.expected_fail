@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<t64> argument for a Result<t8> parameter: type mismatch in analysis.

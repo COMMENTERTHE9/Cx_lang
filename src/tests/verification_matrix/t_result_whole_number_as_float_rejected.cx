@@ -1,0 +1,4 @@
+// A whole-number payload is not a float payload.
+small: Result<t64> = Ok(3)
+f: Result<f64> = small
+print(f)
