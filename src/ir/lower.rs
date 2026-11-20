@@ -2327,7 +2327,21 @@ fn lower_stmt_inner(
                         copy_parts(lowered.value, 0, storage.value, 0, &parts, ctx, &mut current)?;
                         return Ok(Some(current));
                     }
-                    let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
+                    let src_value = if literal_reads_its_target(expr, *binding) {
+                        // `v = V { x: v.y, y: v.x }`. A literal is built in
+                        // storage of its own and the variable is then bound to
+                        // that storage without a copy, which is right once. In
+                        // a loop the same statement runs again: the literal is
+                        // built in the very storage the variable now names,
+                        // and it reads `v.x` after writing over it — 12 12
+                        // where the interpreter has 12 5 (known-issues §80).
+                        // A literal that reads the variable it is assigned to
+                        // is therefore copied out of its own storage first.
+                        let as_value = SemanticExpr { ty: expr.ty.clone(), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
+                        copy_if_memory_resident(ty, &as_value, lowered.value, ctx, &mut current)?
+                    } else {
+                        copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?
+                    };
                     let dst = ctx.fresh_value();
                     remember_result(dst, &LoweredValue { value: src_value, ty: target_ty.clone() }, ty, expr, ctx);
                     current.emit(IrInst::SsaBind {
@@ -7192,14 +7206,30 @@ fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
 enum Scan {
     /// Anything that may change this variable.
     Writes(BindingId),
+    /// Any use of this variable at all: a read as well as a write.
+    Uses(BindingId),
     /// Any call at all — a function or a method, whatever it is given.
     AnyCall,
 }
 
 impl Scan {
+    /// The variable is named where naming it may change it.
     fn names(self, binding: BindingId) -> bool {
-        self == Scan::Writes(binding)
+        self == Scan::Writes(binding) || self == Scan::Uses(binding)
     }
+
+    /// The variable is merely read.
+    fn reads(self, binding: BindingId) -> bool {
+        self == Scan::Uses(binding)
+    }
+}
+
+/// Whether `expr` is a struct or array literal that uses the variable it is
+/// being assigned to — reads it, a field or an element of it, passes it to a
+/// call, or calls a method on it. See the assignment arm of `lower_stmt`.
+fn literal_reads_its_target(expr: &SemanticExpr, target: BindingId) -> bool {
+    matches!(expr.kind, SemanticExprKind::ArrayLit { .. } | SemanticExprKind::StructInstance { .. })
+        && expr_may_write(expr, Scan::Uses(target))
 }
 
 /// Whether a value of this type is handed to a method as a value. Everything
@@ -7236,10 +7266,10 @@ fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     match &expr.kind {
         SemanticExprKind::Value(_)
-        | SemanticExprKind::VarRef { .. }
-        | SemanticExprKind::DotAccess { .. }
         | SemanticExprKind::HandleVal { .. }
         | SemanticExprKind::HandleDrop { .. } => false,
+        SemanticExprKind::VarRef { binding, .. } => scan.reads(*binding),
+        SemanticExprKind::DotAccess { binding, .. } => binding.is_some_and(|b| scan.reads(b)),
         SemanticExprKind::HandleNew { value: e, .. }
         | SemanticExprKind::Unary { expr: e, .. }
         | SemanticExprKind::Cast { expr: e, .. }

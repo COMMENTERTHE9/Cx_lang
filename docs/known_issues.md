@@ -6416,3 +6416,40 @@ as well.
 
 Fixtures: `t_three_state_logic_short_circuits`,
 `t_three_state_bool_set_in_one_branch` (both backends).
+
+## 80. A struct or array literal assigned to a variable it reads was built over that variable, in a loop
+
+*(Found 2026-11-20 by the independent review of the amendment's
+implementation — by its generator, in 3 of 14,900 programs. Present on
+`submain`; not caused by this work. Fixed on `backend/value-alias-semantics`.)*
+
+```cx
+struct V { x: t64, y: t64 }
+v: V = V { x: 12, y: 5 }
+i: t64 = 0
+while (i < 2) {
+    i = i + 1
+    v = V { x: v.y, y: v.x }
+}
+print(v.x)
+print(v.y)                       // interpreter 12 5, JIT 12 12
+```
+
+Compiled code builds a literal in storage of its own and, on assignment, binds
+the variable to that storage without copying — a literal is a fresh value that
+nothing else names. That holds the first time the statement runs. The storage
+is one slot per place in the program, not per execution: the second time
+round a loop the literal is built in the very slot the variable now names, and
+`y: v.x` reads `x` after it has been overwritten. The same for an array
+(`a = [a:[1], a:[0]]`), for a `.copy` parameter assigned a literal in a loop,
+and for a literal containing a call that changes the variable
+(`v = V { x: 3, y: bumpv(v.copy) }`).
+
+**Now** a literal that uses the variable it is assigned to — reads it, a field
+or an element of it, passes it to a call, calls a method on it — is copied out
+of its own storage before the variable is bound (`literal_reads_its_target`,
+in the assignment arm of `lower_stmt`). A literal that does not mention its
+target is bound without a copy, as before. The receiver case of the same
+mechanism was fixed by §76e.
+
+Fixture: `t_literal_assigned_to_a_variable_it_reads` (both backends).

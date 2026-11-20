@@ -1,0 +1,57 @@
+// `v = V { x: v.y, y: v.x }` builds a new value from the old one. Compiled
+// code builds a literal in storage of its own and bound the variable to that
+// storage without a copy — so the second time the statement ran, in a loop,
+// the literal was built in the storage the variable already named, and read
+// `v.x` after writing over it: 12 12 where the interpreter has 12 5.
+struct V { x: t64, y: t64 }
+fnc: t64 bumpv(k.copy: V) {
+    k.x += 100
+    return k.x
+}
+fnc: t64 spin(p.copy: V, times: t64) {
+    i: t64 = 0
+    while (i < times) {
+        i = i + 1
+        p = V { x: p.y, y: p.x }
+    }
+    return p.x * 1000 + p.y
+}
+
+v: V = V { x: 12, y: 5 }
+i: t64 = 0
+while (i < 2) {
+    i = i + 1
+    v = V { x: v.y, y: v.x }
+}
+print(v.x)
+print(v.y)
+
+// an array
+a: [2: t64] = [1, 2]
+for n in 0..3 {
+    a = [a:[1], a:[0]]
+}
+print(a:[0])
+print(a:[1])
+
+// a call in the literal that changes the variable
+w: V = V { x: 3, y: 0 }
+for n in 0..3 {
+    w = V { x: 3, y: bumpv(w.copy) }
+}
+print(w.x)
+print(w.y)
+
+// a `.copy` parameter
+q: V = V { x: 12, y: 5 }
+print(spin(q.copy, 3))
+print(q.x)
+print(q.y)
+
+// a literal that does not read its target needs no copy, and is unchanged
+z: V = V { x: 0, y: 0 }
+for n in 0..3 {
+    z = V { x: n, y: n * 2 }
+}
+print(z.x)
+print(z.y)
