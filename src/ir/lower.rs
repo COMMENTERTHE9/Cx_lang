@@ -1135,6 +1135,11 @@ struct LoweringCtx {
     /// How many operator left operands have been copied in this function
     /// (`operator_operand_copy`); each copy gets a binding of its own.
     operand_copies: u32,
+    /// The current method's struct and array receivers, with their declared
+    /// types. Each is bound to the address of the caller's variable, and that
+    /// binding must never be re-pointed: an assignment to the receiver as a
+    /// whole is a store into the caller's storage.
+    receiver_storage: HashMap<BindingId, SemanticType>,
     /// The current function's `.copy` parameters, for a return that does not go
     /// through `finish_return`: `?` on an `Err` leaves from inside an
     /// expression, where no `FunctionLoweringSpec` is in reach.
@@ -1258,6 +1263,7 @@ impl LoweringCtx {
             result_flows: Vec::new(),
             result_fallbacks: HashSet::new(),
             operand_copies: 0,
+            receiver_storage: HashMap::new(),
             early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
@@ -1924,6 +1930,8 @@ fn lower_semantic_function(
     // Collected here because the entry block does not exist until after every
     // parameter is bound; the copies are emitted into it below.
     let mut copy_on_entry: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
+    // The receivers that are the caller's variables — see `receiver_storage`.
+    let mut receiver_storage: HashMap<BindingId, SemanticType> = HashMap::new();
     // ABI option (a): a `.copy` parameter arrives as the caller's slot ADDRESS.
     let mut copy_params: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
     let mut copy_writebacks: Vec<CopyWriteback> = Vec::new();
@@ -1958,9 +1966,11 @@ fn lower_semantic_function(
                     if known_result_type(pty) { ctx.result_types.insert(value, pty.clone()); }
                 }
                 // The exemption is read off the parameter, never off its index.
-                if !param.is_receiver {
-                    if let Some(pty) = &param.ty {
-                        if matches!(pty, SemanticType::Struct(_) | SemanticType::Array(_, _)) {
+                if let Some(pty) = &param.ty {
+                    if matches!(pty, SemanticType::Struct(_) | SemanticType::Array(_, _)) {
+                        if param.is_receiver {
+                            receiver_storage.insert(param.binding, pty.clone());
+                        } else {
                             copy_on_entry.push((param.binding, value, pty.clone()));
                         }
                     }
@@ -2074,6 +2084,7 @@ fn lower_semantic_function(
     }
     let spec = FunctionLoweringSpec { copy_writebacks: copy_writebacks.clone(), ..spec };
     ctx.early_copy_writebacks = copy_writebacks;
+    ctx.receiver_storage = receiver_storage;
     // Model B, the callee half: an aggregate parameter names storage the caller
     // still owns, so the callee gets its own. `ret_slot_plan` supplies the size,
     // alignment and parts — the same authority the return slot and the bind copy
@@ -2285,6 +2296,31 @@ fn lower_stmt_inner(
                         lower_type(ty)?
                     };
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
+                    // A struct or array receiver is the caller's variable
+                    // (amendment V2 item 2): `s = V { x: 9 }` in a method
+                    // assigns that variable. Binding the name to the new
+                    // value's storage, as an assignment to a local does, kept
+                    // the assignment inside the method and sent every later
+                    // write through the receiver to the new storage as well —
+                    // the caller's variable was left as it was, where the
+                    // interpreter changed it (known-issues §76e). So the new
+                    // value is stored into the receiver's storage, and the
+                    // receiver's binding stays the address it has always been.
+                    if let Some(receiver_ty) = ctx.receiver_storage.get(binding).cloned() {
+                        let (_, _, parts) = ret_slot_plan(&receiver_ty, &ctx.struct_table).ok_or_else(|| {
+                            LoweringError::UnsupportedSemanticConstruct {
+                                construct: format!("an assignment to the receiver '{name}' as a whole, whose type compiled code cannot copy"),
+                            }
+                        })?;
+                        let storage = current.bindings.get(binding).cloned().ok_or_else(|| {
+                            LoweringError::UnresolvedSemanticArtifact {
+                                artifact: format!("receiver '{name}' assigned as a whole"),
+                            }
+                        })?;
+                        ensure_type_match("receiver assignment", IrType::Ptr, storage.ty)?;
+                        copy_parts(lowered.value, 0, storage.value, 0, &parts, ctx, &mut current)?;
+                        return Ok(Some(current));
+                    }
                     let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
                     let dst = ctx.fresh_value();
                     remember_result(dst, &LoweredValue { value: src_value, ty: target_ty.clone() }, ty, expr, ctx);

@@ -5943,3 +5943,34 @@ No tracked program passes a field, element or expression for a struct or array
 receiver.
 
 Fixture: `t_further_receiver_given_a_place_is_a_temporary` (both backends).
+
+### e. In compiled code an assignment to a receiver as a whole stayed inside the method (found by the amendment's review; rule V2 item 2)
+
+```cx
+struct V { x: t64 }
+vm: impl (s: V) { fnc: t64 reset() { s = V { x: 9 }; return s.x } }
+v: V = V { x: 1 }
+print(v.reset())                 // 9 / 9
+print(v.x)                       // interpreter 9, JIT 1
+```
+
+A struct or array receiver arrives as the address of the caller's variable.
+An assignment to a variable in compiled code binds its name to the new value's
+storage — right for a local, and for a receiver it re-pointed the name at
+storage only the method could see. The caller's variable kept its old value,
+and every write the method made through the receiver afterwards
+(`s = V { .. }` then `s.y += 1`) went to the new storage too. The same for an
+array further receiver (`b = [7, 8, 9]`: the caller's array read 8 on the
+interpreter, 10 compiled). A `.copy` parameter assigned whole was unaffected:
+it is copied out at return.
+
+**Now** compiled code keeps a record of the current method's struct and array
+receivers (`receiver_storage`), and an assignment to one stores the new value
+into the receiver's storage, part by part, leaving the binding the address it
+always was.
+
+No tracked method assigns its receiver whole. Found on re-running the
+operator generator with by-name method calls: 2 of 40 programs disagreed
+before this change, 0 of 600 after.
+
+Fixture: `t_receiver_assigned_as_a_whole` (both backends).

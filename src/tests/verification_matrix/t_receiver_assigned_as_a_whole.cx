@@ -1,0 +1,81 @@
+// A struct or array receiver is the caller's variable, so assigning to the
+// receiver as a whole assigns that variable — and what the method writes to
+// the receiver afterwards is written to it too. Compiled code used to bind
+// the receiver's name to the new value inside the method only: `v.reset()`
+// returned 9 and left `v.x` at 1.
+struct V { x: t64, y: t64 }
+struct W { inner: V, k: t64 }
+vm: impl (s: V) {
+    fnc: t64 reset() {
+        s = V { x: 9, y: 9 }
+        return s.x
+    }
+    fnc: t64 reset_then_write() {
+        s = V { x: 20, y: 20 }
+        s.y += 1
+        return s.y
+    }
+    fnc: t64 swap() {
+        s = V { x: s.y, y: s.x }
+        return s.x
+    }
+    fnc: t64 take(other: V) {
+        s = other
+        other.x = 777
+        return s.x
+    }
+    fnc: t64 maybe(c: bool) {
+        if c {
+            s = V { x: 50, y: 60 }
+        }
+        return s.x
+    }
+}
+am: impl (v: V, b: [3: t64]) {
+    fnc: t64 refill() {
+        b = [7, 8, 9]
+        b:[2] += 100
+        return b:[1]
+    }
+}
+wm: impl (w: W, o: V) {
+    fnc: t64 both() {
+        o = V { x: 5, y: 6 }
+        w = W { inner: o, k: 44 }
+        return w.k
+    }
+}
+
+v: V = V { x: 1, y: 2 }
+print(v.reset())
+print(v.x)
+print(v.reset_then_write())
+print(v.x)
+print(v.y)
+print(v.swap())
+print(v.x)
+print(v.y)
+u: V = V { x: 3, y: 4 }
+print(v.take(u))
+print(v.x)
+print(u.x)
+print(v.maybe(false))
+print(v.x)
+print(v.maybe(true))
+print(v.x)
+print(v.y)
+
+nums: [3: t64] = [10, 11, 12]
+print(v.refill(nums))
+print(nums:[0])
+print(nums:[1])
+print(nums:[2])
+
+w: W = W { inner: V { x: 1, y: 1 }, k: 0 }
+o: V = V { x: 0, y: 0 }
+print(w.both(o))
+print(o.x)
+print(o.y)
+wi: V = w.inner
+print(wi.x)
+print(w.k)
