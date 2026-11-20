@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The imported generic function converts its T value to a t8; T is an enum at this call.

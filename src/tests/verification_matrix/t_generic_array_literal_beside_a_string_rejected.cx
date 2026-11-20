@@ -1,0 +1,6 @@
+// A number literal beside `T` elements, in a call whose `T` is a string.
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 34]
+    return c:[1]
+}
+print(second("s"))

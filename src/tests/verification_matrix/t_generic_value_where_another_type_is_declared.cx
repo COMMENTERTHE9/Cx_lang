@@ -1,0 +1,37 @@
+// A `T` value may be used where another type is declared. That is right for
+// the calls whose `T` is that type — any number where a number is declared,
+// which is converted — and each call is checked for it.
+enum Phase { Idle, Active }
+struct P { v: t64 }
+fnc: t64 <T> widen(x: T) {
+    n: t64 = x
+    return n
+}
+fnc: f64 <T> real(x: T) {
+    n: f64 = x
+    return n
+}
+fnc: str <T> text(x: T) {
+    s: str = x
+    return s
+}
+fnc: Phase <T> phase(x: T) { x }
+fnc: t64 <T> field(x: T) {
+    p: P = P { v: x }
+    return p.v
+}
+fnc: Result<t64> <T> held(r: Result<T>) { return r }
+fnc: t64 <T> outer(x: T) { return widen(x) }
+a: t8 = 5
+print(widen(a))
+print(widen(300))
+print(real(a))
+print(real(2.5))
+print(text("hi"))
+print(phase(Phase::Active))
+print(field(a))
+r8: Result<t8> = Ok(7)
+print(held(r8))
+r64: Result<t64> = Ok(300)
+print(held(r64))
+print(outer(a))

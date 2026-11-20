@@ -1,0 +1,9 @@
+// Two type parameters are two types, even when a call gives them the same
+// one.
+fnc: U <T, U> f(x: T, y: U) {
+    z: U = x
+    return z
+}
+a: t64 = 5
+b: t64 = 9
+print(f(a, b))

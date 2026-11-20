@@ -3785,6 +3785,11 @@ in a typed binding and passes the value through elsewhere.
 A generic body is still analysed once, not per instantiation: a `T` that is a
 struct where a t8 is declared is found at run time, not by analysis.
 
+*(Changed 2026-11-20 by §81: the body is still analysed once, but what it
+needs of `T` — here, that it is a number — is recorded and checked for the
+types of every call. A struct given for that `T` is now an analysis error at
+the call.)*
+
 ### Fixtures
 
 ```
@@ -5734,6 +5739,10 @@ how strictly a generic body is checked — whether a concrete value may stand
 where a type parameter is declared at all. It is recorded here and put to the
 owner; it is not changed.
 
+*(Decided by the owner on 2026-11-20 and closed by §81: every program above
+is now an analysis error on both backends. The interpreter's run-time check
+of a `T` local stays, as the second line.)*
+
 Also noted by the review and left as it is: a bare `?` passed for `T` leaves
 a `T` *local* open, as above, but pins a `T` *parameter* as unknown, so
 `x = 5` on the parameter is a type mismatch where `y = 5` on the local is not.
@@ -5874,7 +5883,8 @@ analysis, runs on the interpreter with a payload of the wrong type, and is
 refused by compiled code (127) — none is a silent difference:
 
 - a generic body: `fnc: T <T> launder(x: T) { return Ok(5) }`, and an unbound
-  `fnc: Result<T> <T> mk() { return Ok(5) }` read as a `Result<str>` (§74);
+  `fnc: Result<T> <T> mk() { return Ok(5) }` read as a `Result<str>` (§74)
+  — *closed by §81: both are analysis errors*;
 - an untyped `.copy` parameter: `fnc: t64 fill(r.copy) { r = Ok(300); return 0 }`
   called with a `Result<t8>` variable — the by-address check has no declared
   type to compare with;
@@ -6438,9 +6448,13 @@ The interpreter's answer is unchanged, and is not a `t8` either. Whether a
 concrete value may stand where a type parameter is declared at all is the open
 question recorded in §74.
 
+*(Since §81 a call whose `T` the literal does not fit is an analysis error on
+both backends, and this refusal is the second line behind it.)*
+
 Fixtures: `t_generic_array_literal_element_that_fits` (both backends),
-`t_generic_array_literal_element_that_does_not_fit` (the interpreter's answer;
-compiled code SKIP). Unit test
+`t_generic_array_literal_element_that_does_not_fit` (an analysis error on
+both since §81; before, the interpreter's answer and a compiled-code SKIP).
+Unit test
 `a_literal_array_element_that_does_not_fit_its_generic_type_is_refused`.
 
 ## 79. Three-state bools: `&&`/`||` ran a right operand the interpreter skips, and a merge refused a bool in two representations
@@ -6533,3 +6547,157 @@ mechanism was fixed by §76e.
 
 Fixture: `t_literal_assigned_to_a_variable_it_reads` (both backends).
 
+## 81. A generic body was not checked against its own type parameters
+
+*(The open question of §74, decided by the owner on 2026-11-20 — "make
+incompatible assignments in generic functions compile-time errors … the
+compiler must enforce the actual type represented by T" — and implemented on
+`backend/value-alias-semantics`. Present on `submain`. The rule is decision 2
+of `docs/backend/cx_decisions_2026_11_20.md`.)*
+
+```cx
+fnc: T <T> f(x: T) { return "not a T" }
+n: t64 = f(5)                    // interpreter: type mismatch at run time, compiled: refused
+fnc: T <T> g(x: T) {
+    y: T = 5                     // interpreter: 5 for every T, a string or a bool
+    return y                     //   included; compiled: refused
+}
+fnc: t64 <T> widen(x: T) {
+    n: t64 = x
+    return n
+}
+print(widen(5))                  // 5 on both
+print(widen("s"))                // interpreter: prints 5, then stops; compiled: refused
+fnc: Result<t8> <T> conv(r: Result<T>) { return r }
+big: Result<t64> = Ok(300)
+x: Result<t8> = conv(big)        // interpreter: Ok(300) in a Result<t8>; compiled: refused
+```
+
+Analysis checks a generic body once, with `T` unknown, and let a type
+parameter match anything. The interpreter, which runs the body as written,
+carried on with a value of the wrong type; compiled code, which specialises
+the body, refused — usually with an internal "type mismatch after semantic
+analysis" message. One shape was a silent difference (§78).
+
+**Now**, inside the body of a generic function, each of its own type
+parameters is a type of its own:
+
+1. **Where `T` is declared, only a `T` fits.** A literal, a value of a
+   concrete type, a value of another type parameter, a `Result` or an array
+   of anything but `T` where a `Result<T>` or `[N: T]` is declared — in a
+   declaration, an assignment, a `return` or trailing expression, an
+   argument, an `Ok` payload, a struct field, **each** branch of an `if` or
+   `when` used as a value — is an analysis error in the body, whatever the
+   function is called with.
+2. **A value whose type is, or holds, `T` may be used where another type is
+   declared**, and that is checked for every call: with `T` replaced by what
+   it is there, the value must fit by the rule for concrete types — the same
+   type; any number where a number is declared, which is converted (§43); a
+   `Result` by the payload rule, which converts nothing (§75). An array of
+   `T` is never an array of another element type, as before (§42).
+3. **A number literal written beside `T` elements** is an element of that
+   `[N: T]` (§42), and is checked for every call: a whole number needs `T`
+   to be a whole-number type that holds it; a float needs `T` to be f64.
+
+"Every call" is every call written outside a generic function, and every
+generic function it reaches from there, with the types it reaches them with.
+The error is reported at that outermost call and names the function, the
+types and what its body does:
+
+```
+'widen' is called with T = str, but its body uses a T value where t64 is declared: str is not t64
+this call reaches 'g' with T = str, but its body uses a T value where t64 is declared: str is not t64
+'second' is called with T = t8, but its body writes a number literal as an element of a T array: 349 does not fit t8 (valid range: -128..127)
+```
+
+Unchanged: an `Err(..)` is a `Result` of every type, `T` included; a value
+whose type analysis does not know is not checked, here or anywhere; a call
+that leaves `T` unbound, or binds it to `?`, is checked for nothing.
+
+### Not covered
+
+- **A generic struct's type parameter.** Struct type arguments are not kept
+  in a variable's type, so the type of `b.v` for a `Box<T>` is not known to
+  be anything, and is matched with everything — against a concrete type and
+  against a function's own `T` alike. This is not only a generic-function
+  gap: at top level `b: Box = Box<t64> { v: 300 }`, `xs: [2: t8] = [b.v, 1]`
+  holds 300 on the interpreter and 44 in compiled code (§82 a). Closing it
+  needs struct instantiations in the type system.
+- **A function that instantiates itself with ever larger types** (`g([x])`
+  inside `g`) is followed to a nesting depth of 24. Compiled code refuses
+  such a program at 64 instantiations.
+- **A `T` value where a type is needed but none is declared** — an `if`
+  condition, the operand of `!`, an array index. Analysis does not check
+  these for a concrete type either (§57 a, §82 b).
+- A type parameter no argument binds (`fnc: T <T> make()`), whose result is
+  matched with the caller's own `T` of the same name.
+
+### What changes for existing programs
+
+Programs that the interpreter ran with a value of the wrong type, and compiled
+code refused, are analysis errors on both. Two kinds of program **ran the same
+on both backends** and are now rejected:
+
+- A concrete value where `T` is declared, in a function whose every call
+  gives `T` exactly that type: `y: T = 5` called only with a t64, `z: U = x`
+  called with the same type for `T` and `U`, a struct `P` returned as `T`
+  from a function called only with a `P`. Rule 1 is checked in the body, not
+  per call: a function that makes a `T` out of something else is not generic
+  in `T`.
+- A whole-number literal beside `T` elements, called with an f64, when the
+  element was only printed (`34` on both). Bound to an f64 it was a type
+  mismatch on the interpreter and 34 in compiled code: the interpreter keeps
+  the integer.
+
+Tracked programs whose outcome changed, all fixtures written to pin the old
+leniency: `t_generic_array_literal_element_that_does_not_fit` and
+`t_result_of_unknown_kind_at_a_typed_use` (now analysis errors),
+`t_generic_array_literal_element_that_fits` (its f64 call moved to
+`t_generic_array_literal_whole_number_beside_f64_rejected`),
+`t_generic_local_keeps_its_type` and `t_generic_local_raw_unknown` (reworked
+to reach the interpreter's run-time check through a generic struct's field),
+`t_print_interpolation_type_conflict`, `t_import_mono_enum_conversion` and the
+nine `t_module_enum_generic_*_reject` fixtures (analysis errors on both, where
+the interpreter stopped at run time or printed an enum as a t8 and compiled
+code refused), and `t_mono_instantiation_cap` (its function returned a
+`[1: T]` as a `T`; it now returns a t64).
+
+### How
+
+`src/frontend/generic_scope.rs`. While a function is analysed, its type
+parameters are the *scope*; `types_compatible` and `result_payload_compatible`
+consult it, so every one of their callers is covered. A use of the second or
+third kind is recorded as an obligation of the function; every call to a
+generic function is recorded with what it binds; once all modules are
+analysed, `check_instantiations` follows each call written with concrete
+types through the generic calls it reaches. A branch of an `if`/`when` value
+is checked against the declared type itself (`check_branch_tail_fits`), since
+the value is typed by its first branch.
+
+The interpreter's run-time checks and compiled code's refusals stay behind the
+rule. Their unit tests reach them by analysing without it
+(`generic_scope::unchecked`, test builds only).
+
+Fixtures, both backends: `t_generic_values_of_every_kind`,
+`t_generic_value_where_another_type_is_declared`,
+`t_generic_array_literal_element_that_fits`. Analysis errors on both:
+`t_generic_return_of_another_type_rejected`,
+`t_generic_local_given_a_literal_rejected`,
+`t_generic_local_given_another_type_rejected`,
+`t_generic_value_of_another_parameter_rejected`,
+`t_generic_argument_of_another_type_rejected`,
+`t_generic_result_payload_of_another_type_rejected`,
+`t_generic_array_of_another_type_rejected`,
+`t_generic_struct_returned_as_a_type_parameter_rejected`,
+`t_generic_branch_value_of_another_type_rejected`,
+`t_generic_value_used_as_a_number_called_with_a_string_rejected`,
+`t_generic_value_used_as_a_string_called_with_a_number_rejected`,
+`t_generic_value_in_a_struct_field_called_with_a_bool_rejected`,
+`t_generic_result_used_at_a_narrower_payload_rejected`,
+`t_generic_value_reached_through_another_generic_rejected`,
+`t_generic_array_literal_whole_number_beside_f64_rejected`,
+`t_generic_array_literal_float_beside_a_whole_number_rejected`,
+`t_generic_array_literal_beside_a_string_rejected`. Unit tests in
+`generic_scope.rs`; the lowering tests of §70, §72 and §78 and
+`specialized_module_enum_stores_preserve_semantic_identity` assert both the
+analysis error and the refusal behind it.

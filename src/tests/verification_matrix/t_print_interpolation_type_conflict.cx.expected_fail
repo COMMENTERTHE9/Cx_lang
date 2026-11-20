@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A string assigned to a variable that holds a T value.

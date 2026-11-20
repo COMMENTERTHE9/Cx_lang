@@ -1,6 +1,7 @@
 pub mod ast;
 pub mod builtins;
 pub mod diagnostics;
+pub mod generic_scope;
 pub mod int_facts;
 pub mod lexer;
 pub mod parser;

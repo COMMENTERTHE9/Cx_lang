@@ -168,6 +168,14 @@ pub struct Analyzer {
     /// `analyze_expr_with_elem_hint` and `analyze_branch_with_value_hint`, and
     /// taken by the form that uses it.
     expected_value_ty: Option<SemanticType>,
+    /// The function whose body is being analyzed, if any — the caller of the
+    /// calls recorded in `generic_calls`.
+    current_function_id: Option<FunctionId>,
+    /// What each generic function's body obliges its calls to, and every call
+    /// to a generic function — checked together once the whole program is
+    /// analyzed (`generic_scope::check_instantiations`).
+    generic_functions: HashMap<FunctionId, crate::frontend::generic_scope::GenericFunction>,
+    generic_calls: Vec<crate::frontend::generic_scope::GenericCall>,
 }
 
 impl Analyzer {
@@ -201,6 +209,9 @@ impl Analyzer {
             next_enum_id: 0,
             next_enum_variant_id: 0,
             expected_value_ty: None,
+            current_function_id: None,
+            generic_functions: HashMap::new(),
+            generic_calls: Vec::new(),
         }
     }
 
@@ -1665,9 +1676,23 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
     ) -> Result<SemanticStmt, SemanticError> {
         let outer_labels = std::mem::take(&mut self.loop_labels);
         let outer_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let outer_function = self.current_function_id;
+        // Inside the body each of these type parameters matches only itself;
+        // what the body needs of them is checked at the calls (`generic_scope`).
+        crate::frontend::generic_scope::enter(type_params);
         let result = self.analyze_function_body(name, type_params, params, ret_ty, body, ret_expr, pos, is_test, is_method);
+        let obligations = crate::frontend::generic_scope::leave();
+        self.current_function_id = outer_function;
         self.loop_labels = outer_labels;
         self.loop_depth = outer_depth;
+        if let Ok(SemanticStmt::FuncDef(function)) = &result {
+            if !function.type_params.is_empty() {
+                self.generic_functions.insert(
+                    function.id,
+                    crate::frontend::generic_scope::GenericFunction { name: function.name.clone(), obligations },
+                );
+            }
+        }
         result
     }
 
@@ -1704,6 +1729,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             }
         }
         let func_id = self.fresh_function();
+        self.current_function_id = Some(func_id);
         self.declare(name, ret_ty.clone(), None, true, pos)?;
         // A function declared anywhere but the top level is NESTED and gets a
         // name of its own in the program (`VarInfo::function_key`).
@@ -2362,6 +2388,17 @@ Expr::Unary(op, inner, pos) => {
                     // arrays, `Result`s and all — not merely compatible ones.
                     let fits = if declared_elem.is_none() && untyped_numeric.is_none() {
                         same_element_type(&elem_ty, &e.ty)
+                    } else if let (Some(param), Some(literal)) =
+                        (own_type_param(&elem_ty).filter(|_| untyped_numeric.is_some()), number_literal(e))
+                    {
+                        // A number literal beside `T` elements is an element
+                        // of that `[N: T]` (§42) — for the types it fits,
+                        // which each call is checked for (`generic_scope`).
+                        crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Literal {
+                            param: param.to_string(),
+                            literal,
+                        });
+                        true
                     } else {
                         types_compatible(&elem_ty, &e.ty)
                     };
@@ -3477,6 +3514,23 @@ Expr::Unary(op, inner, pos) => {
             .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
             .collect();
 
+        // What each type parameter is here, for the checks a generic body
+        // leaves to its calls (`generic_scope`). Inside a generic function the
+        // types may be that function's own parameters; they are settled when
+        // it is called in turn.
+        if !function.type_params.is_empty() {
+            self.generic_calls.push(crate::frontend::generic_scope::GenericCall {
+                caller: self.current_function_id,
+                callee: function.id,
+                bindings: function
+                    .type_params
+                    .iter()
+                    .filter_map(|p| type_param_map.get(p).map(|t| (p.clone(), t.clone())))
+                    .collect(),
+                pos,
+            });
+        }
+
         Ok((semantic_args, ret_ty, call_type_args))
     }
 
@@ -4004,7 +4058,11 @@ fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usi
 fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
     if let Some(SemanticStmt::ExprStmt { expr, .. }) = body.last() {
         check_semantic_num_fits(expr, expected, pos)?;
-        if matches!(expected, SemanticType::Result(_)) && !types_compatible(expected, &expr.ty) {
+        // Likewise where one of the function's own type parameters is
+        // involved: `y: T = if c { x } else { 5 }` is typed `T` by its first
+        // branch, and the 5 is not a `T` (`generic_scope`).
+        let generic = mentions_own_type_param(expected) || mentions_own_type_param(&expr.ty);
+        if (matches!(expected, SemanticType::Result(_)) || generic) && !types_compatible(expected, &expr.ty) {
             return Err(sem_err!(
                 pos,
                 "type mismatch: a branch of this if/when yields {}, where {} is declared",
@@ -4853,9 +4911,34 @@ fn is_numeric(ty: &SemanticType) -> bool {
     )
 }
 
-fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
+/// Whether a value of type `got` may be used where `expected` is declared.
+///
+/// Inside a generic function, each of its own type parameters is a type of
+/// its own (`generic_scope`): where `T` is declared only a `T` fits, and a
+/// `T` value used where another type is declared is accepted here and
+/// recorded, to be checked for the types each call gives `T`. A type
+/// parameter that is not the enclosing function's — a generic struct's,
+/// reaching here through a field read — is still matched with anything:
+/// struct type arguments are not tracked (known-issues §75).
+pub(crate) fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
     if expected == got || *got == SemanticType::Unknown {
         return true;
+    }
+    match (own_type_param(expected), own_type_param(got)) {
+        // Another of the function's parameters, or any concrete type.
+        (Some(_), _) => return matches!(got, SemanticType::TypeParam(_)) && own_type_param(got).is_none(),
+        // A `T` value where another type is declared: right for the calls
+        // whose `T` fits it, which each call is checked for.
+        (None, Some(_)) => {
+            if !matches!(expected, SemanticType::TypeParam(_)) {
+                crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Fits {
+                    expected: expected.clone(),
+                    got: got.clone(),
+                });
+            }
+            return true;
+        }
+        (None, None) => {}
     }
     if matches!(expected, SemanticType::TypeParam(_)) || matches!(got, SemanticType::TypeParam(_)) {
         return true;
@@ -4907,8 +4990,25 @@ fn result_payload_compatible(expected: &SemanticType, got: &SemanticType) -> boo
     if expected == got || *got == SemanticType::Unknown {
         return true;
     }
-    // A type parameter is not checked against a concrete type anywhere yet
-    // (known-issues §74); a Result's payload is no stricter than the rest.
+    // One of the enclosing function's own type parameters is that type only
+    // (`generic_scope`): nothing else is a `Result<T>`. A `Result<T>` where
+    // a `Result` of another type is declared is right for the calls whose
+    // `T` that payload rule accepts — no payload is converted — which each
+    // call is checked for. A generic struct's parameter is not tracked, and
+    // stays unchecked (known-issues §75).
+    match (own_type_param(expected), own_type_param(got)) {
+        (Some(_), _) => return matches!(got, SemanticType::TypeParam(_)) && own_type_param(got).is_none(),
+        (None, Some(_)) => {
+            if !matches!(expected, SemanticType::TypeParam(_)) {
+                crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Fits {
+                    expected: SemanticType::Result(Box::new(expected.clone())),
+                    got: SemanticType::Result(Box::new(got.clone())),
+                });
+            }
+            return true;
+        }
+        (None, None) => {}
+    }
     if matches!(expected, SemanticType::TypeParam(_)) || matches!(got, SemanticType::TypeParam(_)) {
         return true;
     }
@@ -4922,6 +5022,25 @@ fn result_payload_compatible(expected: &SemanticType, got: &SemanticType) -> boo
         (SemanticType::Array(..), SemanticType::Array(..)) => types_compatible(expected, got),
         (SemanticType::Result(a), SemanticType::Result(b)) => result_payload_compatible(a, b),
         _ => false,
+    }
+}
+
+/// The name of `ty` when it is a type parameter of the function being
+/// analyzed.
+fn own_type_param(ty: &SemanticType) -> Option<&str> {
+    match ty {
+        SemanticType::TypeParam(name) if crate::frontend::generic_scope::is_own(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// Whether `ty` mentions a type parameter of the function being analyzed.
+fn mentions_own_type_param(ty: &SemanticType) -> bool {
+    match ty {
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => {
+            mentions_own_type_param(inner)
+        }
+        other => own_type_param(other).is_some(),
     }
 }
 
@@ -5027,6 +5146,20 @@ fn is_number_literal(e: &SemanticExpr) -> bool {
         matches!(e.kind, SemanticExprKind::Value(SemanticValue::Num(_) | SemanticValue::Float(_)))
     };
     literal(e) || matches!(&e.kind, SemanticExprKind::Unary { op: Op::Minus, expr, .. } if literal(expr))
+}
+
+/// The value of a number written as a literal, as far as fitting a type goes.
+fn number_literal(e: &SemanticExpr) -> Option<crate::frontend::generic_scope::Literal> {
+    use crate::frontend::generic_scope::Literal;
+    let of = |e: &SemanticExpr, sign: i128| match &e.kind {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => Some(Literal::Whole(sign * *n)),
+        SemanticExprKind::Value(SemanticValue::Float(_)) => Some(Literal::Float),
+        _ => None,
+    };
+    match &e.kind {
+        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => of(expr, -1),
+        _ => of(e, 1),
+    }
 }
 
 /// The element type of an UNTYPED array literal whose elements are all numbers
@@ -5162,6 +5295,14 @@ fn convert_literal_row(row: SemanticExpr, target: &SemanticType, pos: usize) -> 
             SemanticExprKind::ArrayLit { .. } => convert_literal_row(e, inner, pos)?,
             _ => {
                 check_semantic_num_fits(&e, inner, pos)?;
+                // In a row of `T`s the literal is checked for the types each
+                // call gives `T`, as one written beside a `T` element is.
+                if let (Some(param), Some(literal)) = (own_type_param(inner), number_literal(&e)) {
+                    crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Literal {
+                        param: param.to_string(),
+                        literal,
+                    });
+                }
                 insert_cast_if_needed(e, inner)
             }
         });
@@ -5173,7 +5314,7 @@ fn convert_literal_row(row: SemanticExpr, target: &SemanticType, pos: usize) -> 
 }
 
 /// Whether `ty` mentions a type parameter, at any depth.
-fn mentions_type_param(ty: &SemanticType) -> bool {
+pub(crate) fn mentions_type_param(ty: &SemanticType) -> bool {
     match ty {
         SemanticType::TypeParam(_) => true,
         SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => {
@@ -5686,6 +5827,10 @@ fn analyze_modules(
         HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
+    // Every module's generic functions and calls to generic functions, for
+    // the one check that needs the whole program (below).
+    let mut generic_functions = HashMap::new();
+    let mut generic_calls = Vec::new();
     let mut ids = IdCounters::default();
     // Enum names each module declares. Modules are processed dependencies-first,
     // so a module's imports are always already in this map.
@@ -5867,6 +6012,8 @@ fn analyze_modules(
         }
         // Taken before `analyzer.enum_defs` is moved out below.
         ids = analyzer.id_counters();
+        generic_functions.extend(std::mem::take(&mut analyzer.generic_functions));
+        generic_calls.append(&mut analyzer.generic_calls);
 
         // Build ExportTable for imported modules
         if let Some(ref module_key) = key {
@@ -5920,6 +6067,14 @@ fn analyze_modules(
             }
             merged_enums.extend(analyzer.enum_defs);
         }
+    }
+
+    // What a generic body leaves to its calls — a `T` value converted to a
+    // number, a number literal as a `T` element — is checked here for the
+    // types each function is actually reached with (known-issues §81).
+    let instantiation_errors = crate::frontend::generic_scope::check_instantiations(&generic_functions, &generic_calls);
+    if !instantiation_errors.is_empty() {
+        return Err(instantiation_errors);
     }
 
     Ok(SemanticProgram {

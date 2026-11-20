@@ -1,0 +1,6 @@
+// The first argument makes `pick`'s type parameter the caller's `T`, and a
+// number literal is not a `T`.
+fnc: T <T> pick(a: T, b: T) { return b }
+fnc: T <T> g(x: T) { return pick(x, 5) }
+a: t8 = 3
+print(g(a))

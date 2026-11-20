@@ -1,0 +1,5 @@
+// A `Result<T>` holds a `T`. `Ok(5)` returned as one was read as a
+// `Result<str>` by the caller on the interpreter; compiled code refused.
+fnc: Result<T> <T> mk(x: T) { return Ok(5) }
+r: Result<str> = mk("s")
+print(r)

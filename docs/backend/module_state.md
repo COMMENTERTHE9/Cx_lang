@@ -28,6 +28,11 @@ Same-enum generic calls/returns and copy arguments remain supported. Source
 regressions and an IR unit pin each refusal until shared analysis can diagnose
 these invalid specializations earlier.
 
+Since 2026-11-20 shared analysis does diagnose them (known-issues §81): a `T`
+value used where an enum is declared is checked for the type of every call,
+and a call that gives `T` a number or another enum is an analysis error on
+both backends. The lowering checks remain behind it.
+
 Each value has a private lifecycle byte:
 
 | State | Meaning | Allowed access |

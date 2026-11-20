@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The body converts a T value to a t64; the second call's T is a string. Rejected at that call, before anything runs.

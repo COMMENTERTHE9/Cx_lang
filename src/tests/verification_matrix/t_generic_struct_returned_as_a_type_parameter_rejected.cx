@@ -1,0 +1,10 @@
+// A struct of a known type is not a `T`, even for the call that makes `T`
+// that struct.
+struct P { v: t64 }
+fnc: T <T> f(x: T) {
+    p: P = P { v: 1 }
+    return p
+}
+q: P = P { v: 2 }
+r: P = f(q)
+print(r.v)

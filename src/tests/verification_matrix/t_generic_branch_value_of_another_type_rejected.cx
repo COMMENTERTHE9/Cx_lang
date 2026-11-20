@@ -1,0 +1,8 @@
+// Each branch of an `if` used as a value must itself be a `T`: the value is
+// typed by its first branch, and 300 came back from a call whose `T` is t8.
+fnc: T <T> f(c: bool, x: T) {
+    return if c { x } else { 300 }
+}
+a: t8 = 1
+r: t8 = f(false, a)
+print(r)

@@ -1,2 +1,3 @@
-The reference rejects the incompatible enum value; native specialization
-refuses it before code generation. An IR unit pins the enum-identity check.
+Analysis rejects the value of another type at the call that gives the type
+parameter that type (known-issues §81). Behind it the reference runtime rejects
+the assignment and native specialization refuses it; an IR unit test pins that.

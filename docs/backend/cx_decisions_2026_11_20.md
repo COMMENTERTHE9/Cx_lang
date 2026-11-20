@@ -42,62 +42,97 @@ it `.copy` to a function. No new syntax.
 | `q.set(res)` where `set` assigns `Ok(99)` to its `Result` receiver; then `res` | analysis error (held) | `Ok(5)` on both |
 | `q.grow(n8, 1)` with `n8: t8` and a `t64` receiver | analysis error (exact type) | accepted, converted |
 
-## D2 — Inside a generic function a type parameter matches only itself
+## D2 — Inside a generic function a type parameter is a type of its own
 
 *Owner: "If a function declares a value as type T, the compiler must enforce
 the actual type represented by T. … Implement the checks in semantic
-analysis."*
+analysis. … Preserve legitimate generic operations and type inference."*
 
 Within the body of a generic function, for each of **its own** type
 parameters `T`:
 
-1. **`T` matches only `T`.** A value whose type is not `T` — a literal, a
-   variable of a concrete type, a value of another type parameter `U`, a
-   `Result` of something that is not `T` where `Result<T>` is declared — may
-   not be used where `T` is declared: in a typed declaration, an assignment, a
-   `return` or trailing expression, an argument for a `T` parameter, an `Ok`
-   payload, a struct field. It is an analysis error in the body, whatever the
-   function is called with. This extends to every position the rule §42
-   already set for array element types.
-2. **A `T` value is not a value of a concrete type**, with one exception that
-   exists today (known-issues §43): where a number of a declared width is
-   declared (`n: t64 = x`), a `T` value is converted like any number. That
-   conversion is now **checked at each instantiation**: if the function is
-   called with a `T` that is not a number, the call is an analysis error.
+1. **Where `T` is declared, only a `T` fits.** A value whose type is not `T`
+   — a literal, a variable of a concrete type, a value of another type
+   parameter `U`, a `Result` or an array of something that is not `T` where
+   `Result<T>` or `[N: T]` is declared, the result of a function that returns
+   nothing — may not be used where `T` is declared: in a typed declaration,
+   an assignment, a `return` or trailing expression, an `Ok` payload, a
+   struct field, an argument for a parameter whose type the call has made
+   `T`, a gene method's `Self` on a `T` value, and **each** branch of an `if`
+   or `when` used as a value (the value is typed by its first branch, so the
+   others are checked on their own). It is an analysis error in the body,
+   whatever the function is called with — including a call that gives `T`
+   exactly the type of that value. A function that makes a `T` out of
+   something else is not generic in `T`.
+2. **A value whose type is, or holds, `T` may be used where another type is
+   declared** — `n: t64 = x`, `s: str = x`, `phase = x` for an enum variable,
+   a `Result<T>` returned as a `Result<t64>`. That is right only for some
+   `T`, so it is **checked for every call**: with `T` replaced by what it is
+   there, the value must fit by the rule for concrete types —
+   - the same type (a string, a bool, an enum, a struct, an array);
+   - any number where a number is declared, which is converted as it is
+     today (known-issues §43);
+   - a `Result` by the payload rule of §75, which converts nothing: a
+     `Result<T>` is a `Result<t8>` only in a call whose `T` is a t8.
+
+   Otherwise the call is an analysis error. An array of `T` is never an array
+   of another element type, in any call — the existing rule of §42.
 3. **A number literal as an element of an array literal whose other elements
-   are `T`** stays legal (`[x, 1]` is a `[2: T]`, §42) and is also checked at
-   each instantiation: a whole-number literal needs `T` to be a whole-number
-   type the literal fits; a float literal needs `T` to be `f64`. Otherwise the
-   call is an analysis error. (An integer literal beside an `f64` `T` already
-   fails on the interpreter.)
-4. An unknown value (`?`) and an `Err(..)` remain usable where `T` or
-   `Result<T>` is declared, as everywhere.
+   are `T`** stays legal (`[x, 1]` is a `[2: T]`, §42) and is checked for
+   every call: a whole-number literal needs `T` to be a whole-number type the
+   literal fits; a float literal needs `T` to be `f64`. Otherwise the call is
+   an analysis error. That includes a whole number beside an `f64` `T`, which
+   printed the same on both backends but was an integer on the interpreter
+   and could not then be bound to an `f64`.
+4. Unchanged, here as everywhere: an `Err(..)` is a `Result` of every type,
+   `Result<T>` included; a value whose type analysis does not know — the
+   unknown value `?`, the result of an untyped expression — is not checked;
+   a call that binds `T` to `?`, or leaves it unbound, is checked for nothing.
 
-"At each instantiation" means: for every call that reaches the function with
-concrete types — directly, or through other generic functions — the checks of
-items 2 and 3 are made with `T` replaced by what it is bound to there. The
-error is reported at the outermost call, and names the type and the line in
-the generic body.
+"Every call" is defined by what the program says, not by what runs: every
+call written outside a generic function, and every generic function reached
+from it through calls, each with the types it is reached with. The error is
+reported at that outermost call, once per thing the body does, and names the
+function, the types and what the body does with them. A function that calls
+itself with an ever larger type (`g([x])` inside `g`) is followed to a
+nesting depth of 24; compiled code refuses such a program at 64
+instantiations.
 
-Not covered, and unchanged: a type parameter of a generic **struct** reaching
-a function through a field read (`b.v` of a `Box<T>`). Struct type arguments
-are not tracked through variables, so such a value is still not checked
-against a declared type; compiled code refuses the cases it cannot prove
-(known-issues §75). Closing that needs struct instantiations in the type
-system and is a separate piece of work.
+Not covered, and unchanged:
+
+- A type parameter of a generic **struct**. A variable's type is `Box`,
+  without its type argument, so the type of `b.v` is not known and is matched
+  with everything — a concrete type and a function's own `T` alike, inside a
+  function or at top level. This is a silent difference today for a number
+  narrowed on the way (300 / 44; known-issues §82 a, found by this document's
+  review and present on `submain`). Closing it needs struct type arguments in
+  the type system, which is a separate piece of work.
+- A `T` value where a type is needed but none is declared: an `if` condition,
+  the operand of `!`, an array index. Analysis does not check these for a
+  concrete type either (§57 a, §82 b).
 
 | Program | Before (interpreter / compiled) | After |
 |---|---|---|
-| `fnc: T <T> f(x: T) { return "not a T" }`, `f(5)` | prints `not a T` / refused | analysis error |
-| `y: T = 5` in a generic body | 5 for every `T`, a bool included / refused | analysis error |
-| `z: U = x` with `x: T` | runs / refused | analysis error |
-| `pick(x, 5)` inside a generic body, `pick(a: T, b: T)` | runs / refused | analysis error |
+| `fnc: T <T> f(x: T) { return "not a T" }`, `print(f(5))` | prints `not a T` / refused | analysis error |
+| `y: T = 5` in a generic body, called with a string | 5 / refused | analysis error |
+| the same, called only with a t64 | 5 / 5 | **analysis error** |
+| `z: U = x` with `x: T`, called with two t64 | 5 / 5 | **analysis error** |
+| `pick(x, 5)` inside a generic body, `pick(a: T, b: T)`, called with a t8 | 5 / refused | analysis error |
 | `fnc: T <T> launder(x: T) { return Ok(5) }` | `Ok(5)` under any declared type / refused | analysis error |
-| `fnc: Result<T> <T> mk() { return Ok(5) }` | `Ok(5)` read as `Result<str>` / refused | analysis error |
-| `n: t64 = x` with `x: T`, called with a string | run-time error after output / refused | analysis error at the call |
+| `fnc: Result<T> <T> mk(x: T) { return Ok(5) }` read as a `Result<str>` | `Ok(5)` / refused | analysis error |
+| `return if c { x } else { 300 }`, called with a t8 | 300 / refused | analysis error |
+| `n: t64 = x` with `x: T`, called with a number | agree | unchanged |
+| the same, called with a string | prints, then a run-time error / refused | analysis error at the call |
+| `s: str = x`, called with a string; `phase = x`, called with that enum | agree | unchanged |
+| the same, called with a number | a run-time error for the string, the number printed as an enum / refused | analysis error at the call |
+| `fnc: Result<t8> <T> conv(r: Result<T>) { return r }`, called with a `Result<t64>` | `Ok(300)` / refused | analysis error at the call |
 | `c: [2: T] = [x, 349]`, called with a `t8` | 349 / refused (93 on `submain`) | analysis error at the call |
 | `c: [2: T] = [x, 34]`, called with a `t8` or `t64` | 34 / 34 | unchanged |
+| the same, called with an `f64`, the element printed | 34 / 34 | **analysis error at the call** |
+| the same, the element bound to an `f64` | type mismatch / 34 | analysis error at the call |
 | `id(x)`, `[x, x]`, `Ok(x)`, `twice(x)` calling `id(id(x))` | agree | unchanged |
+
+The rows in bold ran the same on both backends and are now rejected.
 
 ## D3 — A constant whole-number expression takes a declared `Result` payload type when it provably fits
 

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A number literal given for a parameter the first argument made the caller's T.

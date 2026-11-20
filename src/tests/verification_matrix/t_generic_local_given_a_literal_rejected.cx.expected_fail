@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A number literal is not a T: analysis rejects the declaration.

@@ -1,0 +1,6 @@
+// A function declared to return `T` returns a `T`. A string is not one —
+// whatever the function is called with. The interpreter used to hand the
+// string to a caller that asked for a number; compiled code refused.
+fnc: T <T> f(x: T) { return "not a T" }
+n: t64 = f(5)
+print(n)

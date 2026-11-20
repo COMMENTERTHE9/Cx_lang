@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The body uses a T value as a string; the second call's T is a number. Rejected at that call, before anything runs.

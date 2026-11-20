@@ -2,11 +2,15 @@
 // about a `T` local's type: the declaration stays open until a value that has
 // a type arrives, and takes that one. The interpreter's answer; compiled code
 // does not lower an unknown passed for a type parameter.
+// (The value that arrives is a generic struct's field, whose type analysis
+// does not track: a number literal is not a `T`, and is rejected there.)
 // (A bool *variable* that holds the unknown state is a bool, and pins the
 // local as one: `t_generic_local_char_handle_unknown`.)
-fnc: T <T> local(x: T) {
+struct Box<T> { v: T }
+fnc: T <T> local(x: T, b: Box) {
     y: T = x
-    y = 5
+    y = b.v
     return y
 }
-print(local(?))
+b: Box = Box { v: 5 }
+print(local(?, b))

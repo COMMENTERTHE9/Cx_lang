@@ -1,0 +1,10 @@
+// A whole-number literal beside `T` elements is not an f64. The interpreter
+// kept the integer in the array, so the element could not then be bound to an
+// f64; compiled code converted it.
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 34]
+    return c:[1]
+}
+f: f64 = 1.5
+r: f64 = second(f)
+print(r)

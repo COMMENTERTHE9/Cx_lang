@@ -1,0 +1,7 @@
+// A number literal is not a `T`: a `T` local declared with one held 5 for
+// every `T` on the interpreter — a string, a bool — and compiled code refused.
+fnc: T <T> f(x: T) {
+    y: T = 5
+    return y
+}
+print(f("s"))

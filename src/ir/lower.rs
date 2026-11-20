@@ -5007,7 +5007,7 @@ fn lower_logical(
         // is the result, and the right operand is not evaluated. That is what
         // the interpreter does (`eval.rs`). Evaluating the right operand
         // regardless ran a call the interpreter skips: its output appeared,
-        // and its `.copy` argument was written back (known-issues §79).
+        // and its `.copy` argument was written back (known-issues §81).
         let after_lhs = active.bindings.clone();
         let settles: i128 = match op {
             Op::And => 0,
@@ -14368,7 +14368,13 @@ mod imported_generic_tests {
             entry, files, topo_order: vec![lib, entry],
             edges: vec![resolver::ImportEdge { importer: entry, importee: lib, alias: "lib".into(), pos: 0 }],
         };
-        let analyzed = semantic::analyze_resolved_program(&resolved).expect("imported call analyzes");
+        // Analysis rejects this call: the function converts its `T` value
+        // to a t8, and `T` is an enum here (known-issues §81).
+        let rejected = semantic::analyze_resolved_program(&resolved).expect_err("an enum is not a number");
+        assert!(rejected[0].msg.contains("Mode is not t8"), "{rejected:?}");
+        // Compiled code's own refusal stands behind it.
+        let analyzed = crate::frontend::generic_scope::unchecked(|| semantic::analyze_resolved_program(&resolved))
+            .expect("imported call analyzes without the generic rule");
         let error = lower_program(&analyzed).expect_err("enum representation is not a number");
         assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
             if construct.contains("enum identity in cast: expected t8, got Mode")), "{error:?}");
@@ -14386,6 +14392,17 @@ mod module_state_tests {
             program: resolver::parse_source(src).expect("parses"), imports: vec![] };
         let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
         semantic::analyze_resolved_program(&resolved).expect("analysis succeeds")
+    }
+
+    /// The analysis errors of a program, joined.
+    fn rejected(src: &str) -> String {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "module_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        semantic::analyze_resolved_program(&resolved)
+            .expect_err("analysis rejects this program")
+            .iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join("\n")
     }
 
     fn from_source(src: &str) -> IrModule {
@@ -14457,11 +14474,17 @@ mod module_state_tests {
         assert!(getter.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { ty: IrType::I8, .. })));
     }
 
+    /// A value of another type must not reach a `Phase` variable through a
+    /// generic function. Analysis rejects each of these programs at the call
+    /// that gives `T` the other type (known-issues §81); compiled code's own
+    /// refusal, which was the only line before, stands behind it.
     #[test]
     fn specialized_module_enum_stores_preserve_semantic_identity() {
-        for argument in ["n", "Other::Second"] {
+        let unchecked = |src: &str| crate::frontend::generic_scope::unchecked(|| analyzed(src));
+        for (argument, given) in [("n", "t8"), ("Other::Second", "Other")] {
             let source = format!("enum Phase {{ Idle, Active }}\nenum Other {{ First, Second }}\nphase: Phase = Phase::Idle\nfnc: t64 <T> set_phase(value: T) {{ phase = value; 0 }}\nn: t8 = 1\nprint(set_phase({argument}))\n");
-            let error = lower_program(&analyzed(&source)).expect_err("same-byte representation does not make an enum assignment valid");
+            assert!(rejected(&source).contains(&format!("{given} is not Phase")), "{argument}: {}", rejected(&source));
+            let error = lower_program(&unchecked(&source)).expect_err("same-byte representation does not make an enum assignment valid");
             assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
                 if construct.contains("enum identity") && construct.contains("expected Phase")), "{error:?}");
         }
@@ -14474,7 +14497,9 @@ mod module_state_tests {
             include_str!("../tests/verification_matrix/t_module_enum_generic_struct_reject.cx"),
             include_str!("../tests/verification_matrix/t_module_enum_generic_array_reject.cx"),
         ] {
-            let error = lower_program(&analyzed(source)).expect_err("typed boundaries cannot disguise an incompatible enum value");
+            let reason = rejected(source);
+            assert!(reason.contains("t8 is not Phase") || reason.contains("expected T, got t8"), "{reason}");
+            let error = lower_program(&unchecked(source)).expect_err("typed boundaries cannot disguise an incompatible enum value");
             assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
                 if construct.contains("enum identity") && construct.contains("expected Phase")), "{error:?}");
         }
@@ -14522,10 +14547,34 @@ mod divergence_shape_tests {
         lower_program(&analyzed).expect_err("compiled code must refuse this shape")
     }
 
-    /// A number literal beside a `T` element in an array literal is accepted
-    /// by analysis for every `T`; when the function is specialised, a literal
-    /// that does not fit the element type is refused rather than narrowed on
-    /// its way into the array (known-issues §78). One that fits is lowered.
+    /// What compiled code does with a program analysis now rejects in a
+    /// generic body (known-issues §81) — its own refusal, the second line.
+    fn lowering_error_without_the_generic_rule(src: &str) -> LoweringError {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = crate::frontend::generic_scope::unchecked(|| semantic::analyze_resolved_program(&resolved))
+            .expect("analysis without the generic rule accepts this shape");
+        lower_program(&analyzed).expect_err("compiled code must refuse this shape")
+    }
+
+    /// The analysis errors of a program, joined.
+    fn analysis_error(src: &str) -> String {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        semantic::analyze_resolved_program(&resolved)
+            .expect_err("analysis rejects this shape")
+            .iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A number literal beside a `T` element in an array literal is an
+    /// element of that `[N: T]`, for the calls whose `T` it fits. Analysis
+    /// rejects a call it does not fit (known-issues §81); behind it, when the
+    /// function is specialised, compiled code refuses the literal rather than
+    /// narrow it on its way into the array (§78). One that fits is lowered.
     #[test]
     fn a_literal_array_element_that_does_not_fit_its_generic_type_is_refused() {
         let generic = |literal: &str, arg: &str| {
@@ -14538,12 +14587,18 @@ mod divergence_shape_tests {
             ("349", "a: bool = false"),
             ("2.5", "a: t64 = 5"),
         ] {
-            let error = format!("{:?}", lowering_error(&generic(literal, arg)));
+            let rejected = analysis_error(&generic(literal, arg));
+            assert!(rejected.contains("writes a number literal as an element of a T array"), "{literal} beside {arg}: {rejected}");
+            let error = format!("{:?}", lowering_error_without_the_generic_rule(&generic(literal, arg)));
             assert!(error.contains("a number literal in an array literal"), "{literal} beside {arg}: {error}");
         }
         let nested = "fnc: T <T> inner(x: T) {\n    g: [2: [2: T]] = [[x, 900], [8, x]]\n    return g:[1]:[0]\n}\na: t8 = 5\nprint(inner(a))";
-        assert!(format!("{:?}", lowering_error(nested)).contains("a number literal in an array literal"));
-        for (literal, arg) in [("34", "a: t8 = 5"), ("-128", "a: t8 = 5"), ("349", "a: t64 = 5"), ("7", "a: f64 = 1.5"), ("2.5", "a: f64 = 1.5")] {
+        assert!(analysis_error(nested).contains("900 does not fit t8"), "{}", analysis_error(nested));
+        assert!(format!("{:?}", lowering_error_without_the_generic_rule(nested)).contains("a number literal in an array literal"));
+        // A whole number beside an f64 `T` is rejected by analysis: the
+        // interpreter cannot make it a float (compiled code can).
+        assert!(analysis_error(&generic("7", "a: f64 = 1.5")).contains("7 is a whole number and T is f64 here"));
+        for (literal, arg) in [("34", "a: t8 = 5"), ("-128", "a: t8 = 5"), ("349", "a: t64 = 5"), ("2.5", "a: f64 = 1.5")] {
             lowered(&generic(literal, arg));
         }
     }
@@ -15046,11 +15101,10 @@ mod divergence_shape_tests {
     /// whole number, never a narrower one — `?` would cut the number down.
     ///
     /// Since §75 analysis rejects a narrowing wherever both types are written,
-    /// so these programs reach lowering by the one route analysis still lets
-    /// through: a generic body, which it does not check against its type
-    /// parameter (§74). `conv` is declared to return a `Result<t8>` and
-    /// returns its `T`. Compiled code's own check is the second line, and
-    /// this pins that it is still there.
+    /// and since §81 through a generic body too: `conv` is declared to return
+    /// a `Result<t8>` and returns its `T`, which each call is checked for.
+    /// Compiled code's own check is the second line, and this pins that it is
+    /// still there, by analyzing without that rule.
     #[test]
     fn a_result_is_not_read_at_a_narrower_integer_type() {
         let conv = "fnc: Result<t8> <T> conv(x: T) { return x }\n";
@@ -15063,7 +15117,9 @@ mod divergence_shape_tests {
             // A constant expression is a t64.
             "print(conv(Ok(100 + 28)))\n",
         ] {
-            let err = format!("{}", lowering_error(&format!("{conv}{narrowing}")));
+            let rejected = analysis_error(&format!("{conv}{narrowing}"));
+            assert!(rejected.contains("is not Result<t8>"), "{narrowing}: {rejected}");
+            let err = format!("{}", lowering_error_without_the_generic_rule(&format!("{conv}{narrowing}")));
             assert!(err.contains("Result"), "{narrowing}: {err}");
         }
         for fine in [
@@ -15113,9 +15169,10 @@ mod divergence_shape_tests {
     /// declared kind is refused; it used to be taken on trust, and `Ok(5)`
     /// was read as a string.
     ///
-    /// Since §75 analysis keeps an `Ok` out of such a value everywhere but in
-    /// a generic body (§74): `launder` is declared to return its `T` and
-    /// returns an `Ok(5)`. That is the route used here.
+    /// Since §75 analysis keeps an `Ok` out of such a value, and since §81 in
+    /// a generic body too: `launder` is declared to return its `T` and
+    /// returns an `Ok(5)`, which is rejected. That route is used here, by
+    /// analyzing without that rule, to pin compiled code's own check.
     #[test]
     fn a_result_no_declaration_vouches_for_is_refused_where_a_kind_is_declared() {
         let prelude = "fnc: T <T> id(x: T) { return x }\n\
@@ -15131,7 +15188,8 @@ mod divergence_shape_tests {
             "t: Result<str> = swap(e, e)\n print(t)\n",
         ] {
             let src = format!("{prelude}fnc: t64 run(c: bool) {{\n {holds_a_number} {body} return 0\n}}\nprint(run(true))\n");
-            let err = format!("{}", lowering_error(&src));
+            assert!(analysis_error(&src).contains("expected T, got Result<integer>"), "{body}: {}", analysis_error(&src));
+            let err = format!("{}", lowering_error_without_the_generic_rule(&src));
             assert!(err.contains("not proven"), "{body}: {err}");
         }
     }

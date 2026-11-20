@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The second call reaches g with a string through two generic functions. Rejected at that call, before anything runs.

@@ -1,0 +1,8 @@
+// A float literal beside `T` elements needs `T` to be f64: the interpreter
+// kept 2.5 in an array of t64, compiled code refused.
+fnc: T <T> half(x: T) {
+    c: [2: T] = [x, 2.5]
+    return c:[1]
+}
+w: t64 = 5
+print(half(w))

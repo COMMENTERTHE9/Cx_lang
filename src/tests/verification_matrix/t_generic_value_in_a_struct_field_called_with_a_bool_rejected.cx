@@ -1,0 +1,8 @@
+// A `T` value given for a t64 field: a bool is not a number.
+struct P { v: t64 }
+fnc: t64 <T> field(x: T) {
+    p: P = P { v: x }
+    return p.v
+}
+print(field(5))
+print(field(true))

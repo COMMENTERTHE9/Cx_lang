@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A string assigned to a T local: analysis rejects the assignment.
