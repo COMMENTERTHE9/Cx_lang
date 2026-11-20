@@ -6213,6 +6213,14 @@ caller on the interpreter only (11 / 1).
 Nothing is refused in place of any of this. `t_enum_boundary_valid`, the one
 tracked program with a scalar `.copy` in a value branch, passes as before.
 
+*(Corrected after the independent review of the implementation. As first
+committed, one shape WAS newly refused: a function's trailing `if`/`else` in
+which a three-state bool local is given a definite value in one branch — the
+value merge found the variable in two representations and refused. And one
+disagreement became visible that the lost write-backs had been hiding: a
+three-state `&&`/`||` ran a right operand the interpreter skips. Both are
+fixed in §79; the sentence above is true as of that entry.)*
+
 A generator written for this change puts calls that write a `.copy` argument
 back in every one of these positions, nested in each other, at top level and
 inside functions, and reads every variable after every statement: 400
@@ -6355,3 +6363,56 @@ Fixtures: `t_generic_array_literal_element_that_fits` (both backends),
 `t_generic_array_literal_element_that_does_not_fit` (the interpreter's answer;
 compiled code SKIP). Unit test
 `a_literal_array_element_that_does_not_fit_its_generic_type_is_refused`.
+
+## 79. Three-state bools: `&&`/`||` ran a right operand the interpreter skips, and a merge refused a bool in two representations
+
+*(Found 2026-11-20 by the independent review of the amendment's
+implementation. The first is present on `submain`; §76g made it visible in
+conditions. The second was introduced by §76g. Both fixed on
+`backend/value-alias-semantics`.)*
+
+**a. Short-circuit.** `&&` and `||` skip their right operand when the left one
+settles the result — a definite false for `&&`, a definite true for `||` —
+whether or not either operand is a three-state bool. The interpreter does
+exactly that. Compiled code took a separate path whenever either operand was
+three-state, and evaluated both operands unconditionally:
+
+```cx
+fnc: bool yes(n.copy: t64) { n += 100; print("called"); return true }
+n: t64 = 0
+b: bool = ?
+d: bool = false && (b || yes(n.copy))
+print(n)                         // interpreter 0;  JIT printed "called", then 100
+```
+
+On `submain` the call's output and its write-back in value position already
+differed. In an `if` condition or a `when` guard the write-back used to be
+dropped (§57b), which hid it there; §76g keeps write-backs, so
+`if n > 5 && (b || yes(n.copy)) { .. }` then left `n` at 100 in compiled code
+only. The three-state path now branches on the left operand first and
+evaluates the right one only when it is needed (`lower_logical`); the
+three-valued result is computed as before.
+
+**b. Merges.** A bool is three-state while it may be unknown and definite once
+it has been assigned `true` or `false`, and compiled code keeps the two in
+different representations. When paths that left a variable in different ones
+met, the statement merge refused the program with an internal-error message
+(present on `submain`), and the value merge added by §76g refused it too — a
+**new** refusal for a function's trailing `if`/`else`, which had compiled
+before because the branches' changes were simply dropped:
+
+```cx
+fnc: t64 f(c: bool) {
+    b: bool = ?
+    if c { b = true; 1 } else { 2 }      // refused after §76g; 1 and 2 before
+}
+```
+
+Every merge now gives such a variable the three-state representation — a
+definite bool is the wire value 0 or 1 of a three-state one
+(`merged_representation`, used by `merge_fallthroughs`, `join_value_paths`
+and `guard_falls_through`). The statement form, refused since `submain`, runs
+as well.
+
+Fixtures: `t_three_state_logic_short_circuits`,
+`t_three_state_bool_set_in_one_branch` (both backends).

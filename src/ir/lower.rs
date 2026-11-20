@@ -2993,7 +2993,9 @@ fn merge_fallthroughs(
     let mut merged_bindings = HashMap::new();
 
     for binding in ordered_bindings {
-        let incoming_value = incoming
+        // Present in the bindings from before the branches, or not a variable
+        // this merge is about.
+        incoming
             .get(&binding)
             .cloned()
             .ok_or_else(|| LoweringError::InternalInvariantViolation {
@@ -3017,14 +3019,18 @@ fn merge_fallthroughs(
             .collect::<Result<Vec<_>, _>>()?;
 
         let first = path_values[0].clone();
-        if path_values.iter().any(|value| value.ty != first.ty) {
-            return Err(LoweringError::InternalInvariantViolation {
-                detail: format!(
-                    "binding {} merged with mismatched SSA value types",
+        // The paths may leave a bool definite on one and three-state on
+        // another (`b: bool = ?`, assigned `true` in one branch): it is
+        // three-state after the merge. Anything else that differs has no
+        // common representation.
+        let Some(merged_ty) = merged_representation(path_values.iter().map(|value| &value.ty)) else {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "an if/when whose branches leave a variable (binding {}) in different representations",
                     binding.0
                 ),
             });
-        }
+        };
 
         if path_values.iter().all(|value| *value == first) {
             merged_bindings.insert(binding, first);
@@ -3032,10 +3038,10 @@ fn merge_fallthroughs(
             let param_value = ctx.fresh_value();
             let block_param = BlockParam {
                 value: param_value,
-                ty: incoming_value.ty.clone(),
+                ty: merged_ty.clone(),
                 read_only: false,
             };
-            merge_param_bindings.push(binding);
+            merge_param_bindings.push((binding, merged_ty));
             merge_block_params.push(block_param.clone());
             merged_bindings.insert(
                 binding,
@@ -3051,21 +3057,18 @@ fn merge_fallthroughs(
     let merge_id = merge_block.id();
 
     for mut active in fallthroughs {
-        let args = merge_param_bindings
-            .iter()
-            .map(|binding| {
-                active
-                    .bindings
-                    .get(binding)
-                    .map(|value| value.value)
-                    .ok_or_else(|| LoweringError::InternalInvariantViolation {
-                        detail: format!(
-                            "binding {} missing from branch-local SSA environment when building merge args",
-                            binding.0
-                        ),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut args = Vec::with_capacity(merge_param_bindings.len());
+        for (binding, ty) in &merge_param_bindings {
+            let value = active.bindings.get(binding).cloned().ok_or_else(|| {
+                LoweringError::InternalInvariantViolation {
+                    detail: format!(
+                        "binding {} missing from branch-local SSA environment when building merge args",
+                        binding.0
+                    ),
+                }
+            })?;
+            args.push(in_representation(value, ty, ctx, &mut active)?);
+        }
 
         active.terminate(IrTerminator::Jump {
             target: merge_id,
@@ -4985,8 +4988,56 @@ fn lower_logical(
     // (neither operand is TBool → falls through). The `==`/`!=` TBool refusal
     // stays in lower_binary — that's the seam's Path-B guard, not A2's.
     if lhs_val.ty == IrType::TBool || expr_lowers_to_tbool(rhs, active) {
-        let rhs_val = lower_expr(rhs, ctx, active)?;
-        return emit_kleene_and_or(op, lhs_val.value, rhs_val.value, ctx, active);
+        // Three-valued, but still short-circuit: a left operand that settles
+        // the result — a definite false for `&&`, a definite true for `||` —
+        // is the result, and the right operand is not evaluated. That is what
+        // the interpreter does (`eval.rs`). Evaluating the right operand
+        // regardless ran a call the interpreter skips: its output appeared,
+        // and its `.copy` argument was written back (known-issues §79).
+        let after_lhs = active.bindings.clone();
+        let settles: i128 = match op {
+            Op::And => 0,
+            Op::Or => 1,
+            _ => unreachable!(),
+        };
+        let settled_wire = ctx.fresh_value();
+        active.emit(IrInst::ConstInt { dst: settled_wire, ty: IrType::I8, value: settles })?;
+        let is_settled = ctx.fresh_value();
+        active.emit(IrInst::Compare { dst: is_settled, op: CompareOp::Eq, lhs: lhs_val.value, rhs: settled_wire })?;
+
+        let mut settled = ctx.start_block(vec![], after_lhs.clone());
+        let mut open = ctx.start_block(vec![], after_lhs.clone());
+        let result_param = ctx.fresh_value();
+        let merge_block = ctx.start_block(
+            vec![BlockParam { value: result_param, ty: IrType::TBool, read_only: false }],
+            after_lhs,
+        );
+        active.terminate(IrTerminator::Branch {
+            cond: is_settled,
+            then_block: settled.id(),
+            then_args: vec![],
+            else_block: open.id(),
+            else_args: vec![],
+        })?;
+        let old_active = std::mem::replace(active, merge_block);
+        ctx.seal_block(old_active)?;
+
+        let settled_val = ctx.fresh_value();
+        settled.emit(IrInst::Cast { dst: settled_val, from: IrType::I8, to: IrType::TBool, value: settled_wire })?;
+
+        let rhs_val = lower_expr(rhs, ctx, &mut open)?;
+        let open_val = emit_kleene_and_or(op, lhs_val.value, rhs_val.value, ctx, &mut open)?;
+
+        join_value_paths(
+            vec![
+                Arrival { block: open, value: open_val.value },
+                Arrival { block: settled, value: settled_val },
+            ],
+            active,
+            &scope,
+            ctx,
+        )?;
+        return Ok(LoweredValue { value: result_param, ty: IrType::TBool });
     }
     ensure_type_match("logical lhs", IrType::Bool, lhs_val.ty.clone())?;
 
@@ -5091,7 +5142,7 @@ fn join_value_paths(
     let mut bindings: Vec<BindingId> = scope.keys().copied().collect();
     bindings.sort_by_key(|binding| binding.0);
 
-    let mut carried: Vec<BindingId> = Vec::new();
+    let mut carried: Vec<(BindingId, IrType)> = Vec::new();
     for binding in bindings {
         let mut values = Vec::with_capacity(arrivals.len());
         for arrival in &arrivals {
@@ -5108,29 +5159,67 @@ fn join_value_paths(
             merge.bindings.insert(binding, first);
             continue;
         }
-        if values.iter().any(|value| value.ty != first.ty) {
+        let Some(ty) = merged_representation(values.iter().map(|value| &value.ty)) else {
             return Err(LoweringError::UnsupportedSemanticConstruct {
                 construct: "an if/when/&&/|| value whose branches leave a variable in different representations".to_string(),
             });
-        }
+        };
         let param = ctx.fresh_value();
-        merge.add_param(BlockParam { value: param, ty: first.ty.clone(), read_only: false });
-        merge.bindings.insert(binding, LoweredValue { value: param, ty: first.ty });
-        carried.push(binding);
+        merge.add_param(BlockParam { value: param, ty: ty.clone(), read_only: false });
+        merge.bindings.insert(binding, LoweredValue { value: param, ty: ty.clone() });
+        carried.push((binding, ty));
     }
 
     let merge_id = merge.id();
     for mut arrival in arrivals {
         let mut args = Vec::with_capacity(1 + carried.len());
         args.push(arrival.value);
-        for binding in &carried {
+        for (binding, ty) in &carried {
             // Present: checked for every arrival above.
-            args.push(arrival.block.bindings[binding].value);
+            let value = arrival.block.bindings[binding].clone();
+            args.push(in_representation(value, ty, ctx, &mut arrival.block)?);
         }
         arrival.block.terminate(IrTerminator::Jump { target: merge_id, args })?;
         ctx.seal_block(arrival.block)?;
     }
     Ok(())
+}
+
+/// The one representation a variable has after a merge whose paths left it in
+/// these. The same on every path: that one. A bool that is definite on one
+/// path and three-state on another — `b: bool = ?` assigned `true` in one
+/// branch only — is three-state afterwards; a definite bool is the wire value
+/// 0 or 1 of a three-state one. Anything else has no common representation.
+fn merged_representation<'a>(mut types: impl Iterator<Item = &'a IrType>) -> Option<IrType> {
+    let first = types.next()?.clone();
+    let mut merged = first;
+    for ty in types {
+        if *ty == merged {
+            continue;
+        }
+        if matches!(ty, IrType::Bool | IrType::TBool) && matches!(merged, IrType::Bool | IrType::TBool) {
+            merged = IrType::TBool;
+        } else {
+            return None;
+        }
+    }
+    Some(merged)
+}
+
+/// `value` as a value of type `ty`, where `merged_representation` chose `ty`:
+/// itself, or a definite bool widened to a three-state one in `block`.
+fn in_representation(
+    value: LoweredValue,
+    ty: &IrType,
+    ctx: &mut LoweringCtx,
+    block: &mut ActiveBlock,
+) -> Result<ValueId, LoweringError> {
+    if value.ty == *ty {
+        return Ok(value.value);
+    }
+    let widened = ctx.fresh_value();
+    block.emit(IrInst::Cast { dst: widened, from: value.ty, to: ty.clone(), value: value.value })?;
+    Ok(widened)
 }
 
 /// Emit `lhs <op> rhs` at `ty` for arithmetic written in the program — the one
@@ -5581,16 +5670,16 @@ fn guard_falls_through(
                 detail: format!("binding {} missing after a when guard", binding.0),
             }
         })?;
-        if after.ty != before.ty {
+        let Some(ty) = merged_representation([&before.ty, &after.ty].into_iter()) else {
             return Err(LoweringError::UnsupportedSemanticConstruct {
                 construct: "a when guard that leaves a variable in a different representation".to_string(),
             });
-        }
+        };
         let value = ctx.fresh_value();
-        params.push(BlockParam { value, ty: before.ty.clone(), read_only: false });
-        joined.insert(*binding, LoweredValue { value, ty: before.ty });
-        from_next.push(before.value);
-        from_guard.push(after.value);
+        params.push(BlockParam { value, ty: ty.clone(), read_only: false });
+        joined.insert(*binding, LoweredValue { value, ty: ty.clone() });
+        from_next.push(in_representation(before, &ty, ctx, &mut next)?);
+        from_guard.push(in_representation(after, &ty, ctx, &mut guard_block)?);
     }
     let join = ctx.start_block(params, joined);
     let join_id = join.id();

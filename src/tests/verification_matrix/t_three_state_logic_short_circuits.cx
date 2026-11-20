@@ -1,0 +1,32 @@
+// `&&` and `||` short-circuit when one operand is a three-state bool as well:
+// a left operand that settles the result — a definite false for `&&`, a
+// definite true for `||` — is the result, and the right operand is not
+// evaluated. Compiled code used to evaluate it regardless whenever either
+// operand was three-state: the skipped call ran, printed, and wrote its
+// `.copy` argument back. When the left operand is unknown the right operand
+// is needed, and runs on both backends.
+fnc: bool yes(n.copy: t64) {
+    n += 100
+    print("called")
+    return true
+}
+n: t64 = 0
+b: bool = ?
+d: bool = false && (b || yes(n.copy))
+print(d)
+print(n)
+e: bool = true || (b && yes(n.copy))
+print(e)
+print(n)
+g: bool = b && yes(n.copy)
+print(when g { true => 1, false => 2, unknown => 3 })
+print(n)
+h: bool = b || yes(n.copy)
+print(h)
+print(n)
+i: t64 = 0
+while (i < 2 && (b || yes(n.copy))) {
+    i = i + 1
+}
+print(i)
+print(n)
