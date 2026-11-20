@@ -1,2 +1,2 @@
-#! interp=diagnostic jit=trap
-A receiver's variable reached by its own name while the method runs: a run-time error on the interpreter (amendment V5). Compiled code refuses the program (SKIP).
+#! interp=diagnostic jit=diagnostic
+A method that calls a function naming the variable it is called on: rejected by analysis.

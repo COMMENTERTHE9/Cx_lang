@@ -1,0 +1,35 @@
+// What the rule does not reject. A method may name any variable other than
+// the ones it is running on; its receiver's variable may be read by the
+// caller while the arguments are evaluated, passed as an ordinary argument (a
+// copy), and reached through the receiver however the receiver is named; and
+// a variable local to a function cannot be named by any method at all.
+struct V { x: t64 }
+limit: t64 = 100
+scale: t64 = 3
+top: V = V { x: 1 }
+spare: V = V { x: 7 }
+fnc: t64 factor() { return scale }
+fnc: t64 capped(n: t64) {
+    if n > limit { return limit }
+    return n
+}
+km: impl (top: V) {
+    fnc: t64 grow(by: t64) {
+        top.x = capped(top.x + by * factor())
+        return top.x
+    }
+    fnc: t64 take(other: V) {
+        top.x += other.x
+        return top.x
+    }
+}
+fnc: t64 local_one() {
+    v: V = V { x: 5 }
+    return v.grow(2) + v.take(v)
+}
+print(top.grow(top.x))
+print(top.take(top))
+print(top.grow(40))
+print(spare.grow(1))
+print(local_one())
+print(top.x)

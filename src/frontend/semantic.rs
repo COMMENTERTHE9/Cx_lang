@@ -5649,6 +5649,30 @@ fn render_method_sig(name: &str, params: &[Option<SemanticType>], ret: &Option<S
 pub fn analyze_resolved_program(
     resolved: &crate::frontend::resolver::ResolvedProgram,
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
+    let program = analyze_modules(resolved)?;
+    // A whole-program rule, checked once every module is analyzed: a method
+    // must not be able to reach the variable it runs on by that variable's
+    // own name (`receiver_access`).
+    let receiver_errors = crate::frontend::receiver_access::check(&program.stmts);
+    if !receiver_errors.is_empty() {
+        return Err(receiver_errors);
+    }
+    Ok(program)
+}
+
+/// Analysis without the whole-program receiver rule, so that the
+/// interpreter's own run-time check — the second line behind it — can still be
+/// exercised by its tests.
+#[cfg(test)]
+pub(crate) fn analyze_resolved_program_without_receiver_rule(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<SemanticProgram, Vec<SemanticError>> {
+    analyze_modules(resolved)
+}
+
+fn analyze_modules(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<SemanticProgram, Vec<SemanticError>> {
     let gene_phen_registry = collect_gene_phen_registry(resolved)?;
 
     // Each analyzed module's key and exports, by module id. A module's

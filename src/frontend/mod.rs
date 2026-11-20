@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod int_facts;
 pub mod lexer;
 pub mod parser;
+pub mod receiver_access;
 pub mod resolver;
 pub mod semantic;
 pub mod semantic_types;

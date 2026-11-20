@@ -171,7 +171,11 @@ every method call on a module-level variable whose method, or anything it can
 call, names that variable.
 
 Detecting this in analysis, so that it is an error before the program runs on
-either backend, is the better end state and is not part of this amendment (§8).
+either backend, was left open by this amendment and decided by the owner on
+2026-11-20: it is now an analysis error, by a conservative static rule
+(`docs/backend/cx_decisions_2026_11_20.md`, D6; known-issues §76h). The
+run-time error and the refusal described above remain as a second line behind
+it.
 
 ### V6 — A `.copy` write-back happens when its call returns, wherever the call is written
 
@@ -400,8 +404,6 @@ that costs a copy and nothing else.
 
 ## 8. Not decided here
 
-- Whether analysis should detect V5 statically, so that it is an error on both
-  backends before the program runs.
 - What an expression receiver binds, if the grammar ever gets one.
 - The cost of V3 in compiled code when an operator's method can write its
   receiver, or its right operand makes a call: a copy of the left operand per

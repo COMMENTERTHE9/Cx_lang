@@ -6325,6 +6325,37 @@ compiled code SKIP) and `t_receiver_named_like_its_variable` (both backends).
 Unit tests `a_receivers_variable_is_not_reached_by_name_while_its_method_runs`,
 `a_receivers_variable_is_reached_through_the_receiver`.
 
+**Since 2026-11-20 the conflict is an analysis error** (owner's decision: find
+it in semantic analysis where it can be found;
+`docs/backend/cx_decisions_2026_11_20.md`, D6). A pass over the whole analyzed
+program (`src/frontend/receiver_access.rs`) computes, for every function and
+method, the variables declared outside every function that its body names —
+or that anything it can call names — and rejects a method call whose receiver
+variable is in the method's set: "method 'top.run', or something it calls,
+names 'top' — the variable it is called on". The same for a struct or array
+variable given by name for a further receiver.
+
+The rule is static and conservative. It rejects a program whose offending
+path is never taken (the one above with `if c { return poke() }` ran on the
+interpreter before), and a read counts as much as a write. Calls are followed
+by name: functions, methods of a known struct type, operators, nested
+functions; a method call on a value whose type is a type parameter is taken to
+reach every method of that name. What it does not reject: the receiver under
+any name, any other variable, the caller's own use of the variable while it
+evaluates the arguments, the variable passed to an ordinary parameter, and a
+variable local to a function, which no method can name.
+
+The interpreter's run-time check and compiled code's refusal stay as a second
+line; a program that analysis accepts cannot reach either by this route. One
+tracked program is affected: the fixture written for the run-time check.
+
+Fixtures (all rejected by analysis on both backends):
+`t_receiver_variable_reached_by_name`,
+`t_receiver_variable_reached_on_untaken_path_rejected`,
+`t_receiver_variable_read_by_a_callee_rejected`,
+`t_further_receiver_variable_reached_by_name_rejected`; and accepted on both,
+`t_method_reaches_other_variables`. Unit tests in `receiver_access.rs`.
+
 ## 77. A guarded catch-all was treated as the last arm in compiled code (closes §57c)
 
 *(Open since the review of the M0 fixes (§57c). Present on `submain`. Fixed on

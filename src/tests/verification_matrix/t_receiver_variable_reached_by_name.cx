@@ -3,9 +3,10 @@
 // which changes `top` by its own name. The interpreter runs a method on a
 // copy of its receiver and stores it back at the end, so `poke` read `top`
 // as it was before the call, and its write was then overwritten: this
-// program printed 1001, then 111. Neither is a defined result, so the
-// interpreter stops when `poke` reaches `top`. Compiled code refuses the
-// program: it cannot reach a top-level struct from a function at all.
+// program printed 1001, then 111. Neither is a defined result. Analysis
+// rejects the call: `run`, or something it calls, names the variable it is
+// called on (owner's decision of 2026-11-20; before it the interpreter
+// stopped at run time and compiled code refused the program).
 struct V { x: t64 }
 top: V = V { x: 1 }
 fnc: t64 poke() {

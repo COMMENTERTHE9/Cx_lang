@@ -78,7 +78,7 @@ own error); compiled code used to answer differently or crash.
 
 ## 3. Fixtures that are compiled-code SKIPs because of the above
 
-Twenty-two fixtures added by this work, and one that existed before it, pin
+Twenty-one fixtures added by this work, and one that existed before it, pin
 the interpreter's answer for a program compiled code refuses. They are counted
 as SKIP by the parity harness, never as PASS. One further fixture is counted
 as SKIP for a reason that is not a refusal, and is listed last.
@@ -95,7 +95,6 @@ as SKIP for a reason that is not a refusal, and is listed last.
 | `t_generic_local_result` | R5 |
 | `t_generic_array_literal_element_that_does_not_fit` | D5 |
 | `t_generic_local_keeps_its_type` | — the interpreter stops with a type mismatch; refusing is the matching outcome |
-| `t_receiver_variable_reached_by_name` | — the interpreter stops with a run-time error (a receiver's variable reached by its own name, known-issues §76h); compiled code refuses the program, as it did on `submain`, because a function names a top-level struct |
 | `t_print_struct_field_order`, `t_assert_eq_char`, `t_generic_local_char_handle_unknown`, `t_generic_local_raw_unknown`, `t_result_value_branch_with_err` | — forms compiled code has never lowered (a struct print, `char`, a printed handle, an unknown bool argument, a bare `?` passed for a type parameter, an `if`/`when` value whose branches are a `Result<t8>` and an Err); listed so the count adds up |
 | `t_result_copy_free_of_err_only_variable` | — **not a refusal.** Both backends run it and agree. The harness counts a run that writes to stderr as SKIP, and `.copy.free` prints its deprecation warning there |
 
@@ -104,11 +103,14 @@ R4 and R5 are pinned by unit tests in `src/ir/lower.rs`
 interpreter's answer, but only a unit test can assert that compiled code
 refuses and why.
 
-Totals at the top of the stack (`backend/value-alias-semantics`): 763
-fixtures, 691 PASS, 72 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
-PASS, 48 SKIP. Of the 24 additional SKIPs, 22 are fixtures this work added to
+Totals at the top of the stack (`backend/value-alias-semantics`): 766
+fixtures, 695 PASS, 71 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
+PASS, 48 SKIP. Of the 23 additional SKIPs, 21 are fixtures this work added to
 pin the interpreter's answer where compiled code refuses, one is
 `t_literal_hint_ok_payload`, and one is the `.copy.free` fixture above.
+(`t_receiver_variable_reached_by_name` was a SKIP until 2026-11-20; a method
+that can reach its receiver's variable by name is now an analysis error on
+both backends.)
 
 **Nothing in the value-and-alias amendment (known-issues §76) is a new
 refusal.** Its rules are analysis errors on both backends, fixes to compiled

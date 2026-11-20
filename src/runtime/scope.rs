@@ -548,7 +548,10 @@ mod lent_receiver_tests {
         let id = resolver::ModuleId(0);
         let file = resolver::ResolvedFile { id, path: "lent_test.cx".into(),
             program: resolver::parse_source(source).unwrap_or_else(|error| panic!("{error}: {source}")), imports: vec![] };
-        let program = semantic::analyze_resolved_program(&resolver::ResolvedProgram {
+        // Analysis rejects these programs itself now (`receiver_access`); the
+        // run-time check tested here is the second line behind it, so it is
+        // reached by leaving that rule out.
+        let program = semantic::analyze_resolved_program_without_receiver_rule(&resolver::ResolvedProgram {
             entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id],
         }).expect("analyzes");
         let mut rt = RunTime::new();
