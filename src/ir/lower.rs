@@ -1323,6 +1323,12 @@ impl ActiveBlock {
         self.block.id()
     }
 
+    /// Give the block one more parameter. Only for a block no jump has been
+    /// built to yet: every edge into it must pass the argument.
+    fn add_param(&mut self, param: BlockParam) {
+        self.block.push_param(param);
+    }
+
     fn emit(&mut self, inst: IrInst) -> Result<(), LoweringError> {
         if self.terminated {
             return Err(LoweringError::InternalInvariantViolation {
@@ -2895,7 +2901,6 @@ fn lower_if_else(
         else_body,
         ctx,
         current,
-        &incoming,
         spec,
         loop_ctx,
     )?;
@@ -2914,7 +2919,6 @@ fn lower_if_chain(
     else_body: Option<&[SemanticStmt]>,
     ctx: &mut LoweringCtx,
     mut decision_block: ActiveBlock,
-    incoming: &BindingMap,
     spec: &FunctionLoweringSpec,
     loop_ctx: &[LoopContext],
 ) -> Result<Vec<ActiveBlock>, LoweringError> {
@@ -2925,26 +2929,34 @@ fn lower_if_chain(
     let cond = guard_unknown_condition(cond, ctx, &mut decision_block)?;
     ensure_type_match("if condition", IrType::Bool, cond.ty.clone())?;
 
-    let then_active = ctx.start_block(vec![], incoming.clone());
+    // Both branches start from the variables as the condition left them.
+    // Evaluating a condition can change one — a `.copy` argument is written
+    // back when its call returns — and the branches used to start from the
+    // bindings captured before the condition was lowered, so the body read
+    // the value from before the call (known-issues §57b; amendment V6).
+    let after_condition = decision_block.bindings.clone();
+
+    let then_active = ctx.start_block(vec![], after_condition.clone());
     let then_block_id = then_active.id();
+    let else_active = ctx.start_block(vec![], after_condition);
+    let else_block_id = else_active.id();
 
+    decision_block.terminate(IrTerminator::Branch {
+        cond: cond.value,
+        then_block: then_block_id,
+        then_args: vec![],
+        else_block: else_block_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(decision_block)?;
+
+    let mut fallthroughs = Vec::new();
+    if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
+        fallthroughs.push(active);
+    }
     if let Some((next_arm, remaining_else_ifs)) = else_ifs.split_first() {
-        let else_active = ctx.start_block(vec![], incoming.clone());
-        let else_block_id = else_active.id();
-
-        decision_block.terminate(IrTerminator::Branch {
-            cond: cond.value,
-            then_block: then_block_id,
-            then_args: vec![],
-            else_block: else_block_id,
-            else_args: vec![],
-        })?;
-        ctx.seal_block(decision_block)?;
-
-        let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
-            fallthroughs.push(active);
-        }
+        // An `else if` is decided in the else block, and its own branches
+        // start from what its own condition left.
         fallthroughs.extend(lower_if_chain(
             &next_arm.0,
             &next_arm.1,
@@ -2952,28 +2964,10 @@ fn lower_if_chain(
             else_body,
             ctx,
             else_active,
-            incoming,
             spec,
             loop_ctx,
         )?);
-        Ok(fallthroughs)
     } else {
-        let else_active = ctx.start_block(vec![], incoming.clone());
-        let else_block_id = else_active.id();
-
-        decision_block.terminate(IrTerminator::Branch {
-            cond: cond.value,
-            then_block: then_block_id,
-            then_args: vec![],
-            else_block: else_block_id,
-            else_args: vec![],
-        })?;
-        ctx.seal_block(decision_block)?;
-
-        let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
-            fallthroughs.push(active);
-        }
         let else_result = if let Some(else_body) = else_body {
             lower_scoped_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec, loop_ctx)?
         } else {
@@ -2982,8 +2976,8 @@ fn lower_if_chain(
         if let Some(active) = else_result {
             fallthroughs.push(active);
         }
-        Ok(fallthroughs)
     }
+    Ok(fallthroughs)
 }
 
 fn merge_fallthroughs(
@@ -3119,7 +3113,7 @@ fn lower_while(
         entry_args.push(val.value);
     }
 
-    let mut header = ctx.start_block(header_params, header_bindings.clone());
+    let mut header = ctx.start_block(header_params, header_bindings);
     let header_id = header.id();
 
     let mut current = current;
@@ -3147,7 +3141,11 @@ fn lower_while(
     // a condition is not decided here.
     ensure_type_match("while condition", IrType::Bool, cond_val.ty.clone())?;
 
-    let body_block = ctx.start_block(vec![], header_bindings.clone());
+    // The body starts from the variables as the condition left them — the
+    // exit edge below already does. A `.copy` write-back made while the
+    // condition was evaluated was lost to the body, which read the header's
+    // own parameters (known-issues §57b; amendment V6).
+    let body_block = ctx.start_block(vec![], header.bindings.clone());
     let body_id = body_block.id();
 
     let mut exit_params = Vec::new();
@@ -4973,7 +4971,7 @@ fn lower_logical(
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
     ensure_type_match("logical result", IrType::Bool, lower_type(result_ty)?)?;
-    let incoming = active.bindings.clone();
+    let scope = active.bindings.clone();
 
     // Evaluate the left operand in the current (decision) block.
     let lhs_val = lower_expr(lhs, ctx, active)?;
@@ -4992,21 +4990,27 @@ fn lower_logical(
     }
     ensure_type_match("logical lhs", IrType::Bool, lhs_val.ty.clone())?;
 
+    // Everything after the left operand starts from the variables as it left
+    // them: it has been evaluated on every path. These blocks used to start
+    // from the bindings captured before it, which dropped a `.copy`
+    // write-back made in the left operand (amendment V6).
+    let after_lhs = active.bindings.clone();
+
     // Block that evaluates the right operand (reached when short-circuit does not fire).
-    let mut rhs_active = ctx.start_block(vec![], incoming.clone());
+    let mut rhs_active = ctx.start_block(vec![], after_lhs.clone());
     let rhs_block_id = rhs_active.id();
 
     // Block that produces the short-circuit constant (reached when lhs settles the result).
-    let mut sc_active = ctx.start_block(vec![], incoming.clone());
+    let mut sc_active = ctx.start_block(vec![], after_lhs.clone());
     let sc_block_id = sc_active.id();
 
-    // Merge block receives the Bool result from whichever path ran.
+    // Merge block receives the Bool result from whichever path ran, and the
+    // variables the right operand changed (`join_value_paths`).
     let result_param = ctx.fresh_value();
     let merge_block = ctx.start_block(
         vec![BlockParam { value: result_param, ty: IrType::Bool, read_only: false }],
-        incoming,
+        after_lhs,
     );
-    let merge_id = merge_block.id();
 
     // AND: true lhs → evaluate rhs; false lhs → short-circuit to false.
     // OR:  true lhs → short-circuit to true; false lhs → evaluate rhs.
@@ -5028,16 +5032,11 @@ fn lower_logical(
     let old_active = std::mem::replace(active, merge_block);
     ctx.seal_block(old_active)?;
 
-    // Lower the right operand and jump to merge with its value.
+    // Lower the right operand; it arrives at the merge with its value.
     let rhs_val = lower_expr(rhs, ctx, &mut rhs_active)?;
     ensure_type_match("logical rhs", IrType::Bool, rhs_val.ty.clone())?;
-    rhs_active.terminate(IrTerminator::Jump {
-        target: merge_id,
-        args: vec![rhs_val.value],
-    })?;
-    ctx.seal_block(rhs_active)?;
 
-    // Emit the short-circuit constant and jump to merge.
+    // Emit the short-circuit constant.
     // AND short-circuits to false (0); OR short-circuits to true (1).
     let sc_const: i128 = match op {
         Op::And => 0,
@@ -5046,13 +5045,92 @@ fn lower_logical(
     };
     let sc_dst = ctx.fresh_value();
     sc_active.emit(IrInst::ConstInt { dst: sc_dst, ty: IrType::Bool, value: sc_const })?;
-    sc_active.terminate(IrTerminator::Jump {
-        target: merge_id,
-        args: vec![sc_dst],
-    })?;
-    ctx.seal_block(sc_active)?;
+
+    join_value_paths(
+        vec![
+            Arrival { block: rhs_active, value: rhs_val.value },
+            Arrival { block: sc_active, value: sc_dst },
+        ],
+        active,
+        &scope,
+        ctx,
+    )?;
 
     Ok(LoweredValue { value: result_param, ty: IrType::Bool })
+}
+
+/// One path into the merge of a value-producing `if`, `when`, `&&` or `||`:
+/// the block it comes from, not yet terminated, and the value it yields.
+struct Arrival {
+    block: ActiveBlock,
+    value: ValueId,
+}
+
+/// Join the paths of a value-producing `if`, `when`, `&&` or `||` at `merge`.
+///
+/// `merge` is the block the caller continues in. It was created with one
+/// parameter, the result, and nothing jumps to it yet. Every path passes its
+/// value — and, for each variable of `scope` that the paths do not agree on,
+/// that variable's value, which the merge takes as a further parameter. `scope`
+/// is the variables that existed before the construct: the ones a change made
+/// on one path has to outlive.
+///
+/// Without the second part a change made on a conditionally evaluated path was
+/// dropped: the merge carried on with the bindings from before the construct.
+/// A `.copy` argument is written back when its call returns, so
+/// `x = if c { inc(n.copy) } else { 0 }` and `b = c && inc(n.copy) > 0` left
+/// `n` as it had been, and so did an assignment in a branch of a function's
+/// trailing `if`/`else` (known-issues §69f; amendment V6). The statement forms
+/// have always merged this way (`merge_fallthroughs`).
+fn join_value_paths(
+    arrivals: Vec<Arrival>,
+    merge: &mut ActiveBlock,
+    scope: &BindingMap,
+    ctx: &mut LoweringCtx,
+) -> Result<(), LoweringError> {
+    let mut bindings: Vec<BindingId> = scope.keys().copied().collect();
+    bindings.sort_by_key(|binding| binding.0);
+
+    let mut carried: Vec<BindingId> = Vec::new();
+    for binding in bindings {
+        let mut values = Vec::with_capacity(arrivals.len());
+        for arrival in &arrivals {
+            let value = arrival.block.bindings.get(&binding).cloned().ok_or_else(|| {
+                LoweringError::InternalInvariantViolation {
+                    detail: format!("binding {} missing from a value branch at its merge", binding.0),
+                }
+            })?;
+            values.push(value);
+        }
+        // No path reaches the merge: it keeps the bindings it was made with.
+        let Some(first) = values.first().cloned() else { continue };
+        if values.iter().all(|value| *value == first) {
+            merge.bindings.insert(binding, first);
+            continue;
+        }
+        if values.iter().any(|value| value.ty != first.ty) {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "an if/when/&&/|| value whose branches leave a variable in different representations".to_string(),
+            });
+        }
+        let param = ctx.fresh_value();
+        merge.add_param(BlockParam { value: param, ty: first.ty.clone(), read_only: false });
+        merge.bindings.insert(binding, LoweredValue { value: param, ty: first.ty });
+        carried.push(binding);
+    }
+
+    let merge_id = merge.id();
+    for mut arrival in arrivals {
+        let mut args = Vec::with_capacity(1 + carried.len());
+        args.push(arrival.value);
+        for binding in &carried {
+            // Present: checked for every arrival above.
+            args.push(arrival.block.bindings[binding].value);
+        }
+        arrival.block.terminate(IrTerminator::Jump { target: merge_id, args })?;
+        ctx.seal_block(arrival.block)?;
+    }
+    Ok(())
 }
 
 /// Emit `lhs <op> rhs` at `ty` for arithmetic written in the program — the one
@@ -5345,183 +5423,194 @@ fn lower_when_stmt(
     spec: &FunctionLoweringSpec,
     loop_ctx: &[LoopContext],
 ) -> Result<Option<ActiveBlock>, LoweringError> {
-    let incoming = current.bindings.clone();
+    // The variables in scope before the `when`: the ones its merge carries.
+    let scope = current.bindings.clone();
     let scrutinee_val = lower_expr(scrutinee, ctx, &mut current)?;
 
     let mut fallthroughs: Vec<ActiveBlock> = Vec::new();
     let outer_names = ctx.binding_names.clone();
 
+    // The block in which the next arm is tried; `None` once an arm has been
+    // lowered after which nothing is reached.
+    let mut chain = Some(current);
     for arm in arms.iter() {
-        // A whole-scrutinee `as v` binding is a pure SSA-level alias: the
-        // scrutinee's already-lowered tag value is reused under the arm's
-        // BindingId, scoped to this arm's body block only (enums are
-        // tag-only, so there is no separate value to compute).
-        let mut body_incoming = incoming.clone();
+        let Some(current) = chain.take() else { break };
         ctx.binding_names = outer_names.clone();
-        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
-            body_incoming.insert(*id, scrutinee_val.clone());
-            ctx.binding_names.insert(name.clone(), *id);
-            ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
-            ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
+        let (body_block, next) = enter_when_arm(arm, scrutinee, &scrutinee_val, current, ctx)?;
+        if let Some(active) = lower_scoped_stmt_sequence(
+            arm.body.iter(),
+            ctx,
+            Some(body_block),
+            spec,
+            loop_ctx,
+        )? {
+            fallthroughs.push(active);
         }
-        let body_block = ctx.start_block(vec![], body_incoming.clone());
-        let body_id = body_block.id();
-
-        match &arm.pattern {
-            SemanticWhenPattern::Catchall => {
-                match &arm.guard {
-                    None => {
-                        current.terminate(IrTerminator::Jump {
-                            target: body_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                        // Arms after Catchall are unreachable — we don't allocate
-                        // their body blocks. Merge whatever fallthroughs we have.
-                        return match fallthroughs.len() {
-                            0 => Ok(None),
-                            1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
-                            _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
-                        };
-                    }
-                    Some(guard_expr) => {
-                        // A guarded catch-all can fail too — it's the terminal
-                        // arm, so its "keep trying" continuation is exactly the
-                        // same "no arm matched" tail the unguarded exhaustion
-                        // fallthrough below already produces (out of scope to
-                        // improve that tail behavior here).
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current.terminate(IrTerminator::Jump {
-                            target: guard_block_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        let no_match = ctx.start_block(vec![], incoming.clone());
-                        let no_match_id = no_match.id();
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: no_match_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                        fallthroughs.push(no_match);
-                        return match fallthroughs.len() {
-                            0 => Ok(None),
-                            1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
-                            _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
-                        };
-                    }
-                }
+        match next {
+            // An unguarded catch-all: arms after it are unreachable.
+            None => {}
+            // A guarded catch-all can fail too — it's treated as the terminal
+            // arm, so its "keep trying" continuation is the same "no arm
+            // matched" tail the exhaustion fallthrough below produces.
+            Some(next) if matches!(arm.pattern, SemanticWhenPattern::Catchall) => {
+                fallthroughs.push(next);
             }
-            // Literal / Range / EnumVariant share one comparison emitter (D1.2a);
-            // the stmt mechanism (fallthrough collection) stays local here.
-            _ => {
-                match &arm.guard {
-                    None => {
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            body_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                    }
-                    Some(guard_expr) => {
-                        // Redirect the pattern-match's "then" target to an
-                        // intermediate guard block (seeded with the same
-                        // bindings as the body, so `as v` is visible to the
-                        // guard) instead of the real body block. The guard's
-                        // "false" edge reuses `current.id()` — the exact same
-                        // "try the next arm" continuation the pattern-mismatch
-                        // else-edge already produces.
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            guard_block_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        let next_id = current.id();
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: next_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                    }
-                }
-            }
+            Some(next) => chain = Some(next),
         }
     }
+    ctx.binding_names = outer_names;
 
-    // Loop completed without a Catchall: `current` is the tail "no arm matched"
-    // block. It falls through to the merge as if it were a no-op arm body.
-    fallthroughs.push(current);
+    // Loop completed without a Catchall: the chain's last block is the tail
+    // "no arm matched" block. It falls through to the merge as if it were a
+    // no-op arm body.
+    fallthroughs.extend(chain);
 
     match fallthroughs.len() {
         0 => Ok(None),
         1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
-        _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
+        _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &scope)?)),
     }
+}
+
+/// Emit one `when` arm's test — its pattern, then its guard — starting in
+/// `current`, the block the arms before it fall through to.
+///
+/// Returns the block the arm's body starts in, and the block in which the next
+/// arm is tried: `None` for an unguarded catch-all, after which nothing is.
+///
+/// Every block starts from the variables as the tests before it left them,
+/// which is `current`'s bindings, not the bindings from before the `when`:
+/// the scrutinee has been evaluated by then, and so may an earlier arm's
+/// guard have been. A `.copy` argument is written back when its call returns,
+/// and both used to be lost (known-issues §57b; amendment V6).
+///
+/// A whole-scrutinee `as v` binding is a pure SSA-level alias: the scrutinee's
+/// already-lowered tag value is reused under the arm's BindingId, scoped to
+/// this arm's guard and body only (enums are tag-only, so there is no separate
+/// value to compute).
+fn enter_when_arm(
+    arm: &SemanticWhenArm,
+    scrutinee: &SemanticExpr,
+    scrutinee_val: &LoweredValue,
+    mut current: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<(ActiveBlock, Option<ActiveBlock>), LoweringError> {
+    let chain = current.bindings.clone();
+    let mut body_incoming = chain.clone();
+    if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
+        body_incoming.insert(*id, scrutinee_val.clone());
+        ctx.binding_names.insert(name.clone(), *id);
+        ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
+        ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
+    }
+    let catchall = matches!(arm.pattern, SemanticWhenPattern::Catchall);
+
+    let Some(guard_expr) = &arm.guard else {
+        let body = ctx.start_block(vec![], body_incoming);
+        if catchall {
+            current.terminate(IrTerminator::Jump { target: body.id(), args: vec![] })?;
+            ctx.seal_block(current)?;
+            return Ok((body, None));
+        }
+        // Literal / Range / EnumVariant share one comparison emitter (D1.2a).
+        let next = emit_when_arm_match(&arm.pattern, scrutinee, scrutinee_val, body.id(), &chain, current, ctx)?;
+        return Ok((body, Some(next)));
+    };
+
+    // The pattern's match leads to an intermediate guard block, seeded with
+    // the same bindings the body would have had (so `as v` is visible to the
+    // guard) instead of to the body.
+    let mut guard_block = ctx.start_block(vec![], body_incoming);
+    let next = if catchall {
+        current.terminate(IrTerminator::Jump { target: guard_block.id(), args: vec![] })?;
+        ctx.seal_block(current)?;
+        ctx.start_block(vec![], chain)
+    } else {
+        emit_when_arm_match(&arm.pattern, scrutinee, scrutinee_val, guard_block.id(), &chain, current, ctx)?
+    };
+
+    let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
+    let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
+    ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
+
+    // The body runs after the guard, on the variables as the guard left them.
+    let body = ctx.start_block(vec![], guard_block.bindings.clone());
+    let next = guard_falls_through(guard_block, guard_val.value, body.id(), next, ctx)?;
+    Ok((body, Some(next)))
+}
+
+/// Finish a guard: branch to the arm's body when it holds, and on to the next
+/// arm's test when it does not.
+///
+/// `next` is the block the next arm is tried in. So far it is reached only by
+/// this arm's pattern not matching, in which case the guard did not run. If
+/// the guard changed no variable, its failing edge goes straight there. If it
+/// did, the two ways of reaching the next arm disagree about that variable, so
+/// both go through a join block that takes it as a parameter, and the chain
+/// continues there.
+fn guard_falls_through(
+    mut guard_block: ActiveBlock,
+    guard: ValueId,
+    body_id: crate::ir::types::BlockId,
+    mut next: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<ActiveBlock, LoweringError> {
+    let mut changed: Vec<BindingId> = next
+        .bindings
+        .iter()
+        .filter(|(binding, value)| guard_block.bindings.get(*binding) != Some(*value))
+        .map(|(binding, _)| *binding)
+        .collect();
+    changed.sort_by_key(|binding| binding.0);
+
+    if changed.is_empty() {
+        guard_block.terminate(IrTerminator::Branch {
+            cond: guard,
+            then_block: body_id,
+            then_args: vec![],
+            else_block: next.id(),
+            else_args: vec![],
+        })?;
+        ctx.seal_block(guard_block)?;
+        return Ok(next);
+    }
+
+    let mut params = Vec::with_capacity(changed.len());
+    let mut joined = next.bindings.clone();
+    let mut from_next = Vec::with_capacity(changed.len());
+    let mut from_guard = Vec::with_capacity(changed.len());
+    for binding in &changed {
+        let before = next.bindings[binding].clone();
+        let after = guard_block.bindings.get(binding).cloned().ok_or_else(|| {
+            LoweringError::InternalInvariantViolation {
+                detail: format!("binding {} missing after a when guard", binding.0),
+            }
+        })?;
+        if after.ty != before.ty {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "a when guard that leaves a variable in a different representation".to_string(),
+            });
+        }
+        let value = ctx.fresh_value();
+        params.push(BlockParam { value, ty: before.ty.clone(), read_only: false });
+        joined.insert(*binding, LoweredValue { value, ty: before.ty });
+        from_next.push(before.value);
+        from_guard.push(after.value);
+    }
+    let join = ctx.start_block(params, joined);
+    let join_id = join.id();
+
+    next.terminate(IrTerminator::Jump { target: join_id, args: from_next })?;
+    ctx.seal_block(next)?;
+    guard_block.terminate(IrTerminator::Branch {
+        cond: guard,
+        then_block: body_id,
+        then_args: vec![],
+        else_block: join_id,
+        else_args: from_guard,
+    })?;
+    ctx.seal_block(guard_block)?;
+    Ok(join)
 }
 
 /// Emit the comparison CFG for one non-catchall `when` arm (tracker D1.2a) — the
@@ -5842,10 +5931,12 @@ fn lower_when_expr(
     } else {
         lower_type(result_ty)?
     };
-    let incoming = active.bindings.clone();
+    // The variables in scope before the `when`: the ones its merge carries.
+    let scope = active.bindings.clone();
     let scrutinee_val = lower_expr(scrutinee, ctx, active)?;
 
-    // Merge block: single block parameter typed as the result.
+    // Merge block: one block parameter typed as the result, to which
+    // `join_value_paths` adds one for each variable the arms disagree on.
     let result_param = ctx.fresh_value();
     let merge_block = ctx.start_block(
         vec![BlockParam {
@@ -5853,153 +5944,50 @@ fn lower_when_expr(
             ty: result_ir_ty.clone(),
             read_only: false,
         }],
-        incoming.clone(),
+        active.bindings.clone(),
     );
-    let merge_id = merge_block.id();
 
     // Swap caller's `*active` to be the merge block up front. The chain is
-    // built in `current` (a local), starting from what was originally `*active`.
-    let mut current = std::mem::replace(active, merge_block);
+    // built in blocks of its own, starting from what was originally `*active`.
+    let current = std::mem::replace(active, merge_block);
 
     // Each arm body lowers to a value via the shared `lower_branch_value`
     // (extracted in D2.1 so if-expr branches reuse the same merge machinery —
-    // leading stmts via the void path, trailing ExprStmt as the value, Jump to
-    // merge with `ensure_type_match`). This thin wrapper keeps the per-arm call
-    // sites unchanged, so the `when`-expr emitted IR is byte-identical.
-    let lower_arm_body =
-        |ctx: &mut LoweringCtx, body_active: ActiveBlock, arm: &SemanticWhenArm|
-         -> Result<(), LoweringError> {
-            lower_branch_value(&arm.body, result_ty, &result_ir_ty, merge_id, body_active, ctx)
-        };
-
+    // leading stmts via the void path, trailing ExprStmt as the value).
+    let mut arrivals: Vec<Arrival> = Vec::new();
     let outer_names = ctx.binding_names.clone();
+    let mut chain = Some(current);
     for arm in arms.iter() {
+        let Some(current) = chain.take() else { break };
         ctx.binding_names = outer_names.clone();
-        // Same whole-scrutinee alias as the statement form — see the comment
-        // in `lower_when_stmt`.
-        let mut body_incoming = incoming.clone();
-        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
-            body_incoming.insert(*id, scrutinee_val.clone());
-            ctx.binding_names.insert(name.clone(), *id);
-            ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
-            ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
-        }
-        let body_block = ctx.start_block(vec![], body_incoming.clone());
-        let body_id = body_block.id();
-
-        match &arm.pattern {
-            SemanticWhenPattern::Catchall => {
-                match &arm.guard {
-                    None => {
-                        current.terminate(IrTerminator::Jump {
-                            target: body_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-                        lower_arm_body(ctx, body_block, arm)?;
-                        // Arms after Catchall are unreachable.
-                        return Ok(LoweredValue {
-                            value: result_param,
-                            ty: result_ir_ty,
-                        });
-                    }
-                    Some(guard_expr) => {
-                        // A guarded catch-all can fail too. A value-producing
-                        // `when` must be exhaustive, so its "keep trying"
-                        // path has no value to supply the merge — Trap, the
-                        // exact same tail behavior the unguarded exhaustion
-                        // fallthrough below already produces.
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current.terminate(IrTerminator::Jump {
-                            target: guard_block_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        let mut no_match = ctx.start_block(vec![], incoming.clone());
-                        let no_match_id = no_match.id();
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: no_match_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        lower_arm_body(ctx, body_block, arm)?;
-
-                        no_match.terminate(IrTerminator::Trap)?;
-                        ctx.seal_block(no_match)?;
-
-                        return Ok(LoweredValue {
-                            value: result_param,
-                            ty: result_ir_ty,
-                        });
-                    }
-                }
+        let (body_block, next) = enter_when_arm(arm, scrutinee, &scrutinee_val, current, ctx)?;
+        arrivals.extend(lower_branch_value(&arm.body, result_ty, &result_ir_ty, body_block, ctx)?);
+        match next {
+            // An unguarded catch-all: arms after it are unreachable.
+            None => {}
+            // A guarded catch-all can fail too. A value-producing `when` must
+            // be exhaustive, so its "keep trying" path has no value to supply
+            // the merge — Trap, the same tail behavior the exhaustion
+            // fallthrough below produces.
+            Some(mut no_match) if matches!(arm.pattern, SemanticWhenPattern::Catchall) => {
+                no_match.terminate(IrTerminator::Trap)?;
+                ctx.seal_block(no_match)?;
             }
-            // Literal / Range / EnumVariant share one comparison emitter (D1.2a);
-            // the expr mechanism (value-producing arm body -> merge) stays local.
-            _ => {
-                match &arm.guard {
-                    None => {
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            body_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        lower_arm_body(ctx, body_block, arm)?;
-                    }
-                    Some(guard_expr) => {
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            guard_block_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        let next_id = current.id();
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: next_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        lower_arm_body(ctx, body_block, arm)?;
-                    }
-                }
-            }
+            Some(next) => chain = Some(next),
         }
     }
+    ctx.binding_names = outer_names;
 
     // Loop completed without Catchall: a value-producing when must be
     // exhaustive. The tail block has no arm value to supply to the merge.
     // Emit Trap on the no-arm-matched path so reaching it is a runtime abort
     // rather than passing an undefined value to the merge.
-    current.terminate(IrTerminator::Trap)?;
-    ctx.seal_block(current)?;
+    if let Some(mut tail) = chain {
+        tail.terminate(IrTerminator::Trap)?;
+        ctx.seal_block(tail)?;
+    }
+
+    join_value_paths(arrivals, active, &scope, ctx)?;
 
     Ok(LoweredValue {
         value: result_param,
@@ -6008,22 +5996,24 @@ fn lower_when_expr(
 }
 
 /// Lower a value-producing branch body — a `when`-expr arm or an if-expr branch
-/// (tracker D2.1) — and `Jump` to `merge_id` with its value. Leading statements
-/// lower via the void path; the trailing `ExprStmt` is the branch value, type-
-/// checked against the expression's type `result_ty` (see `branch_value_fits`)
-/// and its IR type `result_ir_ty`. If the body diverges before the trailing
-/// expression (a leading stmt that never returns control), no merge edge is
-/// added — that branch simply contributes nothing to the merge.
+/// (tracker D2.1) — to the path it arrives at the merge by: the block it ends
+/// in, not yet terminated, and its value. The caller joins the paths
+/// (`join_value_paths`), which is where the merge learns which variables a
+/// branch changed. Leading statements lower via the void path; the trailing
+/// `ExprStmt` is the branch value, type-checked against the expression's type
+/// `result_ty` (see `branch_value_fits`) and its IR type `result_ir_ty`. If the
+/// body diverges before the trailing expression (a leading stmt that never
+/// returns control), there is no arrival — that branch simply contributes
+/// nothing to the merge.
 fn lower_branch_value(
     body: &[SemanticStmt],
     result_ty: &SemanticType,
     result_ir_ty: &IrType,
-    merge_id: crate::ir::types::BlockId,
     body_active: ActiveBlock,
     ctx: &mut LoweringCtx,
-) -> Result<(), LoweringError> {
+) -> Result<Option<Arrival>, LoweringError> {
     let names = ctx.binding_names.clone();
-    let result = lower_branch_value_inner(body, result_ty, result_ir_ty, merge_id, body_active, ctx);
+    let result = lower_branch_value_inner(body, result_ty, result_ir_ty, body_active, ctx);
     ctx.binding_names = names;
     result
 }
@@ -6032,10 +6022,9 @@ fn lower_branch_value_inner(
     body: &[SemanticStmt],
     result_ty: &SemanticType,
     result_ir_ty: &IrType,
-    merge_id: crate::ir::types::BlockId,
     mut body_active: ActiveBlock,
     ctx: &mut LoweringCtx,
-) -> Result<(), LoweringError> {
+) -> Result<Option<Arrival>, LoweringError> {
     if body.is_empty() {
         return Err(LoweringError::InternalInvariantViolation {
             detail: "value-producing branch body is empty".to_string(),
@@ -6056,7 +6045,7 @@ fn lower_branch_value_inner(
         let result = lower_stmt(stmt, ctx, body_active, &inline_spec, &[])?;
         body_active = match result {
             Some(active) => active,
-            None => return Ok(()), // diverged — no merge edge
+            None => return Ok(None), // diverged — no merge edge
         };
     }
     let trailing_expr = match &body[last_idx] {
@@ -6089,12 +6078,7 @@ fn lower_branch_value_inner(
     }
     let value = lower_expr(trailing_expr, ctx, &mut body_active)?;
     ensure_type_match("branch result", result_ir_ty.clone(), value.ty)?;
-    body_active.terminate(IrTerminator::Jump {
-        target: merge_id,
-        args: vec![value.value],
-    })?;
-    ctx.seal_block(body_active)?;
-    Ok(())
+    Ok(Some(Arrival { block: body_active, value: value.value }))
 }
 
 /// Lower an `if`-EXPRESSION to a value (tracker D2.1, #046). Structurally a
@@ -6196,7 +6180,8 @@ fn lower_if_expr(
     } else {
         lower_type(result_ty)?
     };
-    let incoming = active.bindings.clone();
+    // The variables in scope before the `if`: the ones its merge carries.
+    let scope = active.bindings.clone();
 
     // Lower the condition in the decision block (current `active`).
     let cond = lower_expr(condition, ctx, active)?;
@@ -6204,18 +6189,22 @@ fn lower_if_expr(
     // No-op for a definite Bool condition; narrows a definite TBool to Bool.
     let cond = guard_unknown_condition(cond, ctx, active)?;
 
-    // Merge block carries the single result block parameter.
+    // Both branches, and the merge, start from the variables as the condition
+    // left them (amendment V6).
+    let after_condition = active.bindings.clone();
+
+    // Merge block carries the result block parameter, to which
+    // `join_value_paths` adds one for each variable the branches disagree on.
     let result_param = ctx.fresh_value();
     let merge_block = ctx.start_block(
         vec![BlockParam { value: result_param, ty: result_ir_ty.clone(), read_only: false }],
-        incoming.clone(),
+        after_condition.clone(),
     );
-    let merge_id = merge_block.id();
 
     // then / else branch blocks.
-    let then_block = ctx.start_block(vec![], incoming.clone());
+    let then_block = ctx.start_block(vec![], after_condition.clone());
     let then_id = then_block.id();
-    let else_block = ctx.start_block(vec![], incoming.clone());
+    let else_block = ctx.start_block(vec![], after_condition);
     let else_id = else_block.id();
 
     // Terminate + seal the decision block FIRST (seal-order rule): the branch
@@ -6230,9 +6219,11 @@ fn lower_if_expr(
     let old_active = std::mem::replace(active, merge_block);
     ctx.seal_block(old_active)?;
 
-    // Lower each branch to a value merging into the result param.
-    lower_branch_value(then_body, result_ty, &result_ir_ty, merge_id, then_block, ctx)?;
-    lower_branch_value(else_body, result_ty, &result_ir_ty, merge_id, else_block, ctx)?;
+    // Lower each branch to a value, and join the two at the merge.
+    let mut arrivals: Vec<Arrival> = Vec::new();
+    arrivals.extend(lower_branch_value(then_body, result_ty, &result_ir_ty, then_block, ctx)?);
+    arrivals.extend(lower_branch_value(else_body, result_ty, &result_ir_ty, else_block, ctx)?);
+    join_value_paths(arrivals, active, &scope, ctx)?;
 
     Ok(LoweredValue { value: result_param, ty: result_ir_ty })
 }

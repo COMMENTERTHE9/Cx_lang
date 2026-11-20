@@ -6027,3 +6027,66 @@ Fixtures: `t_number_receiver_written_rejected`,
 `t_number_receiver_passed_as_copy_rejected`, and
 `t_value_receivers_are_not_written_back` (both backends). Unit test
 `a_method_may_not_write_a_receiver_that_is_not_a_struct_or_array`.
+
+### g. A `.copy` write-back, or an assignment, made on the way to a decision was lost in compiled code (§57b, §69f; rule V6)
+
+A `.copy` argument is written back when its call returns. For a number, bool
+or string that write is a new SSA value under the variable's binding, and
+compiled code builds every decision from blocks that each start with a set of
+bindings. Three places took the wrong set:
+
+- **A condition, a scrutinee, a guard.** The branches started from the
+  bindings captured *before* the condition was lowered. `if step(i.copy) {
+  print(i) }` printed the old `i`; a `while` whose condition advanced its
+  variable never saw it advance in the body and **did not terminate**; a
+  guard that ran and failed left no trace for the next arm.
+- **The left operand of `&&` / `||`.** The same, one level down.
+- **A value branch, and the right operand of `&&` / `||`.** Each path jumped
+  to the merge with its value only, and the merge carried on with the
+  bindings from before the whole expression.
+
+```cx
+fnc: t64 inc(n.copy: t64) { n += 7; return 1 }
+n: t64 = 0
+x: t64 = if n == 0 { inc(n.copy) } else { 0 }
+print(n)                         // interpreter 7, JIT 0
+b: bool = inc(n.copy) > 0 && n > 7
+print(n)                         // interpreter 14, JIT 0
+```
+
+The last also lost a plain assignment in a branch of a function's trailing
+`if`/`else`, which is a value: a `.copy` parameter assigned there reached the
+caller on the interpreter only (11 / 1).
+
+**Now** (`src/ir/lower.rs`):
+
+- `lower_if_chain`, `lower_while`, `lower_if_expr` and `lower_logical` start
+  their branch blocks from the bindings the condition or left operand *left*;
+  `lower_when_stmt` and `lower_when_expr` thread the bindings through the
+  chain of arms (`enter_when_arm`), so each test starts from what the
+  scrutinee and the guards before it left.
+- A guard that changed a variable and failed reaches the next arm through a
+  join block that takes the variable as a parameter (`guard_falls_through`):
+  the next arm is also reached by the pattern not matching, when the guard
+  never ran.
+- The paths of a value-producing `if`, `when`, `&&` or `||` are joined by
+  `join_value_paths`, which gives the merge one parameter for the result and
+  one for each variable the paths disagree on — what the statement forms have
+  always done (`merge_fallthroughs`).
+
+Nothing is refused in place of any of this. `t_enum_boundary_valid`, the one
+tracked program with a scalar `.copy` in a value branch, passes as before.
+
+A generator written for this change puts calls that write a `.copy` argument
+back in every one of these positions, nested in each other, at top level and
+inside functions, and reads every variable after every statement: 400
+programs, 392 agreeing, 8 that do not parse, none disagreeing.
+
+Found on the way, not fixed here: a `when` statement whose scrutinee begins
+with a parenthesis — `when (a + 1) % 3 { 0 => print(a), _ => print(3) }` — is
+parsed as a `when` *expression*, and compiled code refuses one whose arms are
+calls to `print` ("SemanticType::Void is not storable"). The interpreter runs
+it. Present on `submain`.
+
+Fixtures: `t_copy_write_back_in_conditions`,
+`t_copy_write_back_in_value_branches` (both backends).
