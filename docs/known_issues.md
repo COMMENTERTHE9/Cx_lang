@@ -3568,13 +3568,13 @@ this entry — `same_element_type`, the `Array` arm of `types_compatible`, and
 **Status: FIXED — by a language decision: arrays have one element type, and
 arrays of different element types do not convert.**
 
-*(2026-11-20: one sentence of this entry is under question. It says an impl's
+*(2026-11-20: one sentence of this entry is superseded. It says an impl's
 extra receivers must have the declared type exactly, "numbers included:
-nothing converted on the way in could be written back". The rule stands. Its
-reason assumes a number receiver is written back, which only the interpreter
-ever did; the value-semantics amendment reads such a receiver as a value, and
-the owner has been asked which reading is the language's. Until then a method
-that writes one is an analysis error — §76f.)*
+nothing converted on the way in could be written back". The owner decided on
+2026-11-20 that a receiver which is not a struct or an array is a value: it is
+never written back, so its argument is converted as an ordinary argument is —
+a `t8` may be given for a `t64` receiver. The exact-type rule stands for
+struct and array receivers. See §76f.)*
 
 ### What happened
 
@@ -6129,7 +6129,7 @@ before this change, 0 of 600 after.
 
 Fixture: `t_receiver_assigned_as_a_whole` (both backends).
 
-### f. A receiver that is not a struct or an array: written back by one backend only, and over a later argument's change (§69b; rule V2 item 4 — HELD for the owner)
+### f. A receiver that is not a struct or an array: written back by one backend only, and over a later argument's change (§69b; rule V2 item 4 — decided 2026-11-20: a value)
 
 ```cx
 num: impl (p: V, k: t64) { fnc: t64 grow(by: t64) { k += 100; p.x += by; return k } }
@@ -6169,18 +6169,27 @@ of the two stands is the owner's call, and it is not made here.
   method did not write is the same under either reading, and the second
   program prints 12 on both backends.
 
-When the owner decides: if a non-aggregate receiver is a value, the error can
-go (the assignment becomes local) and §42's reason and the "passed by
-reference" diagnostic are reworded; if it is to be written back, the error is
-replaced by a write-back in compiled code and V2 item 4 is reversed.
+**Decided by the owner on 2026-11-20: it is a value.** "These types should
+behave as values by default. Passing one as an additional method receiver must
+not unexpectedly modify the caller's variable." The held error is removed:
 
-No tracked method writes a non-aggregate receiver.
+- Inside the method such a receiver is an ordinary local. The method may
+  assign it, compound-assign it and pass it as `.copy`; nothing reaches the
+  caller's variable, on either backend (`n` after `q.grow(n, 1)` is 5; `grow`
+  returns 105).
+- Its argument is checked and converted as an ordinary argument is: a `t8`
+  variable may be given for a `t64` receiver, a `Result<t8>` for a
+  `Result<t64>` one, a literal is range-checked. The exact-type requirement of
+  §42 remains for struct and array receivers, which are passed by reference;
+  its diagnostic now says so ("a struct or array receiver is passed by
+  reference").
 
-Fixtures: `t_number_receiver_written_rejected`,
-`t_result_receiver_written_rejected`,
-`t_number_receiver_passed_as_copy_rejected`, and
-`t_value_receivers_are_not_written_back` (both backends). Unit test
-`a_method_may_not_write_a_receiver_that_is_not_a_struct_or_array`.
+Fixtures: `t_value_receivers_are_locals_of_the_method` (assignment, compound
+assignment, `.copy` inside the method, a loop; number, bool, string, enum and
+`Result` receivers; conversion of the argument) and
+`t_value_receivers_are_not_written_back`, both backends. They replace the
+three fixtures that pinned the held error. Unit test
+`a_receiver_that_is_not_a_struct_or_array_is_an_ordinary_value`.
 
 ### g. A `.copy` write-back, or an assignment, made on the way to a decision was lost in compiled code (§57b, §69f; rule V6)
 

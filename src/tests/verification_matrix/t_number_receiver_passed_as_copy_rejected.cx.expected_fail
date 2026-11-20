@@ -1,2 +1,0 @@
-#! interp=diagnostic jit=diagnostic
-A method that passes a number receiver as .copy: rejected by analysis (amendment V2 item 4, held for the owner).

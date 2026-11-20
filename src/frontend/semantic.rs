@@ -140,16 +140,6 @@ pub struct Analyzer {
     /// id is what `lookup_var` resolves to, so shadowing is handled by
     /// construction.
     readonly_bindings: std::collections::HashSet<BindingId>,
-    /// The receivers of the methods analyzed so far that are **not** a struct
-    /// or an array — a number, bool, char, string, enum, handle or Result
-    /// alias of a multi-receiver `impl`. Such a receiver is a value
-    /// (docs/backend/cx_value_and_alias_semantics.md, V2 item 4), and a method
-    /// may not write one: see [`Analyzer::reject_value_receiver_write`].
-    value_receivers: std::collections::HashSet<BindingId>,
-    /// How many leading parameters of the method about to be analyzed are its
-    /// receivers. Set by the `impl` arm just before `analyze_function`, and
-    /// taken by it, so a function nested in the method does not see it.
-    pending_receivers: usize,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     /// The modules THIS module imports, by the alias it imports each under:
@@ -201,8 +191,6 @@ impl Analyzer {
             current_type_bounds: vec![],
             const_bindings: std::collections::HashSet::new(),
             readonly_bindings: std::collections::HashSet::new(),
-            value_receivers: std::collections::HashSet::new(),
-            pending_receivers: 0,
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -629,37 +617,6 @@ impl Analyzer {
         Ok(())
     }
 
-    /// Reject a write to a receiver that is not a struct or an array.
-    ///
-    /// Such a receiver is a value: the method gets what the argument held at
-    /// its position in the argument list, and nothing is written back
-    /// (amendment V2 item 4). The interpreter used to write it back and
-    /// compiled code never did, so a method that assigned one left the
-    /// caller's variable at 105 on one backend and 5 on the other
-    /// (known-issues §69b).
-    ///
-    /// Why an error rather than a local assignment: an owner-decided text
-    /// (§42) describes these receivers as written back, and the owner has not
-    /// yet confirmed which reading stands. Rejecting the write means no
-    /// program's result depends on the answer — a method that does not write
-    /// such a receiver behaves the same under both readings. When the question
-    /// is settled this check is either dropped (the assignment becomes local)
-    /// or replaced by a write-back on both backends.
-    ///
-    /// Sits beside [`Analyzer::reject_const_assignment`] at the same choke
-    /// points: plain, compound, index and field assignment, a `.copy`
-    /// argument, and the target of `read` / `input`.
-    fn reject_value_receiver_write(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
-        if self.lookup_var(name).is_some_and(|info| self.value_receivers.contains(&info.binding)) {
-            return Err(sem_err!(
-                pos,
-                "cannot write to '{}' — a receiver that is not a struct or an array is a value, so the write would not reach the caller's variable; copy it into a local, or return the new value",
-                name
-            ));
-        }
-        Ok(())
-    }
-
     /// Resolve `receiver.field` to `(struct name, field type)`.
     ///
     /// The single point where a struct's declared field list and a field
@@ -833,9 +790,7 @@ impl Analyzer {
                     // function or variable of the same name — though a method is
                     // called on a value, never by its bare name.
                     self.push_scope();
-                    self.pending_receivers = aliases.len();
                     let analyzed = self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false, true);
-                    self.pending_receivers = 0;
                     self.pop_scope();
                     match analyzed {
                         Ok(SemanticStmt::FuncDef(mut sem_func)) => {
@@ -1046,7 +1001,6 @@ impl Analyzer {
                 if let Some(base) = assign_target_base_name(target) {
                     self.reject_const_assignment(base, *pos_eq)?;
                     self.reject_loop_var_assignment(base, *pos_eq)?;
-                    self.reject_value_receiver_write(base, *pos_eq)?;
                 }
                 let tp = self.current_type_params.clone();
                 // The destination's type is the right side's element-type hint, so
@@ -1641,7 +1595,6 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let base = base.to_string();
                 self.reject_const_assignment(&base, *pos)?;
                 self.reject_loop_var_assignment(&base, *pos)?;
-                self.reject_value_receiver_write(&base, *pos)?;
                 let sem_target = self.resolve_place(target, *pos)?;
                 // Narrow the operand against the target's type when both are
                 // numeric — mirrors the regular assign-to-field narrowing at
@@ -1807,24 +1760,12 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         self.current_type_params = type_params.to_vec();
         self.current_ret_ty = ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params));
 
-        // The leading parameters of an `impl` method are its receivers. One
-        // that is not a struct or an array is a value, and the body may not
-        // write it — `reject_value_receiver_write`.
-        let receivers = std::mem::take(&mut self.pending_receivers);
         let mut resolved_params = Vec::with_capacity(params.len());
-        for (index, param) in params.iter().enumerate() {
+        for param in params {
             match param {
                 ParamKind::Typed(param_name, param_ty) => {
                     let binding =
                         self.declare(param_name, Some(param_ty.clone()), None, true, pos)?;
-                    if index < receivers
-                        && !matches!(
-                            semantic_type_from_decl(param_ty.clone(), type_params),
-                            SemanticType::Struct(_) | SemanticType::Array(..)
-                        )
-                    {
-                        self.value_receivers.insert(binding);
-                    }
                     resolved_params.push(SemanticParam {
                         binding,
                         name: param_name.clone(),
@@ -2814,45 +2755,53 @@ Expr::Unary(op, inner, pos) => {
                                 Some(hint) => self.analyze_expr_with_elem_hint(expr, hint)?,
                                 None => self.analyze_expr(expr)?,
                             };
-                            let sem_expr = if index >= extra_alias_count {
-                                // user-typed arg: narrow against the method's
-                                // declared param type, mirroring the free-fn
-                                // call path (~semantic.rs:1624).
-                                let user_idx = index - extra_alias_count;
+                            // A receiver that is not a struct or an array is a
+                            // value (amendment V2 item 4; owner's decision of
+                            // 2026-11-20): nothing is written back through it,
+                            // so its argument is checked and converted as any
+                            // argument is.
+                            let by_value = index >= extra_alias_count
+                                || !matches!(declared_param, Some(SemanticType::Struct(_) | SemanticType::Array(..)));
+                            let sem_expr = if by_value {
+                                // narrow against the declared type, mirroring
+                                // the free-fn call path (~semantic.rs:1624).
+                                let user_idx = index.saturating_sub(extra_alias_count);
                                 let expected = declared_param;
                                 if let Some(expected) = expected {
                                     check_semantic_num_fits(&sem_expr, &expected, *pos)?;
                                     if !types_compatible(&expected, &sem_expr.ty) {
-                                        return Err(sem_err!(
-                                            *pos,
-                                            "argument {} to method '{}.{}': expected {}, got {}",
-                                            user_idx + 1, instance, method,
-                                            type_name(&expected), type_name(&sem_expr.ty)
-                                        ));
+                                        return Err(if index >= extra_alias_count {
+                                            sem_err!(
+                                                *pos,
+                                                "argument {} to method '{}.{}': expected {}, got {}",
+                                                user_idx + 1, instance, method,
+                                                type_name(&expected), type_name(&sem_expr.ty)
+                                            )
+                                        } else {
+                                            sem_err!(
+                                                *pos,
+                                                "receiver argument {} to method '{}.{}': expected {}, got {}",
+                                                index + 1, instance, method,
+                                                type_name(&expected), type_name(&sem_expr.ty)
+                                            )
+                                        });
                                     }
                                     insert_cast_if_needed(sem_expr, &expected)
                                 } else {
                                     sem_expr
                                 }
                             } else {
-                                // extra-alias (struct receiver-alias) arg:
-                                // pass through, never narrow — it is a receiver,
-                                // passed by reference, so it must have the
-                                // alias's declared type exactly. Unchecked, a
-                                // `[3: t8]` given a `[3: t64]` alias was read at
-                                // t64 width (§42).
+                                // A struct or array receiver: pass through,
+                                // never narrow — it is passed by reference, so
+                                // it must have the receiver's declared type
+                                // exactly. Unchecked, a `[3: t8]` given a
+                                // `[3: t64]` receiver was read at t64 width
+                                // (§42).
                                 match declared_param {
-                                    // A number literal is a value with nothing to
-                                    // write back: range-checked and converted, as
-                                    // an argument is.
-                                    Some(expected) if is_number_literal(&sem_expr) && is_numeric(&expected) => {
-                                        check_semantic_num_fits(&sem_expr, &expected, *pos)?;
-                                        insert_cast_if_needed(sem_expr, &expected)
-                                    }
                                     Some(expected) if !same_element_type(&expected, &sem_expr.ty) => {
                                         return Err(sem_err!(
                                             *pos,
-                                            "receiver argument {} to method '{}.{}': expected {}, got {} — an impl's receivers are passed by reference, so it must have the declared type",
+                                            "receiver argument {} to method '{}.{}': expected {}, got {} — a struct or array receiver is passed by reference, so it must have the declared type",
                                             index + 1, instance, method,
                                             stored_type_name(&expected), stored_type_name(&sem_expr.ty)
                                         ));
@@ -3135,16 +3084,6 @@ Expr::Unary(op, inner, pos) => {
                             let sem_expr = self.analyze_expr(expr)?;
                             semantic_args.push(SemanticCallArg::Expr(sem_expr));
                         }
-                    }
-                    // `read(x)` and `input(p, x)` assign the variable they are
-                    // given: the same write an assignment to it would be.
-                    let assigned = match def.kind {
-                        BuiltinKind::Read => args.first(),
-                        BuiltinKind::Input => args.get(1),
-                        _ => None,
-                    };
-                    if let Some(CallArg::Expr(Expr::Ident(target, _))) = assigned {
-                        self.reject_value_receiver_write(target, pos)?;
                     }
                     if def.kind == BuiltinKind::AssertEq && semantic_args.len() == 2 {
                         let lhs_ty = if let SemanticCallArg::Expr(e) = &semantic_args[0] {
@@ -4524,7 +4463,6 @@ impl Analyzer {
                         // read. Apply the same immutable-target checks as assignment.
                         self.reject_const_assignment(name, pos)?;
                         self.reject_loop_var_assignment(name, pos)?;
-                        self.reject_value_receiver_write(name, pos)?;
                         if copied.contains(&name.as_str()) {
                             return Err(sem_err!(
                                 pos,
@@ -7080,41 +7018,44 @@ print(result + result2)
         }
     }
 
-    /// A receiver that is not a struct or an array is a value, and a method
-    /// may not write one (amendment V2 item 4, held for the owner). Every form
-    /// of write is rejected; reading one, and writing a struct or array
-    /// receiver, are not.
+    /// A receiver that is not a struct or an array is a value (owner's
+    /// decision of 2026-11-20): the method may write it like any local, and
+    /// its argument is checked and converted as an ordinary argument is. A
+    /// struct or array receiver is passed by reference and must have the
+    /// declared type exactly.
     #[test]
-    fn a_method_may_not_write_a_receiver_that_is_not_a_struct_or_array() {
+    fn a_receiver_that_is_not_a_struct_or_array_is_an_ordinary_value() {
         let head = "struct V { x: t64 }\nfnc: t64 inc(n.copy: t64) {\n    n += 7\n    return 1\n}\n";
-        let method = |receiver: &str, body: &str| {
-            format!("{head}vm: impl (p: V, {receiver}) {{\n    fnc: t64 m() {{\n{body}\n        return 1\n    }}\n}}")
+        let method = |receiver: &str, body: &str, call: &str| {
+            format!("{head}vm: impl (p: V, {receiver}) {{\n    fnc: t64 m() {{\n{body}\n        return 1\n    }}\n}}\nq: V = V {{ x: 1 }}\n{call}")
         };
-        for (receiver, body) in [
-            ("k: t64", "        k = 9"),
-            ("k: t64", "        k += 9"),
-            ("k: t64", "        one: t64 = inc(k.copy)"),
-            ("k: t64", "        if p.x > 0 { k = 2 }"),
-            ("on: bool", "        on = false"),
-            ("name: str", "        name = \"other\""),
-            ("name: str", "        read(name)"),
-            ("name: str", "        input(\"? \", name)"),
-            ("r: Result<t64>", "        r = Ok(99)"),
+        for (receiver, body, call) in [
+            ("k: t64", "        k = 9\n        k += 9", "n: t64 = 5\nr: t64 = q.m(n)"),
+            ("k: t64", "        one: t64 = inc(k.copy)", "n: t64 = 5\nr: t64 = q.m(n)"),
+            ("on: bool", "        on = false", "b: bool = true\nr: t64 = q.m(b)"),
+            ("name: str", "        name = \"other\"", "s: str = \"a\"\nr: t64 = q.m(s)"),
+            ("r: Result<t64>", "        r = Ok(99)", "e: Result<t64> = Ok(5)\nx: t64 = q.m(e)"),
+            // Converted as an argument is.
+            ("k: t64", "        k = 9", "n: t8 = 5\nr: t64 = q.m(n)"),
+            ("k: t8", "        k = 9", "r: t64 = q.m(100)"),
+            ("r: Result<t64>", "        r = Ok(99)", "e: Result<t8> = Ok(5)\nx: t64 = q.m(e)"),
+            ("r: Result<t64>", "        r = Ok(99)", "x: t64 = q.m(Err(\"no\"))"),
         ] {
-            let src = method(receiver, body);
-            let errors = single_file_errors(&src);
-            assert!(errors.contains("a receiver that is not a struct or an array is a value"), "{src:?} gave {errors}");
-        }
-        for (receiver, body) in [
-            ("k: t64", "        local: t64 = k\n        local += 9\n        p.x += local"),
-            ("b: [2: t64]", "        b:[0] = 9\n        b = [1, 2]"),
-            ("o: V", "        o.x = 9\n        o = V { x: 3 }\n        p = o"),
-        ] {
-            let src = method(receiver, body);
+            let src = method(receiver, body, call);
             let program = crate::frontend::resolver::parse_source(&src).expect("parses");
             if let Err(errs) = analyze_program(&program) {
                 panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
             }
+        }
+        for (receiver, call, wanted) in [
+            ("k: t64", "s: str = \"a\"\nr: t64 = q.m(s)", "receiver argument 1 to method 'q.m': expected t64, got str"),
+            ("k: t8", "r: t64 = q.m(300)", "out of range"),
+            ("r: Result<t8>", "e: Result<t64> = Ok(5)\nx: t64 = q.m(e)", "receiver argument 1 to method 'q.m': expected Result<t8>, got Result<t64>"),
+            // By reference: the declared type exactly.
+            ("b: [2: t64]", "a: [2: t8] = [1, 2]\nr: t64 = q.m(a)", "a struct or array receiver is passed by reference"),
+        ] {
+            let errors = single_file_errors(&method(receiver, "        p.x += 1", call));
+            assert!(errors.contains(wanted), "{receiver} with {call:?} gave {errors}");
         }
     }
 

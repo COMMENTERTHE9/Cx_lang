@@ -1,11 +1,11 @@
 # Cx values, receivers and operands — amendment
 
-**Status: REVIEWED AND IMPLEMENTED, except for one decision that is the
-owner's. The rules were corrected after their independent review (2026-11-20;
-§9) and each is implemented by its own commit on
-`backend/value-alias-semantics` (§6). One rule — V2 item 4 — changes what an
-owner-decided text says: it is held behind an analysis error until the owner
-confirms it (§4, C2).**
+**Status: REVIEWED AND IMPLEMENTED. The rules were corrected after their
+independent review (2026-11-20; §9), each is implemented by its own commit on
+`backend/value-alias-semantics` (§6), and the implementation was reviewed in
+turn (§10). The one question this document left to the owner — V2 item 4 — was
+decided on 2026-11-20, together with a static form of V5; both are set out in
+`docs/backend/cx_decisions_2026_11_20.md`.**
 
 - Decided in principle by the owner on 2026-11-19: *value semantics by default,
   with mutation through explicitly defined mechanisms.*
@@ -74,12 +74,13 @@ In `x.m(y, …)`:
    — is bound to the **value** of that expression. It is a temporary. The
    method may change it; the change is visible nowhere.
 4. A receiver whose declared type is a **non-aggregate** is a value, read at
-   its position in the argument list, and is **not** written back.
-   *Held for confirmation:* an owner-decided text describes such a receiver as
-   written back (§4, C2). Until the owner confirms this item, analysis rejects a
-   method that writes a non-aggregate receiver — an assignment to it, a
-   compound assignment, passing it as `.copy`, or giving it to `read`/`input`
-   — so that no program's result depends on which way the question is answered.
+   its position in the argument list, and is **not** written back. Inside the
+   method it is an ordinary local: the method may assign it, and the
+   assignment stays in the method. Its argument is checked and converted as an
+   ordinary argument is. *(Confirmed by the owner on 2026-11-20. Between
+   2026-11-19 and that decision a method that wrote such a receiver was an
+   analysis error, because an earlier ruling, §42, described it as written
+   back; see C2.)*
 
 The receiver a written method call is made on (`x`) is a variable named
 directly: the grammar has no expression receiver. So for it only item 2
@@ -220,9 +221,9 @@ Results are interpreter / compiled code, on the build before this amendment
 | §69a | `r = b + b.grow()`, then `b.x` | 1 / 1001 | V3.3 | 1001 | interpreter |
 | §69a | `s = a + b` where `add` sets its receiver's `x` to 100, then `a.x` | 100 / 100 | V3.2 | 1 | **both** — C1 |
 | new | `n = -a` where `neg` adds 100 to its receiver, then `a != a` where `eq` adds 1000; `a.x` after each | 101 1101 / 101 1101 | V3.2 | 1 1 | **both** — C1 |
-| §69b | `q.grow(n, 1)` where `grow` adds 100 to its number receiver, then `n` | 105 / 5 | V2.4 | rejected by analysis (held, C2) | both |
+| §69b | `q.grow(n, 1)` where `grow` adds 100 to its number receiver, then `n` | 105 / 5 | V2.4 | 5 (decided 2026-11-20; an analysis error in between) | interpreter |
 | §69b | `q.total(m, inc(m.copy))`, then `m` (`inc` adds 7; `total` does not write `m`) | 5 / 12 | V2.4, V6 | 12 | interpreter |
-| new | `q.set(res)` where `set` assigns `Ok(99)` to its `Result` receiver, then `res` | Ok(99) / Ok(5) | V2.4 | rejected by analysis (held, C2) | both |
+| new | `q.set(res)` where `set` assigns `Ok(99)` to its `Result` receiver, then `res` | Ok(99) / Ok(5) | V2.4 | Ok(5) (decided 2026-11-20; an analysis error in between) | interpreter |
 | §69c | `s = ps:[0] + b` where `add` sets its receiver's `x` to 100, then `ps:[0].x` | 1 / 100 | V3.2 | 1 | compiled code |
 | §69c | the same with `w.inner + b`, then `w.inner.x` | 1 / 100 | V3.2 | 1 | compiled code |
 | §69c | `p.mix(w.inner, 5)` where `mix` adds 1000 to its second receiver, then `w.inner.x` | 2 / 1002 | V2.3 | 2 | compiled code |
@@ -285,33 +286,19 @@ variable, undoing what the right operand did. Compiled code already gives 101
 and 1001. Two tracked fixtures execute this shape without reading the variable
 afterwards; no tracked output changes.
 
-**C2 — A non-aggregate receiver is a value. HELD: needs the owner's
-confirmation.** Known-issues §42, decided by the owner on 2026-10-24, says an
+**C2 — A non-aggregate receiver is a value. Confirmed by the owner on
+2026-11-20.** Known-issues §42, decided by the owner on 2026-10-24, said an
 impl's extra receivers are passed by address, "numbers included: nothing
-converted on the way in could be written back"; the analyzer's comments and its
-diagnostic ("an impl's receivers are passed by reference") say the same; and
-the interpreter does write a number, bool, string, enum, handle or `Result`
-receiver back (`n` after `q.grow(n, 1)` is 105). Compiled code never has
-(`n` is 5), `cx_eval_order.md` lists the case as undecided, and a fixture pins
-that both backends read such a receiver at its position in the argument list.
-The owner's decision of 2026-11-19 — "further method arguments and aliases
-should follow value semantics unless the language explicitly grants write-back"
-— supports the value reading, and V2 item 4 adopts it; but because §42's own
-words can be read as that explicit grant, it is not adopted silently:
-
-- What is implemented now changes no program's result: a method that writes a
-  non-aggregate receiver is an **analysis error** on both backends, and a
-  method that does not write one behaves identically under either reading.
-  The interpreter no longer writes an *unwritten* receiver back, which stops it
-  overwriting a `.copy` write-back made in the same argument list (`m` after
-  `q.total(m, inc(m.copy))` is 12 on both, as compiled code already had it).
-- If the owner confirms the value reading: the analysis error can be dropped
-  (the assignment becomes local to the method), and §42's stated reason and the
-  diagnostic are reworded.
-- If the owner wants write-back instead: the analysis error is replaced by an
-  implementation of the write-back in compiled code, and V2 item 4 is reversed.
-
-No tracked method writes a non-aggregate receiver.
+converted on the way in could be written back", and the interpreter did write
+a number, bool, string, enum, handle or `Result` receiver back (`n` after
+`q.grow(n, 1)` was 105). Compiled code never had (`n` was 5). Because the two
+rulings pointed different ways, the rule was first held behind an analysis
+error and put to the owner, who decided: these are values. The interpreter
+does not write them back; a method may assign one, locally; and the argument
+is converted as an ordinary argument is, which relaxes §42's exact-type rule
+for them. What changes for a program that ran before: on the interpreter, a
+caller's variable is no longer changed by a method that assigns such a
+receiver. No tracked method does.
 
 **C3 — In compiled code, a field or element bound to a further receiver, or
 used as an operator's operand, is a temporary.** The interpreter already
@@ -372,7 +359,7 @@ backends, with the full gates before and after.
 | 3 | V3 | Operators, all of them: the left operand always travels as a value. The interpreter evaluates it at its position and writes nothing back; compiled code gives the method a copy of it unless it is already a fresh value or the method cannot write its receiver and the right operand makes no call. C1's fixture change is in this commit | `e3559d5` | §76c |
 | 4 | V2.3 | Compiled code binds a field, element or other non-name expression given for a further aggregate receiver by value | `2ef5d44` | §76d |
 | 5 | V2.2 | Compiled code stores an assignment to a receiver as a whole into the receiver's storage | `72019c4` | §76e |
-| 6 | V2.4 | Analysis rejects a method that writes a non-aggregate receiver (held, C2); the interpreter writes back aggregate receivers only | `38fc992` | §76f |
+| 6 | V2.4 | The interpreter writes back aggregate receivers only. (As committed, analysis also rejected a method that wrote a non-aggregate receiver, pending the owner; removed after the decision of 2026-11-20 — `docs/backend/cx_decisions_2026_11_20.md`, D1) | `38fc992` | §76f |
 | 7 | V6 | Compiled code: branches start from the bindings the condition, scrutinee or guard left; `&&`/`||`, `if` and `when` values merge the variables their paths changed | `282ea76` | §76g |
 | 8 | V5 | The interpreter reports reaching a variable in use as a receiver; compiled code's refusal says what it refuses | `3e3e08f` | §76h |
 
@@ -404,7 +391,7 @@ that costs a copy and nothing else.
 | Compound assignment resolves its place once | `cx_eval_order.md` (LOCKED) | None |
 | Model B: aggregates are values; the receiver is the one exception | known-issues §27 (ruling) | Kept. V2 states which bindings the exception covers. §27's heading calls the exemption "a property of the parameter, not of its position"; after V2.3 and V3 it also depends on what is bound — a variable named directly — and on the call being a method call rather than an operator. Noted there |
 | Every name in an `impl` header is a receiver | §27, fixture `t177_multi_alias_impl_exit` | Kept for aggregates bound to named variables (V2.2) |
-| An extra receiver's argument must have its declared type exactly, "numbers included: nothing converted on the way in could be written back" | §42 (owner-decided) | **The rule is kept. Its stated reason is contradicted by V2.4 for non-aggregate receivers** — change C2, held for the owner. The analyzer's comments and diagnostic that say the same are reworded when C2 is confirmed |
+| An extra receiver's argument must have its declared type exactly, "numbers included: nothing converted on the way in could be written back" | §42 (owner-decided) | Superseded for non-aggregate receivers by the owner's decision of 2026-11-20: they are values, never written back, and their arguments are converted as ordinary arguments are. The exact-type rule stands for struct and array receivers |
 | `.copy` is copy-in/copy-out, by address, written back at every exit | §30 (decision), `copy_shapes.md` | None; V6 states when. `copy_shapes.md`'s "Method receiver parameters retain their established mutation behavior" now points here |
 | `.copy` is rejected on method calls; repeated `.copy` targets are rejected | §29 (rulings) | None; V4 is modelled on the second |
 | Operators are implemented as genes; `a + b` dispatches to the type's method | `gene_phen_design.md` ("design locked"), `README.md` | The dispatch is kept. "`a + b` *is* `a.add(b)`" and the statement that a named left operand is written back are replaced by V3 — change C1 |
@@ -413,8 +400,6 @@ that costs a copy and nothing else.
 
 ## 8. Not decided here
 
-- **V2 item 4** — whether a non-aggregate receiver is a value (adopted, held)
-  or is written back (§42's wording). The owner's call; see C2.
 - Whether analysis should detect V5 statically, so that it is an error on both
   backends before the program runs.
 - What an expression receiver binds, if the grammar ever gets one.
