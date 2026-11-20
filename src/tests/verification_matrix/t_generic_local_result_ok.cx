@@ -1,0 +1,14 @@
+// A `T` local holding a Result that has an `Ok`, and a `T` local wrapped in
+// one. Both backends.
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+fnc: Result<T> <T> wrap(x: T) {
+    y: T = x
+    return Ok(y)
+}
+r: Result<t64> = Ok(5)
+print(id(r))
+print(wrap(7))
+print(wrap("s"))

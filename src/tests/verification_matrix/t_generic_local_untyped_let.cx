@@ -1,0 +1,31 @@
+// `let y: T` is the same declaration as `y: T = x` without its value: `T` is
+// the function's type parameter, and the local takes the type of the first
+// value assigned to it. Analysis read the type without the function's type
+// parameters in scope, so the interpreter declared `y` as a struct named "T"
+// and refused the assignment; compiled code ran the program.
+enum Color { Red, Green }
+struct P { a: t64, b: t64 }
+fnc: T <T> id(x: T) {
+    let y: T
+    y = x
+    return y
+}
+fnc: T <T> last(x: T, z: T) {
+    let y: T
+    y = x
+    y = z
+    return y
+}
+print(id(5))
+small: t8 = 7
+print(id(small))
+print(id(true))
+print(id("s"))
+print(id(2.5))
+print(id(Color::Green))
+p: P = id(P { a: 3, b: 4 })
+print(p.a + p.b)
+xs: [3: t64] = id([1, 2, 3])
+print(xs:[2])
+print(last(1, 9))
+print(last("a", "b"))

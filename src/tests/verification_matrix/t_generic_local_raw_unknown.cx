@@ -1,0 +1,12 @@
+// A value that carries no type of its own — a bare `?` — decides nothing
+// about a `T` local's type: the declaration stays open until a value that has
+// a type arrives, and takes that one. The interpreter's answer; compiled code
+// does not lower an unknown passed for a type parameter.
+// (A bool *variable* that holds the unknown state is a bool, and pins the
+// local as one: `t_generic_local_char_handle_unknown`.)
+fnc: T <T> local(x: T) {
+    y: T = x
+    y = 5
+    return y
+}
+print(local(?))
