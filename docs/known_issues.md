@@ -6743,6 +6743,42 @@ function — "unresolved semantic artifact reached lowering: function 'twice'"
 `t_generic_function_called_before_its_definition_rejected`,
 `t_receiver_variable_reached_through_a_later_function_rejected`.)*
 
+*(Also found by the review of the implementation, and fixed 2026-11-20:*
+
+- *The branches of an `if`/`when` value were checked against a declared type
+  further out, and only there. As an element of an array literal of `T`, or
+  as the value of an untyped `let`, `if c { x } else { 300 }` put 300 where
+  `T` was a t8 or a string. Now, in a generic function, where one branch of a
+  value yields a value of the function's own type parameter (or an array or
+  `Result` of it), every branch must yield that type — whatever the value is
+  used for (`check_generic_branches`). This also rejects
+  `n: t64 = if c { 1 } else { x }`, which compiled code refused and the
+  interpreter did not convert.*
+- *`pick(5, x)` with `x: T`: the literal bound `pick`'s type parameter to a
+  number and `x` was then given for it, unconverted. Where the caller's own
+  type parameter is involved, a type parameter is bound only to the same type
+  (an `Err` and `?` still fit anything).*
+- *A callee's type parameter that no argument binds kept its name in the
+  result type, so a `Result<T>` from `fnc: Result<T> <T> fail(n: t64)` was
+  taken for the calling function's own `T` — and accepted when the callee
+  spelled it `U`. It is now the callee's: matched like any type analysis does
+  not track.*
+- *Messages: `T { v: 1 }` in a generic body and a nested function whose
+  signature uses the enclosing function's `T` both failed with "expected T,
+  got T". They now say what is wrong.*
+- *A regression: `pick(Err("e"), Ok(x))` for `pick(a: Result<T>, b:
+  Result<T>)` inside a generic function ran on both backends before and was
+  rejected by the first version of this rule. The `Err` bound `pick`'s `T` to
+  "unknown" and the later argument never settled it — at top level the same
+  call was already rejected. A later argument now settles it, in both places.)*
+
+Fixtures: `t_generic_branch_value_in_an_array_rejected`,
+`t_generic_branch_value_in_an_untyped_local_rejected`,
+`t_generic_callee_bound_to_a_literal_then_given_a_type_parameter_rejected`,
+`t_generic_nested_function_uses_the_enclosing_type_parameter_rejected`, and
+`t_generic_err_before_the_argument_that_settles_the_type` (both backends);
+unit test `the_branches_inference_and_names_of_a_generic_body`.
+
 Fixtures, both backends: `t_generic_values_of_every_kind`,
 `t_generic_value_where_another_type_is_declared`,
 `t_generic_array_literal_element_that_fits`. Analysis errors on both:

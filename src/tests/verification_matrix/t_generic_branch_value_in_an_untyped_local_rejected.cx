@@ -1,0 +1,10 @@
+// The same through an untyped local: `y` takes the type of the `if`'s first
+// branch, a `T`, and the second branch is a number literal. The interpreter
+// used to return 300 from a call whose `T` is a t8 or a string.
+fnc: T <T> f(c: bool, x: T) {
+    let y
+    y = if c { x } else { 300 }
+    return y
+}
+a: t8 = 1
+print(f(false, a))

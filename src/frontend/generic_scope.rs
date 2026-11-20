@@ -430,13 +430,47 @@ mod tests {
             ("fnc: T <T> f(x: T) { return Ok(x) }", "f(5)", "return type mismatch: expected T, got Result<T>"),
             ("fnc: [2: T] <T> f(x: T) {\n n: t64 = 1\n return [n, n]\n}", "f(5)", "return type mismatch: expected [2: T], got [2: t64]"),
             ("struct P { v: t64 }\nfnc: T <T> f(x: T) {\n p: P = P { v: 1 }\n return p\n}", "f(P { v: 2 })", "return type mismatch: expected T, got P"),
-            ("fnc: T <T> f(c: bool, x: T) { return if c { x } else { 300 } }", "f(true, 1)", "a branch of this if/when yields numeric literal, where T is declared"),
-            ("fnc: T <T> f(k: t64, x: T) { return when k { 0 => x, _ => \"s\" } }", "f(0, \"a\")", "a branch of this if/when yields str, where T is declared"),
+            ("fnc: T <T> f(c: bool, x: T) { return if c { x } else { 300 } }", "f(true, 1)", "a branch of this if/when yields numeric literal, and another yields T"),
+            ("fnc: T <T> f(k: t64, x: T) { return when k { 0 => x, _ => \"s\" } }", "f(0, \"a\")", "a branch of this if/when yields str, and another yields T"),
             ("fnc: five() { 300 }\nfnc: T <T> f(x: T) {\n y: T = five()\n return y\n}", "f(1)", "type mismatch: expected T, got void"),
             ("fnc: T <T> f(x: T, n: t64) {\n if n == 0 { return x }\n return f(300, n - 1)\n}", "f(1, 0)", "return type mismatch: expected T, got numeric literal"),
         ] {
             let got = errors(&format!("{body}\nprint({call})\n"));
             assert!(got.contains(reason), "{body}: {got}");
+        }
+    }
+
+    /// Holes the review of the implementation found in rule 1, and the
+    /// messages it found misleading.
+    #[test]
+    fn the_branches_inference_and_names_of_a_generic_body() {
+        for (body, call, reason) in [
+            // An if/when value whose branches differ, wherever it is used.
+            ("fnc: [2: T] <T> f(c: bool, x: T) { return [x, if c { x } else { 300 }] }", "f(false, 1)", "a branch of this if/when yields numeric literal, and another yields T"),
+            ("fnc: T <T> f(c: bool, x: T) {\n let y\n y = if c { x } else { 300 }\n return y\n}", "f(false, 1)", "a branch of this if/when yields numeric literal, and another yields T"),
+            ("fnc: T <T> f(c: bool, x: T) {\n let y\n y = if c { 300 } else { x }\n return y\n}", "f(false, 1)", "and another yields T"),
+            ("fnc: [2: T] <T> f(x: T) {\n xs: [2: T] = [x, when 1 { 0 => x, _ => 300 }]\n return xs\n}", "f(1)", "and another yields T"),
+            // A callee's type parameter bound to a number, then given a `T`.
+            ("fnc: T <T> pick(a: T, b: T) { return b }\nfnc: f64 <T> f(x: T) { return pick(5, x) }", "f(2.5)", "type parameter 'T' is bound to numeric literal but argument 2 has T"),
+            // `T { .. }` and a nested function using the enclosing `T`.
+            ("fnc: T <T> f(x: T) { return T { v: 1 } }", "f(5)", "'T' is a type parameter of this function, not a struct"),
+            ("fnc: T <T> f(x: T) {\n fnc: T inner(y: T) { return y }\n return inner(x)\n}", "f(5)", "nested function 'inner' uses 'T', a type parameter of the function it is declared in"),
+        ] {
+            let got = errors(&format!("{body}\nprint({call})\n"));
+            assert!(got.contains(reason), "{body}: {got}");
+        }
+        for fine in [
+            "fnc: T <T> f(c: bool, x: T) { return if c { x } else { x } }\nprint(f(true, 1))\n",
+            "fnc: Result<T> <T> f(c: bool, x: T) { return if c { Ok(x) } else { Err(\"no\") } }\nprint(f(true, 1))\n",
+            "fnc: T <T> f(k: t64, a: T, b: T) { return when k { 0 => a, _ => b } }\nprint(f(0, 1, 2))\n",
+            "fnc: T <T> pick(a: T, b: T) { return b }\nfnc: T <T> f(x: T) { return pick(x, x) }\nprint(f(2))\n",
+            "fnc: Result<T> <T> pick(a: Result<T>, b: Result<T>) { return b }\nfnc: Result<T> <T> f(x: T) { return pick(Err(\"e\"), Ok(x)) }\nprint(f(2))\n",
+            "fnc: T <T> outer(x: T) {\n fnc: U <U> inner(y: U) { return y }\n return inner(x)\n}\nprint(outer(5))\n",
+            // A callee's unbound type parameter is not the caller's `T`,
+            // however it is spelled.
+            "fnc: Result<T> <T> fail(n: t64) { return Err(\"no\") }\nfnc: t64 <T> g(x: T) {\n r: Result<t64> = fail(1)\n print(r)\n return 1\n}\nprint(g(\"s\"))\n",
+        ] {
+            assert_eq!(errors(fine), "", "{fine}");
         }
     }
 
@@ -477,11 +511,10 @@ mod tests {
                     fnc: t64 <T> field(x: T) {\n p: P = P { v: x }\n return p.v\n}\n\
                     fnc: Result<t8> <T> conv(r: Result<T>) { return r }\n\
                     fnc: Result<t8> <T> made(x: T) { return Ok(x) }\n\
-                    fnc: t64 <T> either(c: bool, x: T) {\n n: t64 = if c { 1 } else { x }\n return n\n}\n\
                     a: t8 = 5\nr8: Result<t8> = Ok(1)\nr64: Result<t64> = Ok(300)\nw: t64 = 300\n";
         for fine in [
             "num(a)", "num(300)", "num(2.5)", "real(a)", "real(2.5)", "text(\"s\")", "phase(Phase::Active)", "field(a)",
-            "conv(r8)", "conv(Err(\"x\"))", "made(a)", "either(false, a)", "num(?)",
+            "conv(r8)", "conv(Err(\"x\"))", "made(a)", "num(?)",
         ] {
             assert_eq!(errors(&format!("{head}print({fine})\n")), "", "{fine}");
         }
@@ -497,11 +530,14 @@ mod tests {
             ("field(true)", "bool is not t64"),
             ("conv(r64)", "'conv' is called with T = t64, but its body uses a Result<T> value where Result<t8> is declared: Result<t64> is not Result<t8>"),
             ("made(w)", "Result<t64> is not Result<t8>"),
-            ("either(false, \"s\")", "str is not t64"),
         ] {
             let got = errors(&format!("{head}print({call})\n"));
             assert!(got.contains(reason), "{call}: {got}");
         }
+        // A literal in one branch of a value and a `T` in another is not one
+        // type, even where a number is declared for the whole value.
+        let either = "fnc: t64 <T> either(c: bool, x: T) {\n n: t64 = if c { 1 } else { x }\n return n\n}\na: t8 = 5\nprint(either(false, a))\n";
+        assert!(errors(either).contains("and another yields T"), "{}", errors(either));
     }
 
     /// A number literal beside `T` elements is checked for each call.

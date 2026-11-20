@@ -1784,6 +1784,37 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             );
         }
 
+        // A nested function does not share the type parameters of the
+        // function it is in: `fnc: T inner(y: T)` inside `outer<T>` declared a
+        // `T` that is neither, and failed with "expected T, got T".
+        if nested {
+            let enclosing: Vec<String> = self
+                .current_type_params
+                .iter()
+                .filter(|p| !type_params.contains(p))
+                .cloned()
+                .collect();
+            if !enclosing.is_empty() {
+                let declared = params
+                    .iter()
+                    .filter_map(|param| match param {
+                        ParamKind::Typed(_, ty) => Some(ty.clone()),
+                        ParamKind::Copy(_, ty) | ParamKind::CopyFree(_, ty) => ty.clone(),
+                        ParamKind::CopyInto(..) => None,
+                    })
+                    .chain(ret_ty.clone());
+                for ty in declared {
+                    if let Some(param) = type_param_named(&semantic_type_from_decl(ty, &enclosing)) {
+                        return Err(sem_err!(
+                            pos,
+                            "nested function '{}' uses '{}', a type parameter of the function it is declared in — a nested function does not share them; give it its own: `<{}> {}(...)`",
+                            name, param, param, name
+                        ));
+                    }
+                }
+            }
+        }
+
         let lexical_names = std::sync::Arc::new(self.scopes.iter()
             .flat_map(|scope| scope.iter().filter(|(_, info)| !info.is_function)
                 .map(|(name, info)| (name.clone(), info.binding)))
@@ -2070,6 +2101,17 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
             Expr::Val(AstValue::StructInstance(type_name, type_args, field_exprs, pos)) => {
+                // `T { .. }` in a generic body names the function's type
+                // parameter, not a struct. It used to be taken for a struct
+                // named `T` — printed as one on the interpreter — and since
+                // §81 failed with "expected T, got T".
+                if self.current_type_params.contains(type_name) && !self.structs.contains_key(type_name) {
+                    return Err(sem_err!(
+                        *pos,
+                        "'{}' is a type parameter of this function, not a struct — a struct literal must name a struct",
+                        type_name
+                    ));
+                }
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
                 // Concrete types bound to the struct's generic params at this
                 // literal. The explicit path fills it from `instantiation`; the
@@ -2514,6 +2556,7 @@ Expr::Unary(op, inner, pos) => {
                     }
                     semantic_arms.push(SemanticWhenArm { pattern, guard, body, pos: arm.pos });
                 }
+                check_generic_branches(&semantic_arms.iter().map(|arm| arm.body.as_slice()).collect::<Vec<_>>(), *pos)?;
                 if !when_is_exhaustive(&semantic_arms, true, &semantic_match.ty) {
                     let reason = if when_is_exhaustive(&semantic_arms, true, &SemanticType::Bool) {
                         format!(
@@ -2550,6 +2593,7 @@ Expr::Unary(op, inner, pos) => {
                 if let Some(SemanticStmt::ExprStmt { expr, .. }) = then_semantic.last() {
                     result_ty = expr.ty.clone();
                 }
+                check_generic_branches(&[&then_semantic, &else_semantic], *pos)?;
                 Ok(SemanticExpr {
                     ty: result_ty,
                     kind: SemanticExprKind::If {
@@ -3302,7 +3346,21 @@ Expr::Unary(op, inner, pos) => {
                         };
                         let Some(arg_ty) = arg_ty else { continue };
                         if let Some(existing) = type_param_map.get(tname) {
-                            if types_compatible(existing, &arg_ty) {
+                            // Where the caller's own type parameter is one of
+                            // the two, nothing converts: `pick(5, x)` with
+                            // `x: T` binds the callee's `T` to a number and
+                            // then gives it a `T` (known-issues §81).
+                            let generic = mentions_own_type_param(existing) || mentions_own_type_param(&arg_ty);
+                            if generic && binds_alike(existing, &arg_ty) {
+                                // the same type
+                            } else if generic
+                                && matches!((existing, &arg_ty), (SemanticType::Result(_), SemanticType::Result(_)))
+                                && binds_alike(&arg_ty, existing)
+                            {
+                                type_param_map.insert(tname.clone(), arg_ty);
+                            } else if generic {
+                                return Err(sem_err!(pos, "type parameter '{}' is bound to {} but argument {} has {}", tname, type_name(existing), index + 1, type_name(&arg_ty)));
+                            } else if types_compatible(existing, &arg_ty) {
                                 // fits what `T` is bound to
                             } else if matches!((existing, &arg_ty), (SemanticType::Result(_), SemanticType::Result(_)))
                                 && types_compatible(&arg_ty, existing)
@@ -3500,10 +3558,19 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
-        let ret_ty = substitute_type_params(
-            function.ret_ty.clone().unwrap_or(SemanticType::Void),
-            &type_param_map,
-        );
+        // A type parameter no argument binds is the callee's own, not one of
+        // the caller's that happens to have its name: scoped by the callee's
+        // name, it is matched like any type analysis does not track. Left as
+        // `T`, a `Result<T>` from `fnc: Result<T> <T> fail(n: t64)` called in
+        // a generic function was taken for that function's own `T`
+        // (known-issues §81).
+        let mut ret_map = type_param_map.clone();
+        for param in &function.type_params {
+            ret_map
+                .entry(param.clone())
+                .or_insert_with(|| SemanticType::TypeParam(format!("{}::{}", source_function_name(name), param)));
+        }
+        let ret_ty = substitute_type_params(function.ret_ty.clone().unwrap_or(SemanticType::Void), &ret_map);
 
         // Retain the substitution instead of discarding it. Declared-parameter
         // order, so the monomorphizer's key and mangled name are stable
@@ -4079,6 +4146,37 @@ fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: u
                 "type mismatch: a branch of this if/when yields {}, where {} is declared",
                 type_name(&expr.ty),
                 type_name(expected)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The branches of an `if` or `when` used as a value, in a generic function:
+/// where one yields a value of the function's own type parameter `T` (or an
+/// array or `Result` of it), every other must yield that type too. The value
+/// is typed by its first branch, and only a declared type further out was
+/// checked against each branch (`check_branch_tail_fits`); as an array
+/// element or the value of an untyped `let`, `if c { x } else { 300 }` put
+/// 300 where `T` was a t8 or a string (known-issues §81).
+fn check_generic_branches(bodies: &[&[SemanticStmt]], pos: usize) -> Result<(), SemanticError> {
+    let tails: Vec<&SemanticType> = bodies
+        .iter()
+        .filter_map(|body| match body.last() {
+            Some(SemanticStmt::ExprStmt { expr, .. }) => Some(&expr.ty),
+            _ => None,
+        })
+        .collect();
+    let Some(anchor) = tails.iter().find(|ty| mentions_own_type_param(ty)) else {
+        return Ok(());
+    };
+    for ty in &tails {
+        if !types_compatible(anchor, ty) {
+            return Err(sem_err!(
+                pos,
+                "type mismatch: a branch of this if/when yields {}, and another yields {} — in a generic function the branches of a value must have the same type",
+                type_name(ty),
+                type_name(anchor)
             ));
         }
     }
@@ -5045,6 +5143,28 @@ fn result_payload_compatible(expected: &SemanticType, got: &SemanticType) -> boo
     }
 }
 
+/// The first type parameter `ty` mentions, if any.
+fn type_param_named(ty: &SemanticType) -> Option<String> {
+    match ty {
+        SemanticType::TypeParam(name) => Some(name.clone()),
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => type_param_named(inner),
+        _ => None,
+    }
+}
+
+/// Whether a value of type `got` is a value of type `expected` with nothing
+/// converted: the same type, or one with an unknown part (`?`, an `Err`).
+fn binds_alike(expected: &SemanticType, got: &SemanticType) -> bool {
+    if expected == got || *got == SemanticType::Unknown {
+        return true;
+    }
+    match (expected, got) {
+        (SemanticType::Result(a), SemanticType::Result(b)) => binds_alike(a, b),
+        (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && binds_alike(a, b),
+        _ => false,
+    }
+}
+
 /// The name of `ty` when it is a type parameter of the function being
 /// analyzed.
 fn own_type_param(ty: &SemanticType) -> Option<&str> {
@@ -5364,6 +5484,14 @@ fn bind_nested_type_params(
                 map.insert(name.clone(), arg.clone());
             }
             Some(SemanticType::Numeric) if is_numeric(arg) && *arg != SemanticType::Numeric => {
+                map.insert(name.clone(), arg.clone());
+            }
+            // An `Err(..)` given first says nothing about the payload type; a
+            // later argument that does settles it, as for a parameter whose
+            // whole type is `T`. Left unknown, `pick(Err("e"), Ok(x))` for
+            // `pick(a: Result<T>, b: Result<T>)` was rejected at top level,
+            // and in a generic body once its `T` was checked (§81).
+            Some(SemanticType::Unknown) if *arg != SemanticType::Unknown => {
                 map.insert(name.clone(), arg.clone());
             }
             Some(_) => {}
