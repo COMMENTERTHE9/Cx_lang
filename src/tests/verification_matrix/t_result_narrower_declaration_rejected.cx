@@ -1,0 +1,5 @@
+// A Result is not converted when it is bound: read at a narrower type, the
+// interpreter kept 300 in a `Result<t8>` and compiled code cut it to 44.
+large: Result<t64> = Ok(300)
+narrow: Result<t8> = large
+print(narrow)

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<t64> returned from a function declared to return Result<t8>: type mismatch in analysis.

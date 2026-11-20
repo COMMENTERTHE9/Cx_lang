@@ -160,33 +160,28 @@ program.
    `y: f64 = 1.0` is true (analysis promotes); `assert_eq(x, y)` fails, because
    `assert_eq` promotes only an untyped literal — `assert_eq(1, 1.0)`, two
    literals, passes.
-4. **A `Result`'s payload type is not checked on assignment.**
-   `narrow: Result<t8> = large` with `large: Result<t64> = Ok(300)` is accepted
-   by analysis, and the interpreter then prints `Ok(300)` and unwraps 300 from a
-   `Result<t8>`; `f: Result<f64> = small` is accepted and prints the integer.
-   Compiled code refuses both (§3). PR #476's fixture `t_result_numeric_alias`
-   pinned the interpreter's output as expected; the revision keeps only the
-   widening half (`t_result_numeric_widen`), which is sound. The same narrowing
-   through a variable declared without a type — `lit = Ok(300)`, then
-   `narrow: Result<t8> = lit` — was not refused until §72: it gave 300 on the
-   interpreter and 44 in compiled code. It is refused now; `lit = Ok(5)` is not,
-   because 5 fits.
+4. *(Decided 2026-11-19 — no longer open.)* **A `Result`'s payload type is
+   checked on assignment.** `narrow: Result<t8> = large` with
+   `large: Result<t64>`, and `f: Result<f64> = small` with a whole-number
+   `small`, are analysis errors: a `Result` may be used where the same payload
+   type, or a whole number at least as wide, is declared, and an `Err`
+   anywhere. The rule and what it changes are in known-issues §75. Compiled
+   code's refusal of the same forms stays as a second line.
 5. **`assert_eq` on an unknown number.** `u: t64 = ?` then `assert_eq(u, u)`
    fails on the interpreter; compiled code refuses the unknown.
 6. **Items 2 and 3 inside a `Result`.** `Ok(u || true)` against `Ok(true)`
    fails with `Ok(true) != Ok(true)`, and `Ok(1)` against `Ok(1.0)` with
    `Ok(1) != Ok(1)`: the payloads are compared by the same rule as at the top
    level, so they inherit its gaps. Compiled code refuses both payloads.
-7. **A `Result<unknown>` is accepted wherever a `Result` is declared.** A
-   variable declared without a type and first given an `Err` has the type
-   `Result<unknown>`. It can then be given an `Ok` of any kind (through a
-   `.copy` parameter, for one), and analysis accepts it as a `Result<str>`, a
-   `Result<Color>` or a `Result<t8>` alike. The interpreter carries on with
-   whatever is inside: a variable declared `Result<str>` prints `Ok(5)`.
-   Compiled code refuses unless it can prove the kind. Item 4 is the same gap
-   seen from the number side. The open question is whether analysis should
-   reject such an assignment, or the declaration should be checked when the
-   value arrives.
+7. *(Decided 2026-11-19 — closed except for one route.)* **A value typed
+   `Result<unknown>` holds an Err.** It is still accepted wherever a `Result`
+   is declared — that is what lets an `Err(..)` be a `Result` of every type —
+   but nothing may put an `Ok` under that type: an `Ok` of a known type cannot
+   be assigned to such a variable or element, and such a variable cannot be
+   passed `.copy` to a typed parameter, whose write-back was the way in
+   (known-issues §75). The route that remains is a generic function whose body
+   returns something other than its `T` (§74); until it is closed, compiled
+   code keeps refusing a `Result<unknown>` it cannot prove.
 8. **`assert` on a value that is not a condition.** The interpreter passes
    `assert(x)` for `true` and for a non-zero number, and fails it for
    everything else — an enum, a handle, a `Result`, a string. Compiled code

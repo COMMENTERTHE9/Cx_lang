@@ -1,0 +1,3 @@
+fnc: t64 take8(p: Result<t8>) { print(p); return 0 }
+big: Result<t64> = Ok(300)
+print(take8(big))

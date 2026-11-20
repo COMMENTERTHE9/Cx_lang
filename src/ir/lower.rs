@@ -14785,35 +14785,34 @@ mod divergence_shape_tests {
     }
     /// §70: a Result is read at the payload type it was made with or a wider
     /// whole number, never a narrower one — `?` would cut the number down.
+    ///
+    /// Since §75 analysis rejects a narrowing wherever both types are written,
+    /// so these programs reach lowering by the one route analysis still lets
+    /// through: a generic body, which it does not check against its type
+    /// parameter (§74). `conv` is declared to return a `Result<t8>` and
+    /// returns its `T`. Compiled code's own check is the second line, and
+    /// this pins that it is still there.
     #[test]
     fn a_result_is_not_read_at_a_narrower_integer_type() {
+        let conv = "fnc: Result<t8> <T> conv(x: T) { return x }\n";
         for narrowing in [
-            "large: Result<t64> = Ok(300)\nnarrow: Result<t8> = large\nprint(narrow)\n",
-            "x: t64 = 300\nnarrow: Result<t8> = Ok(x)\nprint(narrow)\n",
-            "fnc: Result<t8> small(r: Result<t8>) { return r }\nlarge: Result<t64> = Ok(300)\nprint(small(large))\n",
-            // §72: a literal typed nowhere is as wide as its value...
-            "fnc: Result<t64> run() {\n let lit\n lit = Ok(300)\n narrow: Result<t8> = lit\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run())\n",
-            // ...on every path that reaches the use...
-            "fnc: Result<t64> run(k: t64) {\n let lit\n lit = Ok(1)\n i: t64 = 0\n while (i < k) { lit = Ok(300)\n i = i + 1 }\n narrow: Result<t8> = lit\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run(1))\n",
-            // ...and so is a constant expression.
-            "a: Result<t8> = Ok(100 + 28)\nprint(a)\n",
-            "a: Result<t8> = Ok(-(100 + 29))\nprint(a)\n",
+            "large: Result<t64> = Ok(300)\nprint(conv(large))\n",
+            "x: t64 = 300\nprint(conv(Ok(x)))\n",
+            // A literal typed nowhere, on one path or on every path.
+            "fnc: Result<t64> run() {\n let lit\n lit = Ok(300)\n narrow: Result<t8> = conv(lit)\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run())\n",
+            "fnc: Result<t64> run(k: t64) {\n let lit\n lit = Ok(1)\n i: t64 = 0\n while (i < k) { lit = Ok(300)\n i = i + 1 }\n narrow: Result<t8> = conv(lit)\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run(1))\n",
+            // A constant expression is a t64.
+            "print(conv(Ok(100 + 28)))\n",
         ] {
-            let err = format!("{}", lowering_error(narrowing));
+            let err = format!("{}", lowering_error(&format!("{conv}{narrowing}")));
             assert!(err.contains("Result"), "{narrowing}: {err}");
         }
         for fine in [
             "small: Result<t8> = Ok(7)\nwide: Result<t64> = small\nprint(wide)\n",
             "negative: Result<t8> = Ok(-3)\nprint(negative)\n",
             "fnc: Result<t64> wide(r: Result<t64>) { return r }\nsmall: Result<t8> = Ok(7)\nprint(wide(small))\n",
-            // §72: a constant that fits is not refused for having no declared width.
-            "fnc: Result<t64> run() {\n let lit\n lit = Ok(5)\n narrow: Result<t8> = lit\n v: t8 = narrow?\n print(v)\n return Ok(0)\n}\nprint(run())\n",
-            "a: Result<t8> = Ok(100 + 27)\nprint(a)\n",
-            "a: Result<t8> = Ok(-(100 + 28))\nprint(a)\n",
-            "fnc: t64 take8(p: Result<t8>) { print(p)\n return 0 }\nlet u\nu = Ok(12)\nprint(take8(u))\n",
-            // ...also where the variable is seen through a loop or an `if` value.
-            "fnc: Result<t64> run() {\n let v\n v = Ok(-3)\n n: Result<t8> = v\n i: t64 = 0\n while (i < 3) { if i == 2 { n = v }\n i = i + 1 }\n print(n)\n return Ok(0)\n}\nprint(run())\n",
-            "fnc: T <T> id(x: T) { return x }\nlet v\nv = Ok(100)\nn: Result<t8> = if true { v } else { id(v) }\nprint(n)\n",
+            // An untyped number read at the width it is stored at.
+            "fnc: t64 take64(p: Result<t64>) { print(p)\n return 0 }\nlet u\nu = Ok(12)\nprint(take64(u))\n",
         ] {
             let _ = lowered(fine);
         }
@@ -14849,31 +14848,32 @@ mod divergence_shape_tests {
         assert!(format!("{err}").contains("not proven"), "{err}");
     }
 
-    /// §72: a value analysis types `Result<unknown>` — an untyped variable
-    /// that started as an Err, the result of a function generic in `T` — is
-    /// accepted wherever a Result is declared, whatever it holds. No
-    /// declaration vouches for it. Where the value graph shows it holds
-    /// another kind, or cannot say, a use at a declared kind is refused; it
-    /// used to be taken on trust, and `Ok(5)` was read as a string.
+    /// §72: a value analysis types `Result<unknown>` promises an Err and is
+    /// accepted wherever a Result is declared. No declaration vouches for
+    /// what it holds, so where the value graph cannot either, a use at a
+    /// declared kind is refused; it used to be taken on trust, and `Ok(5)`
+    /// was read as a string.
+    ///
+    /// Since §75 analysis keeps an `Ok` out of such a value everywhere but in
+    /// a generic body (§74): `launder` is declared to return its `T` and
+    /// returns an `Ok(5)`. That is the route used here.
     #[test]
     fn a_result_no_declaration_vouches_for_is_refused_where_a_kind_is_declared() {
         let prelude = "fnc: T <T> id(x: T) { return x }\n\
                        fnc: T <T> swap(a: T, b: T) { a = b\n return a }\n\
-                       fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5)\n return 0 }\n\
+                       fnc: T <T> launder(x: T) { return Ok(5) }\n\
                        fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok(\"a\"))\n return 0 }\n";
-        let holds_a_number = "let e\n e = Err(\"x\")\n if c { x: t64 = fill(e.copy) }\n";
-        for (body, reason) in [
-            // The graph follows `e` through `id` and finds a number.
-            ("print(cmp(id(e)))\n", "incompatible Result payload kind"),
-            ("t: Result<str> = id(e)\n print(t)\n", "incompatible Result payload kind"),
-            // An array element and a function that does more than forward
-            // are where the graph stops.
-            ("let a\n a = [e, e]\n t: Result<str> = a:[1]\n print(t)\n", "not proven"),
-            ("t: Result<str> = swap(e, e)\n print(t)\n", "not proven"),
+        let holds_a_number = "let e\n e = Err(\"x\")\n if c { e = launder(e) }\n";
+        for body in [
+            "print(cmp(e))\n",
+            "print(cmp(id(e)))\n",
+            "t: Result<str> = id(e)\n print(t)\n",
+            "let a\n a = [e, e]\n t: Result<str> = a:[1]\n print(t)\n",
+            "t: Result<str> = swap(e, e)\n print(t)\n",
         ] {
             let src = format!("{prelude}fnc: t64 run(c: bool) {{\n {holds_a_number} {body} return 0\n}}\nprint(run(true))\n");
             let err = format!("{}", lowering_error(&src));
-            assert!(err.contains(reason), "{body}: {err}");
+            assert!(err.contains("not proven"), "{body}: {err}");
         }
     }
 
@@ -14906,13 +14906,13 @@ mod divergence_shape_tests {
 
     /// §72: a Result of a number with no declared width, read from where the
     /// value graph cannot see — an element of an untyped array — is still a
-    /// whole number. It can be printed and compared; it cannot be read at a
-    /// narrower type, because nothing says how wide the number is.
+    /// whole number: it can be printed, compared, and read as a `Result<t64>`.
+    /// (Reading it at a narrower type is rejected by analysis since §75, so
+    /// that half of this test is now the semantic unit test
+    /// `result_assignments_are_checked_by_payload_type`.)
     #[test]
     fn an_untyped_number_result_read_from_memory_is_a_whole_number() {
-        let _ = lowered("let a\na = [Ok(5), Err(\"x\"), Ok(7)]\nprint(a:[0])\nassert_eq(a:[0], Ok(5))\n");
-        let err = lowering_error("let a\na = [Ok(5), Err(\"x\"), Ok(300)]\nn: Result<t8> = a:[2]\nprint(n)\n");
-        assert!(format!("{err}").contains("Result"), "{err}");
+        let _ = lowered("let a\na = [Ok(5), Err(\"x\"), Ok(7)]\nprint(a:[0])\nassert_eq(a:[0], Ok(5))\nw: Result<t64> = a:[2]\nprint(w)\n");
     }
 
     /// §72: the width a constant payload is recorded with.

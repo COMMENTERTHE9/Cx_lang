@@ -1,0 +1,7 @@
+// A number of no declared width is as wide as a t64. Analysis sees the type,
+// not the 5: the same lines with 300 are the narrowing it must stop. Where a
+// narrower type is meant, the literal is written at the declaration.
+let u
+u = Ok(5)
+n: Result<t8> = u
+print(n)

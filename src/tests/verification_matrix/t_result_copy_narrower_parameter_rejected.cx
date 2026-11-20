@@ -1,0 +1,4 @@
+fnc: t64 fill(r.copy: Result<t8>) { r = Ok(5); return 0 }
+v: Result<t64> = Ok(300)
+x: t64 = fill(v.copy)
+print(v)

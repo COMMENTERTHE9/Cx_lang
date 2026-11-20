@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<unknown> variable passed .copy to a Result<t64> parameter: rejected in analysis, because the write-back could put an Ok into it.

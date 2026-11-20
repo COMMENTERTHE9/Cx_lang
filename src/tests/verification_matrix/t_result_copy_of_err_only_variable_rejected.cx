@@ -1,0 +1,9 @@
+// `e` is declared without a type and given an Err, so its type is
+// `Result<unknown>`: it promises an Err. `.copy` writes back, and `fill`
+// would write an `Ok(5)` into it — after which `e` was accepted as a
+// `Result<str>` and compiled code read 5 as the address of a string.
+fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5); return 0 }
+let e
+e = Err("x")
+x: t64 = fill(e.copy)
+print(e)
