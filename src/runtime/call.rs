@@ -486,6 +486,19 @@ impl RunTime {
                         let _ = self.set_var(instance.to_string(), mutated.clone(), pos);
                     }
                 } else if i <= extra_alias_count {
+                    // A further receiver is its variable only when it is a
+                    // struct or an array given by name. A number, bool,
+                    // string, enum, handle or Result receiver is a value:
+                    // nothing is written back (amendment V2 item 4). Writing
+                    // it back stored the value read at the receiver's position
+                    // over whatever a later argument had done to the variable
+                    // — `q.total(m, inc(m.copy))` left `m` at 5, where
+                    // compiled code had 12 (known-issues §69b). Analysis
+                    // rejects a method that writes such a receiver, so there
+                    // is never anything of the method's to lose.
+                    if !matches!(mutated, Value::Struct(..) | Value::Array(_)) {
+                        continue;
+                    }
                     // Get the original variable name from the leading arg
                     if let Some(SemanticCallArg::Expr(e)) = args.get(i - 1) {
                         if let SemanticExprKind::VarRef { name, .. } = &e.kind {

@@ -140,6 +140,16 @@ pub struct Analyzer {
     /// id is what `lookup_var` resolves to, so shadowing is handled by
     /// construction.
     readonly_bindings: std::collections::HashSet<BindingId>,
+    /// The receivers of the methods analyzed so far that are **not** a struct
+    /// or an array — a number, bool, char, string, enum, handle or Result
+    /// alias of a multi-receiver `impl`. Such a receiver is a value
+    /// (docs/backend/cx_value_and_alias_semantics.md, V2 item 4), and a method
+    /// may not write one: see [`Analyzer::reject_value_receiver_write`].
+    value_receivers: std::collections::HashSet<BindingId>,
+    /// How many leading parameters of the method about to be analyzed are its
+    /// receivers. Set by the `impl` arm just before `analyze_function`, and
+    /// taken by it, so a function nested in the method does not see it.
+    pending_receivers: usize,
     pub struct_type_params: HashMap<String, Vec<String>>,
     enum_defs: Vec<SemanticEnum>,
     /// The modules THIS module imports, by the alias it imports each under:
@@ -191,6 +201,8 @@ impl Analyzer {
             current_type_bounds: vec![],
             const_bindings: std::collections::HashSet::new(),
             readonly_bindings: std::collections::HashSet::new(),
+            value_receivers: std::collections::HashSet::new(),
+            pending_receivers: 0,
             struct_type_params: HashMap::new(),
             enum_defs: Vec::new(),
             module_aliases: HashMap::new(),
@@ -613,6 +625,37 @@ impl Analyzer {
         Ok(())
     }
 
+    /// Reject a write to a receiver that is not a struct or an array.
+    ///
+    /// Such a receiver is a value: the method gets what the argument held at
+    /// its position in the argument list, and nothing is written back
+    /// (amendment V2 item 4). The interpreter used to write it back and
+    /// compiled code never did, so a method that assigned one left the
+    /// caller's variable at 105 on one backend and 5 on the other
+    /// (known-issues §69b).
+    ///
+    /// Why an error rather than a local assignment: an owner-decided text
+    /// (§42) describes these receivers as written back, and the owner has not
+    /// yet confirmed which reading stands. Rejecting the write means no
+    /// program's result depends on the answer — a method that does not write
+    /// such a receiver behaves the same under both readings. When the question
+    /// is settled this check is either dropped (the assignment becomes local)
+    /// or replaced by a write-back on both backends.
+    ///
+    /// Sits beside [`Analyzer::reject_const_assignment`] at the same choke
+    /// points: plain, compound, index and field assignment, a `.copy`
+    /// argument, and the target of `read` / `input`.
+    fn reject_value_receiver_write(&self, name: &str, pos: usize) -> Result<(), SemanticError> {
+        if self.lookup_var(name).is_some_and(|info| self.value_receivers.contains(&info.binding)) {
+            return Err(sem_err!(
+                pos,
+                "cannot write to '{}' — a receiver that is not a struct or an array is a value, so the write would not reach the caller's variable; copy it into a local, or return the new value",
+                name
+            ));
+        }
+        Ok(())
+    }
+
     /// Resolve `receiver.field` to `(struct name, field type)`.
     ///
     /// The single point where a struct's declared field list and a field
@@ -786,7 +829,9 @@ impl Analyzer {
                     // function or variable of the same name — though a method is
                     // called on a value, never by its bare name.
                     self.push_scope();
+                    self.pending_receivers = aliases.len();
                     let analyzed = self.analyze_function(method_name, &[], &full_params, ret_ty, body, ret_expr, *pos, false, true);
+                    self.pending_receivers = 0;
                     self.pop_scope();
                     match analyzed {
                         Ok(SemanticStmt::FuncDef(mut sem_func)) => {
@@ -991,6 +1036,7 @@ impl Analyzer {
                 if let Some(base) = assign_target_base_name(target) {
                     self.reject_const_assignment(base, *pos_eq)?;
                     self.reject_loop_var_assignment(base, *pos_eq)?;
+                    self.reject_value_receiver_write(base, *pos_eq)?;
                 }
                 let tp = self.current_type_params.clone();
                 // The destination's type is the right side's element-type hint, so
@@ -1585,6 +1631,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 let base = base.to_string();
                 self.reject_const_assignment(&base, *pos)?;
                 self.reject_loop_var_assignment(&base, *pos)?;
+                self.reject_value_receiver_write(&base, *pos)?;
                 let sem_target = self.resolve_place(target, *pos)?;
                 // Narrow the operand against the target's type when both are
                 // numeric — mirrors the regular assign-to-field narrowing at
@@ -1750,12 +1797,24 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         self.current_type_params = type_params.to_vec();
         self.current_ret_ty = ret_ty.clone().map(|t| semantic_type_from_decl(t, type_params));
 
+        // The leading parameters of an `impl` method are its receivers. One
+        // that is not a struct or an array is a value, and the body may not
+        // write it — `reject_value_receiver_write`.
+        let receivers = std::mem::take(&mut self.pending_receivers);
         let mut resolved_params = Vec::with_capacity(params.len());
-        for param in params {
+        for (index, param) in params.iter().enumerate() {
             match param {
                 ParamKind::Typed(param_name, param_ty) => {
                     let binding =
                         self.declare(param_name, Some(param_ty.clone()), None, true, pos)?;
+                    if index < receivers
+                        && !matches!(
+                            semantic_type_from_decl(param_ty.clone(), type_params),
+                            SemanticType::Struct(_) | SemanticType::Array(..)
+                        )
+                    {
+                        self.value_receivers.insert(binding);
+                    }
                     resolved_params.push(SemanticParam {
                         binding,
                         name: param_name.clone(),
@@ -3011,6 +3070,16 @@ Expr::Unary(op, inner, pos) => {
                             let sem_expr = self.analyze_expr(expr)?;
                             semantic_args.push(SemanticCallArg::Expr(sem_expr));
                         }
+                    }
+                    // `read(x)` and `input(p, x)` assign the variable they are
+                    // given: the same write an assignment to it would be.
+                    let assigned = match def.kind {
+                        BuiltinKind::Read => args.first(),
+                        BuiltinKind::Input => args.get(1),
+                        _ => None,
+                    };
+                    if let Some(CallArg::Expr(Expr::Ident(target, _))) = assigned {
+                        self.reject_value_receiver_write(target, pos)?;
                     }
                     if def.kind == BuiltinKind::AssertEq && semantic_args.len() == 2 {
                         let lhs_ty = if let SemanticCallArg::Expr(e) = &semantic_args[0] {
@@ -4353,6 +4422,7 @@ impl Analyzer {
                         // read. Apply the same immutable-target checks as assignment.
                         self.reject_const_assignment(name, pos)?;
                         self.reject_loop_var_assignment(name, pos)?;
+                        self.reject_value_receiver_write(name, pos)?;
                         if copied.contains(&name.as_str()) {
                             return Err(sem_err!(
                                 pos,
@@ -6852,6 +6922,44 @@ print(result + result2)
         analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
+    /// A receiver that is not a struct or an array is a value, and a method
+    /// may not write one (amendment V2 item 4, held for the owner). Every form
+    /// of write is rejected; reading one, and writing a struct or array
+    /// receiver, are not.
+    #[test]
+    fn a_method_may_not_write_a_receiver_that_is_not_a_struct_or_array() {
+        let head = "struct V { x: t64 }\nfnc: t64 inc(n.copy: t64) {\n    n += 7\n    return 1\n}\n";
+        let method = |receiver: &str, body: &str| {
+            format!("{head}vm: impl (p: V, {receiver}) {{\n    fnc: t64 m() {{\n{body}\n        return 1\n    }}\n}}")
+        };
+        for (receiver, body) in [
+            ("k: t64", "        k = 9"),
+            ("k: t64", "        k += 9"),
+            ("k: t64", "        one: t64 = inc(k.copy)"),
+            ("k: t64", "        if p.x > 0 { k = 2 }"),
+            ("on: bool", "        on = false"),
+            ("name: str", "        name = \"other\""),
+            ("name: str", "        read(name)"),
+            ("name: str", "        input(\"? \", name)"),
+            ("r: Result<t64>", "        r = Ok(99)"),
+        ] {
+            let src = method(receiver, body);
+            let errors = single_file_errors(&src);
+            assert!(errors.contains("a receiver that is not a struct or an array is a value"), "{src:?} gave {errors}");
+        }
+        for (receiver, body) in [
+            ("k: t64", "        local: t64 = k\n        local += 9\n        p.x += local"),
+            ("b: [2: t64]", "        b:[0] = 9\n        b = [1, 2]"),
+            ("o: V", "        o.x = 9\n        o = V { x: 3 }\n        p = o"),
+        ] {
+            let src = method(receiver, body);
+            let program = crate::frontend::resolver::parse_source(&src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
     }
 
     /// One variable is at most one receiver of a call (amendment V4). Only a

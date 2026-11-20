@@ -1,0 +1,16 @@
+// Passing a number receiver as `.copy` is a write to it as well.
+struct V { x: t64 }
+fnc: t64 inc(n.copy: t64) {
+    n += 7
+    return 1
+}
+num: impl (p: V, k: t64) {
+    fnc: t64 grow() {
+        one: t64 = inc(k.copy)
+        return k + one
+    }
+}
+q: V = V { x: 1 }
+n: t64 = 5
+print(q.grow(n))
+print(n)

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A method that assigns a Result receiver: rejected by analysis (amendment V2 item 4, held for the owner).

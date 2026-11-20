@@ -5974,3 +5974,56 @@ operator generator with by-name method calls: 2 of 40 programs disagreed
 before this change, 0 of 600 after.
 
 Fixture: `t_receiver_assigned_as_a_whole` (both backends).
+
+### f. A receiver that is not a struct or an array: written back by one backend only, and over a later argument's change (§69b; rule V2 item 4 — HELD for the owner)
+
+```cx
+num: impl (p: V, k: t64) { fnc: t64 grow(by: t64) { k += 100; p.x += by; return k } }
+n: t64 = 5
+print(q.grow(n, 1))
+print(n)                         // interpreter 105, JIT 5
+
+num2: impl (p: V, k: t64) { fnc: t64 total(extra: t64) { return p.x * 1000 + k + extra } }
+m: t64 = 5
+print(q.total(m, inc(m.copy)))   // inc adds 7 to m
+print(m)                         // interpreter 5, JIT 12
+```
+
+The interpreter wrote every further receiver back to the variable it was
+given, whatever its type; compiled code passes a number, bool, string, enum,
+handle or `Result` by value and never wrote one back. The second program has
+nothing to do with the method at all: the interpreter stored the value it had
+read for `k` back into `m` and so undid `inc`'s write-back. The review of the
+amendment found the same for a `Result` receiver (`Ok(99)` / `Ok(5)`).
+
+**Decided so far.** The owner's ruling of 2026-11-19 is that further aliases
+"follow value semantics unless the language explicitly grants write-back", and
+the amendment reads a non-aggregate receiver as a value (V2 item 4). But §42,
+decided by the owner on 2026-10-24, describes an impl's extra receivers as
+passed by address, "numbers included: nothing converted on the way in could be
+written back", and the analyzer's comments and diagnostic say the same. Which
+of the two stands is the owner's call, and it is not made here.
+
+**Now**, so that no program's result depends on the answer:
+
+- A method that writes a non-aggregate receiver — assignment, compound
+  assignment, passing it as `.copy`, giving it to `read`/`input` — is an
+  analysis error on both backends (`reject_value_receiver_write`): "cannot
+  write to 'k' — a receiver that is not a struct or an array is a value, so
+  the write would not reach the caller's variable".
+- The interpreter writes back struct and array receivers only. A receiver the
+  method did not write is the same under either reading, and the second
+  program prints 12 on both backends.
+
+When the owner decides: if a non-aggregate receiver is a value, the error can
+go (the assignment becomes local) and §42's reason and the "passed by
+reference" diagnostic are reworded; if it is to be written back, the error is
+replaced by a write-back in compiled code and V2 item 4 is reversed.
+
+No tracked method writes a non-aggregate receiver.
+
+Fixtures: `t_number_receiver_written_rejected`,
+`t_result_receiver_written_rejected`,
+`t_number_receiver_passed_as_copy_rejected`, and
+`t_value_receivers_are_not_written_back` (both backends). Unit test
+`a_method_may_not_write_a_receiver_that_is_not_a_struct_or_array`.

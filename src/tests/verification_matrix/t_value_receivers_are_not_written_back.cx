@@ -1,0 +1,47 @@
+// A receiver that is not a struct or an array — a number, bool, string, enum
+// or Result — is a value: the method gets what the argument held at its
+// position in the argument list, and the caller's variable is not touched by
+// the call. The interpreter used to store the value it had read back into the
+// variable when the method returned, over whatever a later argument had done
+// to it: `m` was 5 after the first call below, where compiled code had 12.
+enum Mode { Slow, Fast }
+struct V { x: t64 }
+num: impl (p: V, k: t64) {
+    fnc: t64 total(extra: t64) { return p.x * 1000 + k + extra }
+}
+mix: impl (p: V, on: bool, name: str, mode: Mode, r: Result<t64>) {
+    fnc: t64 describe() {
+        p.x += 1
+        print(name)
+        print(mode)
+        print(r)
+        if on { return p.x }
+        return 0
+    }
+}
+fnc: t64 inc(m.copy: t64) {
+    m += 7
+    return 1
+}
+fnc: bool flip(b.copy: bool) {
+    b = !b
+    return true
+}
+
+q: V = V { x: 1 }
+m: t64 = 5
+print(q.total(m, inc(m.copy)))
+print(m)
+print(q.total(m, inc(m.copy)))
+print(m)
+
+on: bool = true
+label: str = "first"
+mode: Mode = Mode::Fast
+res: Result<t64> = Ok(5)
+print(q.describe(on, label, mode, res))
+print(on)
+print(label)
+print(mode)
+print(res)
+print(q.x)
