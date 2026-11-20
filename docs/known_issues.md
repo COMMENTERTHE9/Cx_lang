@@ -5915,3 +5915,31 @@ read after every statement): 1,500 programs, all agreeing.
 Fixtures: `t_operator_operands_are_values`,
 `t_operator_keeps_what_its_right_operand_did`, and the changed
 `t_op_expr_receiver_mutation` (both backends).
+
+### d. In compiled code a field or element given for a further receiver was the place itself (the rest of §69c; rule V2 item 3)
+
+A further receiver of a multi-receiver `impl` is bound by reference when it is
+given a variable. Compiled code passed whatever the argument lowered to, and a
+field or an element lowers to its own address:
+
+```cx
+ops: impl (a: V, b: V) { fnc: t64 mix(n: t64) { a.x += n; b.x += 1000; return a.x } }
+p.mix(w.inner, 5)
+wi: V = w.inner
+print(wi.x)                      // interpreter 2, JIT 1002
+```
+
+The same for `p.mix(arr:[0], 5)`, an `if` value yielding a variable, and an
+array field given for an array receiver (`k.bump(h.items)`: 10 / 60).
+
+**Now** only a variable named directly is passed by address. Anything else
+given for a further receiver is copied first (`prepare_call_args`): it is a
+temporary, the method gets its value, and what the method does to it reaches
+nothing — which is what the interpreter always did. The scan that decides
+whether evaluating an expression can change a variable (`expr_may_write`)
+counts an argument only when it is the variable's name, to match.
+
+No tracked program passes a field, element or expression for a struct or array
+receiver.
+
+Fixture: `t_further_receiver_given_a_place_is_a_temporary` (both backends).

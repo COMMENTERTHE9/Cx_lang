@@ -7101,11 +7101,13 @@ fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
                 Some(receiver) => any(receiver),
                 None => scan.names(*instance_binding),
             };
-            // Only a struct or an array is passed by reference; a number,
-            // bool, string or enum argument is a value wherever it came from.
+            // Only a struct or an array is passed by reference, and only when
+            // the argument is the variable's name: a number, bool, string or
+            // enum argument is a value wherever it came from, and a field or
+            // element of the variable is a temporary (`prepare_call_args`).
             let as_alias = args.iter().any(|arg| {
-                matches!(arg, SemanticCallArg::Expr(e)
-                    if !passed_by_value(&e.ty) && root_binding(e).is_some_and(|b| scan.names(b)))
+                matches!(arg, SemanticCallArg::Expr(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, .. } })
+                    if !passed_by_value(ty) && scan.names(*binding))
             });
             scan == Scan::AnyCall || on_it || as_alias || args_may_write(args, scan)
         }
@@ -9045,7 +9047,18 @@ fn prepare_call_args(
                     lowered.ty,
                 )?;
                 let receiver = ctx.signature_table.get(callee).and_then(|s| s.receiver_params.get(i)).copied().unwrap_or(false);
-                let value = if receiver { lowered.value } else { copy_if_memory_resident(&expr.ty, expr, lowered.value, ctx, active)? };
+                // A receiver is passed by address when it is the variable
+                // itself: the receiver the call is made on (argument 0, which
+                // `operator_operand_copy` has already replaced by a copy where
+                // an operator needs one), or a further receiver given a
+                // variable named directly. Anything else given for a further
+                // receiver — a field, an element, an `if` value — is a
+                // temporary: the method gets its value, and what the method
+                // does to it reaches nothing. Passing the place itself let
+                // `p.mix(w.inner, 5)` change `w.inner`, where the interpreter
+                // left it alone (known-issues §69c; amendment V2 item 3).
+                let by_address = receiver && (i == 0 || matches!(expr.kind, SemanticExprKind::VarRef { .. }));
+                let value = if by_address { lowered.value } else { copy_if_memory_resident(&expr.ty, expr, lowered.value, ctx, active)? };
                 lowered_args.push(value);
             }
             // `.copy.free` is plain passing: hand over the value.
