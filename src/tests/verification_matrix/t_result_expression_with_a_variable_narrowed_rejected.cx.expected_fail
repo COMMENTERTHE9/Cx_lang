@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+Ok(n + 1) with a t64 n where Result<t8> is declared: not a constant, type mismatch in analysis.

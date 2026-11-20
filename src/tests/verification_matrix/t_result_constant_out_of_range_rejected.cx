@@ -1,0 +1,5 @@
+// A constant that does not fit the declared payload type is an error, not a
+// wrapped value: a `Result`'s payload is converted only when that is provably
+// safe. (An ordinary `x: t8 = 100 + 100` wraps to -56.)
+c: Result<t8> = Ok(100 + 100)
+print(c)

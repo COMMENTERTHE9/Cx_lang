@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+Ok(100 + 100) where Result<t8> is declared: the constant 200 does not fit, rejected by analysis.

@@ -5784,11 +5784,22 @@ variable or element whose type is `Result<unknown>`.
 
 Two things follow that are worth stating:
 
-- **A literal takes the declared payload type, and only a literal does.**
-  `r: Result<t8> = Ok(5)`, `take8(Ok(12))` and `return Ok(-128)` are a
-  `Result<t8>`, range-checked. `Ok(1 + 2)` is a `Result<t64>`. An untyped
-  variable given `Ok(5)` is a `Result` of a number of no declared width, and
-  cannot be read as a `Result<t8>`: analysis sees its type, not the 5.
+- **A literal takes the declared payload type, and so does a constant
+  expression that fits it.** `r: Result<t8> = Ok(5)`, `take8(Ok(12))` and
+  `return Ok(-128)` are a `Result<t8>`, range-checked. So, by the owner's
+  decision of 2026-11-20, is `Ok(1 + 2)`: where a whole-number payload type is
+  declared and the payload is a constant whole-number expression — literals,
+  unary minus, `+`, `-`, `*`, with every intermediate value inside a `t64` —
+  analysis works out its value, and the payload is that value at the declared
+  type (`constant_whole_number`). A constant that does not fit is an error
+  ("the constant 200 does not fit t8"), not a wrapped value: unlike
+  `x: t8 = 100 + 100`, a `Result`'s payload is converted only when that is
+  provably safe. Anything analysis cannot evaluate — a variable, a division, a
+  call — has its own type: `Ok(n + 1)` with a `t64` `n` is a `Result<t64>`,
+  and an untyped variable given `Ok(5)` is a `Result` of a number of no
+  declared width and cannot be read as a `Result<t8>`: analysis sees its
+  type, not the 5. *(The first version of this rule converted literals only,
+  and made `Ok(1 + 2)` at a `Result<t8>` an error.)*
 - **`.copy` needs the same payload type exactly** (`result_payloads_identical`).
   A `.copy` argument is written back, so an `Err`-only variable cannot be
   passed to a `Result<t64>` parameter. Declare the variable's type —
@@ -5807,7 +5818,8 @@ interpreter's answer for each.)*
 |---|---|---|
 | `Result<t64>` where `Result<t8>` is declared (variable, argument, return, field) | accepted; value not converted | error |
 | `Result<t64>` where `Result<f64>` is declared, or the reverse | accepted | error |
-| `Ok(n)` or `Ok(1 + 2)` with a `t64` payload where `Result<t8>` is declared | accepted; `Ok(1 + 2)` ran on both backends | error |
+| `Ok(n)` with a `t64` `n` where `Result<t8>` is declared | accepted | error |
+| `Ok(100 + 100)` where `Result<t8>` is declared | accepted; `Ok(200)` on both backends on `submain` — a value a `t8` cannot hold | error: the constant does not fit. (`Ok(1 + 2)` is accepted, as before the rule, and is now a `Result<t8>`) |
 | an `Err`-only variable passed `.copy` to a typed `Result` parameter | accepted; ran on both backends | error |
 | a generic `T` bound to `Result<t64>` by one argument and given a `Result` that does not fit it by another | accepted | error |
 | an untyped variable holding `Ok(5)` where `Result<t8>` is declared | accepted; ran on both backends | error |
@@ -5832,10 +5844,11 @@ route described next instead. No fixture older than this work changes.
   compiled code refused), where the branches the other way round were already
   an error. In every position a `Result` type is declared, each branch is now
   checked against it (`check_branch_tail_fits`). This also turns a refusal the
-  first version of the rule introduced into an analysis error:
+  first version of the rule introduced into something analysis decides:
   `x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }` ran on both backends
-  before the rule, was refused by compiled code under it, and is now rejected
-  like `Ok(1 + 2)` in the first branch.
+  before the rule and was refused by compiled code under it. Each branch is
+  now checked like the first: a constant that fits is accepted (the decision
+  of 2026-11-20, above), one that does not is an error.
 - *A float literal was cut to fit a whole-number payload.* The first version
   converted a literal `Ok` payload to the declared type, and so turned
   `r: Result<t8> = Ok(2.5)` into `Ok(2)` and `Ok(1000.5)` into `Ok(127)` on
@@ -5906,8 +5919,13 @@ and pinned with them, `t_result_copy_narrower_parameter_rejected` and
 Added with the review's fixes. Rejected on both:
 `t_result_later_branch_narrower_rejected`,
 `t_result_later_branch_other_kind_rejected`,
-`t_result_constant_arithmetic_in_later_branch_rejected`,
-`t_result_float_literal_into_whole_payload_rejected`. Accepted, both backends:
+`t_result_float_literal_into_whole_payload_rejected`. For constant
+expressions (2026-11-20): `t_result_constant_expression_at_a_narrow_type`
+(accepted, both backends), `t_result_constant_out_of_range_rejected` and
+`t_result_expression_with_a_variable_narrowed_rejected` (rejected on both);
+they replace `t_result_constant_arithmetic_narrowed_rejected` and
+`t_result_constant_arithmetic_in_later_branch_rejected`, which pinned the
+earlier, stricter rule. Accepted, both backends:
 `t_result_literal_branches_take_the_declared_type`,
 `t_result_generic_arguments_agree`, `t_result_copy_free_of_err_only_variable`
 (the parity harness counts the last as SKIP: `.copy.free` prints its

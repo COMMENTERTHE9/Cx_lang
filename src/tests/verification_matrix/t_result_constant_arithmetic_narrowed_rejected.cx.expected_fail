@@ -1,2 +1,0 @@
-#! interp=diagnostic jit=diagnostic
-Ok(1 + 2) is a Result<t64>; where a Result<t8> is declared it is a type mismatch in analysis.

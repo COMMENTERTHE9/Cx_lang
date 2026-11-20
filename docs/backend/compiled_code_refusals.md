@@ -37,8 +37,13 @@ code could not tell the two apart.
 *(After the independent review of §75: for one shape this was not yet true.
 `x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }` — the constant in a
 **later** branch — was still accepted by analysis and refused by compiled
-code. Each branch of an `if`/`when` value is now checked, so it is a type
-error like the rest.)*
+code. Each branch of an `if`/`when` value is now checked like the first.)*
+
+*(2026-11-20, by the owner's decision: a constant whole-number expression that
+provably fits the declared payload type is converted to it, so `Ok(1 + 2)` at
+a `Result<t8>` is legal again and runs on both backends — R2's commonest case
+is neither refused nor an error. A constant that does not fit, and anything
+that is not a constant, remains a type error.)*
 
 R1–R3 were refusals of a `Result` read at a narrower whole-number type than it
 was made with, when the value happened to fit: directly
@@ -131,3 +136,6 @@ the statement form, which `submain` refused.)*
   program, which is a language change, not a compiler capability.
 - Pull request descriptions report SKIPs separately from PASSes and name the
   fixtures.
+- The gates are run on Linux **and Windows**. Both Windows CI jobs are
+  permanent by the owner's decision of 2026-11-20; a refusal or a SKIP is
+  never introduced to make one of them pass.
