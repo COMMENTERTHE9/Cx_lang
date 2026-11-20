@@ -101,8 +101,8 @@ R4 and R5 are pinned by unit tests in `src/ir/lower.rs`
 interpreter's answer, but only a unit test can assert that compiled code
 refuses and why.
 
-Totals at the top of the stack (`backend/value-alias-semantics`): 786
-fixtures, 728 PASS, 58 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
+Totals at the top of the stack (`backend/value-alias-semantics`): 787
+fixtures, 729 PASS, 58 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
 PASS, 48 SKIP. The 58 are `submain`'s 48, less 11 that are now analysis
 errors on both backends (below), plus the 19 fixtures this work added to pin
 the interpreter's answer where compiled code refuses, plus

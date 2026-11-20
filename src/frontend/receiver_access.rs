@@ -24,10 +24,17 @@
 //!    the method's set is an error.
 //!
 //! "Can call" follows names, not values: a call to a function, a method call
-//! on a value of a known struct type, an operator on one. A method call on a
-//! value whose type is not a struct this program declares methods for (a type
-//! parameter) is taken to reach every method of that name. A path that is
+//! on a value of a known struct type, an operator on one. A path that is
 //! never taken still counts, and a read counts as much as a write.
+//!
+//! A method call on a value whose type is a type parameter (`t.touch()` in
+//! `fnc <T: G> call(t: T)`) is the method of whatever struct a call gives
+//! that parameter, so a generic function is followed once for each such
+//! struct it is reached with. Where a call does not say — the parameter is
+//! left unbound, or bound to a generic struct's field, whose type is not
+//! tracked — the method call is not followed. That case is not determined
+//! here, and the two checks behind this rule decide it: the interpreter stops
+//! at run time, and compiled code refuses the program.
 
 use std::collections::{HashMap, HashSet};
 
@@ -44,15 +51,37 @@ struct Unit {
     /// How many leading parameters of a method call on this unit are
     /// receivers after the first (the one the call is made on).
     further_receivers: usize,
+    /// The body's own type parameters. A method call on a value of one is
+    /// resolved by what a call gives it.
+    type_params: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Callee {
-    Function(FunctionId),
+    /// A function, and what the call gives each of its type parameters, in
+    /// their declared order.
+    Function(FunctionId, Vec<TypeArg>),
     FunctionNamed(String),
-    /// `(struct name, method name)`.
+    /// `(struct name, method name)`. In a generic function the first may be
+    /// the name of one of its type parameters instead.
     Method(String, String),
 }
+
+/// What a call gives a type parameter, as far as method calls on a value of
+/// that type go: methods belong to structs.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum TypeArg {
+    Struct(String),
+    /// The calling function's own type parameter of this name.
+    Param(String),
+    /// A type no method of the program is called on, or one that is not
+    /// known.
+    Other,
+}
+
+/// A body, and the struct each of its type parameters is — `None` for one
+/// that is not a struct, or not known.
+type Instance = (usize, Vec<Option<String>>);
 
 /// A written method call, wherever it stands.
 struct MethodCallSite {
@@ -365,12 +394,20 @@ impl<'a> Walk<'a> {
                     self.expr(field);
                 }
             }
-            SemanticExprKind::Call { callee, function, args, .. } => {
+            SemanticExprKind::Call { callee, function, args, type_args, .. } => {
                 self.args(args);
                 self.calls.push(if *function == FunctionId(u32::MAX) {
                     Callee::FunctionNamed(callee.clone())
                 } else {
-                    Callee::Function(*function)
+                    let type_args = type_args
+                        .iter()
+                        .map(|ty| match ty {
+                            SemanticType::Struct(name) => TypeArg::Struct(name.clone()),
+                            SemanticType::TypeParam(name) => TypeArg::Param(name.clone()),
+                            _ => TypeArg::Other,
+                        })
+                        .collect();
+                    Callee::Function(*function, type_args)
                 });
             }
             SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, pos, .. } => {
@@ -469,7 +506,6 @@ struct UnitIndex {
     by_function: HashMap<FunctionId, usize>,
     by_function_name: HashMap<String, usize>,
     by_method: HashMap<(String, String), Vec<usize>>,
-    by_method_name: HashMap<String, Vec<usize>>,
 }
 
 impl UnitIndex {
@@ -480,10 +516,13 @@ impl UnitIndex {
                 continue;
             }
             let unit = units.len();
-            units.push(Unit { further_receivers: nested.further_receivers, ..Unit::default() });
+            units.push(Unit {
+                further_receivers: nested.further_receivers,
+                type_params: nested.function.type_params.clone(),
+                ..Unit::default()
+            });
             self.by_function.insert(nested.function.id, unit);
             if nested.is_method {
-                self.by_method_name.entry(nested.function.name.clone()).or_default().push(unit);
                 for struct_name in &nested.method_of {
                     self.by_method.entry((struct_name.clone(), nested.function.name.clone())).or_default().push(unit);
                 }
@@ -528,35 +567,98 @@ pub(crate) fn check(stmts: &[SemanticStmt]) -> Vec<SemanticError> {
         sites.append(&mut walk.sites);
         index.register(walk.nested, &mut units, &mut queue);
     }
-    let UnitIndex { by_function, by_function_name, by_method, by_method_name } = index;
+    let UnitIndex { by_function, by_function_name, by_method } = index;
 
-    // What each unit can reach: its own names and those of everything it calls.
-    let callees = |callee: &Callee| -> Vec<usize> {
-        match callee {
-            Callee::Function(id) => by_function.get(id).copied().into_iter().collect(),
-            Callee::FunctionNamed(name) => by_function_name.get(name).copied().into_iter().collect(),
-            Callee::Method(struct_name, method) => match by_method.get(&(struct_name.clone(), method.clone())) {
-                Some(found) => found.clone(),
-                // Not a struct this program declares that method for — a type
-                // parameter: any method of that name.
-                None => by_method_name.get(method).cloned().unwrap_or_default(),
-            },
-        }
+    // What a body calls, given the struct each of its type parameters is.
+    let unbound = |unit: usize| -> Instance { (unit, vec![None; units[unit].type_params.len()]) };
+    let methods = |struct_name: &str, method: &str| -> Vec<usize> {
+        by_method.get(&(struct_name.to_string(), method.to_string())).cloned().unwrap_or_default()
     };
-    let mut reach: Vec<HashSet<BindingId>> = units.iter().map(|unit| unit.names.clone()).collect();
+    let callees = |(unit, bound): &Instance| -> Vec<Instance> {
+        let params = &units[*unit].type_params;
+        let bound_to = |name: &str| params.iter().position(|p| p == name).and_then(|i| bound.get(i).cloned().flatten());
+        let mut out = Vec::new();
+        for callee in &units[*unit].calls {
+            match callee {
+                Callee::Function(id, type_args) => {
+                    let Some(&target) = by_function.get(id) else { continue };
+                    let wanted = units[target].type_params.len();
+                    // A call that leaves a parameter unbound records fewer
+                    // types than there are parameters, and which is which is
+                    // then not known.
+                    let known = type_args.len() == wanted;
+                    let target_bound = (0..wanted)
+                        .map(|i| match type_args.get(i).filter(|_| known) {
+                            Some(TypeArg::Struct(name)) => Some(name.clone()),
+                            Some(TypeArg::Param(name)) => bound_to(name),
+                            _ => None,
+                        })
+                        .collect();
+                    out.push((target, target_bound));
+                }
+                Callee::FunctionNamed(name) => out.extend(by_function_name.get(name).map(|&target| unbound(target))),
+                Callee::Method(type_name, method) => {
+                    // On a value of one of this body's type parameters, the
+                    // method of the struct that parameter is here; not
+                    // followed where that is not known.
+                    let struct_name = if params.iter().any(|p| p == type_name) {
+                        bound_to(type_name)
+                    } else {
+                        Some(type_name.clone())
+                    };
+                    if let Some(struct_name) = struct_name {
+                        out.extend(methods(&struct_name, method).into_iter().map(unbound));
+                    }
+                }
+            }
+        }
+        out
+    };
+
+    // Every body a written method call can reach, with the types it is
+    // reached with, and what each of those names: its own names and those of
+    // everything it calls.
+    let mut ids: HashMap<Instance, usize> = HashMap::new();
+    let mut instances: Vec<Instance> = Vec::new();
+    for site in &sites {
+        for target in methods(&site.struct_name, &site.method) {
+            let root = unbound(target);
+            if !ids.contains_key(&root) {
+                ids.insert(root.clone(), instances.len());
+                instances.push(root);
+            }
+        }
+    }
+    let mut edges: Vec<Vec<usize>> = Vec::new();
+    let mut next = 0;
+    while next < instances.len() {
+        let mut out = Vec::new();
+        for callee in callees(&instances[next]) {
+            let id = match ids.get(&callee) {
+                Some(&id) => id,
+                None => {
+                    ids.insert(callee.clone(), instances.len());
+                    instances.push(callee);
+                    instances.len() - 1
+                }
+            };
+            out.push(id);
+        }
+        edges.push(out);
+        next += 1;
+    }
+    let mut reach: Vec<HashSet<BindingId>> = instances.iter().map(|(unit, _)| units[*unit].names.clone()).collect();
     loop {
         let mut changed = false;
-        for index in 0..units.len() {
-            for callee in &units[index].calls {
-                for target in callees(callee) {
-                    if target == index {
-                        continue;
-                    }
-                    let add: Vec<BindingId> = reach[target].difference(&reach[index]).copied().collect();
-                    if !add.is_empty() {
-                        reach[index].extend(add);
-                        changed = true;
-                    }
+        for index in 0..instances.len() {
+            for &target in &edges[index] {
+                if target == index {
+                    continue;
+                }
+                let add: Vec<BindingId> = reach[target].difference(&reach[index]).copied().collect();
+                if !add.is_empty() {
+                    reach[index].extend(add);
+                    changed = true;
                 }
             }
         }
@@ -568,11 +670,13 @@ pub(crate) fn check(stmts: &[SemanticStmt]) -> Vec<SemanticError> {
     let mut errors = Vec::new();
     sites.sort_by_key(|site| site.pos);
     for site in &sites {
-        let targets = callees(&Callee::Method(site.struct_name.clone(), site.method.clone()));
+        let targets = methods(&site.struct_name, &site.method);
         if targets.is_empty() {
             continue;
         }
-        let reached = |binding: BindingId| outer.contains(&binding) && targets.iter().any(|&t| reach[t].contains(&binding));
+        let reached = |binding: BindingId| {
+            outer.contains(&binding) && targets.iter().any(|&t| reach[ids[&unbound(t)]].contains(&binding))
+        };
         if reached(site.instance_binding) {
             errors.push(SemanticError {
                 pos: site.pos,
@@ -622,6 +726,32 @@ mod tests {
     }
 
     const HEAD: &str = "struct V { x: t64 }\ntop: V = V { x: 1 }\nother: V = V { x: 2 }\nfnc: t64 bump(v.copy: V) {\n    v.x += 5\n    return v.x\n}\nim: impl (s: V) {\n    fnc: t64 inc() {\n        s.x += 1\n        return s.x\n    }\n}\n";
+
+    const GENERIC: &str = "struct V { x: t64 }\nstruct W { y: t64 }\ngene G { fnc touch() -> t64 }\ntop: V = V { x: 1 }\n\
+        fnc: t64 <T: G> call(t: T) { t.touch() }\nfnc: t64 <T: G> outer(t: T) { return call(t) }\n";
+
+    /// A method call on a value of a type parameter is the method of the
+    /// struct each call gives that parameter — not every method of its name.
+    #[test]
+    fn a_method_on_a_type_parameter_is_resolved_by_what_the_call_gives_it() {
+        // `W`'s method names `top`; the method running on `top` reaches `V`'s.
+        let other_struct_names_it = "phen G (v: V) { fnc: t64 touch() { return v.x } }\nphen G (w: W) { fnc: t64 touch() { return top.x + w.y } }\n";
+        for run in ["return call(s)", "return outer(s)"] {
+            let src = format!("{GENERIC}{other_struct_names_it}vm: impl (s: V) {{\n    fnc: t64 run() {{\n        s.x += 10\n        {run}\n    }}\n}}\nr: t64 = top.run()\n");
+            assert_eq!(errors(&src), "", "{src}");
+        }
+        // The method running on `top` reaches `W`'s, which names `top`.
+        for run in ["return call(w)", "return outer(w)"] {
+            let src = format!("{GENERIC}{other_struct_names_it}vm: impl (s: V) {{\n    fnc: t64 run() {{\n        w: W = W {{ y: 5 }}\n        {run}\n    }}\n}}\nr: t64 = top.run()\n");
+            assert!(errors(&src).contains("method 'top.run', or something it calls, names 'top'"), "{src}: {}", errors(&src));
+        }
+        // `V`'s own method names `top`, and is the one reached.
+        let own_names_it = "phen G (v: V) { fnc: t64 touch() { return top.x } }\nphen G (w: W) { fnc: t64 touch() { return w.y } }\n";
+        for run in ["return call(s)", "return outer(s)"] {
+            let src = format!("{GENERIC}{own_names_it}vm: impl (s: V) {{\n    fnc: t64 run() {{\n        s.x += 10\n        {run}\n    }}\n}}\nr: t64 = top.run()\n");
+            assert!(errors(&src).contains("method 'top.run', or something it calls, names 'top'"), "{src}: {}", errors(&src));
+        }
+    }
 
     /// A method that can reach the variable it is called on — itself or
     /// through what it calls, on a path taken or not, to read or to write.

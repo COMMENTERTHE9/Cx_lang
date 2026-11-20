@@ -6349,15 +6349,33 @@ The rule is static and conservative. It rejects a program whose offending
 path is never taken (the one above with `if c { return poke() }` ran on the
 interpreter before), and a read counts as much as a write. Calls are followed
 by name: functions, methods of a known struct type, operators, nested
-functions; a method call on a value whose type is a type parameter is taken to
-reach every method of that name. What it does not reject: the receiver under
+functions. A method call on a value whose type is a type parameter is the
+method of the struct each call gives that parameter, so a generic function is
+followed once for each such struct it is reached with. *(The first version
+took such a call to reach every method of that name, and so rejected a program
+in which another struct's method named the variable — which ran before, and
+is not a conflict. Found by the review of the decisions document, fixed
+2026-11-20.)* Where a call does not say what the parameter is — it is left
+unbound, or bound to a generic struct's field — the method call is not
+followed, and the second line below decides. What it does not reject: the receiver under
 any name, any other variable, the caller's own use of the variable while it
 evaluates the arguments, the variable passed to an ordinary parameter, and a
 variable local to a function, which no method can name.
 
 The interpreter's run-time check and compiled code's refusal stay as a second
-line; a program that analysis accepts cannot reach either by this route. One
-tracked program is affected: the fixture written for the run-time check.
+line; a program that analysis accepts reaches them only through a method call
+on a type parameter the call does not determine. One tracked program is
+affected: the fixture written for the run-time check.
+
+Two things the rule is, said plainly. It rejects a **read** of the receiver's
+variable as much as a write, as the run-time check of V5 already did: the
+interpreter runs a method on a copy of its receiver and stores it back at the
+end, so a read by name sees the value from before the call. And it rejects an
+access on a path that is **never taken**. In both cases the way out is the
+same: reach the value through the receiver, or pass what the method needs as
+an argument. One further over-rejection is known: a `"{top}"` written in a
+string that the method passes to a function with a parameter named `top` is
+read there as that parameter, and analysis reads it where it is written.
 
 Fixtures (all rejected by analysis on both backends):
 `t_receiver_variable_reached_by_name`,

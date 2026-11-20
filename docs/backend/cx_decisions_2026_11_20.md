@@ -202,41 +202,62 @@ skipped or made non-blocking to get a build through.
 ## D6 — A receiver's variable reached by name while its method runs is an analysis error
 
 *Owner: "Prefer detecting invalid overlapping mutable access during semantic
-analysis. … If a case cannot be determined statically, use a sound runtime
-check where supported or refuse compilation."*
+analysis. If the compiler can determine that a method will access the same
+mutable receiver through conflicting aliases, reject the program before
+execution. If a case cannot be determined statically, use a sound runtime
+check where supported or refuse compilation until it can be implemented
+safely."*
 
 Rule V5 said the interpreter stops at run time and compiled code refuses. It
-becomes a static rule:
+becomes a static rule, with those two as the fallback:
 
 1. For every function and method, analysis computes the set of variables
    declared **outside every function** (module-level variables, and locals of
    top-level blocks) that its body names — reads, assigns, takes a field or an
    element of, passes as `.copy`, calls a method on, or interpolates into a
-   string — or that anything it can call names. Calls are followed by name:
-   a call to a function, a method call on a value of a known struct type, an
-   operator on one. A method call on a value whose type is a type parameter
-   is taken to reach every method of that name.
-2. A method call `x.m(..)` in which `x`, or a struct or array variable given
+   string — or that anything it can call names. Variables are told apart by
+   their binding, not their spelling: a block's own `top`, or a library's, is
+   not the entry file's `top`.
+2. Calls are followed by name: a call to a function, a method call on a value
+   of a known struct type, an operator on one. A method call on a value whose
+   type is a type parameter is the method of the struct each call gives that
+   parameter, so a generic function is followed once for each such struct it
+   is reached with.
+3. A method call `x.m(..)` in which `x`, or a struct or array variable given
    by name for a further receiver, is such a variable **and is in the set of
    `m`** is an analysis error: the method, or something it calls, reaches the
    variable it is running on.
-3. The rule is deliberately conservative: it rejects a program in which the
-   access is on a path that is never taken. It does not depend on whether the
-   access is a read or a write.
-4. The interpreter keeps its run-time check and compiled code keeps its
-   refusal, as a second line. A program that analysis accepts cannot reach
-   either through this route: a variable local to a function cannot be named
-   by a method called on it.
+4. The rule is deliberately conservative in two ways, both already true of
+   the run-time check it replaces as the first line. It rejects an access on
+   a path that is **never taken**. And it rejects a **read** as much as a
+   write: the interpreter runs a method on a copy of its receiver and stores
+   it back at the end, so a read by name sees the value from before the call,
+   which compiled code would not. The way out is the same for both: reach the
+   value through the receiver, or pass what the method needs as an argument.
+5. **Not determined statically, and left to the fallback:** a method call on
+   a type parameter that a call leaves unbound, or binds to a generic
+   struct's field (whose type is not tracked). There the interpreter keeps its
+   run-time check and compiled code keeps its refusal. Every other program
+   that analysis accepts cannot reach either: a variable local to a function
+   cannot be named by a method called on it.
 
 A receiver that has the name of its variable (`impl (top: V)` called as
 `top.run()`) names the receiver, not the variable, and is unaffected.
 
+One over-rejection is known and accepted: a `"{top}"` in a string that the
+method passes to a function with a parameter named `top` is expanded there, as
+that parameter; analysis reads the name where it is written.
+
 | Program | Before (interpreter / compiled) | After |
 |---|---|---|
 | a method on `top` whose body calls a function that changes `top` | run-time error / refused | analysis error |
+| the same, only reading `top` | run-time error / refused | analysis error |
 | the same with the call on a path not taken | runs / refused | analysis error |
 | `impl (top: V)` called as `top.run()`, using `top` inside | agree | unchanged |
-| a method on `top` that calls a function reading another variable | agree | unchanged |
+| a method on `top` that calls a function reading another variable | agree for a number; for a struct, runs / refused | unchanged |
+| a method on `top` that calls `call(s)`, `fnc <T: G> call(t: T) { t.touch() }`, where `V`'s `touch` names `top` | run-time error / refused | analysis error |
+| the same where only another struct's `touch` names `top` | runs / refused | unchanged |
+| a block-local `top` shadowing the module's, with a method that changes the module's | runs / refused | unchanged |
 
 ## 7. What changes for existing programs
 

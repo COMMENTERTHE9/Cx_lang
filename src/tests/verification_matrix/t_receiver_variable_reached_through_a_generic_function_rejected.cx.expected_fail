@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The method reaches its receiver's variable by name through a generic function and the gene method it dispatches to.
