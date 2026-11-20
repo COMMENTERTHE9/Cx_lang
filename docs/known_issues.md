@@ -6379,6 +6379,13 @@ The interpreter's run-time check and compiled code's refusal stay as a second
 line; a program that analysis accepts cannot reach either by this route. One
 tracked program is affected: the fixture written for the run-time check.
 
+A second over-rejection is known (found by the review of the implementation):
+a method of a struct that two `impl` blocks both give a method of that name —
+a later block replacing it, or a multi-receiver block listing the struct —
+counts as both, though a call runs one. Conservative; the programs it affects
+are ones compiled code refuses in any case (a function naming a top-level
+struct).
+
 Two things the rule is, said plainly. It rejects a **read** of the receiver's
 variable as much as a write, as the run-time check of V5 already did: the
 interpreter runs a method on a copy of its receiver and stores it back at the
@@ -6452,7 +6459,11 @@ when the matched value's type is `bool`; anything else needs a `_` arm, and
 the error says so. The owner's decision to keep the current rule (decision 4)
 asks for exactly this: a `_` unless there is a sound proof. A `when`
 statement is unchanged. No tracked program is affected — the four tracked
-value-`when`s that rely on the proof match a bool. Fixture
+value-`when`s that rely on the proof match a bool. *(One shape that ran the
+same on both backends is rejected: such a `when` on a generic `T` that every
+call makes a bool, found by the review of the implementation. The proof holds
+only per call, analysis checks the body once, and no new exhaustiveness
+system is added at this stage: add a `_` arm.)* Fixture
 `t_when_value_bool_arms_on_a_number_rejected`; the unit test above.
 
 ## 78. A number literal in a generic array literal was narrowed to fit in compiled code
@@ -6644,10 +6655,11 @@ parameters is a type of its own:
    `[N: T]` (§42), and is checked for every call: a whole number needs `T`
    to be a whole-number type that holds it; a float needs `T` to be f64.
 
-"Every call" is every call written outside a generic function, and every
+"Every call" is every call written with concrete types, wherever it is
+written — inside a generic function that is never called, too — and every
 generic function it reaches from there, with the types it reaches them with.
-The error is reported at that outermost call and names the function, the
-types and what its body does:
+The error is reported at that call and names the function, the types and
+what its body does:
 
 ```
 'widen' is called with T = str, but its body uses a T value where t64 is declared: str is not t64
@@ -6839,6 +6851,11 @@ backends (`[w, 1]` at a `[2: t8]` holds 44) or rejected (a `[2: t64]` where a
 `[2: t8]` is declared), so compiled code's answer is the one the rules give
 and the interpreter's is not.
 
+The same root cause, found by the review of the implementation: a generic
+struct literal whose `T` is inferred from fields of two number kinds,
+`p: Pair = Pair { a: 1, b: -0.5 }`, then `print(p.b)` — interpreter -0.5,
+compiled code 0.
+
 Closing it needs a struct's type arguments to be part of its type — in
 analysis, so that `b.v` is a t64 and `c = b` between a `Box<t64>` and a
 `Box<t8>` is a type error. That is a change to the type representation every
@@ -6869,4 +6886,16 @@ distinguished the two zeros — printing, `1.0 / g` — differed. Compiled code
 now subtracts from `-0.0`, which is exact negation for every float (`-0.0 -
 0.0` is `-0.0`, `-0.0 - -0.0` is `+0.0`). Whole numbers are unchanged.
 Fixture `t_float_negation_of_zero` (both backends).
+
+**d. An error in an imported library is reported at a line of the entry
+file**, without the library's name: an ordinary type error in a library, and
+since 2026-11-20 the whole-program errors (§81, §76h), point at the entry
+file's line of the same number — or past its end. Found by the review of the
+implementation; present on `submain`. Not changed: errors carry a position
+but not the file it belongs to.
+
+**e. 1,000 nested calls `id(id(…))` overflow the compiler's own stack**
+(exit −6), and a parameter typed `[9223372036854775807: t32]` makes compiled
+code allocate until the process is killed. Both found by the same review,
+both present on `submain`; recorded, not changed.
 

@@ -67,12 +67,17 @@ parameters `T`:
    nothing — may not be used where `T` is declared: in a typed declaration,
    an assignment, a `return` or trailing expression, an `Ok` payload, a
    struct field, an argument for a parameter whose type the call has made
-   `T`, a gene method's `Self` on a `T` value, and **each** branch of an `if`
-   or `when` used as a value (the value is typed by its first branch, so the
-   others are checked on their own). It is an analysis error in the body,
-   whatever the function is called with — including a call that gives `T`
-   exactly the type of that value. A function that makes a `T` out of
-   something else is not generic in `T`.
+   `T` (a type parameter of a callee is bound to the caller's `T` only by a
+   `T`), a gene method's `Self` on a `T` value. It is an analysis error in
+   the body, whatever the function is called with — including a call that
+   gives `T` exactly the type of that value. A function that makes a `T` out
+   of something else is not generic in `T`.
+
+   The branches of an `if` or `when` used as a value are one value: where
+   one yields a `T` (or an array or `Result` of it), **every** branch must
+   yield that type, whatever the value is used for — returned, declared, an
+   array element, the value of an untyped `let`. (`if c { x } else { 300 }`
+   is rejected, and so is `n: t64 = if c { 1 } else { x }`.)
 2. **A value whose type is, or holds, `T` may be used where another type is
    declared** — `n: t64 = x`, `s: str = x`, `phase = x` for an enum variable,
    a `Result<T>` returned as a `Result<t64>`. That is right only for some
@@ -99,13 +104,22 @@ parameters `T`:
    a call that binds `T` to `?`, or leaves it unbound, is checked for nothing.
 
 "Every call" is defined by what the program says, not by what runs: every
-call written outside a generic function, and every generic function reached
-from it through calls, each with the types it is reached with. The error is
-reported at that outermost call, once per thing the body does, and names the
-function, the types and what the body does with them. A function that calls
-itself with an ever larger type (`g([x])` inside `g`) is followed to a
-nesting depth of 24; compiled code refuses such a program at 64
-instantiations.
+call written with concrete types — wherever it is written, before or after
+the function it calls, and inside a generic function that is never called —
+and every generic function reached from it through calls, each with the
+types it is reached with. The error is reported at that call, once per thing
+the body does, and names the function, the types and what the body does with
+them.
+
+The check is bounded so that its work grows with the program, not with what
+its types can generate; past a limit an instantiation is not checked, and the
+interpreter's run-time checks and compiled code's refusals decide, as before
+this rule. A function that calls itself with an ever larger type (`g([x])`
+inside `g`) is followed to a nesting depth of 24 (compiled code refuses such
+a program at 64 instantiations); one generic function is checked for at most
+256 sets of types reached through other calls, all of them for at most
+20,000; one call follows at most 4,096. A call written with concrete types is
+always checked.
 
 Not covered, and unchanged:
 
@@ -133,7 +147,7 @@ Not covered, and unchanged:
 | `n: t64 = x` with `x: T`, called with a number | agree | unchanged |
 | the same, called with a string | prints, then a run-time error / refused | analysis error at the call |
 | `s: str = x`, called with a string; `phase = x`, called with that enum | agree | unchanged |
-| the same, called with a number | a run-time error for the string, the number printed as an enum / refused | analysis error at the call |
+| the same, called with a number | a run-time error for the string and the enum assignment (the number is printed as an enum where it is returned as one) / refused | analysis error at the call |
 | `fnc: Result<t8> <T> conv(r: Result<T>) { return r }`, called with a `Result<t64>` | `Ok(300)` / refused | analysis error at the call |
 | `c: [2: T] = [x, 349]`, called with a `t8` | 349 / refused (93 on `submain`) | analysis error at the call |
 | `c: [2: T] = [x, 34]`, called with a `t8` or `t64` | 34 / 34 | unchanged |
@@ -222,8 +236,15 @@ static type is `bool`. No exhaustiveness system is added.
 | Program | Before (interpreter / compiled) | After |
 |---|---|---|
 | `when b { true => 1, false => 2, unknown => 3 }` as a value, `b: bool` | agree | unchanged |
-| the same on a t64, a string, an enum, a `Result`, a generic `T` | 0, and carries on / trap | analysis error |
+| the same on a t64, a string, an enum, a `Result` | 0, and carries on / trap | analysis error |
+| the same on a generic `T`, called with a number | 0, and carries on / trap | analysis error |
+| **the same on a generic `T`, called only with bools** | **1, 2 on both** | **analysis error** |
 | the same as a statement | nothing runs, on both | unchanged |
+
+The row in bold ran the same on both backends and is now rejected. For a `T`
+the proof holds only for the calls that make `T` a bool; analysis checks the
+body once, and the owner asked for no new exhaustiveness system at this
+stage. Add a `_` arm.
 
 ## D5 — Both Windows CI jobs are permanent
 
@@ -284,9 +305,16 @@ becomes a static rule, with those two as the fallback:
 A receiver that has the name of its variable (`impl (top: V)` called as
 `top.run()`) names the receiver, not the variable, and is unaffected.
 
-One over-rejection is known and accepted: a `"{top}"` in a string that the
-method passes to a function with a parameter named `top` is expanded there, as
-that parameter; analysis reads the name where it is written.
+Two over-rejections are known and accepted, both conservative:
+
+- a `"{top}"` in a string that the method passes to a function with a
+  parameter named `top` is expanded there, as that parameter; analysis reads
+  the name where it is written;
+- a method of a struct that two `impl` blocks both give a method of that
+  name — the second replacing the first, or a multi-receiver block listing
+  the struct — counts as both, though a call runs one. (Each written call
+  could be resolved to the method registered at that point; that needs the
+  call to carry its method's identity, a larger change.)
 
 | Program | Before (interpreter / compiled) | After |
 |---|---|---|
@@ -310,14 +338,20 @@ that parameter; analysis reads the name where it is written.
   of program that **ran the same on both backends** are now rejected: a
   concrete value where `T` is declared, in a function whose every call gives
   `T` that very type; and a whole-number literal beside `T` elements called
-  with an `f64`, when the element was only printed. A generic function that
-  only moves its `T` values around is unaffected. Tracked fixtures whose
-  outcome changed are listed in known-issues §81.
+  with an `f64`, when the element was only printed. Two more were found by
+  the review of the implementation: a call written with concrete types that
+  breaks what a generic body needs, inside a generic function that is never
+  called (it never ran); and `n: t64 = if c { 1 } else { x }`, a literal and a
+  `T` in one value (compiled code refused it). A generic function that only
+  moves its `T` values around is unaffected. Tracked fixtures whose outcome
+  changed are listed in known-issues §81.
 - **D3:** accepts programs that the Result rule (§75) had started to reject;
   no program that is accepted today changes.
 - **D4:** a `when` used as a value with only `true`/`false`/`unknown` arms on
   something that is not a bool is now an analysis error. It yielded 0 on the
-  interpreter and trapped in compiled code. No tracked program does this.
+  interpreter and trapped in compiled code — except on a generic `T` that
+  every call makes a bool, where it ran the same on both. No tracked program
+  does this.
 - **D5:** none.
 - **D6:** a program whose method reaches its receiver's variable only on a
   path that is not taken, or only to read it, ran on the interpreter (and was
@@ -340,6 +374,14 @@ commit.
 | 4b | D6 | A method call on a type parameter is resolved by what each call gives it | `backend/value-alias-semantics` (#507) | `6ef02cf` |
 | 5 | D2 | A generic body is checked against its own type parameters | `backend/value-alias-semantics` (#507) | `a7cefe7` |
 | 6 | D4 | The three-state proof counts only for a bool | `backend/value-alias-semantics` (#507) | `a1aeb13` |
+| 7 | D2, D6 | A call written before its function's definition names that function | `backend/value-alias-semantics` (#507) | `3cba86e` |
+| 8 | D2, D6 | Both whole-program checks bounded; the receiver rule counts what it cannot determine | `backend/value-alias-semantics` (#507) | `0a2a283` |
+| 9 | D2 | Branches of a value, inference and names in a generic body; one regression | `backend/value-alias-semantics` (#507) | `b32e03c` |
+
+Steps 7–9 answer the independent review of the implementation (§10). A
+silent difference that review found, present on `submain` and outside the six
+decisions — the negation of a float zero — is fixed in its own commit
+(`2db5afd`, known-issues §82 c).
 
 Each step carries fixtures for both backends, unit tests for the reason an
 error is given, and the full gates on Linux; CI runs them on Linux and
@@ -376,3 +418,38 @@ Found by the review and **not** changed, because they are present on
 `submain` and outside the six decisions (known-issues §82): a generic
 struct's field value used at a narrower declared type is a silent difference
 (300 / 44); and `!n` on a number and a string index are accepted by analysis.
+
+## 10. What the independent review of the implementation changed
+
+The implementation was reviewed at `8be2068` by a reviewer who ran about
+43,000 generated programs, a 972-cell matrix of rule 1 of D2, and every
+tracked program on the build before and after. **No silent difference was
+caused by the change.** Its findings, and what was done:
+
+- **Both whole-program rules skipped a call written before the function it
+  calls** (the function's definition took a second id; the call named the
+  first). The most important finding: the D2 per-call checks and the D6
+  receiver rule did not hold for forward calls. Fixed (step 7); the same
+  mismatch made compiled code refuse every forward call to a generic
+  function, and those now compile and agree.
+- **Unbounded work** in both passes: 53 s and 4.7 GB for a 24-line program
+  (D6), 11 s and 25 s for two others (D2). Bounded (step 8).
+- **D6:** an undetermined method call on a type parameter was not followed,
+  and the fallback behind the rule is not complete — compiled code ran one
+  such program while the interpreter stopped. Now counted as reaching every
+  method of its name (step 8). Two static misses (a name after the block that
+  declared a local of that name; a partly unbound generic call) fixed; one
+  over-rejection accepted (D6 above).
+- **D2:** two holes in rule 1 (a branch of a value used as an array element
+  or an untyped `let`), an inference gap (`pick(5, x)`), a dependence on how
+  an unrelated function spells its type parameter, two misleading messages,
+  and one regression (`pick(Err("e"), Ok(x))`). Fixed (step 9).
+- **Documentation:** item 5 of D6, the definition of "every call", two kinds
+  of program rejected that ran the same on both backends (now in §7), a row
+  each of the D2 and D4 tables, the limits. Corrected above.
+
+Recorded and not changed, all present on `submain` (known-issues §82): a
+generic struct literal whose `T` is inferred from fields of two number kinds
+(the §82 a family); errors in an imported library reported at a line of the
+entry file; 1,000 nested calls overflowing the compiler's stack.
+
