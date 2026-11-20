@@ -5779,3 +5779,50 @@ and pinned with them, `t_result_copy_narrower_parameter_rejected` and
 `a_copy_argument_has_exactly_the_parameters_result_type`,
 `result_assignments_are_checked_by_payload_type`.
 
+
+## 76. Values, receivers and operands: the open cases of §69 and §57b, settled
+
+*(§69 recorded seven cases on which the two backends disagreed, as one
+undecided question. The owner decided it on 2026-11-19 — value semantics by
+default, with mutation through explicitly defined mechanisms — and
+`docs/backend/cx_value_and_alias_semantics.md` turns that into rules V1–V8,
+reviewed independently before any code. This entry records each rule's
+implementation, one commit apiece, on `backend/value-alias-semantics`. All of
+the defects were present on `submain`.)*
+
+### a. `break` and `continue` could leave the function they were written in (§69g, rule V8)
+
+Only the early-return signal was caught at a function boundary. A `break` in a
+function body with no loop travelled out of the call and ended a loop of the
+caller; a labeled one in a function declared inside a loop ended that loop,
+because analysis kept the enclosing function's labels in scope; and at the top
+level it was a run-time error after everything before it had run. Compiled
+code refused all three (127).
+
+```cx
+fnc: t64 f() { break; return 1 }
+i: t64 = 0
+while (i < 3) {
+    i = i + 1
+    x: t64 = f()
+    print(i)
+}
+print("after")          // interpreter: after        JIT: refused
+```
+
+**Now** a `break` or `continue` belongs to a loop of the function it is
+written in — the innermost one, or the one carrying its label — and anything
+else is an analysis error on both backends ("'break' is not inside a loop of
+this function"). The loops and labels around a function's declaration are set
+aside while its body is analyzed (`Analyzer::analyze_function`), so a nested
+function may reuse a label for a loop of its own.
+
+No tracked program is affected: all 17 files that use `break`/`continue` do so
+inside a loop of the same function.
+
+Fixtures: `t_break_in_function_outside_loop_rejected`,
+`t_continue_in_method_outside_loop_rejected`,
+`t_break_label_of_enclosing_function_rejected`,
+`t_break_at_top_level_rejected`, and
+`t_break_continue_in_loops_of_their_function` (both backends). Unit test
+`break_and_continue_belong_to_a_loop_of_their_function`.

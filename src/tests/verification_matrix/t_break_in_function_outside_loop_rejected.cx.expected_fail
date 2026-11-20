@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+break in a function body that has no loop: rejected by analysis (amendment V8).

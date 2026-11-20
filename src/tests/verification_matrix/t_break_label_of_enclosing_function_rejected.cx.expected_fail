@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+break to the label of a loop around the function's declaration: rejected by analysis (amendment V8).

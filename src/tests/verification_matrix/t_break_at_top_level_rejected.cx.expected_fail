@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+break at the top level outside a loop: rejected by analysis, before anything is printed (amendment V8).

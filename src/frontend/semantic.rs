@@ -99,7 +99,13 @@ pub struct Analyzer {
     /// on exit. `break 'L`/`continue 'L` resolve `'L` against this stack; a label
     /// not present rejects cleanly ("no enclosing loop labeled 'L"). Unlabeled
     /// loops push nothing and unlabeled break/continue never consult it.
+    ///
+    /// Emptied at a function boundary, with `loop_depth`: a `break` in a
+    /// function body can name only a loop of that body.
     loop_labels: Vec<String>,
+    /// How many loops of the function (or top-level code) being analyzed
+    /// enclose the current statement. `break` and `continue` need at least one.
+    loop_depth: usize,
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
     structs: HashMap<String, Vec<(String, Type)>>,
@@ -172,6 +178,7 @@ impl Analyzer {
             current_type_params: vec![],
             in_function: false,
             loop_labels: vec![],
+            loop_depth: 0,
             funcs: HashMap::new(),
             enums: HashMap::new(),
             structs: HashMap::new(),
@@ -520,29 +527,46 @@ impl Analyzer {
     /// labeled-breaks (a): enter a possibly-labeled loop. A labeled loop whose
     /// label is already active in an enclosing loop rejects (duplicate). Returns
     /// whether a label was pushed, so the caller pops it after the body.
+    ///
+    /// Every loop form calls this, labeled or not, and it is what counts the
+    /// loops a `break` or `continue` may refer to.
     fn enter_loop_label(&mut self, label: &Option<String>, pos: usize) -> Result<bool, SemanticError> {
-        if let Some(name) = label {
+        let pushed = if let Some(name) = label {
             if self.loop_labels.iter().any(|l| l == name) {
                 return Err(sem_err!(pos, "duplicate loop label '{} — already used by an enclosing loop", name));
             }
             self.loop_labels.push(name.clone());
-            Ok(true)
+            true
         } else {
-            Ok(false)
-        }
+            false
+        };
+        self.loop_depth += 1;
+        Ok(pushed)
     }
 
-    /// labeled-breaks (a): pop a label pushed by [`Analyzer::enter_loop_label`].
+    /// labeled-breaks (a): leave a loop entered by [`Analyzer::enter_loop_label`],
+    /// popping its label if it pushed one.
     fn exit_loop_label(&mut self, pushed: bool) {
+        self.loop_depth -= 1;
         if pushed {
             self.loop_labels.pop();
         }
     }
 
-    /// labeled-breaks (a): validate a labeled `break`/`continue` target. Unlabeled
-    /// jumps are unchanged (Ok); a labeled jump with no enclosing loop of that
-    /// label rejects cleanly.
+    /// Validate a `break`/`continue`. It belongs to a loop of the function it
+    /// is written in: the innermost one, or the one carrying its label. A
+    /// function's body is not inside its caller's loops, nor inside the loops
+    /// around its own declaration, so neither is reachable
+    /// (docs/backend/cx_value_and_alias_semantics.md, V8).
+    ///
+    /// Without this the interpreter let the signal out of the function and
+    /// ended a loop of whoever called it, and compiled code refused the
+    /// program (known-issues §69g).
     fn check_jump_label(&self, label: &Option<String>, kw: &str, pos: usize) -> Result<(), SemanticError> {
+        let scope = if self.in_function { "a loop of this function" } else { "a loop" };
+        if self.loop_depth == 0 {
+            return Err(sem_err!(pos, "'{}' is not inside {}", kw, scope));
+        }
         if let Some(name) = label {
             if !self.loop_labels.iter().any(|l| l == name) {
                 return Err(sem_err!(pos, "{} to label '{} but no enclosing loop has that label", kw, name));
@@ -1613,7 +1637,32 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         }
     }
 
+    /// Analyze a function, method or test body. The loops around its
+    /// declaration are not its own: they are set aside for the length of the
+    /// body and put back afterwards, whether or not it analyzed.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_function(
+        &mut self,
+        name: &str,
+        type_params: &[String],
+        params: &[ParamKind],
+        ret_ty: &Option<Type>,
+        body: &[Stmt],
+        ret_expr: &Option<Expr>,
+        pos: usize,
+        is_test: bool,
+        is_method: bool,
+    ) -> Result<SemanticStmt, SemanticError> {
+        let outer_labels = std::mem::take(&mut self.loop_labels);
+        let outer_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let result = self.analyze_function_body(name, type_params, params, ret_ty, body, ret_expr, pos, is_test, is_method);
+        self.loop_labels = outer_labels;
+        self.loop_depth = outer_depth;
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_function_body(
         &mut self,
         name: &str,
         type_params: &[String],
@@ -6778,6 +6827,38 @@ print(result + result2)
         analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
+    /// A `break` or `continue` names a loop of the function it is written in
+    /// (amendment V8). The fixtures assert only that both backends reject;
+    /// these pin the reason, and that a function's own loops still work.
+    #[test]
+    fn break_and_continue_belong_to_a_loop_of_their_function() {
+        for src in [
+            "fnc: t64 f() {\n    break\n    return 1\n}\nprint(f())",
+            "fnc: t64 f() {\n    continue\n    return 1\n}\nprint(f())",
+            // The loop is the caller's, not the function's.
+            "fnc: t64 f() {\n    if true { break }\n    return 1\n}\ni: t64 = 0\nwhile (i < 3) { i = i + f() }",
+            // A label of a loop around the declaration is not visible inside it.
+            "i: t64 = 0\n'outer: while (i < 3) {\n    fnc: t64 f() {\n        break 'outer\n        return 1\n    }\n    i = i + f()\n}",
+            "struct C { n: t64 }\ncm: impl (c: C) {\n    fnc: t64 step() {\n        continue\n        return c.n\n    }\n}",
+        ] {
+            let errors = single_file_errors(src);
+            assert!(errors.contains("is not inside a loop of this function"), "{src:?} gave {errors}");
+        }
+        let errors = single_file_errors("print(1)\nbreak");
+        assert!(errors.contains("'break' is not inside a loop"), "{errors}");
+
+        for src in [
+            "fnc: t64 f() {\n    n: t64 = 0\n    loop {\n        n = n + 1\n        if n > 3 { break }\n    }\n    return n\n}\nprint(f())",
+            // The nested function's loop may reuse the label of the loop around it.
+            "i: t64 = 0\n'outer: while (i < 3) {\n    fnc: t64 f() {\n        'outer: loop { break 'outer }\n        return 1\n    }\n    i = i + f()\n    if i == 2 { continue 'outer }\n}",
+        ] {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
     }
 
     /// The owner's decision of 2026-11-19: a Result is used where a Result of

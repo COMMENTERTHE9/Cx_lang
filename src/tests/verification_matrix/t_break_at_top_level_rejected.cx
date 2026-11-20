@@ -1,0 +1,5 @@
+// Outside any loop at the top level. This used to be a run-time error on the
+// interpreter, after the first line had already been printed.
+print(1)
+break
+print(2)

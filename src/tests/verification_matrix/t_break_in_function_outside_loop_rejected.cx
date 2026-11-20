@@ -1,0 +1,14 @@
+// A `break` belongs to a loop of the function it is written in. The
+// interpreter used to let it out of `f` and end the loop that called `f`
+// (it printed only "after"); compiled code refused the program.
+fnc: t64 f() {
+    break
+    return 1
+}
+i: t64 = 0
+while (i < 3) {
+    i = i + 1
+    x: t64 = f()
+    print(i)
+}
+print("after")

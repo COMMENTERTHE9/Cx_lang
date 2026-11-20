@@ -1,0 +1,17 @@
+// The same for `continue`, and for a method body.
+struct C { n: t64 }
+cm: impl (c: C) {
+    fnc: t64 step() {
+        c.n += 1
+        continue
+        return c.n
+    }
+}
+k: C = C { n: 0 }
+i: t64 = 0
+while (i < 3) {
+    i = i + 1
+    x: t64 = k.step()
+    print(i)
+}
+print(k.n)
