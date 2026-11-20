@@ -145,10 +145,13 @@ Reaching the variable means any of: reading or assigning it, a field or an
 element of it; passing it as `.copy`; binding it as a receiver again
 (`top.inc()` inside `top.run()`); naming it in a string interpolation.
 
-Today only a module-level variable can be reached that way, because of three
-facts: an `impl` block cannot be declared inside a function; a nested function
-cannot be called before its declaration; and a name captured by a nested
-function resolves to the nearest activation of the function that declares it.
+Today only a variable declared outside every function can be reached that
+way — a module-level one, or a local of a top-level block (an `impl` may be
+declared inside a top-level `while` body, and its method can reach that
+block's locals through a nested function). Three facts make it so: an `impl`
+block cannot be declared inside a function; a nested function cannot be called
+before its declaration; and a name captured by a nested function resolves to
+the nearest activation of the function that declares it.
 
 A program that does so has no defined result, and neither backend may give it
 one silently:
@@ -333,14 +336,17 @@ then overwrite what had been written. No tracked program does it.
 analysis error.** In a function body the interpreter used to break the
 caller's loop; a labeled one in a nested function used to leave the enclosing
 function's loop; at the top level it was a run-time error after whatever the
-program had already printed. Compiled code refused all three. All 17 tracked
-files that use `break`/`continue` do so inside a loop of the same function.
+program had already printed. Compiled code refused all three. Every tracked
+file that uses `break`/`continue` does so inside a loop of the same function.
 
 **C8 — Compiled code keeps every `.copy` write-back and every assignment made
 in a condition, a guard, an operand of `&&`/`||`, or a value branch.** A fix to
 compiled code only; the interpreter is already right. Nothing is refused in
 its place: the one tracked program with a scalar `.copy` in a value branch,
-`t_enum_boundary_valid`, keeps passing.
+`t_enum_boundary_valid`, keeps passing. (As first committed one shape was
+newly refused — a three-state bool given a definite value in one branch of a
+function's trailing `if`/`else`. The implementation review found it; it is
+fixed, §10.)
 
 ## 5. What does not change
 
@@ -376,9 +382,9 @@ jit` 572 passed, parity 677 PASS / 69 SKIP / 0 PARITY_FAIL across 746 fixtures
 interpreter's V5 error — that compiled code refuses). Three generators written
 for the amendment (operator methods that write their operands; by-name method
 calls; `.copy` write-backs in every conditional position) found two
-disagreements before step 5 and none after it. All 959 tracked `.cx` files
-were run on the interpreter after step 8: none hits a new diagnostic except
-the fixtures written to.
+disagreements before step 5 and none after it. Every tracked `.cx` file (961
+at that commit) was run on the interpreter after step 8: none hits a new
+diagnostic except the fixtures written to.
 
 "Cannot write its receiver" in step 3 is decided syntactically, with no
 analysis of what a callee does. A method can write its receiver if its body or
@@ -445,3 +451,27 @@ listed corrections*. Each finding was re-run before being accepted.
 | 10 | V4 did not say which receivers, two further receivers, or `(p)` | V4 rewritten |
 | 11 | No entry for the interpreter change after `a + f(a.copy)` | C1b |
 | notes | Texts needing rewording; "refuses" undefined; `a += b`; the §69 smaller notes | §1, §5, §7, §8 |
+
+## 10. The independent review of the implementation, and what was done
+
+The nine code commits (the eight steps of §6 and the guarded catch-all fix)
+were reviewed against these rules after they were written. Verdict:
+*should-fix*. About 20,000 generated programs and 152 hand-written ones held;
+the copy elision of step 3, the receiver storage of step 5, the `when` chain
+and merges of step 7 and the lent-receiver check of step 8 could not be
+broken. What was found:
+
+| # | Finding | New? | Done |
+|---|---|---|---|
+| 1 | A three-state `&&`/`||` evaluated a right operand the interpreter skips; step 7 made its write-back visible in conditions (`n` 0 on the interpreter, 100 compiled) | pre-existing cause, newly visible | Compiled code short-circuits as the interpreter does — known-issues §79a |
+| 2 | Step 7's value merge refused a program in which a three-state bool is definite on one path — a function's trailing `if`/`else` that compiled before. Contradicted "nothing is refused" here and in §76g | new | Merges give the variable the three-state representation; the statement form, refused since `submain`, runs too — §79b |
+| 3 | A struct or array literal assigned to a variable it reads is built over that variable the second time round a loop (`12 5` / `12 12`) | pre-existing on `submain`, not in known-issues | Fixed — §80 |
+| 4 | A `when` value whose only catch-all is guarded: the interpreter yields 0 when nothing matches, compiled code traps | pre-existing | A `when` used as a value needs an unguarded catch-all: analysis error on both — §77 |
+| 5 | Naming a lent receiver's variable in a string stopped the program with "no variable in scope" | new, cosmetic | The receiver-in-use error is reported — §76h |
+| 6 | Counts and one claim in these documents were off (tracked files; "only a module-level variable") | — | Corrected here and in §76 |
+
+After these: `cargo test` 384 passed, `cargo test --features jit` 575 passed,
+parity 691 PASS / 72 SKIP / 0 PARITY_FAIL across 763 fixtures; the reviewer's
+generator (2,400 programs) and the three written for the amendment (900
+programs) show no disagreement on the fixed build.
+

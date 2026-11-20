@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A when used as a value whose only catch-all has a guard: non-exhaustive, rejected by analysis.

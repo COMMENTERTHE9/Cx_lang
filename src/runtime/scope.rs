@@ -572,6 +572,7 @@ mod lent_receiver_tests {
             "        top = V { x: 5 }\n        return 1", // the whole variable assigned
             "        return bump(top.copy)",              // passed as `.copy`
             "        return top.inc()",                   // bound as a receiver again
+            "        print(\"inside {top}\")\n        return 1", // named in a string
         ] {
             let src = format!("{HEAD}vm: impl (s: V) {{\n    fnc: t64 m() {{\n{body}\n    }}\n}}\nr: t64 = top.m()\n");
             match run(&src) {

@@ -99,8 +99,8 @@ R4 and R5 are pinned by unit tests in `src/ir/lower.rs`
 interpreter's answer, but only a unit test can assert that compiled code
 refuses and why.
 
-Totals at the top of the stack (`backend/value-alias-semantics`): 759
-fixtures, 687 PASS, 72 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
+Totals at the top of the stack (`backend/value-alias-semantics`): 763
+fixtures, 691 PASS, 72 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
 PASS, 48 SKIP. Of the 24 additional SKIPs, 22 are fixtures this work added to
 pin the interpreter's answer where compiled code refuses, one is
 `t_literal_hint_ok_payload`, and one is the `.copy.free` fixture above.
@@ -112,6 +112,12 @@ code already refused. Two refusals were *lifted* along the way without being
 listed here, because they were never introduced by this work: a `.copy`
 write-back in a value branch (compiled code now carries it, §76g) and a
 guarded catch-all followed by another arm (§77).
+
+*(The independent review of the implementation found that this was not true
+of the first version: the value merge of §76g refused a function's trailing
+`if`/`else` in which a three-state bool is definite on one path, which had
+compiled before. That is fixed (§79b) — the program runs again, and so does
+the statement form, which `submain` refused.)*
 
 ## 4. Keeping this current
 

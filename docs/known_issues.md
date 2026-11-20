@@ -5953,8 +5953,8 @@ this function"). The loops and labels around a function's declaration are set
 aside while its body is analyzed (`Analyzer::analyze_function`), so a nested
 function may reuse a label for a loop of its own.
 
-No tracked program is affected: all 17 files that use `break`/`continue` do so
-inside a loop of the same function.
+No tracked program is affected: every tracked file that uses
+`break`/`continue` does so inside a loop of the same function.
 
 Fixtures: `t_break_in_function_outside_loop_rejected`,
 `t_continue_in_method_outside_loop_rejected`,
@@ -6281,8 +6281,17 @@ that names a top-level struct. That is a refusal (SKIP), not a different
 answer. An analysis-time rule that rejects the program on both backends
 before it runs is the better end state and is not built.
 
-No tracked program reaches a receiver's variable by name: all 959 tracked
-`.cx` files were run on the interpreter after this change.
+No tracked program reaches a receiver's variable by name: every tracked
+`.cx` file (961 at that commit) was run on the interpreter after this change.
+
+*(From the independent review of the implementation.)* Naming the variable in
+a string — `print("inside {top}")` — also stops the program, and since the
+review's finding now says why: interpolation used to turn the error into "no
+variable `top` in scope". And the variable need not be module-level: an `impl`
+can be declared inside a top-level block (a `while` body), and its method can
+then reach a local of that block through a nested function. The interpreter's
+check covers it, being by frame and binding; compiled code refuses the
+program, with the older "binding … not found in scope" message.
 
 Fixtures: `t_receiver_variable_reached_by_name` (the interpreter's error;
 compiled code SKIP) and `t_receiver_named_like_its_variable` (both backends).
@@ -6320,6 +6329,18 @@ arm (`lower_when_stmt`, `lower_when_expr`); only an unguarded catch-all ends
 it. The value form still traps if no arm at all matches.
 
 Fixture: `t_when_guarded_catch_all_is_not_the_last_arm` (both backends).
+
+**A `when` used as a value needs an arm that always matches** (found by the
+independent review of the implementation; present on `submain`). Analysis
+counted a guarded `_` as making a `when` exhaustive, so
+`x: t64 = when k { 1 => 5, _ if k > 5 => 6 }` was accepted; for `k = 3` the
+interpreter yielded 0 and carried on, and compiled code trapped (126). A
+guarded arm no longer counts towards exhaustiveness when the `when` is a value
+(`when_is_exhaustive`): the program is a semantic error on both backends,
+asking for a `_` arm without a guard. A `when` *statement* keeps the lenient
+rule — when no arm runs nothing happens, on both backends. No tracked program
+is affected. Fixture `t_when_value_guarded_catch_all_only_rejected`; unit test
+`a_when_value_needs_an_unguarded_catch_all`.
 
 ## 78. A number literal in a generic array literal was narrowed to fit in compiled code
 
@@ -6453,3 +6474,4 @@ target is bound without a copy, as before. The receiver case of the same
 mechanism was fixed by §76e.
 
 Fixture: `t_literal_assigned_to_a_variable_it_reads` (both backends).
+
