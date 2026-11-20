@@ -244,6 +244,16 @@ impl<'a> Instances<'a> {
         Some(id)
     }
 
+    /// A call whose types, once the caller's are settled, still name a type
+    /// parameter analysis does not track — a generic struct's, or one a callee
+    /// leaves unbound: it cannot be checked.
+    fn untracked(&mut self, callee: FunctionId) {
+        if self.unchecked.is_none() {
+            let name = self.functions.get(&callee).map(|f| source_function_name(&f.name).to_string()).unwrap_or_default();
+            self.unchecked = Some(format!("generic function '{name}' is called with a type analysis does not track (a generic struct's field)"));
+        }
+    }
+
     /// The generic calls an instance makes, with its own type parameters
     /// replaced by what they are there.
     fn calls(&mut self, id: usize) -> Vec<usize> {
@@ -265,6 +275,8 @@ impl<'a> Instances<'a> {
                         out.push(target);
                     }
                 }
+            } else {
+                self.untracked(inner.callee);
             }
         }
         self.all[id].calls = Some(out.clone());
@@ -371,6 +383,11 @@ pub(crate) fn check_instantiations(
     // Calls outside every generic function first, then those inside one; each
     // in source order.
     let mut roots: Vec<&GenericCall> = calls.iter().filter(|call| Instances::concrete(&call.bindings)).collect();
+    // Outside every generic function, a call whose types still name a type
+    // parameter names one analysis does not track.
+    for call in calls.iter().filter(|call| !call.in_generic && !Instances::concrete(&call.bindings)) {
+        instances.untracked(call.callee);
+    }
     roots.sort_by_key(|call| (call.in_generic, call.pos));
     let mut starts: Vec<(usize, usize)> = Vec::new();
     for root in &roots {
@@ -826,6 +843,14 @@ mod tests {
         // A program within the limit says nothing.
         let fine = errors("fnc: T <T> id(x: T) { return x }\nprint(id(5))\n");
         assert_eq!(fine, "");
+        // A call with a generic struct's field, whose type is not tracked,
+        // cannot be checked either.
+        let field = "struct Box<T> { v: T }\nfnc: t64 <T> widen(x: T) {\n n: t64 = x\n return n\n}\nb: Box = Box<str> { v: \"s\" }\nprint(widen(b.v))\n";
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "field.cx".into(), program: resolver::parse_source(field).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let program = semantic::analyze_resolved_program(&resolved).expect("a struct field's type is not checked");
+        assert!(program.unchecked_generics.as_deref().is_some_and(|u| u.contains("does not track")), "{:?}", program.unchecked_generics);
     }
 
     /// A generic struct's type parameter is not the function's: struct type

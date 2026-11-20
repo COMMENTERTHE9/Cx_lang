@@ -130,7 +130,9 @@ type, `g([x])` inside `g`, meets them quickly; it has no end of
 instantiations.) Where the check stops short, the analyzed program records
 what it did not check (`SemanticProgram::unchecked_generics`), and compiled
 code refuses the program — "generic function 'g' is reached with more than
-128 sets of types, past what analysis checks". The interpreter runs it with
+128 sets of types, past what analysis checks". The same for a call whose
+types name a type parameter analysis does not track (a generic struct's
+field given to a generic function). The interpreter runs it with
 its run-time checks. This is the owner's rule for what cannot be determined
 statically: a run-time check where there is one, a refusal to compile where
 there is not.
@@ -408,7 +410,7 @@ commit.
 | 8 | D2, D6 | Both whole-program checks bounded; the receiver rule counts what it cannot determine | `backend/value-alias-semantics` (#507) | `0a2a283` |
 | 9 | D2 | Branches of a value, inference and names in a generic body; one regression | `backend/value-alias-semantics` (#507) | `b32e03c` |
 | 10 | D2 | Branch and inference rules narrowed to what is needed; check ordering | `backend/value-alias-semantics` (#507) | `b4129f7` |
-| 11 | D2 | What the check leaves unchecked is recorded, and compiled code refuses it; reach over strongly connected components; an `Err` first; an inferred variable's type is checked | `backend/value-alias-semantics` (#507) | see §12 |
+| 11 | D2 | What the check leaves unchecked is recorded, and compiled code refuses it; reach over strongly connected components; an `Err` first; an inferred variable's type is checked | `backend/value-alias-semantics` (#507) | `e8bb2ac` |
 
 Steps 7–9 answer the independent review of the implementation (§10), step 10
 the confirmation review of those fixes (§11), and step 11 the review of step

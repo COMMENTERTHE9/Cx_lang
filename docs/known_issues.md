@@ -6686,7 +6686,10 @@ that leaves `T` unbound, or binds it to `?`, is checked for nothing.
   with ever larger types (`g([x])` inside `g`) meets these. Where it stops
   short, the analyzed program records what it did not check
   (`SemanticProgram::unchecked_generics`) and compiled code refuses the
-  program; the interpreter runs it with its run-time checks. *(Three earlier
+  program; the interpreter runs it with its run-time checks. So does a call
+  whose types name a type parameter analysis does not track — a generic
+  struct's field given to a generic function (compiled code refused those
+  already, as an unresolved function). *(Three earlier
   versions got this wrong. The first bounded only what one call followed, not
   the work behind it — 1,200 calls of a function to itself took 11 s and
   1.7 GB. The second and third left programs unchecked past their limits and
