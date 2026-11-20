@@ -420,7 +420,8 @@ commit.
 | 9 | D2 | Branches of a value, inference and names in a generic body; one regression | `backend/value-alias-semantics` (#507) | `b32e03c` |
 | 10 | D2 | Branch and inference rules narrowed to what is needed; check ordering | `backend/value-alias-semantics` (#507) | `b4129f7` |
 | 11 | D2 | What the check leaves unchecked is recorded, and compiled code refuses it; reach over strongly connected components; an `Err` first; an inferred variable's type is checked | `backend/value-alias-semantics` (#507) | `e8bb2ac`, `2182771` |
-| 12 | D2 | Only what compiled code may compile is recorded; literal obligations merged; messages made when reported | `backend/value-alias-semantics` (#507) | see §13 |
+| 12 | D2 | Only what compiled code may compile is recorded; literal obligations merged; messages made when reported | `backend/value-alias-semantics` (#507) | `05d8796` |
+| 13 | D2 | Unary minus requires a number (a value of `T` included) | `backend/value-alias-semantics` (#507) | `1512e25` |
 
 Steps 7–9 answer the independent review of the implementation (§10), step 10
 the confirmation review of those fixes (§11), step 11 the review of step 10
@@ -582,8 +583,15 @@ compiled code. It found:
   and messages are made only for what is reported: 0.25 s and 0.77 s.
 - **A silent difference present on `submain`**: unary minus on a value of
   the function's own `T`, which analysis did not check (`-x` with a t8 −128:
-  interpreter 128, compiled code −128). Fixed in its own commit, with unary
-  minus on any value that is not a number (known-issues §82 g).
+  interpreter 128, compiled code −128). Fixed in its own commit (step 13,
+  `1512e25`), with unary minus on any value that is not a number
+  (known-issues §82 g).
+
+Steps 12 and 13 were checked with that review's own tools rather than by a
+further reviewer: its 1,400-program budget fuzzer on 1,500 fresh programs
+(all rejected by analysis or refused by compiled code), and four of the
+earlier reviewers' generators on 3,000 more (no difference between the
+backends).
 - Documentation: the claim, in `e8bb2ac`'s message and a test comment, that
   calls after a `return` are instances compiled code never makes — the
   monomorphizer does walk dead code; only partial calls and nested generic
