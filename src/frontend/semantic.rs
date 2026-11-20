@@ -2357,6 +2357,22 @@ Expr::Unary(op, inner, pos) => {
                         return Ok(rewritten);
                     }
                 }
+                // Unary minus negates a number, and nothing else. The
+                // interpreter stops at run time on anything else; compiled
+                // code printed `true` for `-b`, the variant for `-e`, and
+                // crashed on `-s` (known-issues §82 g). Nor is a value of the
+                // function's own `T` known to be a number, as for `x + 1`:
+                // `-x` with a t8 -128 was 128 on the interpreter and -128 in
+                // compiled code. A value whose type analysis does not know,
+                // or a generic struct's field, is left to run time as before.
+                if *op == Op::Minus {
+                    let unchecked = expr.ty == SemanticType::Unknown
+                        || matches!(&expr.ty, SemanticType::TypeParam(_) if own_type_param(&expr.ty).is_none())
+                        || matches!(&expr.ty, SemanticType::Struct(name) if !self.structs.contains_key(name));
+                    if !is_numeric(&expr.ty) && !unchecked {
+                        return Err(sem_err!(*pos, "unary minus requires a number, got {}", type_name(&expr.ty)));
+                    }
+                }
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool
                 } else {
@@ -7354,6 +7370,34 @@ print(result + result2)
         analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
+    /// Unary minus negates a number and nothing else — a value of the
+    /// function's own `T` included (known-issues §82 g).
+    #[test]
+    fn unary_minus_requires_a_number() {
+        for (src, named) in [
+            ("b: bool = true\nprint(-b)", "bool"),
+            ("s: str = \"s\"\nprint(-s)", "str"),
+            ("enum E { A, B }\ne: E = E::A\nprint(-e)", "E"),
+            ("r: Result<t64> = Ok(1)\nprint(-r)", "Result<t64>"),
+            ("a: [2: t64] = [1, 2]\nprint(-a)", "[2: t64]"),
+            ("fnc: T <T> neg(x: T) { return -x }\nprint(neg(5))", "T"),
+        ] {
+            let errors = single_file_errors(src);
+            assert!(errors.contains(&format!("unary minus requires a number, got {named}")), "{src}: {errors}");
+        }
+        for src in [
+            "a: t8 = -128\nprint(-a)",
+            "f: f64 = 2.5\nprint(-f)",
+            // (A struct with a `Neg` phen dispatches to it before this check;
+            // the prelude that declares `Neg` is not loaded here.)
+        ] {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
     }
 
     /// A `when` used as a value needs an arm that always matches; a guarded

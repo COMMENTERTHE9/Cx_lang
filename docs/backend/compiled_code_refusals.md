@@ -73,12 +73,12 @@ own error); compiled code used to answer differently or crash.
 | D1 | A `Result` whose payload is a struct or an array | `Ok(P { x: 1 })` / `Ok()`; an array payload was read out of a stack frame that had returned | refused | §60 | A decision on who owns the payload, and the `Result` calling convention |
 | D2 | A `Result` whose payload kind nothing declares or proves, used at a declared kind | assertion fails / trap, later a crash reading a number as a string | refused; since §75 the commonest route (a `.copy` write-back into an untyped `Err` variable) is a type error in analysis instead | §72 a, §75 | As R4 |
 | D3 | `assert` on a `Result`, an enum or a handle | assertion fails / passes for a non-zero word | refused | §70 f, §72 e | A decision on whether these are type errors |
-| D4 | Unary minus on a `Result` | type mismatch / crash (134) | refused | §70 d | Nothing to lift: the interpreter rejects it too |
+| D4 | Unary minus on a `Result` | type mismatch / crash (134) | **an analysis error on both backends since 2026-11-20** (known-issues §82 g) | §70 d | Lifted: unary minus on anything that is not a number is an analysis error |
 | D5 | A number literal beside a `T` element in a generic function's array literal, when it does not fit the element type the function is called with | `[x, 349]` with a `t8`: 349 / 93; with a `bool`: 349 / `true` — exit 0 on both | **an analysis error on both backends since 2026-11-20** (known-issues §81); compiled code's refusal stays behind it | §78 | Lifted: the owner decided that a generic body is checked against its type parameters |
 
 ## 3. Fixtures that are compiled-code SKIPs because of the above
 
-Nineteen fixtures added by this work, and one that existed before it, pin
+Eighteen fixtures added by this work, and one that existed before it, pin
 the interpreter's answer for a program compiled code refuses. They are counted
 as SKIP by the parity harness, never as PASS. One further fixture is counted
 as SKIP for a reason that is not a refusal, and is listed last.
@@ -88,7 +88,6 @@ as SKIP for a reason that is not a refusal, and is listed last.
 | **`t_literal_hint_ok_payload`** — existed on `submain` and passed there; it passed by reading an array out of a dead stack frame | D1 |
 | `t_result_struct_payload_print`, `t_result_aggregate_payload_is_a_snapshot`, `t_result_aggregate_equality`, `t_result_aggregate_snapshot`, `t_assert_eq_str_in_result_aggregate` | D1 |
 | `t_assert_on_a_result`, `t_assert_on_an_enum`, `t_assert_on_a_handle` | D3 |
-| `t_unary_minus_on_a_result` | D4 |
 | `t_len_of_a_variable_assigned_in_both_branches` | R6 |
 | `t_user_function_named_like_the_runtime`, `t_user_function_named_like_the_float_remainder` | R7 |
 | `t_generic_local_result` | R5 |
@@ -101,10 +100,10 @@ R4 and R5 are pinned by unit tests in `src/ir/lower.rs`
 interpreter's answer, but only a unit test can assert that compiled code
 refuses and why.
 
-Totals at the top of the stack (`backend/value-alias-semantics`): 803
-fixtures, 745 PASS, 58 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
-PASS, 48 SKIP. The 58 are `submain`'s 48, less 11 that are now analysis
-errors on both backends (below), plus the 19 fixtures this work added to pin
+Totals at the top of the stack (`backend/value-alias-semantics`): 806
+fixtures, 749 PASS, 57 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
+PASS, 48 SKIP. The 57 are `submain`'s 48, less 11 that are now analysis
+errors on both backends (below), plus the 18 fixtures this work added to pin
 the interpreter's answer where compiled code refuses, plus
 `t_literal_hint_ok_payload`, plus the `.copy.free` fixture above.
 
@@ -116,7 +115,9 @@ method that can reach its receiver's variable by name);
 D5 — a generic body is checked against its type parameters, §81); and, of the
 fixtures `submain` already had as SKIPs, `t_print_interpolation_type_conflict`,
 `t_import_mono_enum_conversion` and the nine `t_module_enum_generic_*_reject`
-fixtures, for the same reason.
+fixtures, for the same reason. And `t_unary_minus_on_a_result` (register entry
+D4): unary minus on anything that is not a number is an analysis error
+(known-issues §82 g).
 
 **Nothing in the value-and-alias amendment (known-issues §76) is a new
 refusal.** Its rules are analysis errors on both backends, fixes to compiled

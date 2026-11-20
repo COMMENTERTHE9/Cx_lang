@@ -1,2 +1,2 @@
-#! interp=diagnostic jit=trap
-Negating a Result has no meaning; compiled code used to crash on it and now refuses.
+#! interp=diagnostic jit=diagnostic
+Unary minus on a Result: an analysis error on both backends.

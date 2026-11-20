@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+Unary minus on a value of a type parameter.

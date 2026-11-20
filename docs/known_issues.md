@@ -6937,3 +6937,20 @@ time grows exponentially with the depth of a nested array literal — one line
 at 18; and a run-time type mismatch inside a generic function is reported at
 line 1 of the file.
 
+**g. Unary minus on a value that is not a number** — found 2026-11-20 by the
+review of that day's fixes; present on `submain`. **Fixed.** Analysis did not
+check the operand of unary minus at all. The interpreter stops at run time on
+anything but a number; compiled code printed `true` for `-b` with a bool and
+the variant for `-e` with an enum (exit 0 — exit mismatches), and crashed on
+`-s` with a string (exit 139). On a value of a generic function's own `T` it
+was a silent difference: `fnc: T <T> neg(x: T) { return -x }` called with a
+t8 −128 printed 128 on the interpreter and −128 in compiled code. Unary minus
+on a value that is not a number — a type parameter's included, as for
+`x + 1` — is now an analysis error, "unary minus requires a number, got
+bool". A struct with a `Neg` phen still dispatches to it; a value whose type
+analysis does not know is left to run time as before. Fixtures
+`t_unary_minus_on_a_value_that_is_not_a_number_rejected`,
+`t_unary_minus_on_a_type_parameter_rejected`, and
+`t_unary_minus_on_a_result` (an analysis error now; it was a compiled-code
+refusal, register entry D4); unit test `unary_minus_requires_a_number`.
+

@@ -1,0 +1,5 @@
+// Unary minus negates a number. On a bool compiled code printed `true` where
+// the interpreter stopped; on an enum it printed the variant; on a string it
+// crashed (known-issues §82 g). All are analysis errors now.
+b: bool = true
+print(-b)
