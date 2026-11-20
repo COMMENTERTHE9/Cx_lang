@@ -6852,3 +6852,21 @@ type mismatch of "unknown" and an "invalid assignment target"; compiled code
 fails to build the first and refuses the second. Not a silent difference. (A
 number or a string as an `if` or `while` condition is §57 a.)
 
+**c. The negation of a float zero printed `-0` on the interpreter and `0` in
+compiled code** — a silent difference, exit 0 on both. Found 2026-11-20 by
+the independent review of the implementation of that day's decisions, and
+present on `submain`. **Fixed.**
+
+```cx
+f: f64 = 0.0
+g: f64 = -f
+print(g)                         // interpreter -0, JIT 0 (now -0 on both)
+```
+
+The interpreter negates the float. Compiled code lowered `-x` as `0.0 - x`,
+which IEEE arithmetic makes `+0.0` when `x` is a zero; anything that
+distinguished the two zeros — printing, `1.0 / g` — differed. Compiled code
+now subtracts from `-0.0`, which is exact negation for every float (`-0.0 -
+0.0` is `-0.0`, `-0.0 - -0.0` is `+0.0`). Whole numbers are unchanged.
+Fixture `t_float_negation_of_zero` (both backends).
+

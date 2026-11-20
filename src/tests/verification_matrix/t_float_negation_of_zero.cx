@@ -1,0 +1,18 @@
+// The negation of a float zero is negative zero, and prints as -0. Compiled
+// code computed `-x` as `0.0 - x`, which is +0 for a zero, and printed 0 where
+// the interpreter printed -0 — with exit 0 on both (known-issues §82 c).
+f: f64 = 0.0
+g: f64 = -f
+print(g)
+h: f64 = -g
+print(h)
+k: f64 = -2.5
+print(-k)
+print(-(1.0 - 1.0))
+print(g == 0.0)
+print(g + 1.0)
+fnc: f64 neg(v: f64) { return -v }
+print(neg(0.0))
+print(neg(-0.0))
+z: t64 = 0
+print(-z)

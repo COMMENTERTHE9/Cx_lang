@@ -3953,6 +3953,7 @@ fn lower_expr_inner(
         //   synthesised first; then a Binary/Sub instruction computes the
         //   difference.  This works uniformly for i8/i16/i32/i64 and f64
         //   because each type already has a matching ConstInt/ConstFloat form.
+        //   For f64 the zero is -0.0, so that the negation of 0.0 is -0.0.
         //
         // Op::Not  — boolean complement
         //   Lower as `value == 0` using Compare/Eq against a Bool-typed zero.
@@ -3976,8 +3977,11 @@ fn lower_expr_inner(
             //   dst = 0 - lowered
             let zero = ctx.fresh_value();
             match &lowered.ty {
+                // Negative zero: `-0.0 - x` is `-x` for every float, a zero
+                // included. `0.0 - x` gave +0 for a zero, where the
+                // interpreter negates and prints -0 (known-issues §82 c).
                 IrType::F64 => {
-                    active.emit(IrInst::ConstFloat { dst: zero, value: 0.0 })?;
+                    active.emit(IrInst::ConstFloat { dst: zero, value: -0.0 })?;
                 }
                 ty => {
                     active.emit(IrInst::ConstInt { dst: zero, ty: ty.clone(), value: 0 })?;
