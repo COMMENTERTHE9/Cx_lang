@@ -4400,7 +4400,7 @@ both. What a number means as a condition is a language question.
 
 **b. A `.copy` write-back made while evaluating a condition is lost in compiled
 code.** The branch's bindings are captured before the condition is lowered, so
-the body reads the value from before the call. Both exit 0.
+the body reads the value from before the call. Both exit 0. *(Fixed: §76g.)*
 
 ```cx
 i: t64 = 0
@@ -4415,7 +4415,8 @@ print(i)          // interpreter: 1 1    JIT: 0 0
 The same happens in a `while` condition and a `when` scrutinee.
 
 **c. A guarded catch-all followed by another arm drops the later arms in
-compiled code.** Both exit 0; the expression form traps instead.
+compiled code.** Both exit 0; the expression form traps instead. *(Fixed:
+§77.)*
 
 ```cx
 n: t64 = 3
@@ -6144,3 +6145,35 @@ Fixtures: `t_receiver_variable_reached_by_name` (the interpreter's error;
 compiled code SKIP) and `t_receiver_named_like_its_variable` (both backends).
 Unit tests `a_receivers_variable_is_not_reached_by_name_while_its_method_runs`,
 `a_receivers_variable_is_reached_through_the_receiver`.
+
+## 77. A guarded catch-all was treated as the last arm in compiled code (closes §57c)
+
+*(Open since the review of the M0 fixes (§57c). Present on `submain`. Fixed on
+`backend/value-alias-semantics`, in the `when` lowering that §76g had just
+restructured.)*
+
+```cx
+n: t64 = 3
+when n {
+    _ if n == 9 => print(4),
+    _ => print(0),
+}
+print(5)                         // interpreter 0 5, JIT 5
+
+x: t64 = when n {
+    _ if n == 9 => 4,
+    _ => 0,
+}                                // interpreter 0, JIT trap (126)
+```
+
+A `_` arm with a guard is not the end of a `when`: its guard can fail, and the
+arms after it are then tried. Compiled code stopped lowering arms at the first
+catch-all whether or not it had a guard. In the statement form the "guard
+failed" edge went straight past the remaining arms, with exit 0; in the value
+form it went to a trap.
+
+**Now** a guarded catch-all continues the chain of arms like any other guarded
+arm (`lower_when_stmt`, `lower_when_expr`); only an unguarded catch-all ends
+it. The value form still traps if no arm at all matches.
+
+Fixture: `t_when_guarded_catch_all_is_not_the_last_arm` (both backends).

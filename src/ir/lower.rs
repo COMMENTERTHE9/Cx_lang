@@ -5446,17 +5446,12 @@ fn lower_when_stmt(
         )? {
             fallthroughs.push(active);
         }
-        match next {
-            // An unguarded catch-all: arms after it are unreachable.
-            None => {}
-            // A guarded catch-all can fail too — it's treated as the terminal
-            // arm, so its "keep trying" continuation is the same "no arm
-            // matched" tail the exhaustion fallthrough below produces.
-            Some(next) if matches!(arm.pattern, SemanticWhenPattern::Catchall) => {
-                fallthroughs.push(next);
-            }
-            Some(next) => chain = Some(next),
-        }
+        // `None` after an unguarded catch-all: arms after it are unreachable.
+        // A guarded catch-all can fail like any other guarded arm, and the
+        // arms after it are then tried. It used to be treated as the last arm,
+        // so `_ if n == 9 => .., _ => ..` never ran its second arm
+        // (known-issues §57c).
+        chain = next;
     }
     ctx.binding_names = outer_names;
 
@@ -5962,19 +5957,11 @@ fn lower_when_expr(
         ctx.binding_names = outer_names.clone();
         let (body_block, next) = enter_when_arm(arm, scrutinee, &scrutinee_val, current, ctx)?;
         arrivals.extend(lower_branch_value(&arm.body, result_ty, &result_ir_ty, body_block, ctx)?);
-        match next {
-            // An unguarded catch-all: arms after it are unreachable.
-            None => {}
-            // A guarded catch-all can fail too. A value-producing `when` must
-            // be exhaustive, so its "keep trying" path has no value to supply
-            // the merge — Trap, the same tail behavior the exhaustion
-            // fallthrough below produces.
-            Some(mut no_match) if matches!(arm.pattern, SemanticWhenPattern::Catchall) => {
-                no_match.terminate(IrTerminator::Trap)?;
-                ctx.seal_block(no_match)?;
-            }
-            Some(next) => chain = Some(next),
-        }
+        // `None` after an unguarded catch-all: arms after it are unreachable.
+        // A guarded catch-all can fail like any other guarded arm, and the
+        // arms after it are then tried; only when none is left does the
+        // exhaustion tail below trap (known-issues §57c).
+        chain = next;
     }
     ctx.binding_names = outer_names;
 

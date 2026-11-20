@@ -1,0 +1,32 @@
+// A guarded catch-all can fail like any other guarded arm, and the arms after
+// it are then tried. Compiled code treated it as the last arm: in the
+// statement form the later arms never ran (this printed 5 where the
+// interpreter prints 0 then 5), and in the value form the program trapped.
+n: t64 = 3
+when n {
+    _ if n == 9 => print(4),
+    _ => print(0),
+}
+print(5)
+x: t64 = when n {
+    _ if n == 9 => 4,
+    _ if n == 3 => 7,
+    _ => 0,
+}
+print(x)
+y: t64 = when n {
+    _ if n == 9 => 4,
+    1 => 1,
+    _ => 8,
+}
+print(y)
+when n {
+    _ if n == 9 => print(40),
+    3 => print(41),
+    _ => print(42),
+}
+when n {
+    1 => print(50),
+    _ if n == 9 => print(51),
+}
+print(6)
