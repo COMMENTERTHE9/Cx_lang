@@ -6357,6 +6357,13 @@ fn resolve_field_ptr(
         ),
     })?;
 
+    // A top-level struct named from inside a function: compiled code keeps
+    // module-level numbers and enums in shared storage and nothing else, so
+    // there is no address to give. Say so, rather than report the missing
+    // binding as an internal error.
+    if !active.bindings.contains_key(&binding_id) && ctx.top_level_bindings.contains(&binding_id) {
+        return Err(top_level_state_unsupported(&ctx.function_name, container, "reads or writes a field of"));
+    }
     let base = active.bindings.get(&binding_id).cloned().ok_or_else(|| {
         LoweringError::InternalInvariantViolation {
             detail: format!(

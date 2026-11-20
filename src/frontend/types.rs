@@ -170,6 +170,18 @@ pub enum RuntimeError {
         pos: usize,
         function: String,
     },
+    /// A variable was reached through its own binding while it is the receiver
+    /// of a method that has not returned. A struct or array receiver *is* the
+    /// caller's variable, but the interpreter runs the method on a copy and
+    /// stores it back at the end — so a read by the variable's own name in the
+    /// method, or in anything it calls, saw the value from before the call,
+    /// and a write was overwritten when the method returned. Neither is a
+    /// defined result, so the program stops here instead
+    /// (docs/backend/cx_value_and_alias_semantics.md, V5).
+    ReceiverInUse {
+        pos: usize,
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -104,6 +104,16 @@ impl RunTime {
         Ok(())
     }
 
+    /// Refuse to reach a variable that is the receiver of a method still
+    /// running (amendment V5; `RunTime::lent_receivers`). Called by every read
+    /// and write below, once the variable's frame and binding are known.
+    fn check_not_lent(&self, frame: usize, binding: BindingId, name: &str, pos: usize) -> Result<(), RuntimeError> {
+        if !self.lent_receivers.is_empty() && self.lent_receivers.contains(&(frame, binding)) {
+            return Err(RuntimeError::ReceiverInUse { pos, name: name.to_string() });
+        }
+        Ok(())
+    }
+
     /// Shared write path: type-check `value` against the entry at `binding` in
     /// frame `i`, write it, emit debug events. The caller has already located the
     /// owning frame (by binding on the hot path, by name on the cold path).
@@ -157,6 +167,7 @@ impl RunTime {
         let value = self.resolve_assigned_value(value, pos)?;
         for i in (0..self.scopes.len()).rev() {
             if self.scopes[i].vars.contains_key(&binding) {
+                self.check_not_lent(i, binding, name, pos)?;
                 return self.write_var_at(i, binding, name, value, pos);
             }
         }
@@ -172,6 +183,7 @@ impl RunTime {
                 if self.const_bindings.contains(&binding) {
                     return Err(RuntimeError::BadAssignTarget { pos });
                 }
+                self.check_not_lent(i, binding, &name, pos)?;
                 return self.write_var_at(i, binding, &name, value, pos);
         }
         let was_seen = self.scopes.last().unwrap().seen.contains(&name);
@@ -232,6 +244,7 @@ impl RunTime {
     ) -> Result<(), RuntimeError> {
         let logged = value.clone();
         if let Some((owner, binding)) = self.resolve_name(container) {
+            self.check_not_lent(owner, binding, container, pos)?;
             if let Some(entry) = self.scopes[owner].vars.get_mut(&binding) {
                 match &mut entry.val {
                     Some(Value::Container(map)) => {
@@ -295,6 +308,7 @@ impl RunTime {
             return Err(RuntimeError::BadAssignTarget { pos });
         }
         if let Some((owner, binding)) = self.resolve_name(arr_name) {
+            self.check_not_lent(owner, binding, arr_name, pos)?;
             if let Some(entry) = self.scopes[owner].vars.get_mut(&binding) {
                 let Some(mut cur) = entry.val.as_mut() else {
                     return Err(RuntimeError::NotAContainer { pos, name: arr_name.to_string() });
@@ -340,6 +354,7 @@ impl RunTime {
 
     pub fn get_field(&self, container: &str, field: &str, pos: usize) -> Result<Value, RuntimeError> {
         if let Some((owner, binding)) = self.resolve_name(container) {
+            self.check_not_lent(owner, binding, container, pos)?;
             if let Some(entry) = self.scopes[owner].vars.get(&binding) {
                 match &entry.val {
                     Some(Value::Struct(_, map)) | Some(Value::Container(map)) => {
@@ -359,6 +374,7 @@ impl RunTime {
     /// index, then reads.
     pub fn get_var(&self, name: &str, pos: usize) -> Result<Value, RuntimeError> {
         if let Some((owner, binding)) = self.resolve_name(name) {
+            self.check_not_lent(owner, binding, name, pos)?;
             if let Some(entry) = self.scopes[owner].vars.get(&binding) {
                 if let Some(value) = &entry.val {
                     return Ok(value.clone());
@@ -406,8 +422,9 @@ impl RunTime {
     /// only for diagnostics. Walks frames innermost->outermost exactly like the
     /// name-based path, but matches on the BindingId — no string hashing.
     pub fn get_var_by_id(&self, binding: BindingId, name: &str, pos: usize) -> Result<Value, RuntimeError> {
-        for frame in self.scopes.iter().rev() {
+        for (index, frame) in self.scopes.iter().enumerate().rev() {
             if let Some(entry) = frame.vars.get(&binding) {
+                self.check_not_lent(index, binding, name, pos)?;
                 if let Some(value) = &entry.val {
                     return Ok(value.clone());
                 }
@@ -519,3 +536,77 @@ mod type_parameter_tests {
     }
 }
 
+
+#[cfg(test)]
+mod lent_receiver_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Run a program; the first run-time error, if any.
+    fn run(source: &str) -> Result<(), RuntimeError> {
+        use crate::frontend::{resolver, semantic};
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "lent_test.cx".into(),
+            program: resolver::parse_source(source).unwrap_or_else(|error| panic!("{error}: {source}")), imports: vec![] };
+        let program = semantic::analyze_resolved_program(&resolver::ResolvedProgram {
+            entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id],
+        }).expect("analyzes");
+        let mut rt = RunTime::new();
+        crate::run_with_interpreter_setup(&mut rt, &program);
+        for stmt in &program.stmts { rt.run_semantic_stmt(stmt)?; }
+        assert!(rt.lent_receivers.is_empty(), "a receiver is still lent after the program");
+        Ok(())
+    }
+
+    const HEAD: &str = "struct V { x: t64 }\ntop: V = V { x: 1 }\nfnc: t64 bump(v.copy: V) {\n    v.x += 5\n    return v.x\n}\nim: impl (s: V) {\n    fnc: t64 inc() {\n        s.x += 1\n        return s.x\n    }\n}\n";
+
+    /// While a method runs, its receiver's variable is reached only through
+    /// the receiver (amendment V5): every way of reaching it by its own name
+    /// stops the program, naming the variable.
+    #[test]
+    fn a_receivers_variable_is_not_reached_by_name_while_its_method_runs() {
+        for body in [
+            "        return top.x",                      // a field read
+            "        top.x = 5\n        return 1",       // a field write
+            "        t: V = top\n        return t.x",    // the whole variable read
+            "        top = V { x: 5 }\n        return 1", // the whole variable assigned
+            "        return bump(top.copy)",              // passed as `.copy`
+            "        return top.inc()",                   // bound as a receiver again
+        ] {
+            let src = format!("{HEAD}vm: impl (s: V) {{\n    fnc: t64 m() {{\n{body}\n    }}\n}}\nr: t64 = top.m()\n");
+            match run(&src) {
+                Err(RuntimeError::ReceiverInUse { name, pos }) => {
+                    assert_eq!(name, "top", "{src}");
+                    assert_ne!(pos, 0, "the error should carry its statement's position: {src}");
+                }
+                other => panic!("expected ReceiverInUse for {src:?}, got {other:?}"),
+            }
+        }
+        // In a function the method calls, and for a further receiver.
+        let through_a_call = format!("{HEAD}fnc: t64 poke() {{\n    top.x += 1000\n    return 1\n}}\nvm: impl (s: V) {{\n    fnc: t64 m() {{\n        return poke()\n    }}\n}}\nr: t64 = top.m()\n");
+        assert!(matches!(run(&through_a_call), Err(RuntimeError::ReceiverInUse { .. })));
+        let further = format!("{HEAD}other: V = V {{ x: 2 }}\nvm: impl (a: V, b: V) {{\n    fnc: t64 m() {{\n        return other.x\n    }}\n}}\nr: t64 = top.m(other)\n");
+        assert!(matches!(run(&further), Err(RuntimeError::ReceiverInUse { .. })));
+    }
+
+    /// Through the receiver is the ordinary case, whatever the receiver is
+    /// called; a path that is not taken is not an error; and a recursive
+    /// function's locals are one variable per call.
+    #[test]
+    fn a_receivers_variable_is_reached_through_the_receiver() {
+        for src in [
+            // The receiver has the name of its variable.
+            format!("{HEAD}vm: impl (top: V) {{\n    fnc: t64 m() {{\n        top.x += 10\n        return top.inc() + bump(top.copy)\n    }}\n}}\nr: t64 = top.m()\n"),
+            // The path that names the variable is not taken.
+            format!("{HEAD}vm: impl (s: V) {{\n    fnc: t64 m(c: bool) {{\n        if c {{ return top.x }}\n        return s.x\n    }}\n}}\nr: t64 = top.m(false)\n"),
+            // An argument reads the variable: the method has not started.
+            format!("{HEAD}vm: impl (s: V) {{\n    fnc: t64 m(k: t64) {{\n        return s.x + k\n    }}\n}}\nr: t64 = top.m(top.x)\n"),
+            // One local per call of a recursive function.
+            format!("{HEAD}dm: impl (s: V) {{\n    fnc: t64 depth(n: t64) {{\n        if n > 0 {{ return walk(n - 1) + s.x }}\n        return s.x\n    }}\n}}\nfnc: t64 walk(n: t64) {{\n    v: V = V {{ x: n }}\n    return v.depth(n)\n}}\nr: t64 = walk(3)\n"),
+        ] {
+            if let Err(error) = run(&src) {
+                panic!("{src:?} failed: {error:?}");
+            }
+        }
+    }
+}

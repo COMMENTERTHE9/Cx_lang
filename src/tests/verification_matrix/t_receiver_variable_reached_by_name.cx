@@ -1,0 +1,24 @@
+// While a method runs, its receiver's variable is reached only through the
+// receiver. Here `run` is called on the top-level `top` and calls `poke`,
+// which changes `top` by its own name. The interpreter runs a method on a
+// copy of its receiver and stores it back at the end, so `poke` read `top`
+// as it was before the call, and its write was then overwritten: this
+// program printed 1001, then 111. Neither is a defined result, so the
+// interpreter stops when `poke` reaches `top`. Compiled code refuses the
+// program: it cannot reach a top-level struct from a function at all.
+struct V { x: t64 }
+top: V = V { x: 1 }
+fnc: t64 poke() {
+    top.x += 1000
+    return top.x
+}
+vm: impl (s: V) {
+    fnc: t64 run() {
+        s.x += 10
+        r: t64 = poke()
+        s.x += 100
+        return r
+    }
+}
+print(top.run())
+print(top.x)

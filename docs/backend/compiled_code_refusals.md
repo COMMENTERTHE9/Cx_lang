@@ -81,6 +81,7 @@ as SKIP by the parity harness, never as PASS.
 | `t_user_function_named_like_the_runtime`, `t_user_function_named_like_the_float_remainder` | R7 |
 | `t_generic_local_result` | R5 |
 | `t_generic_local_keeps_its_type` | — the interpreter stops with a type mismatch; refusing is the matching outcome |
+| `t_receiver_variable_reached_by_name` | — the interpreter stops with a run-time error (a receiver's variable reached by its own name, known-issues §76h); compiled code refuses the program, as it did on `submain`, because a function names a top-level struct |
 | `t_print_struct_field_order`, `t_assert_eq_char`, `t_generic_local_char_handle_unknown`, `t_result_value_branch_with_err` | — forms compiled code has never lowered (a struct print, `char`, a printed handle, an unknown bool argument, an `if`/`when` value whose branches are a `Result<t8>` and an Err); listed so the count adds up |
 
 R4 and R5 are pinned by unit tests in `src/ir/lower.rs`

@@ -6090,3 +6090,57 @@ it. Present on `submain`.
 
 Fixtures: `t_copy_write_back_in_conditions`,
 `t_copy_write_back_in_value_branches` (both backends).
+
+### h. Inside a method the interpreter ran on a copy of the receiver, so the variable's own name saw a stale value (§69e; rule V5)
+
+```cx
+struct V { x: t64 }
+top: V = V { x: 1 }
+fnc: t64 poke() { top.x += 1000; return top.x }
+vm: impl (s: V) { fnc: t64 run() { s.x += 10; r: t64 = poke(); s.x += 100; return r } }
+print(top.run())                 // interpreter 1001; a true alias gives 1011
+print(top.x)                     // interpreter 111;  a true alias gives 1111
+```
+
+A struct or array receiver *is* the caller's variable, but the interpreter
+binds the receiver to a copy and stores it back when the method returns. So
+`poke` read `top` as it was before the call, and what it wrote was overwritten
+by the store-back. Compiled code refused the program (127): it cannot reach a
+top-level struct from a function, and said so as "lowering invariant
+violation: binding for 'top' (id 0) not found in scope".
+
+**Now** the program has no result on either backend, and neither gives one
+silently:
+
+- **The interpreter stops** with a run-time error at the statement that
+  reaches the variable: "'top' is in use as the receiver of a method that is
+  still running". For the length of a method's body, the variables its
+  receivers are — the one the call is made on, and each struct or array
+  further receiver given a variable by name — are recorded with the frame
+  they live in (`RunTime::lent_receivers`), and every variable read and write
+  in `src/runtime/scope.rs` checks against the record. Reading or writing the
+  variable or a field or element of it, passing it as `.copy`, and calling a
+  method on it again all count.
+- **Compiled code refuses**, as before, now with a message that says what it
+  refuses ("function 'poke' reads or writes a field of top-level variable
+  'top'").
+
+Reaching the variable *through the receiver* is unaffected, whatever the
+receiver is called — `impl (top: V)` called as `top.run()` shadows the
+variable and is the commonest shape there is. An operator's operands are not
+receivers. A recursive function has one variable per call.
+
+**The two backends differ for a program whose offending path is not taken.**
+The interpreter's check is dynamic: `if c { return poke() }` with `c` false
+runs and exits 0. Compiled code's refusal is static: it refuses any function
+that names a top-level struct. That is a refusal (SKIP), not a different
+answer. An analysis-time rule that rejects the program on both backends
+before it runs is the better end state and is not built.
+
+No tracked program reaches a receiver's variable by name: all 959 tracked
+`.cx` files were run on the interpreter after this change.
+
+Fixtures: `t_receiver_variable_reached_by_name` (the interpreter's error;
+compiled code SKIP) and `t_receiver_named_like_its_variable` (both backends).
+Unit tests `a_receivers_variable_is_not_reached_by_name_while_its_method_runs`,
+`a_receivers_variable_is_reached_through_the_receiver`.

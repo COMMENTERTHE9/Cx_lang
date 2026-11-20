@@ -13,6 +13,20 @@ fn signal_targets_loop(sig: &Option<String>, mine: &Option<String>) -> bool {
 
 impl RunTime {
     pub fn run_semantic_stmt(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
+        match self.run_semantic_stmt_inner(stmt) {
+            // Variables are read and written by name with no source position,
+            // and that is where this error is raised. Give it the position of
+            // the innermost statement it came out of, so the diagnostic points
+            // at the line that reached the variable rather than at line 1.
+            Err(RuntimeError::ReceiverInUse { pos: 0, name }) => Err(RuntimeError::ReceiverInUse {
+                pos: statement_pos(stmt).unwrap_or(0),
+                name,
+            }),
+            other => other,
+        }
+    }
+
+    fn run_semantic_stmt_inner(&mut self, stmt: &SemanticStmt) -> Result<(), RuntimeError> {
         match stmt {
             SemanticStmt::Noop => Ok(()),
             SemanticStmt::ModuleNames { names } => {
@@ -691,5 +705,22 @@ impl RunTime {
             _ => return Err(RuntimeError::BadAssignTarget { pos: 0 }),
         }
         Ok((root, field, path))
+    }
+}
+
+/// Where a statement is in the source, for the statements that say.
+fn statement_pos(stmt: &SemanticStmt) -> Option<usize> {
+    match stmt {
+        SemanticStmt::Assign { pos_eq: pos, .. }
+        | SemanticStmt::TypedAssign { pos_type: pos, .. }
+        | SemanticStmt::CompoundAssign { pos, .. }
+        | SemanticStmt::ExprStmt { pos, .. }
+        | SemanticStmt::Return { pos, .. }
+        | SemanticStmt::Decl { pos, .. }
+        | SemanticStmt::While { pos, .. }
+        | SemanticStmt::For { pos, .. }
+        | SemanticStmt::Loop { pos, .. }
+        | SemanticStmt::IfElse { pos, .. } => Some(*pos),
+        _ => None,
     }
 }
