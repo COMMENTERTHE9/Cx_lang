@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<T> returned as a Result<t8> in a call whose T is t64: a payload is not narrowed.

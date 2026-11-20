@@ -1,0 +1,12 @@
+// Parentheses do not make a variable's name an expression: `(p)` is `p`.
+struct V { x: t64 }
+vm: impl (a: V, b: V) {
+    fnc: t64 mix(k: t64) {
+        a.x += 100
+        b.x += 1000
+        return a.x + b.x + k
+    }
+}
+p: V = V { x: 1 }
+print(p.mix((p), 5))
+print(p.x)

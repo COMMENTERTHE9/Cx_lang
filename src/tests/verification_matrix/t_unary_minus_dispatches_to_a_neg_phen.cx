@@ -1,0 +1,11 @@
+// Unary minus on a struct with a `Neg` phen calls it, on both backends; on
+// anything else that is not a number it is an analysis error.
+struct V { x: t64 }
+phen Neg (v: V) { fnc: Self neg() { V { x: 0 - v.x } } }
+v: V = V { x: 3 }
+w: V = -v
+print(w.x)
+a: t8 = -128
+print(-a)
+f: f64 = 2.5
+print(-f)

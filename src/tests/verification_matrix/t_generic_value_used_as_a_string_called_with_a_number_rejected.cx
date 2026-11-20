@@ -1,0 +1,8 @@
+// A `T` value where a string is declared is right only for the calls whose
+// `T` is a string.
+fnc: str <T> text(x: T) {
+    s: str = x
+    return s
+}
+print(text("hi"))
+print(text(5))

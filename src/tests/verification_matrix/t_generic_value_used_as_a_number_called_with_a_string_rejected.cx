@@ -1,0 +1,9 @@
+// `n: t64 = x` converts a number. The function is called with a string,
+// which is not one: the interpreter used to print the first line and then
+// stop at run time; compiled code refused.
+fnc: t64 <T> widen(x: T) {
+    n: t64 = x
+    return n
+}
+print(widen(5))
+print(widen("s"))

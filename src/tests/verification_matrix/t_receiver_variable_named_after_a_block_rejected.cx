@@ -1,0 +1,16 @@
+// A name declared in a block ends with the block. After it, `{vv}` in the
+// string is the module's `vv` — the variable `run` is called on. The receiver
+// rule used to keep the block's `vv` for the rest of the method and miss it.
+struct V { x: t64 }
+vv: V = V { x: 1 }
+vm: impl (s: V) {
+    fnc: t64 run() {
+        {
+            vv: t64 = 5
+            s.x += vv
+        }
+        print("v={vv}")
+        return s.x
+    }
+}
+print(vv.run())

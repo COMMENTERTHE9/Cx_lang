@@ -1,0 +1,14 @@
+5
+300
+5
+text
+two
+300
+n
+3
+2
+Ok(5)
+Ok(s)
+Err(no)
+Ok(7)
+Err(gone)

@@ -1760,6 +1760,15 @@ name rather than by hash, because each fix and its write-up are one commit.)*
 **Status: FIXED.** Aggregates are values on both backends — every bind, every
 parameter, every return. The method receiver is the one declared exception.
 
+*(2026-11-20: which bindings that exception covers is now stated by
+`docs/backend/cx_value_and_alias_semantics.md`, rule V2 — a struct or array
+receiver given a variable by name. The heading further down, "a property of
+the parameter, not of its position", still holds for the callee: a receiver
+parameter is never copied on entry. What the caller passes also depends on the
+argument (a field, an element or another expression given for a further
+receiver is a temporary) and on the call being a method call (an operator's
+operands are values). See §76.)*
+
 A live silent divergence on shipped flat-array paths. `r: [3: t64] = a` bound
 `r` to the same storage as `a` on the JIT, while the interpreter copied the
 value. Both backends exited 0 with different answers:
@@ -3559,6 +3568,14 @@ this entry — `same_element_type`, the `Array` arm of `types_compatible`, and
 **Status: FIXED — by a language decision: arrays have one element type, and
 arrays of different element types do not convert.**
 
+*(2026-11-20: one sentence of this entry is superseded. It says an impl's
+extra receivers must have the declared type exactly, "numbers included:
+nothing converted on the way in could be written back". The owner decided on
+2026-11-20 that a receiver which is not a struct or an array is a value: it is
+never written back, so its argument is converted as an ordinary argument is —
+a `t8` may be given for a `t64` receiver. The exact-type rule stands for
+struct and array receivers. See §76f.)*
+
 ### What happened
 
 `types_compatible` took any two numeric arrays of one length as compatible, so
@@ -3767,6 +3784,11 @@ in a typed binding and passes the value through elsewhere.
 
 A generic body is still analysed once, not per instantiation: a `T` that is a
 struct where a t8 is declared is found at run time, not by analysis.
+
+*(Changed 2026-11-20 by §81: the body is still analysed once, but what it
+needs of `T` — here, that it is a number — is recorded and checked for the
+types of every call. A struct given for that `T` is now an analysis error at
+the call.)*
 
 ### Fixtures
 
@@ -4400,7 +4422,7 @@ both. What a number means as a condition is a language question.
 
 **b. A `.copy` write-back made while evaluating a condition is lost in compiled
 code.** The branch's bindings are captured before the condition is lowered, so
-the body reads the value from before the call. Both exit 0.
+the body reads the value from before the call. Both exit 0. *(Fixed: §76g.)*
 
 ```cx
 i: t64 = 0
@@ -4415,7 +4437,8 @@ print(i)          // interpreter: 1 1    JIT: 0 0
 The same happens in a `while` condition and a `when` scrutinee.
 
 **c. A guarded catch-all followed by another arm drops the later arms in
-compiled code.** Both exit 0; the expression form traps instead.
+compiled code.** Both exit 0; the expression form traps instead. *(Fixed:
+§77.)*
 
 ```cx
 n: t64 = 3
@@ -5024,6 +5047,12 @@ derived by hand. The reviewer's differential fuzzer, which found (a) in 67 of
 3000 programs, finds none in the same 3000.
 
 ## 69. Open: receivers, aliases and operands whose evaluation the two backends do not agree on
+
+*(2026-11-20: no longer open. The owner decided the question on 2026-11-19,
+`docs/backend/cx_value_and_alias_semantics.md` states the rules, and §76
+records the fix for each case below: a → §76c, b → §76f (one part held for the
+owner), c → §76c and §76d, d → §76b, e → §76h, f → §76g, g → §76a. The
+"smaller notes" at the end are still open.)*
 
 *(2026-11-18, from the same review. All were present on `submain`. None is
 fixed here: together they are one question — what a receiver, a further alias
@@ -5710,6 +5739,10 @@ how strictly a generic body is checked — whether a concrete value may stand
 where a type parameter is declared at all. It is recorded here and put to the
 owner; it is not changed.
 
+*(Decided by the owner on 2026-11-20 and closed by §81: every program above
+is now an analysis error on both backends. The interpreter's run-time check
+of a `T` local stays, as the second line.)*
+
 Also noted by the review and left as it is: a bare `?` passed for `T` leaves
 a `T` *local* open, as above, but pins a `T` *parameter* as unknown, so
 `x = 5` on the parameter is a type mismatch where `y = 5` on the local is not.
@@ -5851,7 +5884,8 @@ analysis, runs on the interpreter with a payload of the wrong type, and is
 refused by compiled code (127) — none is a silent difference:
 
 - a generic body: `fnc: T <T> launder(x: T) { return Ok(5) }`, and an unbound
-  `fnc: Result<T> <T> mk() { return Ok(5) }` read as a `Result<str>` (§74);
+  `fnc: Result<T> <T> mk() { return Ok(5) }` read as a `Result<str>` (§74)
+  — *closed by §81: both are analysis errors*;
 - an untyped `.copy` parameter: `fnc: t64 fill(r.copy) { r = Ok(300); return 0 }`
   called with a `Result<t8>` variable — the by-address check has no declared
   type to compare with;
@@ -5910,4 +5944,1013 @@ deprecation warning, and a run that writes to stderr is not counted as a
 pass). Unit test `every_branch_of_a_result_value_is_checked_and_literals_are_not_cut`.
 The two earlier Result generators, fresh seeds on the fixed build: 1,300
 programs, no disagreement.
+
+## 76. Values, receivers and operands: the open cases of §69 and §57b, settled
+
+*(§69 recorded seven cases on which the two backends disagreed, as one
+undecided question. The owner decided it on 2026-11-19 — value semantics by
+default, with mutation through explicitly defined mechanisms — and
+`docs/backend/cx_value_and_alias_semantics.md` turns that into rules V1–V8,
+reviewed independently before any code. This entry records each rule's
+implementation, one commit apiece, on `backend/value-alias-semantics`. All of
+the defects were present on `submain`.)*
+
+### a. `break` and `continue` could leave the function they were written in (§69g, rule V8)
+
+Only the early-return signal was caught at a function boundary. A `break` in a
+function body with no loop travelled out of the call and ended a loop of the
+caller; a labeled one in a function declared inside a loop ended that loop,
+because analysis kept the enclosing function's labels in scope; and at the top
+level it was a run-time error after everything before it had run. Compiled
+code refused all three (127).
+
+```cx
+fnc: t64 f() { break; return 1 }
+i: t64 = 0
+while (i < 3) {
+    i = i + 1
+    x: t64 = f()
+    print(i)
+}
+print("after")          // interpreter: after        JIT: refused
+```
+
+**Now** a `break` or `continue` belongs to a loop of the function it is
+written in — the innermost one, or the one carrying its label — and anything
+else is an analysis error on both backends ("'break' is not inside a loop of
+this function"). The loops and labels around a function's declaration are set
+aside while its body is analyzed (`Analyzer::analyze_function`), so a nested
+function may reuse a label for a loop of its own.
+
+No tracked program is affected: every tracked file that uses
+`break`/`continue` does so inside a loop of the same function.
+
+Fixtures: `t_break_in_function_outside_loop_rejected`,
+`t_continue_in_method_outside_loop_rejected`,
+`t_break_label_of_enclosing_function_rejected`,
+`t_break_at_top_level_rejected`, and
+`t_break_continue_in_loops_of_their_function` (both backends). Unit test
+`break_and_continue_belong_to_a_loop_of_their_function`.
+
+### b. The same variable could be two receivers of one call (§69d, rule V4)
+
+`p.mix(p, 5)` on `impl (a: V, b: V)`: the interpreter gave each receiver its
+own copy and let the last write-back win, and compiled code had one object.
+With `mix` adding 100 to `a.x` and 1000 to `b.x`: 1107, then `p.x` 1001 on the
+interpreter; 2207, then 1101 compiled. The same for one variable given for two
+further receivers (`p.mix3(q, q, 5)`), and for `(p)`, which is `p`.
+
+**Now** it is an analysis error on both backends: "'p' is given for two
+receivers of method 'p.mix' — a receiver is the variable itself, and one
+variable cannot be two receivers of the same call". Only what is bound by
+reference is compared — a struct or array receiver given a variable named
+directly. The receiver's variable passed to an ordinary parameter
+(`p.keep(p)`), a field or element of it given for a further receiver
+(`w.absorb(w.inner)`), and one variable given for two number receivers are
+unaffected. It is the receiver counterpart of the existing rule that two
+`.copy` arguments may not name one variable (§29).
+
+No tracked program is affected.
+
+Fixtures: `t_one_variable_two_receivers_rejected`,
+`t_one_variable_two_further_receivers_rejected`,
+`t_parenthesised_name_two_receivers_rejected`, and
+`t_receiver_variable_given_again_by_value` (both backends). Unit test
+`one_variable_is_at_most_one_receiver_of_a_call`.
+
+### c. An operator could change a variable through its operands, and the interpreter undid what the right operand had done (§69a, half of §69c; rule V3)
+
+An operator on a type with a user `+` was rewritten to a method call on the
+left operand's variable. Three things followed.
+
+```cx
+struct V { x: t64 }
+phen Add (v: V) { fnc: V add(rhs: V) { v.x = 100; V { x: v.x + rhs.x } } }
+a: V = V { x: 1 }
+b: V = V { x: 2 }
+s: V = a + b
+print(a.x)                       // 100 / 100 — `+` changed its operand
+ps: [2: V] = [V { x: 1 }, V { x: 2 }]
+t: V = ps:[0] + b
+p0: V = ps:[0]
+print(p0.x)                      // 1 / 100 — in compiled code only, for a
+                                 //           field or an element
+fnc: V bumpv(k.copy: V) { k.x += 100; return V { x: 1 } }
+c: V = V { x: 1 }
+r: V = c + bumpv(c.copy)
+print(c.x)                       // 1 / 101 — the interpreter stored the value
+                                 //           it had read for `c` back over
+                                 //           what `bumpv` wrote
+```
+
+**Now** an operator's operands are values, for every operator a `phen`
+defines — `+ - * / %`, unary `-`, `==`/`!=` and the four orderings. The method
+is given the value the left operand had when it was evaluated; nothing it does
+to its receiver or its parameter reaches a variable, a field or an element;
+and what evaluating the right operand did stays done. The three lines above
+print 1, 1 and 101 on both backends. A method called by name — `a.add(b)` —
+still runs on its receiver's variable.
+
+How: analysis sends an operator's left operand as an expression receiver in
+every case, not only when it is not a name
+(`try_operator_gene_dispatch`). The interpreter evaluates it in place and
+writes nothing back. Compiled code, where a receiver is passed by address,
+gives the method a copy of the operand unless the operand is already a fresh
+value, or the method cannot write its receiver and the right operand makes no
+call (`operator_operand_copy`, `method_may_write_receiver`). "Cannot write" is
+read off the method's body with no analysis of what it calls; when in doubt
+the operand is copied. `a + b` with a method that only reads its receiver
+copies nothing, as before.
+
+**What changes for existing programs.** One tracked fixture:
+`t_op_expr_receiver_mutation`, written as the canary for the operator design,
+pinned that `a.x` is 100 after `a + b` above. Its expected output changes from
+`102 100 104 100 2 4` to `102 1 104 1 2 4`, and its header says why. The texts
+that said `a + b` *is* `a.add(b)` (`README.md`, `gene_phen_design.md`, the
+comment on the dispatch) are amended. This was decided by the owner on
+2026-11-19: operator operands "must not implicitly write back mutations to
+their source variables". No other tracked output changes; two fixtures execute
+`a + f(a.copy)` without reading `a` afterwards.
+
+A generator written for this change (operator methods that write their
+receiver by field, by whole assignment, through a method call or as `.copy`,
+on named, field, element and `if`/`when`-value operands, with every variable
+read after every statement): 1,500 programs, all agreeing.
+
+Fixtures: `t_operator_operands_are_values`,
+`t_operator_keeps_what_its_right_operand_did`, and the changed
+`t_op_expr_receiver_mutation` (both backends).
+
+### d. In compiled code a field or element given for a further receiver was the place itself (the rest of §69c; rule V2 item 3)
+
+A further receiver of a multi-receiver `impl` is bound by reference when it is
+given a variable. Compiled code passed whatever the argument lowered to, and a
+field or an element lowers to its own address:
+
+```cx
+ops: impl (a: V, b: V) { fnc: t64 mix(n: t64) { a.x += n; b.x += 1000; return a.x } }
+p.mix(w.inner, 5)
+wi: V = w.inner
+print(wi.x)                      // interpreter 2, JIT 1002
+```
+
+The same for `p.mix(arr:[0], 5)`, an `if` value yielding a variable, and an
+array field given for an array receiver (`k.bump(h.items)`: 10 / 60).
+
+**Now** only a variable named directly is passed by address. Anything else
+given for a further receiver is copied first (`prepare_call_args`): it is a
+temporary, the method gets its value, and what the method does to it reaches
+nothing — which is what the interpreter always did. The scan that decides
+whether evaluating an expression can change a variable (`expr_may_write`)
+counts an argument only when it is the variable's name, to match.
+
+No tracked program passes a field, element or expression for a struct or array
+receiver.
+
+Fixture: `t_further_receiver_given_a_place_is_a_temporary` (both backends).
+
+### e. In compiled code an assignment to a receiver as a whole stayed inside the method (found by the amendment's review; rule V2 item 2)
+
+```cx
+struct V { x: t64 }
+vm: impl (s: V) { fnc: t64 reset() { s = V { x: 9 }; return s.x } }
+v: V = V { x: 1 }
+print(v.reset())                 // 9 / 9
+print(v.x)                       // interpreter 9, JIT 1
+```
+
+A struct or array receiver arrives as the address of the caller's variable.
+An assignment to a variable in compiled code binds its name to the new value's
+storage — right for a local, and for a receiver it re-pointed the name at
+storage only the method could see. The caller's variable kept its old value,
+and every write the method made through the receiver afterwards
+(`s = V { .. }` then `s.y += 1`) went to the new storage too. The same for an
+array further receiver (`b = [7, 8, 9]`: the caller's array read 8 on the
+interpreter, 10 compiled). A `.copy` parameter assigned whole was unaffected:
+it is copied out at return.
+
+**Now** compiled code keeps a record of the current method's struct and array
+receivers (`receiver_storage`), and an assignment to one stores the new value
+into the receiver's storage, part by part, leaving the binding the address it
+always was.
+
+No tracked method assigns its receiver whole. Found on re-running the
+operator generator with by-name method calls: 2 of 40 programs disagreed
+before this change, 0 of 600 after.
+
+Fixture: `t_receiver_assigned_as_a_whole` (both backends).
+
+### f. A receiver that is not a struct or an array: written back by one backend only, and over a later argument's change (§69b; rule V2 item 4 — decided 2026-11-20: a value)
+
+```cx
+num: impl (p: V, k: t64) { fnc: t64 grow(by: t64) { k += 100; p.x += by; return k } }
+n: t64 = 5
+print(q.grow(n, 1))
+print(n)                         // interpreter 105, JIT 5
+
+num2: impl (p: V, k: t64) { fnc: t64 total(extra: t64) { return p.x * 1000 + k + extra } }
+m: t64 = 5
+print(q.total(m, inc(m.copy)))   // inc adds 7 to m
+print(m)                         // interpreter 5, JIT 12
+```
+
+The interpreter wrote every further receiver back to the variable it was
+given, whatever its type; compiled code passes a number, bool, string, enum,
+handle or `Result` by value and never wrote one back. The second program has
+nothing to do with the method at all: the interpreter stored the value it had
+read for `k` back into `m` and so undid `inc`'s write-back. The review of the
+amendment found the same for a `Result` receiver (`Ok(99)` / `Ok(5)`).
+
+**Decided so far.** The owner's ruling of 2026-11-19 is that further aliases
+"follow value semantics unless the language explicitly grants write-back", and
+the amendment reads a non-aggregate receiver as a value (V2 item 4). But §42,
+decided by the owner on 2026-10-24, describes an impl's extra receivers as
+passed by address, "numbers included: nothing converted on the way in could be
+written back", and the analyzer's comments and diagnostic say the same. Which
+of the two stands is the owner's call, and it is not made here.
+
+**Now**, so that no program's result depends on the answer:
+
+- A method that writes a non-aggregate receiver — assignment, compound
+  assignment, passing it as `.copy`, giving it to `read`/`input` — is an
+  analysis error on both backends (`reject_value_receiver_write`): "cannot
+  write to 'k' — a receiver that is not a struct or an array is a value, so
+  the write would not reach the caller's variable".
+- The interpreter writes back struct and array receivers only. A receiver the
+  method did not write is the same under either reading, and the second
+  program prints 12 on both backends.
+
+**Decided by the owner on 2026-11-20: it is a value.** "These types should
+behave as values by default. Passing one as an additional method receiver must
+not unexpectedly modify the caller's variable." The held error is removed:
+
+- Inside the method such a receiver is an ordinary local. The method may
+  assign it, compound-assign it and pass it as `.copy`; nothing reaches the
+  caller's variable, on either backend (`n` after `q.grow(n, 1)` is 5; `grow`
+  returns 105).
+- Its argument is checked and converted as an ordinary argument is: a `t8`
+  variable may be given for a `t64` receiver, a `Result<t8>` for a
+  `Result<t64>` one, a literal is range-checked. The exact-type requirement of
+  §42 remains for struct and array receivers, which are passed by reference;
+  its diagnostic now says so ("a struct or array receiver is passed by
+  reference").
+
+Fixtures: `t_value_receivers_are_locals_of_the_method` (assignment, compound
+assignment, `.copy` inside the method, a loop; number, bool, string, enum and
+`Result` receivers; conversion of the argument) and
+`t_value_receivers_are_not_written_back`, both backends. They replace the
+three fixtures that pinned the held error. Unit test
+`a_receiver_that_is_not_a_struct_or_array_is_an_ordinary_value`.
+
+### g. A `.copy` write-back, or an assignment, made on the way to a decision was lost in compiled code (§57b, §69f; rule V6)
+
+A `.copy` argument is written back when its call returns. For a number, bool
+or string that write is a new SSA value under the variable's binding, and
+compiled code builds every decision from blocks that each start with a set of
+bindings. Three places took the wrong set:
+
+- **A condition, a scrutinee, a guard.** The branches started from the
+  bindings captured *before* the condition was lowered. `if step(i.copy) {
+  print(i) }` printed the old `i`; a `while` whose condition advanced its
+  variable never saw it advance in the body and **did not terminate**; a
+  guard that ran and failed left no trace for the next arm.
+- **The left operand of `&&` / `||`.** The same, one level down.
+- **A value branch, and the right operand of `&&` / `||`.** Each path jumped
+  to the merge with its value only, and the merge carried on with the
+  bindings from before the whole expression.
+
+```cx
+fnc: t64 inc(n.copy: t64) { n += 7; return 1 }
+n: t64 = 0
+x: t64 = if n == 0 { inc(n.copy) } else { 0 }
+print(n)                         // interpreter 7, JIT 0
+b: bool = inc(n.copy) > 0 && n > 7
+print(n)                         // interpreter 14, JIT 0
+```
+
+The last also lost a plain assignment in a branch of a function's trailing
+`if`/`else`, which is a value: a `.copy` parameter assigned there reached the
+caller on the interpreter only (11 / 1).
+
+**Now** (`src/ir/lower.rs`):
+
+- `lower_if_chain`, `lower_while`, `lower_if_expr` and `lower_logical` start
+  their branch blocks from the bindings the condition or left operand *left*;
+  `lower_when_stmt` and `lower_when_expr` thread the bindings through the
+  chain of arms (`enter_when_arm`), so each test starts from what the
+  scrutinee and the guards before it left.
+- A guard that changed a variable and failed reaches the next arm through a
+  join block that takes the variable as a parameter (`guard_falls_through`):
+  the next arm is also reached by the pattern not matching, when the guard
+  never ran.
+- The paths of a value-producing `if`, `when`, `&&` or `||` are joined by
+  `join_value_paths`, which gives the merge one parameter for the result and
+  one for each variable the paths disagree on — what the statement forms have
+  always done (`merge_fallthroughs`).
+
+Nothing is refused in place of any of this. `t_enum_boundary_valid`, the one
+tracked program with a scalar `.copy` in a value branch, passes as before.
+
+*(Corrected after the independent review of the implementation. As first
+committed, one shape WAS newly refused: a function's trailing `if`/`else` in
+which a three-state bool local is given a definite value in one branch — the
+value merge found the variable in two representations and refused. And one
+disagreement became visible that the lost write-backs had been hiding: a
+three-state `&&`/`||` ran a right operand the interpreter skips. Both are
+fixed in §79; the sentence above is true as of that entry.)*
+
+A generator written for this change puts calls that write a `.copy` argument
+back in every one of these positions, nested in each other, at top level and
+inside functions, and reads every variable after every statement: 400
+programs, 392 agreeing, 8 that do not parse, none disagreeing.
+
+Found on the way, not fixed here: a `when` statement whose scrutinee begins
+with a parenthesis — `when (a + 1) % 3 { 0 => print(a), _ => print(3) }` — is
+parsed as a `when` *expression*, and compiled code refuses one whose arms are
+calls to `print` ("SemanticType::Void is not storable"). The interpreter runs
+it. Present on `submain`.
+
+Fixtures: `t_copy_write_back_in_conditions`,
+`t_copy_write_back_in_value_branches` (both backends).
+
+### h. Inside a method the interpreter ran on a copy of the receiver, so the variable's own name saw a stale value (§69e; rule V5)
+
+```cx
+struct V { x: t64 }
+top: V = V { x: 1 }
+fnc: t64 poke() { top.x += 1000; return top.x }
+vm: impl (s: V) { fnc: t64 run() { s.x += 10; r: t64 = poke(); s.x += 100; return r } }
+print(top.run())                 // interpreter 1001; a true alias gives 1011
+print(top.x)                     // interpreter 111;  a true alias gives 1111
+```
+
+A struct or array receiver *is* the caller's variable, but the interpreter
+binds the receiver to a copy and stores it back when the method returns. So
+`poke` read `top` as it was before the call, and what it wrote was overwritten
+by the store-back. Compiled code refused the program (127): it cannot reach a
+top-level struct from a function, and said so as "lowering invariant
+violation: binding for 'top' (id 0) not found in scope".
+
+**Now** the program has no result on either backend, and neither gives one
+silently:
+
+- **The interpreter stops** with a run-time error at the statement that
+  reaches the variable: "'top' is in use as the receiver of a method that is
+  still running". For the length of a method's body, the variables its
+  receivers are — the one the call is made on, and each struct or array
+  further receiver given a variable by name — are recorded with the frame
+  they live in (`RunTime::lent_receivers`), and every variable read and write
+  in `src/runtime/scope.rs` checks against the record. Reading or writing the
+  variable or a field or element of it, passing it as `.copy`, and calling a
+  method on it again all count.
+- **Compiled code refuses**, as before, now with a message that says what it
+  refuses ("function 'poke' reads or writes a field of top-level variable
+  'top'").
+
+Reaching the variable *through the receiver* is unaffected, whatever the
+receiver is called — `impl (top: V)` called as `top.run()` shadows the
+variable and is the commonest shape there is. An operator's operands are not
+receivers. A recursive function has one variable per call.
+
+**The two backends differ for a program whose offending path is not taken.**
+The interpreter's check is dynamic: `if c { return poke() }` with `c` false
+runs and exits 0. Compiled code's refusal is static: it refuses any function
+that names a top-level struct. That is a refusal (SKIP), not a different
+answer. An analysis-time rule that rejects the program on both backends
+before it runs is the better end state and is not built.
+
+No tracked program reaches a receiver's variable by name: every tracked
+`.cx` file (961 at that commit) was run on the interpreter after this change.
+
+*(From the independent review of the implementation.)* Naming the variable in
+a string — `print("inside {top}")` — also stops the program, and since the
+review's finding now says why: interpolation used to turn the error into "no
+variable `top` in scope". And the variable need not be module-level: an `impl`
+can be declared inside a top-level block (a `while` body), and its method can
+then reach a local of that block through a nested function. The interpreter's
+check covers it, being by frame and binding; compiled code refuses the
+program, with the older "binding … not found in scope" message.
+
+Fixtures: `t_receiver_variable_reached_by_name` (the interpreter's error;
+compiled code SKIP) and `t_receiver_named_like_its_variable` (both backends).
+Unit tests `a_receivers_variable_is_not_reached_by_name_while_its_method_runs`,
+`a_receivers_variable_is_reached_through_the_receiver`.
+
+**Since 2026-11-20 the conflict is an analysis error** (owner's decision: find
+it in semantic analysis where it can be found;
+`docs/backend/cx_decisions_2026_11_20.md`, D6). A pass over the whole analyzed
+program (`src/frontend/receiver_access.rs`) computes, for every function and
+method, the variables declared outside every function that its body names —
+or that anything it can call names — and rejects a method call whose receiver
+variable is in the method's set: "method 'top.run', or something it calls,
+names 'top' — the variable it is called on". The same for a struct or array
+variable given by name for a further receiver.
+
+The rule is static and conservative. It rejects a program whose offending
+path is never taken (the one above with `if c { return poke() }` ran on the
+interpreter before), and a read counts as much as a write. Calls are followed
+by name: functions, methods of a known struct type, operators, nested
+functions. A method call on a value whose type is a type parameter is the
+method of the struct each call gives that parameter, so a generic function is
+followed once for each such struct it is reached with. *(The first version
+took such a call to reach every method of that name, and so rejected a program
+in which another struct's method named the variable — which ran before, and
+is not a conflict. Found by the review of the decisions document, fixed
+2026-11-20.)* Where a call does not say what the parameter is — it is left
+unbound, another parameter of the function is, or it is bound to a generic
+struct's field — the method call is taken to reach every method of that name.
+*(The second version did not follow such a call at all and left it to the
+second line below. The review of the implementation showed that line is not
+complete: compiled code ran a method that reached its receiver's array
+through `len` while the interpreter stopped. Fixed 2026-11-20.)* The bodies
+followed with their type parameters bound are limited to 2,048; past that a
+body is followed once with them taken as not known, which reaches at least as
+much. *(A generic function that calls itself with its type arguments permuted
+made them grow factorially: ten type parameters took 53 s and 4.7 GB.)* A
+name declared inside a block is that block's own; after the block the same
+name in a string is the outer variable again. *(The walk used to keep it for
+the rest of the method, and missed a `"{vv}"` naming the receiver's
+variable.)* What it does not reject: the receiver under
+any name, any other variable, the caller's own use of the variable while it
+evaluates the arguments, the variable passed to an ordinary parameter, and a
+variable local to a function, which no method can name.
+
+The interpreter's run-time check and compiled code's refusal stay as a second
+line; a program that analysis accepts cannot reach either by this route. One
+tracked program is affected: the fixture written for the run-time check.
+
+A second over-rejection is known (found by the review of the implementation):
+a method of a struct that two `impl` blocks both give a method of that name —
+a later block replacing it, or a multi-receiver block listing the struct —
+counts as both, though a call runs one. Conservative; the programs it affects
+are ones compiled code refuses in any case (a function naming a top-level
+struct).
+
+Two things the rule is, said plainly. It rejects a **read** of the receiver's
+variable as much as a write, as the run-time check of V5 already did: the
+interpreter runs a method on a copy of its receiver and stores it back at the
+end, so a read by name sees the value from before the call. And it rejects an
+access on a path that is **never taken**. In both cases the way out is the
+same: reach the value through the receiver, or pass what the method needs as
+an argument. One further over-rejection is known: a `"{top}"` written in a
+string that the method passes to a function with a parameter named `top` is
+read there as that parameter, and analysis reads it where it is written.
+
+Fixtures (all rejected by analysis on both backends):
+`t_receiver_variable_reached_by_name`,
+`t_receiver_variable_reached_on_untaken_path_rejected`,
+`t_receiver_variable_read_by_a_callee_rejected`,
+`t_further_receiver_variable_reached_by_name_rejected`; and accepted on both,
+`t_method_reaches_other_variables`. Unit tests in `receiver_access.rs`.
+
+## 77. A guarded catch-all was treated as the last arm in compiled code (closes §57c)
+
+*(Open since the review of the M0 fixes (§57c). Present on `submain`. Fixed on
+`backend/value-alias-semantics`, in the `when` lowering that §76g had just
+restructured.)*
+
+```cx
+n: t64 = 3
+when n {
+    _ if n == 9 => print(4),
+    _ => print(0),
+}
+print(5)                         // interpreter 0 5, JIT 5
+
+x: t64 = when n {
+    _ if n == 9 => 4,
+    _ => 0,
+}                                // interpreter 0, JIT trap (126)
+```
+
+A `_` arm with a guard is not the end of a `when`: its guard can fail, and the
+arms after it are then tried. Compiled code stopped lowering arms at the first
+catch-all whether or not it had a guard. In the statement form the "guard
+failed" edge went straight past the remaining arms, with exit 0; in the value
+form it went to a trap.
+
+**Now** a guarded catch-all continues the chain of arms like any other guarded
+arm (`lower_when_stmt`, `lower_when_expr`); only an unguarded catch-all ends
+it. The value form still traps if no arm at all matches.
+
+Fixture: `t_when_guarded_catch_all_is_not_the_last_arm` (both backends).
+
+**A `when` used as a value needs an arm that always matches** (found by the
+independent review of the implementation; present on `submain`). Analysis
+counted a guarded `_` as making a `when` exhaustive, so
+`x: t64 = when k { 1 => 5, _ if k > 5 => 6 }` was accepted; for `k = 3` the
+interpreter yielded 0 and carried on, and compiled code trapped (126). A
+guarded arm no longer counts towards exhaustiveness when the `when` is a value
+(`when_is_exhaustive`): the program is a semantic error on both backends,
+asking for a `_` arm without a guard. A `when` *statement* keeps the lenient
+rule — when no arm runs nothing happens, on both backends. No tracked program
+is affected. Fixture `t_when_value_guarded_catch_all_only_rejected`; unit test
+`a_when_value_needs_an_unguarded_catch_all`.
+
+**…and `true`, `false`, `unknown` prove it only for a bool** (found
+2026-11-20 by the independent review of the owner's decisions of that day;
+present on `submain`). The one coverage proof analysis has — unguarded arms
+for the three states of a bool — did not look at what was being matched:
+`x: t64 = when n { true => 1, false => 2, unknown => 3 }` with a t64 `n` was
+accepted, and no arm matches a number. The interpreter yielded 0 and carried
+on; compiled code trapped (126). The same for a string, an enum, a `Result`
+and a generic `T`. The proof now counts, for a `when` used as a value, only
+when the matched value's type is `bool`; anything else needs a `_` arm, and
+the error says so. The owner's decision to keep the current rule (decision 4)
+asks for exactly this: a `_` unless there is a sound proof. A `when`
+statement is unchanged. No tracked program is affected — the four tracked
+value-`when`s that rely on the proof match a bool. *(One shape that ran the
+same on both backends is rejected: such a `when` on a generic `T` that every
+call makes a bool, found by the review of the implementation. The proof holds
+only per call, analysis checks the body once, and no new exhaustiveness
+system is added at this stage: add a `_` arm.)* Fixture
+`t_when_value_bool_arms_on_a_number_rejected`; the unit test above.
+
+## 78. A number literal in a generic array literal was narrowed to fit in compiled code
+
+*(Found 2026-11-20 by the independent review of the generic-local fix (§74).
+Present on `submain`. Closed on the compiled side by a refusal, on
+`backend/value-alias-semantics`; the question behind it is analysis's and is
+put to the owner.)*
+
+```cx
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 349]
+    return c:[1]
+}
+a: t8 = 5
+print(second(a))                 // interpreter 349, JIT 93 — exit 0 on both
+b: bool = false
+print(second(b))                 // interpreter 349, JIT true
+```
+
+A number literal beside a `T` element in an array literal is accepted by
+analysis for every `T`: the range check a literal gets at a declared type
+(`[a, 300]` with `a: t8` is an error, §42) has no type to check against in a
+generic body. The interpreter, which runs the generic function as written,
+keeps the literal. Compiled code knows the element type once the function is
+specialised, and every array element goes through a store that narrows it to
+the element's width — so 349 became 93 in a `t8`, `true` in a `bool`, and 2.5
+became 2 in a `t64`. The review counted 64 such programs in a matrix of
+1,760; half of them were silent on `submain` as well.
+
+**Now** compiled code refuses the program when a bare number literal (or one
+behind a unary minus) does not fit the element type the function was
+specialised with (`ensure_literal_element_fits`, used by both array-literal
+paths). A literal that fits is lowered as before. In a non-generic function
+the check cannot fire: analysis has already rejected the literal.
+
+The interpreter's answer is unchanged, and is not a `t8` either. Whether a
+concrete value may stand where a type parameter is declared at all is the open
+question recorded in §74.
+
+*(Since §81 a call whose `T` the literal does not fit is an analysis error on
+both backends, and this refusal is the second line behind it.)*
+
+Fixtures: `t_generic_array_literal_element_that_fits` (both backends),
+`t_generic_array_literal_element_that_does_not_fit` (an analysis error on
+both since §81; before, the interpreter's answer and a compiled-code SKIP).
+Unit test
+`a_literal_array_element_that_does_not_fit_its_generic_type_is_refused`.
+
+## 79. Three-state bools: `&&`/`||` ran a right operand the interpreter skips, and a merge refused a bool in two representations
+
+*(Found 2026-11-20 by the independent review of the amendment's
+implementation. The first is present on `submain`; §76g made it visible in
+conditions. The second was introduced by §76g. Both fixed on
+`backend/value-alias-semantics`.)*
+
+**a. Short-circuit.** `&&` and `||` skip their right operand when the left one
+settles the result — a definite false for `&&`, a definite true for `||` —
+whether or not either operand is a three-state bool. The interpreter does
+exactly that. Compiled code took a separate path whenever either operand was
+three-state, and evaluated both operands unconditionally:
+
+```cx
+fnc: bool yes(n.copy: t64) { n += 100; print("called"); return true }
+n: t64 = 0
+b: bool = ?
+d: bool = false && (b || yes(n.copy))
+print(n)                         // interpreter 0;  JIT printed "called", then 100
+```
+
+On `submain` the call's output and its write-back in value position already
+differed. In an `if` condition or a `when` guard the write-back used to be
+dropped (§57b), which hid it there; §76g keeps write-backs, so
+`if n > 5 && (b || yes(n.copy)) { .. }` then left `n` at 100 in compiled code
+only. The three-state path now branches on the left operand first and
+evaluates the right one only when it is needed (`lower_logical`); the
+three-valued result is computed as before.
+
+**b. Merges.** A bool is three-state while it may be unknown and definite once
+it has been assigned `true` or `false`, and compiled code keeps the two in
+different representations. When paths that left a variable in different ones
+met, the statement merge refused the program with an internal-error message
+(present on `submain`), and the value merge added by §76g refused it too — a
+**new** refusal for a function's trailing `if`/`else`, which had compiled
+before because the branches' changes were simply dropped:
+
+```cx
+fnc: t64 f(c: bool) {
+    b: bool = ?
+    if c { b = true; 1 } else { 2 }      // refused after §76g; 1 and 2 before
+}
+```
+
+Every merge now gives such a variable the three-state representation — a
+definite bool is the wire value 0 or 1 of a three-state one
+(`merged_representation`, used by `merge_fallthroughs`, `join_value_paths`
+and `guard_falls_through`). The statement form, refused since `submain`, runs
+as well.
+
+Fixtures: `t_three_state_logic_short_circuits`,
+`t_three_state_bool_set_in_one_branch` (both backends).
+
+## 80. A struct or array literal assigned to a variable it reads was built over that variable, in a loop
+
+*(Found 2026-11-20 by the independent review of the amendment's
+implementation — by its generator, in 3 of 14,900 programs. Present on
+`submain`; not caused by this work. Fixed on `backend/value-alias-semantics`.)*
+
+```cx
+struct V { x: t64, y: t64 }
+v: V = V { x: 12, y: 5 }
+i: t64 = 0
+while (i < 2) {
+    i = i + 1
+    v = V { x: v.y, y: v.x }
+}
+print(v.x)
+print(v.y)                       // interpreter 12 5, JIT 12 12
+```
+
+Compiled code builds a literal in storage of its own and, on assignment, binds
+the variable to that storage without copying — a literal is a fresh value that
+nothing else names. That holds the first time the statement runs. The storage
+is one slot per place in the program, not per execution: the second time
+round a loop the literal is built in the very slot the variable now names, and
+`y: v.x` reads `x` after it has been overwritten. The same for an array
+(`a = [a:[1], a:[0]]`), for a `.copy` parameter assigned a literal in a loop,
+and for a literal containing a call that changes the variable
+(`v = V { x: 3, y: bumpv(v.copy) }`).
+
+**Now** a literal that uses the variable it is assigned to — reads it, a field
+or an element of it, passes it to a call, calls a method on it — is copied out
+of its own storage before the variable is bound (`literal_reads_its_target`,
+in the assignment arm of `lower_stmt`). A literal that does not mention its
+target is bound without a copy, as before. The receiver case of the same
+mechanism was fixed by §76e.
+
+Fixture: `t_literal_assigned_to_a_variable_it_reads` (both backends).
+
+## 81. A generic body was not checked against its own type parameters
+
+*(The open question of §74, decided by the owner on 2026-11-20 — "make
+incompatible assignments in generic functions compile-time errors … the
+compiler must enforce the actual type represented by T" — and implemented on
+`backend/value-alias-semantics`. Present on `submain`. The rule is decision 2
+of `docs/backend/cx_decisions_2026_11_20.md`.)*
+
+```cx
+fnc: T <T> f(x: T) { return "not a T" }
+n: t64 = f(5)                    // interpreter: type mismatch at run time, compiled: refused
+fnc: T <T> g(x: T) {
+    y: T = 5                     // interpreter: 5 for every T, a string or a bool
+    return y                     //   included; compiled: refused
+}
+fnc: t64 <T> widen(x: T) {
+    n: t64 = x
+    return n
+}
+print(widen(5))                  // 5 on both
+print(widen("s"))                // interpreter: prints 5, then stops; compiled: refused
+fnc: Result<t8> <T> conv(r: Result<T>) { return r }
+big: Result<t64> = Ok(300)
+x: Result<t8> = conv(big)        // interpreter: Ok(300) in a Result<t8>; compiled: refused
+```
+
+Analysis checks a generic body once, with `T` unknown, and let a type
+parameter match anything. The interpreter, which runs the body as written,
+carried on with a value of the wrong type; compiled code, which specialises
+the body, refused — usually with an internal "type mismatch after semantic
+analysis" message. One shape was a silent difference (§78).
+
+**Now**, inside the body of a generic function, each of its own type
+parameters is a type of its own:
+
+1. **Where `T` is declared, only a `T` fits.** A literal, a value of a
+   concrete type, a value of another type parameter, a `Result` or an array
+   of anything but `T` where a `Result<T>` or `[N: T]` is declared — in a
+   declaration, an assignment, a `return` or trailing expression, an
+   argument, an `Ok` payload, a struct field, **each** branch of an `if` or
+   `when` used as a value — is an analysis error in the body, whatever the
+   function is called with.
+2. **A value whose type is, or holds, `T` may be used where another type is
+   declared**, and that is checked for every call: with `T` replaced by what
+   it is there, the value must fit by the rule for concrete types — the same
+   type; any number where a number is declared, which is converted (§43); a
+   `Result` by the payload rule, which converts nothing (§75). An array of
+   `T` is never an array of another element type, as before (§42).
+3. **A number literal written beside `T` elements** is an element of that
+   `[N: T]` (§42), and is checked for every call: a whole number needs `T`
+   to be a whole-number type that holds it; a float needs `T` to be f64.
+
+"Every call" is every call written with concrete types, wherever it is
+written — inside a generic function that is never called, too — and every
+generic function it reaches from there, with the types it reaches them with.
+The error is reported at that call and names the function, the types and
+what its body does:
+
+```
+'widen' is called with T = str, but its body uses a T value where t64 is declared: str is not t64
+this call reaches 'g' with T = str, but its body uses a T value where t64 is declared: str is not t64
+'second' is called with T = t8, but its body writes a number literal as an element of a T array: 349 does not fit t8 (valid range: -128..127)
+```
+
+Unchanged: an `Err(..)` is a `Result` of every type, `T` included; a value
+whose type analysis does not know is not checked, here or anywhere; a call
+that leaves `T` unbound, or binds it to `?`, is checked for nothing.
+
+### Not covered
+
+- **A generic struct's type parameter.** Struct type arguments are not kept
+  in a variable's type, so the type of `b.v` for a `Box<T>` is not known to
+  be anything, and is matched with everything — against a concrete type and
+  against a function's own `T` alike. This is not only a generic-function
+  gap: at top level `b: Box = Box<t64> { v: 300 }`, `xs: [2: t8] = [b.v, 1]`
+  holds 300 on the interpreter and 44 in compiled code (§82 a). Closing it
+  needs struct instantiations in the type system.
+- **Past its limit.** The check follows every instantiation the program's
+  calls reach, checking at most 128 sets of types for one generic function
+  and none nested more than 32 deep; a function that instantiates itself
+  with ever larger types (`g([x])` inside `g`) meets these. Where it stops
+  short of an instantiation compiled code may compile — one reached from a
+  call written outside every generic body — the analyzed program records what
+  it did not check (`SemanticProgram::unchecked_generics`) and compiled code
+  refuses the program; the interpreter runs it with its run-time checks. So
+  does such a call whose types name a type parameter analysis does not track
+  — a generic struct's field given to a generic function (compiled code
+  refused those already, as an unresolved function). Calls in a generic
+  function nothing calls, and a call that leaves a type parameter unbound
+  (which compiled code cannot compile: it emits only specialisations), are
+  checked as far as the limits allow and never recorded. *(The first version
+  of the record also recorded those, and so refused programs that ran the
+  same on both backends — among them a library whose every importer was
+  refused; found by the review of that version and fixed.)* *(Three earlier
+  versions got this wrong. The first bounded only what one call followed, not
+  the work behind it — 1,200 calls of a function to itself took 11 s and
+  1.7 GB. The second and third left programs unchecked past their limits and
+  relied on compiled code meeting its own limit there; reviews built programs
+  where it did not — calls after a `return`, partly bound calls and nested
+  generic functions use up the budget with instances compiled code never
+  makes — and compiled code compiled them: 34 held as a float where the
+  interpreter held an integer, or stopped. The record makes that impossible
+  by construction.)*
+- **A `T` value where a type is needed but none is declared** — an `if`
+  condition, the operand of `!`, an array index. Analysis does not check
+  these for a concrete type either (§57 a, §82 b).
+- A type parameter no argument binds (`fnc: T <T> make()`): its result is a
+  type of the callee's own, `make::T`, which is not checked against anything
+  — as a generic struct's type parameter is not. Compiled code refuses a call
+  that leaves a type parameter unbound.
+
+### What changes for existing programs
+
+Programs that the interpreter ran with a value of the wrong type, and compiled
+code refused, are analysis errors on both. Two kinds of program **ran the same
+on both backends** and are now rejected:
+
+- A concrete value where `T` is declared, in a function whose every call
+  gives `T` exactly that type: `y: T = 5` called only with a t64, `z: U = x`
+  called with the same type for `T` and `U`, a struct `P` returned as `T`
+  from a function called only with a `P`. Rule 1 is checked in the body, not
+  per call: a function that makes a `T` out of something else is not generic
+  in `T`.
+- A whole-number literal beside `T` elements, called with an f64, when the
+  element was only printed (`34` on both). Bound to an f64 it was a type
+  mismatch on the interpreter and 34 in compiled code: the interpreter keeps
+  the integer.
+
+Tracked programs whose outcome changed, all fixtures written to pin the old
+leniency: `t_generic_array_literal_element_that_does_not_fit` and
+`t_result_of_unknown_kind_at_a_typed_use` (now analysis errors),
+`t_generic_array_literal_element_that_fits` (its f64 call moved to
+`t_generic_array_literal_whole_number_beside_f64_rejected`),
+`t_generic_local_keeps_its_type` and `t_generic_local_raw_unknown` (reworked
+to reach the interpreter's run-time check through a generic struct's field),
+`t_print_interpolation_type_conflict`, `t_import_mono_enum_conversion` and the
+nine `t_module_enum_generic_*_reject` fixtures (analysis errors on both, where
+the interpreter stopped at run time or printed an enum as a t8 and compiled
+code refused), and `t_mono_instantiation_cap` (its function returned a
+`[1: T]` as a `T`; it now returns a t64).
+
+### How
+
+`src/frontend/generic_scope.rs`. While a function is analysed, its type
+parameters are the *scope*; `types_compatible` and `result_payload_compatible`
+consult it, so every one of their callers is covered. A use of the second or
+third kind is recorded as an obligation of the function; every call to a
+generic function is recorded with what it binds; once all modules are
+analysed, `check_instantiations` follows each call written with concrete
+types through the generic calls it reaches. A branch of an `if`/`when` value
+is checked against the declared type itself (`check_branch_tail_fits`), since
+the value is typed by its first branch.
+
+The interpreter's run-time checks and compiled code's refusals stay behind the
+rule. Their unit tests reach them by analysing without it
+(`generic_scope::unchecked`, test builds only).
+
+*(Found by the independent review of the implementation, fixed 2026-11-20: a
+call written **before** the function it calls was not followed. The function
+pre-pass gave each top-level function an id so that such a call could be
+checked, and the definition then took a second id; the call named the first,
+which no function had. The definition now keeps the pre-pass id. The same
+mismatch is why compiled code refused every forward call to a generic
+function — "unresolved semantic artifact reached lowering: function 'twice'"
+— and those now compile and agree with the interpreter. The receiver rule of
+§76h was affected the same way. Fixtures
+`t_generic_function_called_before_its_definition` (both backends),
+`t_generic_function_called_before_its_definition_rejected`,
+`t_receiver_variable_reached_through_a_later_function_rejected`.)*
+
+*(Also found by the review of the implementation, and fixed 2026-11-20:*
+
+- *The branches of an `if`/`when` value were checked against a declared type
+  further out, and only there. As an element of an array literal of `T`, or
+  as the value of an untyped `let`, `if c { x } else { 300 }` put 300 where
+  `T` was a t8 or a string. Now, in a generic function, where **no** type is
+  declared for such a value and one branch yields a value of the function's
+  own type parameter (or an array or `Result` of it), every branch must yield
+  that type (`check_generic_branches`). Where a type is declared, each branch
+  is checked against it, a `T` branch for each call. (The first version of
+  this fix required agreement everywhere, and rejected programs with a
+  declared type that ran the same on both backends —
+  `return if c { x } else { 7 }` from a `t8` function, `s: str = if c { x }
+  else { "lit" }`; found by the confirmation review and narrowed.)*
+- *`pick(5, x)` with `x: T`: the literal bound `pick`'s type parameter to a
+  number and `x` was then given for it, unconverted. That is now an error.
+  A type parameter bound to a declared type may still be given the caller's
+  `T`, checked for each call (`pick(n, x)` with `n: f64`), and one bound by
+  `?` or an `Err` is settled by the later argument. (The first version of
+  this fix rejected every mix of a bound type and the caller's `T`, and so
+  two programs that ran the same on both backends; narrowed. The second
+  settled only a `?`, not an `Err`, and so rejected `pick(Err("e"), Ok(x))`;
+  fixed.)*
+- *An if value assigned to a variable known only by inference took the
+  variable's type as declared and skipped the branch rule, while nothing
+  checked the branches: `let y`, `y = x`, `y = if c { x } else { 300 }`
+  returned 300 from a call whose `T` is a t8. Where a type is given for the
+  value, each branch is now checked against it at the value itself.*
+- *A callee's type parameter that no argument binds kept its name in the
+  result type, so a `Result<T>` from `fnc: Result<T> <T> fail(n: t64)` was
+  taken for the calling function's own `T` — and accepted when the callee
+  spelled it `U`. It is now the callee's: matched like any type analysis does
+  not track.*
+- *Messages: `T { v: 1 }` in a generic body and a nested function whose
+  signature uses the enclosing function's `T` both failed with "expected T,
+  got T". They now say what is wrong.*
+- *A regression: `pick(Err("e"), Ok(x))` for `pick(a: Result<T>, b:
+  Result<T>)` inside a generic function ran on both backends before and was
+  rejected by the first version of this rule. The `Err` bound `pick`'s `T` to
+  "unknown" and the later argument never settled it — at top level the same
+  call was already rejected. A later argument now settles it, in both places.)*
+
+Fixtures: `t_generic_branch_value_in_an_array_rejected`,
+`t_generic_branch_value_in_an_untyped_local_rejected`,
+`t_generic_callee_bound_to_a_literal_then_given_a_type_parameter_rejected`,
+`t_generic_nested_function_uses_the_enclosing_type_parameter_rejected`, and
+`t_generic_err_before_the_argument_that_settles_the_type` (both backends);
+unit test `the_branches_inference_and_names_of_a_generic_body`.
+
+Fixtures, both backends: `t_generic_values_of_every_kind`,
+`t_generic_value_where_another_type_is_declared`,
+`t_generic_array_literal_element_that_fits`. Analysis errors on both:
+`t_generic_return_of_another_type_rejected`,
+`t_generic_local_given_a_literal_rejected`,
+`t_generic_local_given_another_type_rejected`,
+`t_generic_value_of_another_parameter_rejected`,
+`t_generic_argument_of_another_type_rejected`,
+`t_generic_result_payload_of_another_type_rejected`,
+`t_generic_array_of_another_type_rejected`,
+`t_generic_struct_returned_as_a_type_parameter_rejected`,
+`t_generic_branch_value_of_another_type_rejected`,
+`t_generic_value_used_as_a_number_called_with_a_string_rejected`,
+`t_generic_value_used_as_a_string_called_with_a_number_rejected`,
+`t_generic_value_in_a_struct_field_called_with_a_bool_rejected`,
+`t_generic_result_used_at_a_narrower_payload_rejected`,
+`t_generic_value_reached_through_another_generic_rejected`,
+`t_generic_array_literal_whole_number_beside_f64_rejected`,
+`t_generic_array_literal_float_beside_a_whole_number_rejected`,
+`t_generic_array_literal_beside_a_string_rejected`. Unit tests in
+`generic_scope.rs`; the lowering tests of §70, §72 and §78 and
+`specialized_module_enum_stores_preserve_semantic_identity` assert both the
+analysis error and the refusal behind it.
+
+## 82. Open: found by the review of the 2026-11-20 decisions, present on `submain`, not changed
+
+*(Found 2026-11-20 by the independent review of
+`docs/backend/cx_decisions_2026_11_20.md`; each reproduced here on `submain`
+(`d4b2c06`) and on `backend/value-alias-semantics`. None is caused by the
+work of November 2026 and none is inside the six decisions, so they are
+recorded and put to the owner rather than changed.)*
+
+**a. A generic struct's field value, used where a number of a declared width
+is declared: a silent difference.** Exit 0 on both backends.
+
+```cx
+struct Box<T> { v: T }
+struct S { a: t8 }
+b: Box = Box<t64> { v: 300 }
+xs: [2: t8] = [b.v, 1]
+print(xs:[0])                    // interpreter 300, JIT 44
+s: S = S { a: b.v }
+print(s.a)                       // interpreter 300, JIT 44
+c: Box = Box<t8> { v: 1 }
+c = b
+print(c.v)                       // interpreter 300, JIT 44
+f: Box = Box<f64> { v: 2.5 }
+ys: [2: t64] = [f.v, 1]
+print(ys:[0])                    // interpreter 2.5, JIT 2
+```
+
+A variable's type is `Box`, without its type argument, so analysis does not
+know what `b.v` is: it matches it with every declared type and inserts no
+conversion (a conversion would need the source type, §43). The interpreter
+keeps the value as it is; compiled code, storing into the declared layout,
+narrows it. In a non-generic program the same shapes are converted on both
+backends (`[w, 1]` at a `[2: t8]` holds 44) or rejected (a `[2: t64]` where a
+`[2: t8]` is declared), so compiled code's answer is the one the rules give
+and the interpreter's is not.
+
+The same root cause, found by the review of the implementation: a generic
+struct literal whose `T` is inferred from fields of two number kinds,
+`p: Pair = Pair { a: 1, b: -0.5 }`, then `print(p.b)` — interpreter -0.5,
+compiled code 0.
+
+Closing it needs a struct's type arguments to be part of its type — in
+analysis, so that `b.v` is a t64 and `c = b` between a `Box<t64>` and a
+`Box<t8>` is a type error. That is a change to the type representation every
+stage reads, not a bounded fix; it is the same gap that keeps a generic
+struct's fields out of §75 and §81.
+
+**b. A value of the wrong type where no type is declared.** Analysis accepts
+`!n` for a number and `a:[s]` for a string index. Both backends then fail,
+neither with a message that names the problem: the interpreter reports a
+type mismatch of "unknown" and an "invalid assignment target"; compiled code
+fails to build the first and refuses the second. Not a silent difference. (A
+number or a string as an `if` or `while` condition is §57 a.)
+
+**c. The negation of a float zero printed `-0` on the interpreter and `0` in
+compiled code** — a silent difference, exit 0 on both. Found 2026-11-20 by
+the independent review of the implementation of that day's decisions, and
+present on `submain`. **Fixed.**
+
+```cx
+f: f64 = 0.0
+g: f64 = -f
+print(g)                         // interpreter -0, JIT 0 (now -0 on both)
+```
+
+The interpreter negates the float. Compiled code lowered `-x` as `0.0 - x`,
+which IEEE arithmetic makes `+0.0` when `x` is a zero; anything that
+distinguished the two zeros — printing, `1.0 / g` — differed. Compiled code
+now subtracts from `-0.0`, which is exact negation for every float (`-0.0 -
+0.0` is `-0.0`, `-0.0 - -0.0` is `+0.0`). Whole numbers are unchanged.
+Fixture `t_float_negation_of_zero` (both backends).
+
+**d. An error in an imported library is reported at a line of the entry
+file**, without the library's name: an ordinary type error in a library, and
+since 2026-11-20 the whole-program errors (§81, §76h), point at the entry
+file's line of the same number — or past its end. Found by the review of the
+implementation; present on `submain`. Not changed: errors carry a position
+but not the file it belongs to.
+
+**e. 1,000 nested calls `id(id(…))` overflow the compiler's own stack**
+(exit −6), and a parameter typed `[9223372036854775807: t32]` makes compiled
+code allocate until the process is killed. Both found by the same review,
+both present on `submain`; recorded, not changed.
+
+**f. Two more, found by the confirmation review of 2026-11-20's fixes,
+present on `submain`, recorded and not changed:** compiled code's compile
+time grows exponentially with the depth of a nested array literal — one line
+`deep: [1: [1: …]] = [[…]]` takes 0.7 s at 14 levels, 5.9 s at 16 and 52 s
+at 18; and a run-time type mismatch inside a generic function is reported at
+line 1 of the file.
+
+**g. Unary minus on a value that is not a number** — found 2026-11-20 by the
+review of that day's fixes; present on `submain`. **Fixed.** Analysis did not
+check the operand of unary minus at all. The interpreter stops at run time on
+anything but a number; compiled code printed `true` for `-b` with a bool and
+the variant for `-e` with an enum (exit 0 — exit mismatches), and crashed on
+`-s` with a string (exit 139). On a value of a generic function's own `T` it
+was a silent difference: `fnc: T <T> neg(x: T) { return -x }` called with a
+t8 −128 printed 128 on the interpreter and −128 in compiled code. Unary minus
+on a value that is not a number — a type parameter's included, as for
+`x + 1` — is now an analysis error, "unary minus requires a number, got
+bool". A struct with a `Neg` phen still dispatches to it; a value whose type
+analysis does not know is left to run time as before. Fixtures
+`t_unary_minus_on_a_value_that_is_not_a_number_rejected`,
+`t_unary_minus_on_a_type_parameter_rejected`, and
+`t_unary_minus_on_a_result` (an analysis error now; it was a compiled-code
+refusal, register entry D4); unit test `unary_minus_requires_a_number`.
 

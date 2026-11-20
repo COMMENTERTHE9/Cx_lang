@@ -1,0 +1,82 @@
+// The same in a position that is evaluated only on one path: a branch of an
+// `if` or `when` used as a value, a guard of a `when` value, and the operands
+// of `&&` and `||`. Compiled code joined the paths with the variables as they
+// were before the whole expression, so a write-back made on a path was lost.
+// If the call does not run, nothing is written.
+fnc: t64 inc(n.copy: t64) {
+    n += 7
+    return 1
+}
+fnc: bool yes(n.copy: t64) {
+    n += 100
+    return true
+}
+
+n: t64 = 0
+x: t64 = if n == 0 { inc(n.copy) } else { 0 }
+print(n)
+y: t64 = if n == 0 { inc(n.copy) } else { 0 }
+print(n)
+
+z: t64 = when n {
+    7 => inc(n.copy),
+    _ => 0,
+}
+print(n)
+w: t64 = when n {
+    14 if inc(n.copy) > 5 => 1,
+    14 if inc(n.copy) > 0 => 2,
+    _ => 3,
+}
+print(w)
+print(n)
+
+// `&&`: the left operand always runs, the right only when the left is true
+a: t64 = 0
+b1: bool = yes(a.copy) && a > 50
+print(b1)
+print(a)
+b2: bool = a > 1000 && yes(a.copy)
+print(b2)
+print(a)
+b3: bool = a > 50 && yes(a.copy)
+print(b3)
+print(a)
+
+// `||`: the right operand runs only when the left is false
+c: t64 = 0
+b4: bool = c == 0 || yes(c.copy)
+print(b4)
+print(c)
+b5: bool = c > 0 || yes(c.copy)
+print(b5)
+print(c)
+
+// nested, and inside a function
+fnc: t64 run(k: t64) {
+    v: t64 = k
+    r: t64 = if k > 0 { when k { 1 => inc(v.copy), _ => inc(v.copy) + inc(v.copy) } } else { 0 }
+    ok: bool = k > 1 && (v > 10 || yes(v.copy)) && yes(v.copy)
+    return v * 10 + r
+}
+print(run(0))
+print(run(1))
+print(run(2))
+
+// an assignment in a branch of a function's trailing `if`/`else` reaches the
+// caller through a `.copy` parameter
+fnc: t64 settle(n.copy: t64) {
+    if n > 0 {
+        n = n + 10
+        1
+    } else {
+        n = 0 - 1
+        0
+    }
+}
+p: t64 = 1
+print(settle(p.copy))
+print(p)
+q: t64 = 0
+print(settle(q.copy))
+print(q)

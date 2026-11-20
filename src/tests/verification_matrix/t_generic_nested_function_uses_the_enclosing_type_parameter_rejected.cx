@@ -1,0 +1,8 @@
+// A nested function does not share the type parameters of the function it is
+// declared in. `fnc: T inner(y: T)` declared a `T` that was neither, and the
+// error was "expected T, got T"; it now says what is wrong.
+fnc: T <T> outer(x: T) {
+    fnc: T inner(y: T) { return y }
+    return inner(x)
+}
+print(outer(5))

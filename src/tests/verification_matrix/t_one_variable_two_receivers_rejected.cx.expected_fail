@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The variable a method is called on, given again for a further receiver: rejected by analysis (amendment V4).

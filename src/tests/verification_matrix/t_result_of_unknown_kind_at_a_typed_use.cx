@@ -1,13 +1,12 @@
 // A value typed `Result<unknown>` promises an Err, and so is accepted wherever
-// a Result is declared. One route still lets an Ok through under that type:
-// analysis does not check a generic body against its type parameter
-// (known-issues §74), so `launder`, declared to return `T`, returns an `Ok(5)`
-// to a caller for whom `T` is `Result<unknown>`. The comparison below must
-// fail, not read 5 as the address of a string: compiled code refuses the
-// program, because nothing declares or proves what the value holds.
+// a Result is declared. The last route that let an Ok through under that type
+// was a generic body: `launder`, declared to return `T`, returned an `Ok(5)`
+// to a caller for whom `T` is `Result<unknown>`, and the comparison below
+// read 5 where a string was declared. Analysis now rejects the `return`: an
+// `Ok(5)` is not a `T` (known-issues §74, §81).
 //
-// (The route this fixture used before — a `.copy` write-back into an untyped
-// Err variable — is now rejected by analysis:
+// (The route this fixture used before that — a `.copy` write-back into an
+// untyped Err variable — is rejected by analysis too:
 // t_result_copy_of_err_only_variable_rejected.)
 fnc: T <T> launder(x: T) { return Ok(5) }
 fnc: t64 cmp(p: Result<str>) { assert_eq(p, Ok("a")); return 0 }

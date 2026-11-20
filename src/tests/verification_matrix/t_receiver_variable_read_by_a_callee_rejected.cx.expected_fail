@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A method running on a variable that a function it calls reads by name: rejected by analysis.

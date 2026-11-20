@@ -1,0 +1,34 @@
+// A number literal beside a `T` element in an array literal is built at the
+// element type the generic function is called with, when it fits it: a whole
+// number for a whole-number type that holds it, a float for an f64. Each call
+// is checked for that (t_generic_array_literal_element_that_does_not_fit,
+// t_generic_array_literal_whole_number_beside_f64_rejected).
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 34]
+    return c:[1]
+}
+fnc: T <T> first(x: T) {
+    let c
+    c = [-7, x]
+    return c:[0]
+}
+fnc: T <T> inner(x: T) {
+    g: [2: [2: T]] = [[x, 9], [8, x]]
+    return g:[1]:[0]
+}
+fnc: T <T> half(x: T) {
+    c: [2: T] = [x, 2.5]
+    return c:[1]
+}
+fnc: T <T> via(x: T) { return second(x) }
+a: t8 = 5
+print(second(a))
+w: t64 = 5
+print(second(w))
+print(first(a))
+print(inner(a))
+print(inner(w))
+f: f64 = 1.5
+h: f64 = half(f)
+print(h + 0.5)
+print(via(a))

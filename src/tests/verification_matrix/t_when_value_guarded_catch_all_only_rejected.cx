@@ -1,0 +1,9 @@
+// A `when` used as a value needs an arm that always matches. A `_` arm with a
+// guard does not: its guard can fail, and for `k = 3` this `when` has no
+// value. The interpreter yielded 0 and carried on; compiled code trapped.
+k: t64 = 3
+x: t64 = when k {
+    1 => 5,
+    _ if k > 5 => 6,
+}
+print(x)

@@ -94,6 +94,11 @@ impl IrBlockBuilder {
         self.insts.push(inst);
     }
 
+    /// Add a parameter to a block that nothing jumps to yet.
+    pub fn push_param(&mut self, param: BlockParam) {
+        self.params.push(param);
+    }
+
     pub fn set_terminator(&mut self, term: IrTerminator) -> Result<(), IrBuildError> {
         if self.term.is_some() {
             return Err(IrBuildError::TerminatorAlreadySet);

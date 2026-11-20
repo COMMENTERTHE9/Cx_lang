@@ -35,7 +35,13 @@ impl RunTime {
                     let trimmed = var_name.trim();
                     let is_identifier = is_bare_identifier(trimmed);
                     let val = if is_identifier {
-                        self.get_var(trimmed, pos).ok()
+                        match self.get_var(trimmed, pos) {
+                            Ok(value) => Some(value),
+                            // The variable exists; it is lent to a method that
+                            // is still running. Say that, not "no variable".
+                            Err(error @ RuntimeError::ReceiverInUse { .. }) => return Err(error),
+                            Err(_) => None,
+                        }
                     } else {
                         None
                     };

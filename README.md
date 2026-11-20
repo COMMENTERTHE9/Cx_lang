@@ -316,7 +316,7 @@ print(compute(10, 0))          // Err(division by zero)
 
 A `gene` is a contract — signatures only, naming no concrete type. A `phen` binds one gene to one type and supplies the bodies. `Self` inside a phen is the type it is bound to.
 
-Operator overloading is not separate syntax: the eight operator genes (`Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Eq`, `Ord`) ship in the prelude, and `a + b` on a type with a phen for `Add` *is* `a.add(b)`.
+Operator overloading is not separate syntax: the eight operator genes (`Add`, `Sub`, `Mul`, `Div`, `Mod`, `Neg`, `Eq`, `Ord`) ship in the prelude, and `a + b` on a type with a phen for `Add` runs that type's `add` — the method `a.add(b)` runs, given the *values* of `a` and `b`: an operator never changes a variable through its operands, where a method called by name runs on its receiver's variable.
 
 ```cx
 struct Vec2 { x: t32, y: t32 }

@@ -1,0 +1,18 @@
+// The rule is static: a method that *can* reach the variable it is called on
+// is rejected, also when the path that does so is not taken. This program ran
+// on the interpreter (11, 11) and was refused by compiled code.
+struct V { x: t64 }
+top: V = V { x: 1 }
+fnc: t64 poke() {
+    top.x += 1000
+    return 1
+}
+vm: impl (s: V) {
+    fnc: t64 run(c: bool) {
+        s.x += 10
+        if c { return poke() }
+        return s.x
+    }
+}
+print(top.run(false))
+print(top.x)

@@ -1,0 +1,71 @@
+// A receiver that is not a struct or an array is a value (owner's decision of
+// 2026-11-20). Inside the method it is an ordinary local: the method may
+// assign it, compound-assign it and pass it as `.copy`, and none of that
+// reaches the caller's variable. Its argument is converted as any argument
+// is — a `t8` for a `t64` receiver, a `Result<t8>` for a `Result<t64>` one.
+// The interpreter used to write such a receiver back (`n` was 105 after the
+// first call here); compiled code never did.
+enum Mode { Slow, Fast }
+struct V { x: t64 }
+fnc: t64 inc(n.copy: t64) {
+    n += 7
+    return 1
+}
+num: impl (p: V, k: t64) {
+    fnc: t64 grow(by: t64) {
+        k += 100
+        p.x += by
+        return k
+    }
+    fnc: t64 through_copy() {
+        one: t64 = inc(k.copy)
+        return k + one
+    }
+    fnc: t64 loop_it() {
+        i: t64 = 0
+        while (i < 3) {
+            i = i + 1
+            k = k * 2
+        }
+        return k
+    }
+}
+mix: impl (p: V, on: bool, name: str, mode: Mode, r: Result<t64>) {
+    fnc: t64 change() {
+        on = false
+        name = "changed"
+        mode = Mode::Slow
+        r = Ok(99)
+        p.x += 1
+        print(on)
+        print(name)
+        print(mode)
+        print(r)
+        return p.x
+    }
+}
+q: V = V { x: 1 }
+n: t64 = 5
+print(q.grow(n, 1))
+print(n)
+print(q.through_copy(n))
+print(n)
+print(q.loop_it(n))
+print(n)
+small: t8 = 7
+print(q.grow(small, 1))
+print(small)
+print(q.grow(3, 1))
+on: bool = true
+label: str = "first"
+mode: Mode = Mode::Fast
+res: Result<t64> = Ok(5)
+print(q.change(on, label, mode, res))
+print(on)
+print(label)
+print(mode)
+print(res)
+print(q.x)
+r8: Result<t8> = Ok(4)
+print(q.change(on, label, mode, r8))
+print(r8)

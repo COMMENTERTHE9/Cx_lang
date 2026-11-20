@@ -99,7 +99,13 @@ pub struct Analyzer {
     /// on exit. `break 'L`/`continue 'L` resolve `'L` against this stack; a label
     /// not present rejects cleanly ("no enclosing loop labeled 'L"). Unlabeled
     /// loops push nothing and unlabeled break/continue never consult it.
+    ///
+    /// Emptied at a function boundary, with `loop_depth`: a `break` in a
+    /// function body can name only a loop of that body.
     loop_labels: Vec<String>,
+    /// How many loops of the function (or top-level code) being analyzed
+    /// enclose the current statement. `break` and `continue` need at least one.
+    loop_depth: usize,
     funcs: HashMap<String, FunctionInfo>,
     enums: HashMap<String, EnumInfo>,
     structs: HashMap<String, Vec<(String, Type)>>,
@@ -107,8 +113,9 @@ pub struct Analyzer {
     pub method_alias_counts: HashMap<(String, String), usize>,
     /// The declared types of an impl method's receivers, in order — the first
     /// is the value the method is called on, the rest are passed as its first
-    /// arguments. They are passed by reference, so an argument must have its
-    /// receiver's type exactly (§42).
+    /// arguments. A struct or array receiver is passed by reference, so its
+    /// argument must have the receiver's type exactly (§42); any other
+    /// receiver is a value, and its argument is converted like a parameter's.
     pub method_alias_types: HashMap<(String, String), Vec<SemanticType>>,
     /// Whole-graph phen-provided method names, injected from Pass 0's
     /// registry (0.3.4 slice 2). Consulted at impl-block registration to
@@ -162,6 +169,14 @@ pub struct Analyzer {
     /// `analyze_expr_with_elem_hint` and `analyze_branch_with_value_hint`, and
     /// taken by the form that uses it.
     expected_value_ty: Option<SemanticType>,
+    /// The function whose body is being analyzed, if any — the caller of the
+    /// calls recorded in `generic_calls`.
+    current_function_id: Option<FunctionId>,
+    /// What each generic function's body obliges its calls to, and every call
+    /// to a generic function — checked together once the whole program is
+    /// analyzed (`generic_scope::check_instantiations`).
+    generic_functions: HashMap<FunctionId, crate::frontend::generic_scope::GenericFunction>,
+    generic_calls: Vec<crate::frontend::generic_scope::GenericCall>,
 }
 
 impl Analyzer {
@@ -172,6 +187,7 @@ impl Analyzer {
             current_type_params: vec![],
             in_function: false,
             loop_labels: vec![],
+            loop_depth: 0,
             funcs: HashMap::new(),
             enums: HashMap::new(),
             structs: HashMap::new(),
@@ -194,6 +210,9 @@ impl Analyzer {
             next_enum_id: 0,
             next_enum_variant_id: 0,
             expected_value_ty: None,
+            current_function_id: None,
+            generic_functions: HashMap::new(),
+            generic_calls: Vec::new(),
         }
     }
 
@@ -524,29 +543,46 @@ impl Analyzer {
     /// labeled-breaks (a): enter a possibly-labeled loop. A labeled loop whose
     /// label is already active in an enclosing loop rejects (duplicate). Returns
     /// whether a label was pushed, so the caller pops it after the body.
+    ///
+    /// Every loop form calls this, labeled or not, and it is what counts the
+    /// loops a `break` or `continue` may refer to.
     fn enter_loop_label(&mut self, label: &Option<String>, pos: usize) -> Result<bool, SemanticError> {
-        if let Some(name) = label {
+        let pushed = if let Some(name) = label {
             if self.loop_labels.iter().any(|l| l == name) {
                 return Err(sem_err!(pos, "duplicate loop label '{} — already used by an enclosing loop", name));
             }
             self.loop_labels.push(name.clone());
-            Ok(true)
+            true
         } else {
-            Ok(false)
-        }
+            false
+        };
+        self.loop_depth += 1;
+        Ok(pushed)
     }
 
-    /// labeled-breaks (a): pop a label pushed by [`Analyzer::enter_loop_label`].
+    /// labeled-breaks (a): leave a loop entered by [`Analyzer::enter_loop_label`],
+    /// popping its label if it pushed one.
     fn exit_loop_label(&mut self, pushed: bool) {
+        self.loop_depth -= 1;
         if pushed {
             self.loop_labels.pop();
         }
     }
 
-    /// labeled-breaks (a): validate a labeled `break`/`continue` target. Unlabeled
-    /// jumps are unchanged (Ok); a labeled jump with no enclosing loop of that
-    /// label rejects cleanly.
+    /// Validate a `break`/`continue`. It belongs to a loop of the function it
+    /// is written in: the innermost one, or the one carrying its label. A
+    /// function's body is not inside its caller's loops, nor inside the loops
+    /// around its own declaration, so neither is reachable
+    /// (docs/backend/cx_value_and_alias_semantics.md, V8).
+    ///
+    /// Without this the interpreter let the signal out of the function and
+    /// ended a loop of whoever called it, and compiled code refused the
+    /// program (known-issues §69g).
     fn check_jump_label(&self, label: &Option<String>, kw: &str, pos: usize) -> Result<(), SemanticError> {
+        let scope = if self.in_function { "a loop of this function" } else { "a loop" };
+        if self.loop_depth == 0 {
+            return Err(sem_err!(pos, "'{}' is not inside {}", kw, scope));
+        }
         if let Some(name) = label {
             if !self.loop_labels.iter().any(|l| l == name) {
                 return Err(sem_err!(pos, "{} to label '{} but no enclosing loop has that label", kw, name));
@@ -1351,7 +1387,7 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                         })
                     })
                     .collect::<Result<Vec<_>, SemanticError>>()?;
-                if !when_is_exhaustive(&semantic_arms) {
+                if !when_is_exhaustive(&semantic_arms, false, &semantic_expr.ty) {
                     return Err(sem_err!(*pos, "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases"));
                 }
                 Ok(SemanticStmt::When {
@@ -1623,7 +1659,50 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
         }
     }
 
+    /// Analyze a function, method or test body. The loops around its
+    /// declaration are not its own: they are set aside for the length of the
+    /// body and put back afterwards, whether or not it analyzed.
+    #[allow(clippy::too_many_arguments)]
     fn analyze_function(
+        &mut self,
+        name: &str,
+        type_params: &[String],
+        params: &[ParamKind],
+        ret_ty: &Option<Type>,
+        body: &[Stmt],
+        ret_expr: &Option<Expr>,
+        pos: usize,
+        is_test: bool,
+        is_method: bool,
+    ) -> Result<SemanticStmt, SemanticError> {
+        let outer_labels = std::mem::take(&mut self.loop_labels);
+        let outer_depth = std::mem::replace(&mut self.loop_depth, 0);
+        let outer_function = self.current_function_id;
+        // Inside the body each of these type parameters matches only itself;
+        // what the body needs of them is checked at the calls (`generic_scope`).
+        crate::frontend::generic_scope::enter(type_params);
+        let result = self.analyze_function_body(name, type_params, params, ret_ty, body, ret_expr, pos, is_test, is_method);
+        let obligations = crate::frontend::generic_scope::leave();
+        self.current_function_id = outer_function;
+        self.loop_labels = outer_labels;
+        self.loop_depth = outer_depth;
+        if let Ok(SemanticStmt::FuncDef(function)) = &result {
+            if !function.type_params.is_empty() {
+                self.generic_functions.insert(
+                    function.id,
+                    crate::frontend::generic_scope::GenericFunction {
+                        name: function.name.clone(),
+                        type_params: function.type_params.clone(),
+                        obligations,
+                    },
+                );
+            }
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_function_body(
         &mut self,
         name: &str,
         type_params: &[String],
@@ -1654,11 +1733,21 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 ));
             }
         }
-        let func_id = self.fresh_function();
-        self.declare(name, ret_ty.clone(), None, true, pos)?;
         // A function declared anywhere but the top level is NESTED and gets a
         // name of its own in the program (`VarInfo::function_key`).
         let nested = !is_method && self.scopes.len() > 1;
+        // A top-level function already has an id: the function pre-pass of
+        // `analyze_modules` gave it one, so that a call written before the
+        // definition can be checked. The definition keeps that id. Taking a
+        // second one here left every such call naming an id no function had:
+        // the whole-program checks did not follow it (known-issues §81, §76h)
+        // and compiled code could not find the generic function it called.
+        let func_id = match self.funcs.get(name) {
+            Some(info) if !nested && !is_method => info.id,
+            _ => self.fresh_function(),
+        };
+        self.current_function_id = Some(func_id);
+        self.declare(name, ret_ty.clone(), None, true, pos)?;
         let program_name = if nested {
             let unique = format!("{name}#{}", func_id.0);
             match &self.own_module_key {
@@ -1697,6 +1786,37 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                     type_bounds: vec![],
                 },
             );
+        }
+
+        // A nested function does not share the type parameters of the
+        // function it is in: `fnc: T inner(y: T)` inside `outer<T>` declared a
+        // `T` that is neither, and failed with "expected T, got T".
+        if nested {
+            let enclosing: Vec<String> = self
+                .current_type_params
+                .iter()
+                .filter(|p| !type_params.contains(p))
+                .cloned()
+                .collect();
+            if !enclosing.is_empty() {
+                let declared = params
+                    .iter()
+                    .filter_map(|param| match param {
+                        ParamKind::Typed(_, ty) => Some(ty.clone()),
+                        ParamKind::Copy(_, ty) | ParamKind::CopyFree(_, ty) => ty.clone(),
+                        ParamKind::CopyInto(..) => None,
+                    })
+                    .chain(ret_ty.clone());
+                for ty in declared {
+                    if let Some(param) = type_param_named(&semantic_type_from_decl(ty, &enclosing)) {
+                        return Err(sem_err!(
+                            pos,
+                            "nested function '{}' uses '{}', a type parameter of the function it is declared in — a nested function does not share them; give it its own: `<{}> {}(...)`",
+                            name, param, param, name
+                        ));
+                    }
+                }
+            }
         }
 
         let lexical_names = std::sync::Arc::new(self.scopes.iter()
@@ -1985,6 +2105,17 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
     fn analyze_expr(&mut self, expr: &Expr) -> Result<SemanticExpr, SemanticError> {
         match expr {
             Expr::Val(AstValue::StructInstance(type_name, type_args, field_exprs, pos)) => {
+                // `T { .. }` in a generic body names the function's type
+                // parameter, not a struct. It used to be taken for a struct
+                // named `T` — printed as one on the interpreter — and since
+                // §81 failed with "expected T, got T".
+                if self.current_type_params.contains(type_name) && !self.structs.contains_key(type_name) {
+                    return Err(sem_err!(
+                        *pos,
+                        "'{}' is a type parameter of this function, not a struct — a struct literal must name a struct",
+                        type_name
+                    ));
+                }
                 let mut semantic_fields: Vec<(String, SemanticExpr)> = Vec::new();
                 // Concrete types bound to the struct's generic params at this
                 // literal. The explicit path fills it from `instantiation`; the
@@ -2226,6 +2357,22 @@ Expr::Unary(op, inner, pos) => {
                         return Ok(rewritten);
                     }
                 }
+                // Unary minus negates a number, and nothing else. The
+                // interpreter stops at run time on anything else; compiled
+                // code printed `true` for `-b`, the variant for `-e`, and
+                // crashed on `-s` (known-issues §82 g). Nor is a value of the
+                // function's own `T` known to be a number, as for `x + 1`:
+                // `-x` with a t8 -128 was 128 on the interpreter and -128 in
+                // compiled code. A value whose type analysis does not know,
+                // or a generic struct's field, is left to run time as before.
+                if *op == Op::Minus {
+                    let unchecked = expr.ty == SemanticType::Unknown
+                        || matches!(&expr.ty, SemanticType::TypeParam(_) if own_type_param(&expr.ty).is_none())
+                        || matches!(&expr.ty, SemanticType::Struct(name) if !self.structs.contains_key(name));
+                    if !is_numeric(&expr.ty) && !unchecked {
+                        return Err(sem_err!(*pos, "unary minus requires a number, got {}", type_name(&expr.ty)));
+                    }
+                }
                 let result_ty = if *op == Op::Not {
                     SemanticType::Bool
                 } else {
@@ -2313,6 +2460,14 @@ Expr::Unary(op, inner, pos) => {
                     // arrays, `Result`s and all — not merely compatible ones.
                     let fits = if declared_elem.is_none() && untyped_numeric.is_none() {
                         same_element_type(&elem_ty, &e.ty)
+                    } else if let (Some(param), Some(literal)) =
+                        (own_type_param(&elem_ty).filter(|_| untyped_numeric.is_some()), number_literal(e))
+                    {
+                        // A number literal beside `T` elements is an element
+                        // of that `[N: T]` (§42) — for the types it fits,
+                        // which each call is checked for (`generic_scope`).
+                        crate::frontend::generic_scope::record_literal(param, literal);
+                        true
                     } else {
                         types_compatible(&elem_ty, &e.ty)
                     };
@@ -2418,8 +2573,19 @@ Expr::Unary(op, inner, pos) => {
                     }
                     semantic_arms.push(SemanticWhenArm { pattern, guard, body, pos: arm.pos });
                 }
-                if !when_is_exhaustive(&semantic_arms) {
-                    return Err(sem_err!(*pos, "non-exhaustive `when`: add a `_` catch-all arm to handle the remaining cases"));
+                check_generic_branches(&semantic_arms.iter().map(|arm| arm.body.as_slice()).collect::<Vec<_>>(), value_hint.as_ref(), *pos)?;
+                if !when_is_exhaustive(&semantic_arms, true, &semantic_match.ty) {
+                    let reason = if when_is_exhaustive(&semantic_arms, true, &SemanticType::Bool) {
+                        format!(
+                            "`true`, `false` and `unknown` are every state of a bool, and this `when` is on {} — a `when` used as a value needs a `_` arm for a value that is none of them",
+                            type_name(&semantic_match.ty)
+                        )
+                    } else if when_is_exhaustive(&semantic_arms, false, &semantic_match.ty) {
+                        "a `when` used as a value needs an arm that always matches — its `_` arm has a guard, which can fail; add a `_` arm without one".to_string()
+                    } else {
+                        "add a `_` catch-all arm to handle the remaining cases".to_string()
+                    };
+                    return Err(sem_err!(*pos, "non-exhaustive `when`: {}", reason));
                 }
                 Ok(SemanticExpr {
                     ty: result_ty,
@@ -2444,6 +2610,7 @@ Expr::Unary(op, inner, pos) => {
                 if let Some(SemanticStmt::ExprStmt { expr, .. }) = then_semantic.last() {
                     result_ty = expr.ty.clone();
                 }
+                check_generic_branches(&[&then_semantic, &else_semantic], value_hint.as_ref(), *pos)?;
                 Ok(SemanticExpr {
                     ty: result_ty,
                     kind: SemanticExprKind::If {
@@ -2697,45 +2864,53 @@ Expr::Unary(op, inner, pos) => {
                                 Some(hint) => self.analyze_expr_with_elem_hint(expr, hint)?,
                                 None => self.analyze_expr(expr)?,
                             };
-                            let sem_expr = if index >= extra_alias_count {
-                                // user-typed arg: narrow against the method's
-                                // declared param type, mirroring the free-fn
-                                // call path (~semantic.rs:1624).
-                                let user_idx = index - extra_alias_count;
+                            // A receiver that is not a struct or an array is a
+                            // value (amendment V2 item 4; owner's decision of
+                            // 2026-11-20): nothing is written back through it,
+                            // so its argument is checked and converted as any
+                            // argument is.
+                            let by_value = index >= extra_alias_count
+                                || !matches!(declared_param, Some(SemanticType::Struct(_) | SemanticType::Array(..)));
+                            let sem_expr = if by_value {
+                                // narrow against the declared type, mirroring
+                                // the free-fn call path (~semantic.rs:1624).
+                                let user_idx = index.saturating_sub(extra_alias_count);
                                 let expected = declared_param;
                                 if let Some(expected) = expected {
                                     check_semantic_num_fits(&sem_expr, &expected, *pos)?;
                                     if !types_compatible(&expected, &sem_expr.ty) {
-                                        return Err(sem_err!(
-                                            *pos,
-                                            "argument {} to method '{}.{}': expected {}, got {}",
-                                            user_idx + 1, instance, method,
-                                            type_name(&expected), type_name(&sem_expr.ty)
-                                        ));
+                                        return Err(if index >= extra_alias_count {
+                                            sem_err!(
+                                                *pos,
+                                                "argument {} to method '{}.{}': expected {}, got {}",
+                                                user_idx + 1, instance, method,
+                                                type_name(&expected), type_name(&sem_expr.ty)
+                                            )
+                                        } else {
+                                            sem_err!(
+                                                *pos,
+                                                "receiver argument {} to method '{}.{}': expected {}, got {}",
+                                                index + 1, instance, method,
+                                                type_name(&expected), type_name(&sem_expr.ty)
+                                            )
+                                        });
                                     }
                                     insert_cast_if_needed(sem_expr, &expected)
                                 } else {
                                     sem_expr
                                 }
                             } else {
-                                // extra-alias (struct receiver-alias) arg:
-                                // pass through, never narrow — it is a receiver,
-                                // passed by reference, so it must have the
-                                // alias's declared type exactly. Unchecked, a
-                                // `[3: t8]` given a `[3: t64]` alias was read at
-                                // t64 width (§42).
+                                // A struct or array receiver: pass through,
+                                // never narrow — it is passed by reference, so
+                                // it must have the receiver's declared type
+                                // exactly. Unchecked, a `[3: t8]` given a
+                                // `[3: t64]` receiver was read at t64 width
+                                // (§42).
                                 match declared_param {
-                                    // A number literal is a value with nothing to
-                                    // write back: range-checked and converted, as
-                                    // an argument is.
-                                    Some(expected) if is_number_literal(&sem_expr) && is_numeric(&expected) => {
-                                        check_semantic_num_fits(&sem_expr, &expected, *pos)?;
-                                        insert_cast_if_needed(sem_expr, &expected)
-                                    }
                                     Some(expected) if !same_element_type(&expected, &sem_expr.ty) => {
                                         return Err(sem_err!(
                                             *pos,
-                                            "receiver argument {} to method '{}.{}': expected {}, got {} — an impl's receivers are passed by reference, so it must have the declared type",
+                                            "receiver argument {} to method '{}.{}': expected {}, got {} — a struct or array receiver is passed by reference, so it must have the declared type",
                                             index + 1, instance, method,
                                             stored_type_name(&expected), stored_type_name(&sem_expr.ty)
                                         ));
@@ -2767,6 +2942,33 @@ Expr::Unary(op, inner, pos) => {
                             semantic_args.push(SemanticCallArg::CopyInto(resolved));
                         }
                     }
+                }
+
+                // One variable is at most one receiver of a call (amendment
+                // V4). A struct or array receiver bound to a variable named
+                // directly is that variable, so `p.mix(p, 5)` would make one
+                // variable two receivers — and the two backends disagreed about
+                // the result: the interpreter gave each receiver its own copy
+                // and let the last write-back win, compiled code had one object
+                // (known-issues §69d). A field or element of the variable, and
+                // a receiver that is not a struct or array, are values and are
+                // not bound twice by anything.
+                let mut by_reference: Vec<BindingId> = vec![instance_binding];
+                for arg in semantic_args.iter().take(extra_alias_count) {
+                    let SemanticCallArg::Expr(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name } }) = arg else {
+                        continue;
+                    };
+                    if !matches!(ty, SemanticType::Struct(_) | SemanticType::Array(..)) {
+                        continue;
+                    }
+                    if by_reference.contains(binding) {
+                        return Err(sem_err!(
+                            *pos,
+                            "'{}' is given for two receivers of method '{}.{}' — a receiver is the variable itself, and one variable cannot be two receivers of the same call",
+                            name, instance, method
+                        ));
+                    }
+                    by_reference.push(*binding);
                 }
 
                 Ok(SemanticExpr {
@@ -3161,7 +3363,22 @@ Expr::Unary(op, inner, pos) => {
                         };
                         let Some(arg_ty) = arg_ty else { continue };
                         if let Some(existing) = type_param_map.get(tname) {
-                            if types_compatible(existing, &arg_ty) {
+                            // Where the caller's own type parameter is one of
+                            // the two, nothing converts: `pick(5, x)` with
+                            // `x: T` binds the callee's `T` to a number and
+                            // then gives it a `T` (known-issues §81).
+                            if contains_unknown(existing) && arg_ty != *existing && binds_alike(&arg_ty, existing) {
+                                // A `?` or an `Err(..)` given first says
+                                // nothing about what it leaves unknown; a
+                                // later argument settles it.
+                                type_param_map.insert(tname.clone(), arg_ty);
+                            } else if mentions_numeric_literal_type(existing) && mentions_own_type_param(&arg_ty) {
+                                // An untyped number literal bound it, and a
+                                // `T` is not converted to that: `pick(5, x)`
+                                // returned the caller's `T` value unconverted
+                                // from what the call made a `pick<t64>`.
+                                return Err(sem_err!(pos, "type parameter '{}' of '{}' is bound to a number literal by an earlier argument, but argument {} is a value of type parameter {} — give the literal that type, or the value a declared one", tname, name, index + 1, type_name(&arg_ty)));
+                            } else if types_compatible(existing, &arg_ty) {
                                 // fits what `T` is bound to
                             } else if matches!((existing, &arg_ty), (SemanticType::Result(_), SemanticType::Result(_)))
                                 && types_compatible(&arg_ty, existing)
@@ -3359,10 +3576,19 @@ Expr::Unary(op, inner, pos) => {
             }
         }
 
-        let ret_ty = substitute_type_params(
-            function.ret_ty.clone().unwrap_or(SemanticType::Void),
-            &type_param_map,
-        );
+        // A type parameter no argument binds is the callee's own, not one of
+        // the caller's that happens to have its name: scoped by the callee's
+        // name, it is matched like any type analysis does not track. Left as
+        // `T`, a `Result<T>` from `fnc: Result<T> <T> fail(n: t64)` called in
+        // a generic function was taken for that function's own `T`
+        // (known-issues §81).
+        let mut ret_map = type_param_map.clone();
+        for param in &function.type_params {
+            ret_map
+                .entry(param.clone())
+                .or_insert_with(|| SemanticType::TypeParam(format!("{}::{}", source_function_name(name), param)));
+        }
+        let ret_ty = substitute_type_params(function.ret_ty.clone().unwrap_or(SemanticType::Void), &ret_map);
 
         // Retain the substitution instead of discarding it. Declared-parameter
         // order, so the monomorphizer's key and mangled name are stable
@@ -3383,6 +3609,23 @@ Expr::Unary(op, inner, pos) => {
             .filter_map(|p| type_param_map.get(p).cloned())
             .map(|t| if t == SemanticType::Numeric { SemanticType::I64 } else { t })
             .collect();
+
+        // What each type parameter is here, for the checks a generic body
+        // leaves to its calls (`generic_scope`). Inside a generic function the
+        // types may be that function's own parameters; they are settled when
+        // it is called in turn.
+        if !function.type_params.is_empty() {
+            self.generic_calls.push(crate::frontend::generic_scope::GenericCall {
+                caller: self.current_function_id,
+                callee: function.id,
+                bindings: function
+                    .type_params
+                    .iter()
+                    .filter_map(|p| type_param_map.get(p).map(|t| (p.clone(), t.clone())))
+                    .collect(),
+                pos,
+            });
+        }
 
         Ok((semantic_args, ret_ty, call_type_args))
     }
@@ -3454,21 +3697,23 @@ Expr::Unary(op, inner, pos) => {
     }
 
     /// 0.3.4 slice 6: operator-gene dispatch. When the left operand is a user
-    /// struct whose type has a phen for the operator's gene, the operator IS
-    /// the gene method (design doc: "no separate operator-overloading syntax
-    /// — it is gene/phen end to end"), rewritten to the same MethodCall node
-    /// a hand-written `a.add(b)` produces — the proven slice 3/5 machinery,
-    /// no new dispatch mechanism.
+    /// struct whose type has a phen for the operator's gene, the operator runs
+    /// the gene's method (design doc: "no separate operator-overloading syntax
+    /// — it is gene/phen end to end"), rewritten to the MethodCall node the
+    /// proven slice 3/5 machinery lowers and runs — no new dispatch mechanism.
+    ///
+    /// It is the same method a hand-written `a.add(b)` runs, on different
+    /// things. A written method call runs on its receiver's variable. An
+    /// operator runs on **values**: its operands are evaluated left to right
+    /// and nothing the method does to them is written back to a variable
+    /// (docs/backend/cx_value_and_alias_semantics.md, V3). So the left operand
+    /// always travels as an expression receiver — a temporary, evaluated in
+    /// place — whether it is a name, a field, an element or a call.
     ///
     /// Returns Ok(None) when this isn't operator-gene territory (no struct
     /// operand, or no phen) — the caller falls through to the existing
     /// built-in behavior: the decision-6 bootstrap intrinsics for primitives,
     /// and every existing rejection for types that don't opt in.
-    ///
-    /// Interim restriction (design doc): the left operand must be a named
-    /// variable — the method machinery is name-based end to end (runtime
-    /// receiver lookup and mutation write-back both key on the variable
-    /// name), so an expression receiver has no representation yet.
     #[allow(clippy::too_many_arguments)]
     fn try_operator_gene_dispatch(
         &mut self,
@@ -3495,25 +3740,21 @@ Expr::Unary(op, inner, pos) => {
                 ));
             }
         }
-        // A named left operand keeps the receiver it always had. Anything else
-        // — `(a + b) + c`, `mk(1) + b` — travels as an expression receiver: a
-        // temporary, evaluated in place, with no write-back. Nothing is
-        // reordered by this: the receiver occupies argument 0 either way, so it
-        // is evaluated exactly where the named form's `VarRef` was.
+        // The left operand is an operand, whatever it is: it is evaluated at
+        // its position — argument 0, exactly where a named receiver's `VarRef`
+        // was — and its value is what the method gets. A named operand used to
+        // travel as a named receiver, so a `+` that changed its receiver
+        // changed the variable, and the interpreter wrote the value it had read
+        // back over whatever the right operand had done to the variable
+        // (known-issues §69a).
         //
-        // Only the LEFT operand ever needed this. The right has always accepted
-        // an arbitrary expression, because it travels as an ordinary call
-        // argument.
-        let (instance, instance_binding, receiver_expr) = match &lhs.kind {
-            SemanticExprKind::VarRef { binding, name } => (name.clone(), *binding, None),
-            _ => (
-                // Diagnostic label only — not resolved by name. See the
-                // `receiver_expr` doc on SemanticExprKind::MethodCall.
-                format!("({})", op_symbol),
-                BindingId(u32::MAX),
-                Some(Box::new(lhs.clone())),
-            ),
+        // `instance` is a label for diagnostics only; it is not resolved by
+        // name. See the `receiver_expr` doc on SemanticExprKind::MethodCall.
+        let (instance, instance_binding) = match &lhs.kind {
+            SemanticExprKind::VarRef { binding, name } => (name.clone(), *binding),
+            _ => (format!("({})", op_symbol), BindingId(u32::MAX)),
         };
+        let receiver_expr = Some(Box::new(lhs.clone()));
         let args = match rhs {
             Some(r) => vec![SemanticCallArg::Expr(r.clone())],
             None => vec![],
@@ -3913,12 +4154,70 @@ fn check_semantic_num_fits(sem: &SemanticExpr, expected: &SemanticType, pos: usi
 fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: usize) -> Result<(), SemanticError> {
     if let Some(SemanticStmt::ExprStmt { expr, .. }) = body.last() {
         check_semantic_num_fits(expr, expected, pos)?;
-        if matches!(expected, SemanticType::Result(_)) && !types_compatible(expected, &expr.ty) {
+        // Likewise where one of the function's own type parameters is
+        // involved: `y: T = if c { x } else { 5 }` is typed `T` by its first
+        // branch, and the 5 is not a `T` (`generic_scope`).
+        let generic = mentions_own_type_param(expected) || mentions_own_type_param(&expr.ty);
+        if (matches!(expected, SemanticType::Result(_)) || generic) && !types_compatible(expected, &expr.ty) {
             return Err(sem_err!(
                 pos,
                 "type mismatch: a branch of this if/when yields {}, where {} is declared",
                 type_name(&expr.ty),
                 type_name(expected)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The branches of an `if` or `when` used as a value, in a generic function,
+/// where one of them involves the function's own type parameter `T`. Where a
+/// type is given for the value, each branch must fit it (a `T` branch where a
+/// concrete type is given is checked for each call, by rule 2). Where none is
+/// — an element of an array of `T`, a fresh untyped `let`, an argument to
+/// `print`, a `when` whose value is not used — the value is typed by its
+/// first branch, and where one branch yields a `T` (or an array or `Result`
+/// of it) every other must yield that type: `if c { x } else { 300 }` as an
+/// array element or an untyped `let` put 300 where `T` was a t8 or a string
+/// (known-issues §81).
+fn check_generic_branches(bodies: &[&[SemanticStmt]], declared: Option<&SemanticType>, pos: usize) -> Result<(), SemanticError> {
+    let tails: Vec<&SemanticType> = bodies
+        .iter()
+        .filter_map(|body| match body.last() {
+            Some(SemanticStmt::ExprStmt { expr, .. }) => Some(&expr.ty),
+            _ => None,
+        })
+        .collect();
+    // A type given for the value — declared, or the one an untyped variable
+    // already has — is what each branch must fit, here, whatever the place it
+    // came from checks: a variable known only by inference used to take the
+    // value unchecked. A `T` branch where a concrete type is given is checked
+    // for each call.
+    if let Some(declared) = declared {
+        if mentions_own_type_param(declared) || tails.iter().any(|ty| mentions_own_type_param(ty)) {
+            for ty in &tails {
+                if !types_compatible(declared, ty) {
+                    return Err(sem_err!(
+                        pos,
+                        "type mismatch: a branch of this if/when yields {}, where {} is declared",
+                        type_name(ty),
+                        type_name(declared)
+                    ));
+                }
+            }
+        }
+        return Ok(());
+    }
+    let Some(anchor) = tails.iter().find(|ty| mentions_own_type_param(ty)) else {
+        return Ok(());
+    };
+    for ty in &tails {
+        if !types_compatible(anchor, ty) {
+            return Err(sem_err!(
+                pos,
+                "type mismatch: a branch of this if/when yields {}, and another yields {} — in a generic function the branches of a value must have the same type",
+                type_name(ty),
+                type_name(anchor)
             ));
         }
     }
@@ -3931,12 +4230,28 @@ fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: u
 /// it is a TBool match covering all three states (true, false, unknown). Open
 /// domains (numeric / range / string) and bare enum-variant matches must supply
 /// a `_`. Full static enum exhaustiveness is deferred to 0.3.
-fn when_is_exhaustive(arms: &[SemanticWhenArm]) -> bool {
-    if arms.iter().any(|a| matches!(a.pattern, SemanticWhenPattern::Catchall)) {
+///
+/// `for_value`: the `when` is used as a value. Then an arm with a guard does not
+/// count, because its guard can fail: `x = when k { 1 => 5, _ if k > 5 => 6 }`
+/// has no value for `k = 3`. The interpreter yielded 0 for it and compiled code
+/// trapped (known-issues §77). And the three-state proof counts only when the
+/// value matched — `scrutinee` — is a bool. A `when` statement keeps the
+/// lenient rule — when no arm runs, nothing happens, on both backends.
+fn when_is_exhaustive(arms: &[SemanticWhenArm], for_value: bool, scrutinee: &SemanticType) -> bool {
+    let counts = |a: &SemanticWhenArm| !for_value || a.guard.is_none();
+    if arms.iter().any(|a| matches!(a.pattern, SemanticWhenPattern::Catchall) && counts(a)) {
         return true;
     }
+    // `true`, `false` and `unknown` are every state of a bool — and of
+    // nothing else. On a number, a string, an enum or a `T` none of them need
+    // match, so they prove nothing about a `when` that must produce a value:
+    // `x: t64 = when n { true => 1, false => 2, unknown => 3 }` with a t64
+    // `n` yielded 0 on the interpreter and trapped in compiled code.
+    if for_value && *scrutinee != SemanticType::Bool {
+        return false;
+    }
     let (mut has_true, mut has_false, mut has_unknown) = (false, false, false);
-    for a in arms {
+    for a in arms.iter().filter(|a| counts(a)) {
         if let SemanticWhenPattern::Literal(sv) = &a.pattern {
             match sv {
                 SemanticValue::Bool(true) => has_true = true,
@@ -4755,9 +5070,34 @@ fn is_numeric(ty: &SemanticType) -> bool {
     )
 }
 
-fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
+/// Whether a value of type `got` may be used where `expected` is declared.
+///
+/// Inside a generic function, each of its own type parameters is a type of
+/// its own (`generic_scope`): where `T` is declared only a `T` fits, and a
+/// `T` value used where another type is declared is accepted here and
+/// recorded, to be checked for the types each call gives `T`. A type
+/// parameter that is not the enclosing function's — a generic struct's,
+/// reaching here through a field read — is still matched with anything:
+/// struct type arguments are not tracked (known-issues §75).
+pub(crate) fn types_compatible(expected: &SemanticType, got: &SemanticType) -> bool {
     if expected == got || *got == SemanticType::Unknown {
         return true;
+    }
+    match (own_type_param(expected), own_type_param(got)) {
+        // Another of the function's parameters, or any concrete type.
+        (Some(_), _) => return matches!(got, SemanticType::TypeParam(_)) && own_type_param(got).is_none(),
+        // A `T` value where another type is declared: right for the calls
+        // whose `T` fits it, which each call is checked for.
+        (None, Some(_)) => {
+            if !matches!(expected, SemanticType::TypeParam(_)) {
+                crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Fits {
+                    expected: expected.clone(),
+                    got: got.clone(),
+                });
+            }
+            return true;
+        }
+        (None, None) => {}
     }
     if matches!(expected, SemanticType::TypeParam(_)) || matches!(got, SemanticType::TypeParam(_)) {
         return true;
@@ -4809,8 +5149,25 @@ fn result_payload_compatible(expected: &SemanticType, got: &SemanticType) -> boo
     if expected == got || *got == SemanticType::Unknown {
         return true;
     }
-    // A type parameter is not checked against a concrete type anywhere yet
-    // (known-issues §74); a Result's payload is no stricter than the rest.
+    // One of the enclosing function's own type parameters is that type only
+    // (`generic_scope`): nothing else is a `Result<T>`. A `Result<T>` where
+    // a `Result` of another type is declared is right for the calls whose
+    // `T` that payload rule accepts — no payload is converted — which each
+    // call is checked for. A generic struct's parameter is not tracked, and
+    // stays unchecked (known-issues §75).
+    match (own_type_param(expected), own_type_param(got)) {
+        (Some(_), _) => return matches!(got, SemanticType::TypeParam(_)) && own_type_param(got).is_none(),
+        (None, Some(_)) => {
+            if !matches!(expected, SemanticType::TypeParam(_)) {
+                crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Fits {
+                    expected: SemanticType::Result(Box::new(expected.clone())),
+                    got: SemanticType::Result(Box::new(got.clone())),
+                });
+            }
+            return true;
+        }
+        (None, None) => {}
+    }
     if matches!(expected, SemanticType::TypeParam(_)) || matches!(got, SemanticType::TypeParam(_)) {
         return true;
     }
@@ -4824,6 +5181,57 @@ fn result_payload_compatible(expected: &SemanticType, got: &SemanticType) -> boo
         (SemanticType::Array(..), SemanticType::Array(..)) => types_compatible(expected, got),
         (SemanticType::Result(a), SemanticType::Result(b)) => result_payload_compatible(a, b),
         _ => false,
+    }
+}
+
+/// The first type parameter `ty` mentions, if any.
+fn type_param_named(ty: &SemanticType) -> Option<String> {
+    match ty {
+        SemanticType::TypeParam(name) => Some(name.clone()),
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => type_param_named(inner),
+        _ => None,
+    }
+}
+
+/// Whether a value of type `got` is a value of type `expected` with nothing
+/// converted: the same type, or one with an unknown part (`?`, an `Err`)
+/// where `expected` has any.
+fn binds_alike(expected: &SemanticType, got: &SemanticType) -> bool {
+    if expected == got || *got == SemanticType::Unknown {
+        return true;
+    }
+    match (expected, got) {
+        (SemanticType::Result(a), SemanticType::Result(b)) => binds_alike(a, b),
+        (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && binds_alike(a, b),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is, or holds, the type of an untyped number literal.
+fn mentions_numeric_literal_type(ty: &SemanticType) -> bool {
+    match ty {
+        SemanticType::Numeric => true,
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => mentions_numeric_literal_type(inner),
+        _ => false,
+    }
+}
+
+/// The name of `ty` when it is a type parameter of the function being
+/// analyzed.
+fn own_type_param(ty: &SemanticType) -> Option<&str> {
+    match ty {
+        SemanticType::TypeParam(name) if crate::frontend::generic_scope::is_own(name) => Some(name),
+        _ => None,
+    }
+}
+
+/// Whether `ty` mentions a type parameter of the function being analyzed.
+fn mentions_own_type_param(ty: &SemanticType) -> bool {
+    match ty {
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => {
+            mentions_own_type_param(inner)
+        }
+        other => own_type_param(other).is_some(),
     }
 }
 
@@ -4932,6 +5340,20 @@ fn is_number_literal(e: &SemanticExpr) -> bool {
         matches!(e.kind, SemanticExprKind::Value(SemanticValue::Num(_) | SemanticValue::Float(_)))
     };
     literal(e) || matches!(&e.kind, SemanticExprKind::Unary { op: Op::Minus, expr, .. } if literal(expr))
+}
+
+/// The value of a number written as a literal, as far as fitting a type goes.
+fn number_literal(e: &SemanticExpr) -> Option<crate::frontend::generic_scope::Literal> {
+    use crate::frontend::generic_scope::Literal;
+    let of = |e: &SemanticExpr, sign: i128| match &e.kind {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => Some(Literal::Whole(sign * *n)),
+        SemanticExprKind::Value(SemanticValue::Float(_)) => Some(Literal::Float),
+        _ => None,
+    };
+    match &e.kind {
+        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => of(expr, -1),
+        _ => of(e, 1),
+    }
 }
 
 /// The element type of an UNTYPED array literal whose elements are all numbers
@@ -5067,6 +5489,11 @@ fn convert_literal_row(row: SemanticExpr, target: &SemanticType, pos: usize) -> 
             SemanticExprKind::ArrayLit { .. } => convert_literal_row(e, inner, pos)?,
             _ => {
                 check_semantic_num_fits(&e, inner, pos)?;
+                // In a row of `T`s the literal is checked for the types each
+                // call gives `T`, as one written beside a `T` element is.
+                if let (Some(param), Some(literal)) = (own_type_param(inner), number_literal(&e)) {
+                    crate::frontend::generic_scope::record_literal(param, literal);
+                }
                 insert_cast_if_needed(e, inner)
             }
         });
@@ -5078,7 +5505,7 @@ fn convert_literal_row(row: SemanticExpr, target: &SemanticType, pos: usize) -> 
 }
 
 /// Whether `ty` mentions a type parameter, at any depth.
-fn mentions_type_param(ty: &SemanticType) -> bool {
+pub(crate) fn mentions_type_param(ty: &SemanticType) -> bool {
     match ty {
         SemanticType::TypeParam(_) => true,
         SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => {
@@ -5105,6 +5532,14 @@ fn bind_nested_type_params(
                 map.insert(name.clone(), arg.clone());
             }
             Some(SemanticType::Numeric) if is_numeric(arg) && *arg != SemanticType::Numeric => {
+                map.insert(name.clone(), arg.clone());
+            }
+            // An `Err(..)` given first says nothing about the payload type; a
+            // later argument that does settles it, as for a parameter whose
+            // whole type is `T`. Left unknown, `pick(Err("e"), Ok(x))` for
+            // `pick(a: Result<T>, b: Result<T>)` was rejected at top level,
+            // and in a generic body once its `T` was checked (§81).
+            Some(SemanticType::Unknown) if *arg != SemanticType::Unknown => {
                 map.insert(name.clone(), arg.clone());
             }
             Some(_) => {}
@@ -5554,6 +5989,30 @@ fn render_method_sig(name: &str, params: &[Option<SemanticType>], ret: &Option<S
 pub fn analyze_resolved_program(
     resolved: &crate::frontend::resolver::ResolvedProgram,
 ) -> Result<SemanticProgram, Vec<SemanticError>> {
+    let program = analyze_modules(resolved)?;
+    // A whole-program rule, checked once every module is analyzed: a method
+    // must not be able to reach the variable it runs on by that variable's
+    // own name (`receiver_access`).
+    let receiver_errors = crate::frontend::receiver_access::check(&program.stmts);
+    if !receiver_errors.is_empty() {
+        return Err(receiver_errors);
+    }
+    Ok(program)
+}
+
+/// Analysis without the whole-program receiver rule, so that the
+/// interpreter's own run-time check — the second line behind it — can still be
+/// exercised by its tests.
+#[cfg(test)]
+pub(crate) fn analyze_resolved_program_without_receiver_rule(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<SemanticProgram, Vec<SemanticError>> {
+    analyze_modules(resolved)
+}
+
+fn analyze_modules(
+    resolved: &crate::frontend::resolver::ResolvedProgram,
+) -> Result<SemanticProgram, Vec<SemanticError>> {
     let gene_phen_registry = collect_gene_phen_registry(resolved)?;
 
     // Each analyzed module's key and exports, by module id. A module's
@@ -5567,6 +6026,10 @@ pub fn analyze_resolved_program(
         HashMap::new();
     let mut merged_stmts: Vec<SemanticStmt> = Vec::new();
     let mut merged_enums: Vec<SemanticEnum> = Vec::new();
+    // Every module's generic functions and calls to generic functions, for
+    // the one check that needs the whole program (below).
+    let mut generic_functions = HashMap::new();
+    let mut generic_calls = Vec::new();
     let mut ids = IdCounters::default();
     // Enum names each module declares. Modules are processed dependencies-first,
     // so a module's imports are always already in this map.
@@ -5748,6 +6211,8 @@ pub fn analyze_resolved_program(
         }
         // Taken before `analyzer.enum_defs` is moved out below.
         ids = analyzer.id_counters();
+        generic_functions.extend(std::mem::take(&mut analyzer.generic_functions));
+        generic_calls.append(&mut analyzer.generic_calls);
 
         // Build ExportTable for imported modules
         if let Some(ref module_key) = key {
@@ -5803,7 +6268,16 @@ pub fn analyze_resolved_program(
         }
     }
 
-    Ok(SemanticProgram {
+    // What a generic body leaves to its calls — a `T` value converted to a
+    // number, a number literal as a `T` element — is checked here for the
+    // types each function is actually reached with (known-issues §81).
+    let (instantiation_errors, unchecked_generics) =
+        crate::frontend::generic_scope::check_instantiations(&generic_functions, &generic_calls);
+    if !instantiation_errors.is_empty() {
+        return Err(instantiation_errors);
+    }
+
+    Ok(SemanticProgram { unchecked_generics,
         stmts: merged_stmts,
         enums: merged_enums,
     })
@@ -6896,6 +7370,178 @@ print(result + result2)
         analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
+    /// Unary minus negates a number and nothing else — a value of the
+    /// function's own `T` included (known-issues §82 g).
+    #[test]
+    fn unary_minus_requires_a_number() {
+        for (src, named) in [
+            ("b: bool = true\nprint(-b)", "bool"),
+            ("s: str = \"s\"\nprint(-s)", "str"),
+            ("enum E { A, B }\ne: E = E::A\nprint(-e)", "E"),
+            ("r: Result<t64> = Ok(1)\nprint(-r)", "Result<t64>"),
+            ("a: [2: t64] = [1, 2]\nprint(-a)", "[2: t64]"),
+            ("fnc: T <T> neg(x: T) { return -x }\nprint(neg(5))", "T"),
+        ] {
+            let errors = single_file_errors(src);
+            assert!(errors.contains(&format!("unary minus requires a number, got {named}")), "{src}: {errors}");
+        }
+        for src in [
+            "a: t8 = -128\nprint(-a)",
+            "f: f64 = 2.5\nprint(-f)",
+            // (A struct with a `Neg` phen dispatches to it before this check;
+            // the prelude that declares `Neg` is not loaded here.)
+        ] {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
+    }
+
+    /// A `when` used as a value needs an arm that always matches; a guarded
+    /// arm can fail (known-issues §77). A `when` statement keeps the lenient
+    /// rule.
+    #[test]
+    fn a_when_value_needs_an_unguarded_catch_all() {
+        for src in [
+            "k: t64 = 3\nx: t64 = when k {\n    1 => 5,\n    _ if k > 5 => 6,\n}",
+            "b: bool = ?\nx: t64 = when b {\n    true => 1,\n    false => 2,\n    unknown if 1 > 2 => 3,\n}",
+        ] {
+            let errors = single_file_errors(src);
+            assert!(errors.contains("its `_` arm has a guard") || errors.contains("non-exhaustive `when`"), "{src:?} gave {errors}");
+        }
+        // `true`, `false` and `unknown` cover a bool, and nothing else.
+        for (scrutinee, named) in [
+            ("n: t64 = 1", "t64"),
+            ("n: str = \"a\"", "str"),
+            ("enum C { Red, Green }\nn: C = C::Green", "C"),
+            ("n: Result<t64> = Ok(1)", "Result<t64>"),
+        ] {
+            let errors = single_file_errors(&format!("{scrutinee}\nx: t64 = when n {{\n    true => 1,\n    false => 2,\n    unknown => 3,\n}}"));
+            assert!(
+                errors.contains(&format!("are every state of a bool, and this `when` is on {named}")),
+                "{scrutinee:?} gave {errors}"
+            );
+        }
+        let generic = single_file_errors("fnc: t64 <T> f(v: T) { return when v { true => 1, false => 2, unknown => 3 } }\nprint(f(5))");
+        assert!(generic.contains("this `when` is on T"), "{generic}");
+        for src in [
+            "k: t64 = 3\nx: t64 = when k {\n    1 => 5,\n    _ if k > 5 => 6,\n    _ => 7,\n}",
+            "b: bool = ?\nx: t64 = when b {\n    true => 1,\n    false => 2,\n    unknown => 3,\n}",
+            // A statement runs no arm when none matches.
+            "k: t64 = 3\nwhen k {\n    1 => print(5),\n    _ if k > 5 => print(6),\n}",
+            "k: t64 = 3\nwhen k {\n    true => print(1),\n    false => print(2),\n    unknown => print(3),\n}",
+            "b: bool = true\nx: t64 = when b {\n    true => 1,\n    false => 2,\n    ? => 3,\n}",
+        ] {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
+    }
+
+    /// A receiver that is not a struct or an array is a value (owner's
+    /// decision of 2026-11-20): the method may write it like any local, and
+    /// its argument is checked and converted as an ordinary argument is. A
+    /// struct or array receiver is passed by reference and must have the
+    /// declared type exactly.
+    #[test]
+    fn a_receiver_that_is_not_a_struct_or_array_is_an_ordinary_value() {
+        let head = "struct V { x: t64 }\nfnc: t64 inc(n.copy: t64) {\n    n += 7\n    return 1\n}\n";
+        let method = |receiver: &str, body: &str, call: &str| {
+            format!("{head}vm: impl (p: V, {receiver}) {{\n    fnc: t64 m() {{\n{body}\n        return 1\n    }}\n}}\nq: V = V {{ x: 1 }}\n{call}")
+        };
+        for (receiver, body, call) in [
+            ("k: t64", "        k = 9\n        k += 9", "n: t64 = 5\nr: t64 = q.m(n)"),
+            ("k: t64", "        one: t64 = inc(k.copy)", "n: t64 = 5\nr: t64 = q.m(n)"),
+            ("on: bool", "        on = false", "b: bool = true\nr: t64 = q.m(b)"),
+            ("name: str", "        name = \"other\"", "s: str = \"a\"\nr: t64 = q.m(s)"),
+            ("r: Result<t64>", "        r = Ok(99)", "e: Result<t64> = Ok(5)\nx: t64 = q.m(e)"),
+            // Converted as an argument is.
+            ("k: t64", "        k = 9", "n: t8 = 5\nr: t64 = q.m(n)"),
+            ("k: t8", "        k = 9", "r: t64 = q.m(100)"),
+            ("r: Result<t64>", "        r = Ok(99)", "e: Result<t8> = Ok(5)\nx: t64 = q.m(e)"),
+            ("r: Result<t64>", "        r = Ok(99)", "x: t64 = q.m(Err(\"no\"))"),
+        ] {
+            let src = method(receiver, body, call);
+            let program = crate::frontend::resolver::parse_source(&src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
+        for (receiver, call, wanted) in [
+            ("k: t64", "s: str = \"a\"\nr: t64 = q.m(s)", "receiver argument 1 to method 'q.m': expected t64, got str"),
+            ("k: t8", "r: t64 = q.m(300)", "out of range"),
+            ("r: Result<t8>", "e: Result<t64> = Ok(5)\nx: t64 = q.m(e)", "receiver argument 1 to method 'q.m': expected Result<t8>, got Result<t64>"),
+            // By reference: the declared type exactly.
+            ("b: [2: t64]", "a: [2: t8] = [1, 2]\nr: t64 = q.m(a)", "a struct or array receiver is passed by reference"),
+        ] {
+            let errors = single_file_errors(&method(receiver, "        p.x += 1", call));
+            assert!(errors.contains(wanted), "{receiver} with {call:?} gave {errors}");
+        }
+    }
+
+    /// One variable is at most one receiver of a call (amendment V4). Only a
+    /// struct or array receiver bound to a variable named directly is bound by
+    /// reference, so only that is compared.
+    #[test]
+    fn one_variable_is_at_most_one_receiver_of_a_call() {
+        let two = "struct V { x: t64 }\nvm: impl (a: V, b: V) {\n    fnc: t64 mix(k: t64) {\n        a.x += 100\n        b.x += 1000\n        return a.x + b.x + k\n    }\n}\np: V = V { x: 1 }\nq: V = V { x: 2 }\n";
+        for call in ["print(p.mix(p, 5))", "print(p.mix((p), 5))"] {
+            let errors = single_file_errors(&format!("{two}{call}"));
+            assert!(errors.contains("'p' is given for two receivers of method 'p.mix'"), "{call} gave {errors}");
+        }
+        let three = "struct V { x: t64 }\nvm: impl (a: V, b: V, c: V) {\n    fnc: t64 mix3(k: t64) { return a.x + b.x + c.x + k }\n}\np: V = V { x: 1 }\nq: V = V { x: 2 }\nprint(p.mix3(q, q, 5))";
+        assert!(single_file_errors(three).contains("'q' is given for two receivers of method 'p.mix3'"));
+
+        let accepted = [
+            format!("{two}print(p.mix(q, 5))"),
+            // A field or element is a temporary; an ordinary parameter is a copy.
+            format!("{two}arr: [2: V] = [V {{ x: 1 }}, V {{ x: 2 }}]\nprint(p.mix(arr:[0], 5))"),
+            "struct V { x: t64 }\nkm: impl (a: V) {\n    fnc: t64 keep(other: V) { return a.x + other.x }\n}\np: V = V { x: 1 }\nprint(p.keep(p))".to_string(),
+            // Number receivers are values.
+            "struct V { x: t64 }\nsm: impl (s: V, k: t64, j: t64) {\n    fnc: t64 sum() { return s.x + k + j }\n}\np: V = V { x: 1 }\nn: t64 = 4\nprint(p.sum(n, n))".to_string(),
+        ];
+        for src in &accepted {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
+    }
+
+    /// A `break` or `continue` names a loop of the function it is written in
+    /// (amendment V8). The fixtures assert only that both backends reject;
+    /// these pin the reason, and that a function's own loops still work.
+    #[test]
+    fn break_and_continue_belong_to_a_loop_of_their_function() {
+        for src in [
+            "fnc: t64 f() {\n    break\n    return 1\n}\nprint(f())",
+            "fnc: t64 f() {\n    continue\n    return 1\n}\nprint(f())",
+            // The loop is the caller's, not the function's.
+            "fnc: t64 f() {\n    if true { break }\n    return 1\n}\ni: t64 = 0\nwhile (i < 3) { i = i + f() }",
+            // A label of a loop around the declaration is not visible inside it.
+            "i: t64 = 0\n'outer: while (i < 3) {\n    fnc: t64 f() {\n        break 'outer\n        return 1\n    }\n    i = i + f()\n}",
+            "struct C { n: t64 }\ncm: impl (c: C) {\n    fnc: t64 step() {\n        continue\n        return c.n\n    }\n}",
+        ] {
+            let errors = single_file_errors(src);
+            assert!(errors.contains("is not inside a loop of this function"), "{src:?} gave {errors}");
+        }
+        let errors = single_file_errors("print(1)\nbreak");
+        assert!(errors.contains("'break' is not inside a loop"), "{errors}");
+
+        for src in [
+            "fnc: t64 f() {\n    n: t64 = 0\n    loop {\n        n = n + 1\n        if n > 3 { break }\n    }\n    return n\n}\nprint(f())",
+            // The nested function's loop may reuse the label of the loop around it.
+            "i: t64 = 0\n'outer: while (i < 3) {\n    fnc: t64 f() {\n        'outer: loop { break 'outer }\n        return 1\n    }\n    i = i + f()\n    if i == 2 { continue 'outer }\n}",
+        ] {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
     }
 
     /// What the independent review of the Result rule found (known-issues

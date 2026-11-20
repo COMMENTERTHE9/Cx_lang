@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A method that can reach its receiver variable on a path not taken: rejected by analysis.

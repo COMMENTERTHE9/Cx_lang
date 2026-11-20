@@ -1,0 +1,15 @@
+// The receiver rule follows a call to a function defined further down. `peek`
+// names `top`, and `run` — running on `top` — calls it, on a path never taken
+// here. (Before, the rule did not follow the call; the interpreter ran the
+// program and compiled code refused it.)
+struct V { x: t64 }
+top: V = V { x: 1 }
+vm: impl (s: V) {
+    fnc: t64 run(c: bool) {
+        s.x += 10
+        if c { return peek() }
+        return s.x
+    }
+}
+fnc: t64 peek() { return top.x }
+print(top.run(false))

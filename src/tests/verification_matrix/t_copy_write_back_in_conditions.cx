@@ -1,0 +1,73 @@
+// A `.copy` argument is written back when its call returns, wherever the call
+// is written. In a condition, a scrutinee or a guard, compiled code started
+// the branches from the variables as they were before the condition was
+// evaluated, so the body read the old value — and so did everything after.
+fnc: bool step(n.copy: t64) {
+    n = n + 1
+    return n < 4
+}
+fnc: t64 inc(n.copy: t64) {
+    n += 7
+    return 1
+}
+fnc: bool rename(s.copy: str) {
+    s = "new"
+    return true
+}
+struct V { x: t64 }
+vm: impl (v: V) {
+    fnc: t64 plus(k: t64) { return v.x + k }
+}
+
+// `if`
+i: t64 = 0
+if step(i.copy) { print(i) } else { print(100 + i) }
+print(i)
+
+// `else if`: the first condition has run when the second is decided
+j: t64 = 3
+if step(j.copy) {
+    print(900)
+} else if inc(j.copy) > 0 {
+    print(j)
+} else {
+    print(901)
+}
+print(j)
+
+// `while`: the body sees the condition's write, on every pass
+k: t64 = 0
+passes: t64 = 0
+while (step(k.copy)) {
+    passes = passes + k
+}
+print(k)
+print(passes)
+
+// a `when` scrutinee
+m: t64 = 0
+when inc(m.copy) {
+    1 => print(m),
+    _ => print(902),
+}
+print(m)
+
+// a `when` guard: it runs, fails, and the next arm sees what it did
+g: t64 = 0
+when 1 {
+    1 if inc(g.copy) > 5 => print(903),
+    1 if inc(g.copy) > 0 => print(g),
+    _ => print(904),
+}
+print(g)
+
+// a call nested in a method argument inside a condition
+q: V = V { x: 1 }
+h: t64 = 0
+if q.plus(inc(h.copy)) > 1 { print(h) }
+print(h)
+
+// a string
+name: str = "old"
+if rename(name.copy) { print(name) }
+print(name)

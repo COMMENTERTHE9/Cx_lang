@@ -136,6 +136,10 @@ struct FunctionSignature {
     /// into the callee's dead frame ever escapes (the silent-corruption bug
     /// this convention closes: garbage fields, exit 0, zero prior coverage).
     ret_slot_ty: Option<SemanticType>,
+    /// For a method: whether its body can change its first receiver — see
+    /// `method_may_write_receiver`. `true` for anything that is not a method,
+    /// so that an unknown callee is never taken to be read-only.
+    receiver_writes: bool,
 }
 
 /// The returned struct's name, when a function returns a struct by value.
@@ -707,6 +711,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                 result_sources: None,
                 return_ty,
                 ret_slot_ty,
+                receiver_writes: true,
             });
         }
         // Impl-block methods are registered alongside free functions so calls
@@ -791,6 +796,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         result_sources: returns_only_err(method).then(Vec::new),
                         return_ty,
                         ret_slot_ty,
+                        receiver_writes: method_may_write_receiver(method, method_alias_params.get(i)),
                     },
                 );
             }
@@ -883,6 +889,7 @@ fn build_signature_table(program: &SemanticProgram, target: TargetConfig) -> Has
                         result_sources: returns_only_err(method).then(Vec::new),
                         return_ty,
                         ret_slot_ty,
+                        receiver_writes: method_may_write_receiver(method, method_receiver_params.get(i)),
                     },
                 );
             }
@@ -1128,6 +1135,11 @@ struct LoweringCtx {
     /// How many operator left operands have been copied in this function
     /// (`operator_operand_copy`); each copy gets a binding of its own.
     operand_copies: u32,
+    /// The current method's struct and array receivers, with their declared
+    /// types. Each is bound to the address of the caller's variable, and that
+    /// binding must never be re-pointed: an assignment to the receiver as a
+    /// whole is a store into the caller's storage.
+    receiver_storage: HashMap<BindingId, SemanticType>,
     /// The current function's `.copy` parameters, for a return that does not go
     /// through `finish_return`: `?` on an `Err` leaves from inside an
     /// expression, where no `FunctionLoweringSpec` is in reach.
@@ -1251,6 +1263,7 @@ impl LoweringCtx {
             result_flows: Vec::new(),
             result_fallbacks: HashSet::new(),
             operand_copies: 0,
+            receiver_storage: HashMap::new(),
             early_copy_writebacks: Vec::new(),
             enum_variants,
             binding_print_types: HashMap::new(),
@@ -1308,6 +1321,12 @@ impl LoweringCtx {
 impl ActiveBlock {
     fn id(&self) -> crate::ir::types::BlockId {
         self.block.id()
+    }
+
+    /// Give the block one more parameter. Only for a block no jump has been
+    /// built to yet: every edge into it must pass the argument.
+    fn add_param(&mut self, param: BlockParam) {
+        self.block.push_param(param);
     }
 
     fn emit(&mut self, inst: IrInst) -> Result<(), LoweringError> {
@@ -1563,6 +1582,17 @@ fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> Lowe
 }
 
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
+    // Analysis checks what a generic body needs of its type parameters for
+    // every set of types the program reaches it with, up to a limit per
+    // function (known-issues §81). Past it, nothing has checked that the
+    // specialised code is right for its types: refuse rather than compile it.
+    if let Some(unchecked) = &program.unchecked_generics {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "{unchecked}, past what analysis checks — compiled code refuses what was not checked"
+            ),
+        });
+    }
     let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
 
     // Two modules may each declare an enum of the same name. Enum TYPES are
@@ -1917,6 +1947,8 @@ fn lower_semantic_function(
     // Collected here because the entry block does not exist until after every
     // parameter is bound; the copies are emitted into it below.
     let mut copy_on_entry: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
+    // The receivers that are the caller's variables — see `receiver_storage`.
+    let mut receiver_storage: HashMap<BindingId, SemanticType> = HashMap::new();
     // ABI option (a): a `.copy` parameter arrives as the caller's slot ADDRESS.
     let mut copy_params: Vec<(BindingId, ValueId, SemanticType)> = Vec::new();
     let mut copy_writebacks: Vec<CopyWriteback> = Vec::new();
@@ -1951,9 +1983,11 @@ fn lower_semantic_function(
                     if known_result_type(pty) { ctx.result_types.insert(value, pty.clone()); }
                 }
                 // The exemption is read off the parameter, never off its index.
-                if !param.is_receiver {
-                    if let Some(pty) = &param.ty {
-                        if matches!(pty, SemanticType::Struct(_) | SemanticType::Array(_, _)) {
+                if let Some(pty) = &param.ty {
+                    if matches!(pty, SemanticType::Struct(_) | SemanticType::Array(_, _)) {
+                        if param.is_receiver {
+                            receiver_storage.insert(param.binding, pty.clone());
+                        } else {
                             copy_on_entry.push((param.binding, value, pty.clone()));
                         }
                     }
@@ -2067,6 +2101,7 @@ fn lower_semantic_function(
     }
     let spec = FunctionLoweringSpec { copy_writebacks: copy_writebacks.clone(), ..spec };
     ctx.early_copy_writebacks = copy_writebacks;
+    ctx.receiver_storage = receiver_storage;
     // Model B, the callee half: an aggregate parameter names storage the caller
     // still owns, so the callee gets its own. `ret_slot_plan` supplies the size,
     // alignment and parts — the same authority the return slot and the bind copy
@@ -2278,7 +2313,46 @@ fn lower_stmt_inner(
                         lower_type(ty)?
                     };
                     ensure_type_match("assign", target_ty.clone(), lowered.ty)?;
-                    let src_value = copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?;
+                    // A struct or array receiver is the caller's variable
+                    // (amendment V2 item 2): `s = V { x: 9 }` in a method
+                    // assigns that variable. Binding the name to the new
+                    // value's storage, as an assignment to a local does, kept
+                    // the assignment inside the method and sent every later
+                    // write through the receiver to the new storage as well —
+                    // the caller's variable was left as it was, where the
+                    // interpreter changed it (known-issues §76e). So the new
+                    // value is stored into the receiver's storage, and the
+                    // receiver's binding stays the address it has always been.
+                    if let Some(receiver_ty) = ctx.receiver_storage.get(binding).cloned() {
+                        let (_, _, parts) = ret_slot_plan(&receiver_ty, &ctx.struct_table).ok_or_else(|| {
+                            LoweringError::UnsupportedSemanticConstruct {
+                                construct: format!("an assignment to the receiver '{name}' as a whole, whose type compiled code cannot copy"),
+                            }
+                        })?;
+                        let storage = current.bindings.get(binding).cloned().ok_or_else(|| {
+                            LoweringError::UnresolvedSemanticArtifact {
+                                artifact: format!("receiver '{name}' assigned as a whole"),
+                            }
+                        })?;
+                        ensure_type_match("receiver assignment", IrType::Ptr, storage.ty)?;
+                        copy_parts(lowered.value, 0, storage.value, 0, &parts, ctx, &mut current)?;
+                        return Ok(Some(current));
+                    }
+                    let src_value = if literal_reads_its_target(expr, *binding) {
+                        // `v = V { x: v.y, y: v.x }`. A literal is built in
+                        // storage of its own and the variable is then bound to
+                        // that storage without a copy, which is right once. In
+                        // a loop the same statement runs again: the literal is
+                        // built in the very storage the variable now names,
+                        // and it reads `v.x` after writing over it — 12 12
+                        // where the interpreter has 12 5 (known-issues §80).
+                        // A literal that reads the variable it is assigned to
+                        // is therefore copied out of its own storage first.
+                        let as_value = SemanticExpr { ty: expr.ty.clone(), kind: SemanticExprKind::VarRef { binding: *binding, name: name.clone() } };
+                        copy_if_memory_resident(ty, &as_value, lowered.value, ctx, &mut current)?
+                    } else {
+                        copy_if_memory_resident(ty, expr, lowered.value, ctx, &mut current)?
+                    };
                     let dst = ctx.fresh_value();
                     remember_result(dst, &LoweredValue { value: src_value, ty: target_ty.clone() }, ty, expr, ctx);
                     current.emit(IrInst::SsaBind {
@@ -2446,7 +2520,7 @@ fn lower_stmt_inner(
             // to lower_expr for non-void.
             if let SemanticExprKind::MethodCall { instance, method, args, instance_binding, struct_name, receiver_expr, operator, .. } = &expr.kind {
                 // Same receiver choice as the value-position arm above.
-                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, &mut current)?;
+                let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, method, args, ctx, &mut current)?;
                 let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
                     (_, Some(copy)) => copy.clone(),
                     (Some(rx), None) => (**rx).clone(),
@@ -2852,7 +2926,6 @@ fn lower_if_else(
         else_body,
         ctx,
         current,
-        &incoming,
         spec,
         loop_ctx,
     )?;
@@ -2871,7 +2944,6 @@ fn lower_if_chain(
     else_body: Option<&[SemanticStmt]>,
     ctx: &mut LoweringCtx,
     mut decision_block: ActiveBlock,
-    incoming: &BindingMap,
     spec: &FunctionLoweringSpec,
     loop_ctx: &[LoopContext],
 ) -> Result<Vec<ActiveBlock>, LoweringError> {
@@ -2882,26 +2954,34 @@ fn lower_if_chain(
     let cond = guard_unknown_condition(cond, ctx, &mut decision_block)?;
     ensure_type_match("if condition", IrType::Bool, cond.ty.clone())?;
 
-    let then_active = ctx.start_block(vec![], incoming.clone());
+    // Both branches start from the variables as the condition left them.
+    // Evaluating a condition can change one — a `.copy` argument is written
+    // back when its call returns — and the branches used to start from the
+    // bindings captured before the condition was lowered, so the body read
+    // the value from before the call (known-issues §57b; amendment V6).
+    let after_condition = decision_block.bindings.clone();
+
+    let then_active = ctx.start_block(vec![], after_condition.clone());
     let then_block_id = then_active.id();
+    let else_active = ctx.start_block(vec![], after_condition);
+    let else_block_id = else_active.id();
 
+    decision_block.terminate(IrTerminator::Branch {
+        cond: cond.value,
+        then_block: then_block_id,
+        then_args: vec![],
+        else_block: else_block_id,
+        else_args: vec![],
+    })?;
+    ctx.seal_block(decision_block)?;
+
+    let mut fallthroughs = Vec::new();
+    if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
+        fallthroughs.push(active);
+    }
     if let Some((next_arm, remaining_else_ifs)) = else_ifs.split_first() {
-        let else_active = ctx.start_block(vec![], incoming.clone());
-        let else_block_id = else_active.id();
-
-        decision_block.terminate(IrTerminator::Branch {
-            cond: cond.value,
-            then_block: then_block_id,
-            then_args: vec![],
-            else_block: else_block_id,
-            else_args: vec![],
-        })?;
-        ctx.seal_block(decision_block)?;
-
-        let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
-            fallthroughs.push(active);
-        }
+        // An `else if` is decided in the else block, and its own branches
+        // start from what its own condition left.
         fallthroughs.extend(lower_if_chain(
             &next_arm.0,
             &next_arm.1,
@@ -2909,28 +2989,10 @@ fn lower_if_chain(
             else_body,
             ctx,
             else_active,
-            incoming,
             spec,
             loop_ctx,
         )?);
-        Ok(fallthroughs)
     } else {
-        let else_active = ctx.start_block(vec![], incoming.clone());
-        let else_block_id = else_active.id();
-
-        decision_block.terminate(IrTerminator::Branch {
-            cond: cond.value,
-            then_block: then_block_id,
-            then_args: vec![],
-            else_block: else_block_id,
-            else_args: vec![],
-        })?;
-        ctx.seal_block(decision_block)?;
-
-        let mut fallthroughs = Vec::new();
-        if let Some(active) = lower_scoped_stmt_sequence(then_body.iter(), ctx, Some(then_active), spec, loop_ctx)? {
-            fallthroughs.push(active);
-        }
         let else_result = if let Some(else_body) = else_body {
             lower_scoped_stmt_sequence(else_body.iter(), ctx, Some(else_active), spec, loop_ctx)?
         } else {
@@ -2939,8 +3001,8 @@ fn lower_if_chain(
         if let Some(active) = else_result {
             fallthroughs.push(active);
         }
-        Ok(fallthroughs)
     }
+    Ok(fallthroughs)
 }
 
 fn merge_fallthroughs(
@@ -2956,7 +3018,9 @@ fn merge_fallthroughs(
     let mut merged_bindings = HashMap::new();
 
     for binding in ordered_bindings {
-        let incoming_value = incoming
+        // Present in the bindings from before the branches, or not a variable
+        // this merge is about.
+        incoming
             .get(&binding)
             .cloned()
             .ok_or_else(|| LoweringError::InternalInvariantViolation {
@@ -2980,14 +3044,18 @@ fn merge_fallthroughs(
             .collect::<Result<Vec<_>, _>>()?;
 
         let first = path_values[0].clone();
-        if path_values.iter().any(|value| value.ty != first.ty) {
-            return Err(LoweringError::InternalInvariantViolation {
-                detail: format!(
-                    "binding {} merged with mismatched SSA value types",
+        // The paths may leave a bool definite on one and three-state on
+        // another (`b: bool = ?`, assigned `true` in one branch): it is
+        // three-state after the merge. Anything else that differs has no
+        // common representation.
+        let Some(merged_ty) = merged_representation(path_values.iter().map(|value| &value.ty)) else {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: format!(
+                    "an if/when whose branches leave a variable (binding {}) in different representations",
                     binding.0
                 ),
             });
-        }
+        };
 
         if path_values.iter().all(|value| *value == first) {
             merged_bindings.insert(binding, first);
@@ -2995,10 +3063,10 @@ fn merge_fallthroughs(
             let param_value = ctx.fresh_value();
             let block_param = BlockParam {
                 value: param_value,
-                ty: incoming_value.ty.clone(),
+                ty: merged_ty.clone(),
                 read_only: false,
             };
-            merge_param_bindings.push(binding);
+            merge_param_bindings.push((binding, merged_ty));
             merge_block_params.push(block_param.clone());
             merged_bindings.insert(
                 binding,
@@ -3014,21 +3082,18 @@ fn merge_fallthroughs(
     let merge_id = merge_block.id();
 
     for mut active in fallthroughs {
-        let args = merge_param_bindings
-            .iter()
-            .map(|binding| {
-                active
-                    .bindings
-                    .get(binding)
-                    .map(|value| value.value)
-                    .ok_or_else(|| LoweringError::InternalInvariantViolation {
-                        detail: format!(
-                            "binding {} missing from branch-local SSA environment when building merge args",
-                            binding.0
-                        ),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut args = Vec::with_capacity(merge_param_bindings.len());
+        for (binding, ty) in &merge_param_bindings {
+            let value = active.bindings.get(binding).cloned().ok_or_else(|| {
+                LoweringError::InternalInvariantViolation {
+                    detail: format!(
+                        "binding {} missing from branch-local SSA environment when building merge args",
+                        binding.0
+                    ),
+                }
+            })?;
+            args.push(in_representation(value, ty, ctx, &mut active)?);
+        }
 
         active.terminate(IrTerminator::Jump {
             target: merge_id,
@@ -3076,7 +3141,7 @@ fn lower_while(
         entry_args.push(val.value);
     }
 
-    let mut header = ctx.start_block(header_params, header_bindings.clone());
+    let mut header = ctx.start_block(header_params, header_bindings);
     let header_id = header.id();
 
     let mut current = current;
@@ -3104,7 +3169,11 @@ fn lower_while(
     // a condition is not decided here.
     ensure_type_match("while condition", IrType::Bool, cond_val.ty.clone())?;
 
-    let body_block = ctx.start_block(vec![], header_bindings.clone());
+    // The body starts from the variables as the condition left them — the
+    // exit edge below already does. A `.copy` write-back made while the
+    // condition was evaluated was lost to the body, which read the header's
+    // own parameters (known-issues §57b; amendment V6).
+    let body_block = ctx.start_block(vec![], header.bindings.clone());
     let body_id = body_block.id();
 
     let mut exit_params = Vec::new();
@@ -3895,6 +3964,7 @@ fn lower_expr_inner(
         //   synthesised first; then a Binary/Sub instruction computes the
         //   difference.  This works uniformly for i8/i16/i32/i64 and f64
         //   because each type already has a matching ConstInt/ConstFloat form.
+        //   For f64 the zero is -0.0, so that the negation of 0.0 is -0.0.
         //
         // Op::Not  — boolean complement
         //   Lower as `value == 0` using Compare/Eq against a Bool-typed zero.
@@ -3918,8 +3988,11 @@ fn lower_expr_inner(
             //   dst = 0 - lowered
             let zero = ctx.fresh_value();
             match &lowered.ty {
+                // Negative zero: `-0.0 - x` is `-x` for every float, a zero
+                // included. `0.0 - x` gave +0 for a zero, where the
+                // interpreter negates and prints -0 (known-issues §82 c).
                 IrType::F64 => {
-                    active.emit(IrInst::ConstFloat { dst: zero, value: 0.0 })?;
+                    active.emit(IrInst::ConstFloat { dst: zero, value: -0.0 })?;
                 }
                 ty => {
                     active.emit(IrInst::ConstInt { dst: zero, ty: ty.clone(), value: 0 })?;
@@ -3982,7 +4055,7 @@ fn lower_expr_inner(
             // synthesizes the `VarRef` it always did. Either way the receiver
             // occupies argument 0 and is evaluated there, so no evaluation
             // order changes and no new lowering machinery is involved.
-            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, args, ctx, active)?;
+            let operand = operator_operand_copy(*operator, receiver_expr, instance, *instance_binding, struct_name, method, args, ctx, active)?;
             let recv_arg = SemanticCallArg::Expr(match (receiver_expr, &operand) {
                 (_, Some(copy)) => copy.clone(),
                 (Some(rx), None) => (**rx).clone(),
@@ -4930,7 +5003,7 @@ fn lower_logical(
     active: &mut ActiveBlock,
 ) -> Result<LoweredValue, LoweringError> {
     ensure_type_match("logical result", IrType::Bool, lower_type(result_ty)?)?;
-    let incoming = active.bindings.clone();
+    let scope = active.bindings.clone();
 
     // Evaluate the left operand in the current (decision) block.
     let lhs_val = lower_expr(lhs, ctx, active)?;
@@ -4944,26 +5017,80 @@ fn lower_logical(
     // (neither operand is TBool → falls through). The `==`/`!=` TBool refusal
     // stays in lower_binary — that's the seam's Path-B guard, not A2's.
     if lhs_val.ty == IrType::TBool || expr_lowers_to_tbool(rhs, active) {
-        let rhs_val = lower_expr(rhs, ctx, active)?;
-        return emit_kleene_and_or(op, lhs_val.value, rhs_val.value, ctx, active);
+        // Three-valued, but still short-circuit: a left operand that settles
+        // the result — a definite false for `&&`, a definite true for `||` —
+        // is the result, and the right operand is not evaluated. That is what
+        // the interpreter does (`eval.rs`). Evaluating the right operand
+        // regardless ran a call the interpreter skips: its output appeared,
+        // and its `.copy` argument was written back (known-issues §81).
+        let after_lhs = active.bindings.clone();
+        let settles: i128 = match op {
+            Op::And => 0,
+            Op::Or => 1,
+            _ => unreachable!(),
+        };
+        let settled_wire = ctx.fresh_value();
+        active.emit(IrInst::ConstInt { dst: settled_wire, ty: IrType::I8, value: settles })?;
+        let is_settled = ctx.fresh_value();
+        active.emit(IrInst::Compare { dst: is_settled, op: CompareOp::Eq, lhs: lhs_val.value, rhs: settled_wire })?;
+
+        let mut settled = ctx.start_block(vec![], after_lhs.clone());
+        let mut open = ctx.start_block(vec![], after_lhs.clone());
+        let result_param = ctx.fresh_value();
+        let merge_block = ctx.start_block(
+            vec![BlockParam { value: result_param, ty: IrType::TBool, read_only: false }],
+            after_lhs,
+        );
+        active.terminate(IrTerminator::Branch {
+            cond: is_settled,
+            then_block: settled.id(),
+            then_args: vec![],
+            else_block: open.id(),
+            else_args: vec![],
+        })?;
+        let old_active = std::mem::replace(active, merge_block);
+        ctx.seal_block(old_active)?;
+
+        let settled_val = ctx.fresh_value();
+        settled.emit(IrInst::Cast { dst: settled_val, from: IrType::I8, to: IrType::TBool, value: settled_wire })?;
+
+        let rhs_val = lower_expr(rhs, ctx, &mut open)?;
+        let open_val = emit_kleene_and_or(op, lhs_val.value, rhs_val.value, ctx, &mut open)?;
+
+        join_value_paths(
+            vec![
+                Arrival { block: open, value: open_val.value },
+                Arrival { block: settled, value: settled_val },
+            ],
+            active,
+            &scope,
+            ctx,
+        )?;
+        return Ok(LoweredValue { value: result_param, ty: IrType::TBool });
     }
     ensure_type_match("logical lhs", IrType::Bool, lhs_val.ty.clone())?;
 
+    // Everything after the left operand starts from the variables as it left
+    // them: it has been evaluated on every path. These blocks used to start
+    // from the bindings captured before it, which dropped a `.copy`
+    // write-back made in the left operand (amendment V6).
+    let after_lhs = active.bindings.clone();
+
     // Block that evaluates the right operand (reached when short-circuit does not fire).
-    let mut rhs_active = ctx.start_block(vec![], incoming.clone());
+    let mut rhs_active = ctx.start_block(vec![], after_lhs.clone());
     let rhs_block_id = rhs_active.id();
 
     // Block that produces the short-circuit constant (reached when lhs settles the result).
-    let mut sc_active = ctx.start_block(vec![], incoming.clone());
+    let mut sc_active = ctx.start_block(vec![], after_lhs.clone());
     let sc_block_id = sc_active.id();
 
-    // Merge block receives the Bool result from whichever path ran.
+    // Merge block receives the Bool result from whichever path ran, and the
+    // variables the right operand changed (`join_value_paths`).
     let result_param = ctx.fresh_value();
     let merge_block = ctx.start_block(
         vec![BlockParam { value: result_param, ty: IrType::Bool, read_only: false }],
-        incoming,
+        after_lhs,
     );
-    let merge_id = merge_block.id();
 
     // AND: true lhs → evaluate rhs; false lhs → short-circuit to false.
     // OR:  true lhs → short-circuit to true; false lhs → evaluate rhs.
@@ -4985,16 +5112,11 @@ fn lower_logical(
     let old_active = std::mem::replace(active, merge_block);
     ctx.seal_block(old_active)?;
 
-    // Lower the right operand and jump to merge with its value.
+    // Lower the right operand; it arrives at the merge with its value.
     let rhs_val = lower_expr(rhs, ctx, &mut rhs_active)?;
     ensure_type_match("logical rhs", IrType::Bool, rhs_val.ty.clone())?;
-    rhs_active.terminate(IrTerminator::Jump {
-        target: merge_id,
-        args: vec![rhs_val.value],
-    })?;
-    ctx.seal_block(rhs_active)?;
 
-    // Emit the short-circuit constant and jump to merge.
+    // Emit the short-circuit constant.
     // AND short-circuits to false (0); OR short-circuits to true (1).
     let sc_const: i128 = match op {
         Op::And => 0,
@@ -5003,13 +5125,130 @@ fn lower_logical(
     };
     let sc_dst = ctx.fresh_value();
     sc_active.emit(IrInst::ConstInt { dst: sc_dst, ty: IrType::Bool, value: sc_const })?;
-    sc_active.terminate(IrTerminator::Jump {
-        target: merge_id,
-        args: vec![sc_dst],
-    })?;
-    ctx.seal_block(sc_active)?;
+
+    join_value_paths(
+        vec![
+            Arrival { block: rhs_active, value: rhs_val.value },
+            Arrival { block: sc_active, value: sc_dst },
+        ],
+        active,
+        &scope,
+        ctx,
+    )?;
 
     Ok(LoweredValue { value: result_param, ty: IrType::Bool })
+}
+
+/// One path into the merge of a value-producing `if`, `when`, `&&` or `||`:
+/// the block it comes from, not yet terminated, and the value it yields.
+struct Arrival {
+    block: ActiveBlock,
+    value: ValueId,
+}
+
+/// Join the paths of a value-producing `if`, `when`, `&&` or `||` at `merge`.
+///
+/// `merge` is the block the caller continues in. It was created with one
+/// parameter, the result, and nothing jumps to it yet. Every path passes its
+/// value — and, for each variable of `scope` that the paths do not agree on,
+/// that variable's value, which the merge takes as a further parameter. `scope`
+/// is the variables that existed before the construct: the ones a change made
+/// on one path has to outlive.
+///
+/// Without the second part a change made on a conditionally evaluated path was
+/// dropped: the merge carried on with the bindings from before the construct.
+/// A `.copy` argument is written back when its call returns, so
+/// `x = if c { inc(n.copy) } else { 0 }` and `b = c && inc(n.copy) > 0` left
+/// `n` as it had been, and so did an assignment in a branch of a function's
+/// trailing `if`/`else` (known-issues §69f; amendment V6). The statement forms
+/// have always merged this way (`merge_fallthroughs`).
+fn join_value_paths(
+    arrivals: Vec<Arrival>,
+    merge: &mut ActiveBlock,
+    scope: &BindingMap,
+    ctx: &mut LoweringCtx,
+) -> Result<(), LoweringError> {
+    let mut bindings: Vec<BindingId> = scope.keys().copied().collect();
+    bindings.sort_by_key(|binding| binding.0);
+
+    let mut carried: Vec<(BindingId, IrType)> = Vec::new();
+    for binding in bindings {
+        let mut values = Vec::with_capacity(arrivals.len());
+        for arrival in &arrivals {
+            let value = arrival.block.bindings.get(&binding).cloned().ok_or_else(|| {
+                LoweringError::InternalInvariantViolation {
+                    detail: format!("binding {} missing from a value branch at its merge", binding.0),
+                }
+            })?;
+            values.push(value);
+        }
+        // No path reaches the merge: it keeps the bindings it was made with.
+        let Some(first) = values.first().cloned() else { continue };
+        if values.iter().all(|value| *value == first) {
+            merge.bindings.insert(binding, first);
+            continue;
+        }
+        let Some(ty) = merged_representation(values.iter().map(|value| &value.ty)) else {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "an if/when/&&/|| value whose branches leave a variable in different representations".to_string(),
+            });
+        };
+        let param = ctx.fresh_value();
+        merge.add_param(BlockParam { value: param, ty: ty.clone(), read_only: false });
+        merge.bindings.insert(binding, LoweredValue { value: param, ty: ty.clone() });
+        carried.push((binding, ty));
+    }
+
+    let merge_id = merge.id();
+    for mut arrival in arrivals {
+        let mut args = Vec::with_capacity(1 + carried.len());
+        args.push(arrival.value);
+        for (binding, ty) in &carried {
+            // Present: checked for every arrival above.
+            let value = arrival.block.bindings[binding].clone();
+            args.push(in_representation(value, ty, ctx, &mut arrival.block)?);
+        }
+        arrival.block.terminate(IrTerminator::Jump { target: merge_id, args })?;
+        ctx.seal_block(arrival.block)?;
+    }
+    Ok(())
+}
+
+/// The one representation a variable has after a merge whose paths left it in
+/// these. The same on every path: that one. A bool that is definite on one
+/// path and three-state on another — `b: bool = ?` assigned `true` in one
+/// branch only — is three-state afterwards; a definite bool is the wire value
+/// 0 or 1 of a three-state one. Anything else has no common representation.
+fn merged_representation<'a>(mut types: impl Iterator<Item = &'a IrType>) -> Option<IrType> {
+    let first = types.next()?.clone();
+    let mut merged = first;
+    for ty in types {
+        if *ty == merged {
+            continue;
+        }
+        if matches!(ty, IrType::Bool | IrType::TBool) && matches!(merged, IrType::Bool | IrType::TBool) {
+            merged = IrType::TBool;
+        } else {
+            return None;
+        }
+    }
+    Some(merged)
+}
+
+/// `value` as a value of type `ty`, where `merged_representation` chose `ty`:
+/// itself, or a definite bool widened to a three-state one in `block`.
+fn in_representation(
+    value: LoweredValue,
+    ty: &IrType,
+    ctx: &mut LoweringCtx,
+    block: &mut ActiveBlock,
+) -> Result<ValueId, LoweringError> {
+    if value.ty == *ty {
+        return Ok(value.value);
+    }
+    let widened = ctx.fresh_value();
+    block.emit(IrInst::Cast { dst: widened, from: value.ty, to: ty.clone(), value: value.value })?;
+    Ok(widened)
 }
 
 /// Emit `lhs <op> rhs` at `ty` for arithmetic written in the program — the one
@@ -5302,183 +5541,189 @@ fn lower_when_stmt(
     spec: &FunctionLoweringSpec,
     loop_ctx: &[LoopContext],
 ) -> Result<Option<ActiveBlock>, LoweringError> {
-    let incoming = current.bindings.clone();
+    // The variables in scope before the `when`: the ones its merge carries.
+    let scope = current.bindings.clone();
     let scrutinee_val = lower_expr(scrutinee, ctx, &mut current)?;
 
     let mut fallthroughs: Vec<ActiveBlock> = Vec::new();
     let outer_names = ctx.binding_names.clone();
 
+    // The block in which the next arm is tried; `None` once an arm has been
+    // lowered after which nothing is reached.
+    let mut chain = Some(current);
     for arm in arms.iter() {
-        // A whole-scrutinee `as v` binding is a pure SSA-level alias: the
-        // scrutinee's already-lowered tag value is reused under the arm's
-        // BindingId, scoped to this arm's body block only (enums are
-        // tag-only, so there is no separate value to compute).
-        let mut body_incoming = incoming.clone();
+        let Some(current) = chain.take() else { break };
         ctx.binding_names = outer_names.clone();
-        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
-            body_incoming.insert(*id, scrutinee_val.clone());
-            ctx.binding_names.insert(name.clone(), *id);
-            ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
-            ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
+        let (body_block, next) = enter_when_arm(arm, scrutinee, &scrutinee_val, current, ctx)?;
+        if let Some(active) = lower_scoped_stmt_sequence(
+            arm.body.iter(),
+            ctx,
+            Some(body_block),
+            spec,
+            loop_ctx,
+        )? {
+            fallthroughs.push(active);
         }
-        let body_block = ctx.start_block(vec![], body_incoming.clone());
-        let body_id = body_block.id();
-
-        match &arm.pattern {
-            SemanticWhenPattern::Catchall => {
-                match &arm.guard {
-                    None => {
-                        current.terminate(IrTerminator::Jump {
-                            target: body_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                        // Arms after Catchall are unreachable — we don't allocate
-                        // their body blocks. Merge whatever fallthroughs we have.
-                        return match fallthroughs.len() {
-                            0 => Ok(None),
-                            1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
-                            _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
-                        };
-                    }
-                    Some(guard_expr) => {
-                        // A guarded catch-all can fail too — it's the terminal
-                        // arm, so its "keep trying" continuation is exactly the
-                        // same "no arm matched" tail the unguarded exhaustion
-                        // fallthrough below already produces (out of scope to
-                        // improve that tail behavior here).
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current.terminate(IrTerminator::Jump {
-                            target: guard_block_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        let no_match = ctx.start_block(vec![], incoming.clone());
-                        let no_match_id = no_match.id();
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: no_match_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                        fallthroughs.push(no_match);
-                        return match fallthroughs.len() {
-                            0 => Ok(None),
-                            1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
-                            _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
-                        };
-                    }
-                }
-            }
-            // Literal / Range / EnumVariant share one comparison emitter (D1.2a);
-            // the stmt mechanism (fallthrough collection) stays local here.
-            _ => {
-                match &arm.guard {
-                    None => {
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            body_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                    }
-                    Some(guard_expr) => {
-                        // Redirect the pattern-match's "then" target to an
-                        // intermediate guard block (seeded with the same
-                        // bindings as the body, so `as v` is visible to the
-                        // guard) instead of the real body block. The guard's
-                        // "false" edge reuses `current.id()` — the exact same
-                        // "try the next arm" continuation the pattern-mismatch
-                        // else-edge already produces.
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            guard_block_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        let next_id = current.id();
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: next_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        if let Some(active) = lower_scoped_stmt_sequence(
-                            arm.body.iter(),
-                            ctx,
-                            Some(body_block),
-                            spec,
-                            loop_ctx,
-                        )? {
-                            fallthroughs.push(active);
-                        }
-                    }
-                }
-            }
-        }
+        // `None` after an unguarded catch-all: arms after it are unreachable.
+        // A guarded catch-all can fail like any other guarded arm, and the
+        // arms after it are then tried. It used to be treated as the last arm,
+        // so `_ if n == 9 => .., _ => ..` never ran its second arm
+        // (known-issues §57c).
+        chain = next;
     }
+    ctx.binding_names = outer_names;
 
-    // Loop completed without a Catchall: `current` is the tail "no arm matched"
-    // block. It falls through to the merge as if it were a no-op arm body.
-    fallthroughs.push(current);
+    // Loop completed without a Catchall: the chain's last block is the tail
+    // "no arm matched" block. It falls through to the merge as if it were a
+    // no-op arm body.
+    fallthroughs.extend(chain);
 
     match fallthroughs.len() {
         0 => Ok(None),
         1 => Ok(Some(fallthroughs.into_iter().next().unwrap())),
-        _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &incoming)?)),
+        _ => Ok(Some(merge_fallthroughs(ctx, fallthroughs, &scope)?)),
     }
+}
+
+/// Emit one `when` arm's test — its pattern, then its guard — starting in
+/// `current`, the block the arms before it fall through to.
+///
+/// Returns the block the arm's body starts in, and the block in which the next
+/// arm is tried: `None` for an unguarded catch-all, after which nothing is.
+///
+/// Every block starts from the variables as the tests before it left them,
+/// which is `current`'s bindings, not the bindings from before the `when`:
+/// the scrutinee has been evaluated by then, and so may an earlier arm's
+/// guard have been. A `.copy` argument is written back when its call returns,
+/// and both used to be lost (known-issues §57b; amendment V6).
+///
+/// A whole-scrutinee `as v` binding is a pure SSA-level alias: the scrutinee's
+/// already-lowered tag value is reused under the arm's BindingId, scoped to
+/// this arm's guard and body only (enums are tag-only, so there is no separate
+/// value to compute).
+fn enter_when_arm(
+    arm: &SemanticWhenArm,
+    scrutinee: &SemanticExpr,
+    scrutinee_val: &LoweredValue,
+    mut current: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<(ActiveBlock, Option<ActiveBlock>), LoweringError> {
+    let chain = current.bindings.clone();
+    let mut body_incoming = chain.clone();
+    if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
+        body_incoming.insert(*id, scrutinee_val.clone());
+        ctx.binding_names.insert(name.clone(), *id);
+        ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
+        ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
+    }
+    let catchall = matches!(arm.pattern, SemanticWhenPattern::Catchall);
+
+    let Some(guard_expr) = &arm.guard else {
+        let body = ctx.start_block(vec![], body_incoming);
+        if catchall {
+            current.terminate(IrTerminator::Jump { target: body.id(), args: vec![] })?;
+            ctx.seal_block(current)?;
+            return Ok((body, None));
+        }
+        // Literal / Range / EnumVariant share one comparison emitter (D1.2a).
+        let next = emit_when_arm_match(&arm.pattern, scrutinee, scrutinee_val, body.id(), &chain, current, ctx)?;
+        return Ok((body, Some(next)));
+    };
+
+    // The pattern's match leads to an intermediate guard block, seeded with
+    // the same bindings the body would have had (so `as v` is visible to the
+    // guard) instead of to the body.
+    let mut guard_block = ctx.start_block(vec![], body_incoming);
+    let next = if catchall {
+        current.terminate(IrTerminator::Jump { target: guard_block.id(), args: vec![] })?;
+        ctx.seal_block(current)?;
+        ctx.start_block(vec![], chain)
+    } else {
+        emit_when_arm_match(&arm.pattern, scrutinee, scrutinee_val, guard_block.id(), &chain, current, ctx)?
+    };
+
+    let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
+    let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
+    ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
+
+    // The body runs after the guard, on the variables as the guard left them.
+    let body = ctx.start_block(vec![], guard_block.bindings.clone());
+    let next = guard_falls_through(guard_block, guard_val.value, body.id(), next, ctx)?;
+    Ok((body, Some(next)))
+}
+
+/// Finish a guard: branch to the arm's body when it holds, and on to the next
+/// arm's test when it does not.
+///
+/// `next` is the block the next arm is tried in. So far it is reached only by
+/// this arm's pattern not matching, in which case the guard did not run. If
+/// the guard changed no variable, its failing edge goes straight there. If it
+/// did, the two ways of reaching the next arm disagree about that variable, so
+/// both go through a join block that takes it as a parameter, and the chain
+/// continues there.
+fn guard_falls_through(
+    mut guard_block: ActiveBlock,
+    guard: ValueId,
+    body_id: crate::ir::types::BlockId,
+    mut next: ActiveBlock,
+    ctx: &mut LoweringCtx,
+) -> Result<ActiveBlock, LoweringError> {
+    let mut changed: Vec<BindingId> = next
+        .bindings
+        .iter()
+        .filter(|(binding, value)| guard_block.bindings.get(*binding) != Some(*value))
+        .map(|(binding, _)| *binding)
+        .collect();
+    changed.sort_by_key(|binding| binding.0);
+
+    if changed.is_empty() {
+        guard_block.terminate(IrTerminator::Branch {
+            cond: guard,
+            then_block: body_id,
+            then_args: vec![],
+            else_block: next.id(),
+            else_args: vec![],
+        })?;
+        ctx.seal_block(guard_block)?;
+        return Ok(next);
+    }
+
+    let mut params = Vec::with_capacity(changed.len());
+    let mut joined = next.bindings.clone();
+    let mut from_next = Vec::with_capacity(changed.len());
+    let mut from_guard = Vec::with_capacity(changed.len());
+    for binding in &changed {
+        let before = next.bindings[binding].clone();
+        let after = guard_block.bindings.get(binding).cloned().ok_or_else(|| {
+            LoweringError::InternalInvariantViolation {
+                detail: format!("binding {} missing after a when guard", binding.0),
+            }
+        })?;
+        let Some(ty) = merged_representation([&before.ty, &after.ty].into_iter()) else {
+            return Err(LoweringError::UnsupportedSemanticConstruct {
+                construct: "a when guard that leaves a variable in a different representation".to_string(),
+            });
+        };
+        let value = ctx.fresh_value();
+        params.push(BlockParam { value, ty: ty.clone(), read_only: false });
+        joined.insert(*binding, LoweredValue { value, ty: ty.clone() });
+        from_next.push(in_representation(before, &ty, ctx, &mut next)?);
+        from_guard.push(in_representation(after, &ty, ctx, &mut guard_block)?);
+    }
+    let join = ctx.start_block(params, joined);
+    let join_id = join.id();
+
+    next.terminate(IrTerminator::Jump { target: join_id, args: from_next })?;
+    ctx.seal_block(next)?;
+    guard_block.terminate(IrTerminator::Branch {
+        cond: guard,
+        then_block: body_id,
+        then_args: vec![],
+        else_block: join_id,
+        else_args: from_guard,
+    })?;
+    ctx.seal_block(guard_block)?;
+    Ok(join)
 }
 
 /// Emit the comparison CFG for one non-catchall `when` arm (tracker D1.2a) — the
@@ -5799,10 +6044,12 @@ fn lower_when_expr(
     } else {
         lower_type(result_ty)?
     };
-    let incoming = active.bindings.clone();
+    // The variables in scope before the `when`: the ones its merge carries.
+    let scope = active.bindings.clone();
     let scrutinee_val = lower_expr(scrutinee, ctx, active)?;
 
-    // Merge block: single block parameter typed as the result.
+    // Merge block: one block parameter typed as the result, to which
+    // `join_value_paths` adds one for each variable the arms disagree on.
     let result_param = ctx.fresh_value();
     let merge_block = ctx.start_block(
         vec![BlockParam {
@@ -5810,153 +6057,42 @@ fn lower_when_expr(
             ty: result_ir_ty.clone(),
             read_only: false,
         }],
-        incoming.clone(),
+        active.bindings.clone(),
     );
-    let merge_id = merge_block.id();
 
     // Swap caller's `*active` to be the merge block up front. The chain is
-    // built in `current` (a local), starting from what was originally `*active`.
-    let mut current = std::mem::replace(active, merge_block);
+    // built in blocks of its own, starting from what was originally `*active`.
+    let current = std::mem::replace(active, merge_block);
 
     // Each arm body lowers to a value via the shared `lower_branch_value`
     // (extracted in D2.1 so if-expr branches reuse the same merge machinery —
-    // leading stmts via the void path, trailing ExprStmt as the value, Jump to
-    // merge with `ensure_type_match`). This thin wrapper keeps the per-arm call
-    // sites unchanged, so the `when`-expr emitted IR is byte-identical.
-    let lower_arm_body =
-        |ctx: &mut LoweringCtx, body_active: ActiveBlock, arm: &SemanticWhenArm|
-         -> Result<(), LoweringError> {
-            lower_branch_value(&arm.body, result_ty, &result_ir_ty, merge_id, body_active, ctx)
-        };
-
+    // leading stmts via the void path, trailing ExprStmt as the value).
+    let mut arrivals: Vec<Arrival> = Vec::new();
     let outer_names = ctx.binding_names.clone();
+    let mut chain = Some(current);
     for arm in arms.iter() {
+        let Some(current) = chain.take() else { break };
         ctx.binding_names = outer_names.clone();
-        // Same whole-scrutinee alias as the statement form — see the comment
-        // in `lower_when_stmt`.
-        let mut body_incoming = incoming.clone();
-        if let SemanticWhenPattern::EnumVariant { enum_name, binding: Some((id, name)), .. } = &arm.pattern {
-            body_incoming.insert(*id, scrutinee_val.clone());
-            ctx.binding_names.insert(name.clone(), *id);
-            ctx.binding_print_types.insert(*id, SemanticType::Enum(enum_name.clone()));
-            ctx.binding_decl_types.insert(*id, SemanticType::Enum(enum_name.clone()));
-        }
-        let body_block = ctx.start_block(vec![], body_incoming.clone());
-        let body_id = body_block.id();
-
-        match &arm.pattern {
-            SemanticWhenPattern::Catchall => {
-                match &arm.guard {
-                    None => {
-                        current.terminate(IrTerminator::Jump {
-                            target: body_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-                        lower_arm_body(ctx, body_block, arm)?;
-                        // Arms after Catchall are unreachable.
-                        return Ok(LoweredValue {
-                            value: result_param,
-                            ty: result_ir_ty,
-                        });
-                    }
-                    Some(guard_expr) => {
-                        // A guarded catch-all can fail too. A value-producing
-                        // `when` must be exhaustive, so its "keep trying"
-                        // path has no value to supply the merge — Trap, the
-                        // exact same tail behavior the unguarded exhaustion
-                        // fallthrough below already produces.
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current.terminate(IrTerminator::Jump {
-                            target: guard_block_id,
-                            args: vec![],
-                        })?;
-                        ctx.seal_block(current)?;
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        let mut no_match = ctx.start_block(vec![], incoming.clone());
-                        let no_match_id = no_match.id();
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: no_match_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        lower_arm_body(ctx, body_block, arm)?;
-
-                        no_match.terminate(IrTerminator::Trap)?;
-                        ctx.seal_block(no_match)?;
-
-                        return Ok(LoweredValue {
-                            value: result_param,
-                            ty: result_ir_ty,
-                        });
-                    }
-                }
-            }
-            // Literal / Range / EnumVariant share one comparison emitter (D1.2a);
-            // the expr mechanism (value-producing arm body -> merge) stays local.
-            _ => {
-                match &arm.guard {
-                    None => {
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            body_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        lower_arm_body(ctx, body_block, arm)?;
-                    }
-                    Some(guard_expr) => {
-                        let mut guard_block = ctx.start_block(vec![], body_incoming);
-                        let guard_block_id = guard_block.id();
-                        current = emit_when_arm_match(
-                            &arm.pattern,
-                            scrutinee,
-                            &scrutinee_val,
-                            guard_block_id,
-                            &incoming,
-                            current,
-                            ctx,
-                        )?;
-                        let next_id = current.id();
-
-                        let guard_val = lower_expr(guard_expr, ctx, &mut guard_block)?;
-                        let guard_val = guard_unknown_condition(guard_val, ctx, &mut guard_block)?;
-                        ensure_type_match("when guard", IrType::Bool, guard_val.ty.clone())?;
-
-                        guard_block.terminate(IrTerminator::Branch {
-                            cond: guard_val.value,
-                            then_block: body_id,
-                            then_args: vec![],
-                            else_block: next_id,
-                            else_args: vec![],
-                        })?;
-                        ctx.seal_block(guard_block)?;
-
-                        lower_arm_body(ctx, body_block, arm)?;
-                    }
-                }
-            }
-        }
+        let (body_block, next) = enter_when_arm(arm, scrutinee, &scrutinee_val, current, ctx)?;
+        arrivals.extend(lower_branch_value(&arm.body, result_ty, &result_ir_ty, body_block, ctx)?);
+        // `None` after an unguarded catch-all: arms after it are unreachable.
+        // A guarded catch-all can fail like any other guarded arm, and the
+        // arms after it are then tried; only when none is left does the
+        // exhaustion tail below trap (known-issues §57c).
+        chain = next;
     }
+    ctx.binding_names = outer_names;
 
     // Loop completed without Catchall: a value-producing when must be
     // exhaustive. The tail block has no arm value to supply to the merge.
     // Emit Trap on the no-arm-matched path so reaching it is a runtime abort
     // rather than passing an undefined value to the merge.
-    current.terminate(IrTerminator::Trap)?;
-    ctx.seal_block(current)?;
+    if let Some(mut tail) = chain {
+        tail.terminate(IrTerminator::Trap)?;
+        ctx.seal_block(tail)?;
+    }
+
+    join_value_paths(arrivals, active, &scope, ctx)?;
 
     Ok(LoweredValue {
         value: result_param,
@@ -5965,22 +6101,24 @@ fn lower_when_expr(
 }
 
 /// Lower a value-producing branch body — a `when`-expr arm or an if-expr branch
-/// (tracker D2.1) — and `Jump` to `merge_id` with its value. Leading statements
-/// lower via the void path; the trailing `ExprStmt` is the branch value, type-
-/// checked against the expression's type `result_ty` (see `branch_value_fits`)
-/// and its IR type `result_ir_ty`. If the body diverges before the trailing
-/// expression (a leading stmt that never returns control), no merge edge is
-/// added — that branch simply contributes nothing to the merge.
+/// (tracker D2.1) — to the path it arrives at the merge by: the block it ends
+/// in, not yet terminated, and its value. The caller joins the paths
+/// (`join_value_paths`), which is where the merge learns which variables a
+/// branch changed. Leading statements lower via the void path; the trailing
+/// `ExprStmt` is the branch value, type-checked against the expression's type
+/// `result_ty` (see `branch_value_fits`) and its IR type `result_ir_ty`. If the
+/// body diverges before the trailing expression (a leading stmt that never
+/// returns control), there is no arrival — that branch simply contributes
+/// nothing to the merge.
 fn lower_branch_value(
     body: &[SemanticStmt],
     result_ty: &SemanticType,
     result_ir_ty: &IrType,
-    merge_id: crate::ir::types::BlockId,
     body_active: ActiveBlock,
     ctx: &mut LoweringCtx,
-) -> Result<(), LoweringError> {
+) -> Result<Option<Arrival>, LoweringError> {
     let names = ctx.binding_names.clone();
-    let result = lower_branch_value_inner(body, result_ty, result_ir_ty, merge_id, body_active, ctx);
+    let result = lower_branch_value_inner(body, result_ty, result_ir_ty, body_active, ctx);
     ctx.binding_names = names;
     result
 }
@@ -5989,10 +6127,9 @@ fn lower_branch_value_inner(
     body: &[SemanticStmt],
     result_ty: &SemanticType,
     result_ir_ty: &IrType,
-    merge_id: crate::ir::types::BlockId,
     mut body_active: ActiveBlock,
     ctx: &mut LoweringCtx,
-) -> Result<(), LoweringError> {
+) -> Result<Option<Arrival>, LoweringError> {
     if body.is_empty() {
         return Err(LoweringError::InternalInvariantViolation {
             detail: "value-producing branch body is empty".to_string(),
@@ -6013,7 +6150,7 @@ fn lower_branch_value_inner(
         let result = lower_stmt(stmt, ctx, body_active, &inline_spec, &[])?;
         body_active = match result {
             Some(active) => active,
-            None => return Ok(()), // diverged — no merge edge
+            None => return Ok(None), // diverged — no merge edge
         };
     }
     let trailing_expr = match &body[last_idx] {
@@ -6046,12 +6183,7 @@ fn lower_branch_value_inner(
     }
     let value = lower_expr(trailing_expr, ctx, &mut body_active)?;
     ensure_type_match("branch result", result_ir_ty.clone(), value.ty)?;
-    body_active.terminate(IrTerminator::Jump {
-        target: merge_id,
-        args: vec![value.value],
-    })?;
-    ctx.seal_block(body_active)?;
-    Ok(())
+    Ok(Some(Arrival { block: body_active, value: value.value }))
 }
 
 /// Lower an `if`-EXPRESSION to a value (tracker D2.1, #046). Structurally a
@@ -6153,7 +6285,8 @@ fn lower_if_expr(
     } else {
         lower_type(result_ty)?
     };
-    let incoming = active.bindings.clone();
+    // The variables in scope before the `if`: the ones its merge carries.
+    let scope = active.bindings.clone();
 
     // Lower the condition in the decision block (current `active`).
     let cond = lower_expr(condition, ctx, active)?;
@@ -6161,18 +6294,22 @@ fn lower_if_expr(
     // No-op for a definite Bool condition; narrows a definite TBool to Bool.
     let cond = guard_unknown_condition(cond, ctx, active)?;
 
-    // Merge block carries the single result block parameter.
+    // Both branches, and the merge, start from the variables as the condition
+    // left them (amendment V6).
+    let after_condition = active.bindings.clone();
+
+    // Merge block carries the result block parameter, to which
+    // `join_value_paths` adds one for each variable the branches disagree on.
     let result_param = ctx.fresh_value();
     let merge_block = ctx.start_block(
         vec![BlockParam { value: result_param, ty: result_ir_ty.clone(), read_only: false }],
-        incoming.clone(),
+        after_condition.clone(),
     );
-    let merge_id = merge_block.id();
 
     // then / else branch blocks.
-    let then_block = ctx.start_block(vec![], incoming.clone());
+    let then_block = ctx.start_block(vec![], after_condition.clone());
     let then_id = then_block.id();
-    let else_block = ctx.start_block(vec![], incoming.clone());
+    let else_block = ctx.start_block(vec![], after_condition);
     let else_id = else_block.id();
 
     // Terminate + seal the decision block FIRST (seal-order rule): the branch
@@ -6187,9 +6324,11 @@ fn lower_if_expr(
     let old_active = std::mem::replace(active, merge_block);
     ctx.seal_block(old_active)?;
 
-    // Lower each branch to a value merging into the result param.
-    lower_branch_value(then_body, result_ty, &result_ir_ty, merge_id, then_block, ctx)?;
-    lower_branch_value(else_body, result_ty, &result_ir_ty, merge_id, else_block, ctx)?;
+    // Lower each branch to a value, and join the two at the merge.
+    let mut arrivals: Vec<Arrival> = Vec::new();
+    arrivals.extend(lower_branch_value(then_body, result_ty, &result_ir_ty, then_block, ctx)?);
+    arrivals.extend(lower_branch_value(else_body, result_ty, &result_ir_ty, else_block, ctx)?);
+    join_value_paths(arrivals, active, &scope, ctx)?;
 
     Ok(LoweredValue { value: result_param, ty: result_ir_ty })
 }
@@ -6323,6 +6462,13 @@ fn resolve_field_ptr(
         ),
     })?;
 
+    // A top-level struct named from inside a function: compiled code keeps
+    // module-level numbers and enums in shared storage and nothing else, so
+    // there is no address to give. Say so, rather than report the missing
+    // binding as an internal error.
+    if !active.bindings.contains_key(&binding_id) && ctx.top_level_bindings.contains(&binding_id) {
+        return Err(top_level_state_unsupported(&ctx.function_name, container, "reads or writes a field of"));
+    }
     let base = active.bindings.get(&binding_id).cloned().ok_or_else(|| {
         LoweringError::InternalInvariantViolation {
             detail: format!(
@@ -6725,6 +6871,7 @@ fn fill_aggregate_slot(
                 } else {
                     lower_type(elem_sem_ty)?
                 };
+                ensure_literal_element_fits(elem_expr, elem_sem_ty, &elem_ir_ty)?;
                 let lowered = lower_expr(elem_expr, ctx, active)?;
                 ensure_result_value("array element", elem_sem_ty, elem_expr, &lowered, ctx)?;
                 if lowered.ty == IrType::TBool && elem_ir_ty == IrType::Bool {
@@ -6786,6 +6933,53 @@ fn copy_parts(
         active.emit(IrInst::Store { ptr: dst, value: tmp })?;
     }
     Ok(())
+}
+
+/// A number literal written as an array element must fit the element type.
+///
+/// Analysis checks this wherever it knows the element type. In a generic
+/// function it does not: `[x, 349]` is typed `[2: T]`, the literal is accepted
+/// for any `T`, and the element type is known only here, after
+/// monomorphization. The narrowing store an element goes through would then
+/// cut 349 to 93 for a `t8`, make it `true` for a `bool`, and drop the
+/// fraction of 2.5 for a `t64`, while the interpreter keeps the literal as
+/// written — different output with exit 0 (known-issues §74). Refuse instead.
+///
+/// Only a bare literal, or one behind a unary minus, is looked at: every other
+/// element expression has a type of its own that analysis has already checked
+/// against the element type.
+fn ensure_literal_element_fits(
+    element: &SemanticExpr,
+    elem_sem_ty: &SemanticType,
+    elem_ir_ty: &IrType,
+) -> Result<(), LoweringError> {
+    let (literal, negated) = match &element.kind {
+        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => (&expr.kind, true),
+        other => (other, false),
+    };
+    let fits = match literal {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => {
+            let value = if negated { n.checked_neg() } else { Some(*n) };
+            match (value, ir_int_range(elem_ir_ty)) {
+                (Some(value), Some((min, max))) => value >= min && value <= max,
+                // A whole number in a float element is exact, as it is in a
+                // float variable.
+                (Some(_), None) => *elem_ir_ty == IrType::F64,
+                (None, _) => false,
+            }
+        }
+        SemanticExprKind::Value(SemanticValue::Float(_)) => *elem_ir_ty == IrType::F64,
+        _ => return Ok(()),
+    };
+    if fits {
+        return Ok(());
+    }
+    Err(LoweringError::UnsupportedSemanticConstruct {
+        construct: format!(
+            "a number literal in an array literal whose element type is {} — it does not fit, and compiled code would store a different value than the one written",
+            crate::frontend::semantic::type_name(elem_sem_ty)
+        ),
+    })
 }
 
 fn lower_array_lit(
@@ -6860,6 +7054,7 @@ fn lower_array_lit(
     for (i, elem_expr) in elements.iter().enumerate() {
         if !matches!(elem_sem_ty, SemanticType::Result(_)) { ensure_enum_expr("array element", elem_sem_ty, elem_expr)?; }
         require_storage_shape(elem_sem_ty, elem_expr, ctx)?;
+        ensure_literal_element_fits(elem_expr, elem_sem_ty, &elem_ir_ty)?;
         let lowered_elem = lower_expr(elem_expr, ctx, active)?;
         ensure_result_value("array element", elem_sem_ty, elem_expr, &lowered_elem, ctx)?;
         let byte_offset = i * layout.stride;
@@ -6912,26 +7107,34 @@ fn lower_array_lit(
     })
 }
 
-/// The left operand of a dispatched operator, taken before the right operand
-/// is evaluated: `a + f(a.copy)`, `w.inner + g(w.copy)`, `ps:[0] + h(ps.copy)`
-/// on a type with a user `+`.
+/// The left (or only) operand of a dispatched operator, as a value: `a + b`,
+/// `a + f(a.copy)`, `w.inner + b`, `ps:[0] + h(ps.copy)`, `-a` on a type with
+/// a user operator.
 ///
-/// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md). The operator's
-/// method takes its receiver by address, and a left operand that is a
-/// variable, a field, an element, or an `if`/`when` value yielding one of
-/// those lowers to the address of the thing itself — so the method would see
-/// whatever evaluating B did to it. When B calls anything at all, the left
-/// operand is copied first and the method is given the copy.
+/// An operator's operands are values (docs/backend/cx_value_and_alias_semantics.md,
+/// V3): `A + B` evaluates A, then B, the method is given the value A had, and
+/// nothing the method does to it reaches a variable. The method takes its
+/// receiver by address, and a left operand that is a variable, a field, an
+/// element, or an `if`/`when` value yielding one of those lowers to the address
+/// of the thing itself. So unless neither of two things can happen, the operand
+/// is copied first and the method is given the copy:
 ///
-/// The test is "B contains a call", not "B can change A". Which variable a
-/// left operand ends up naming is not always readable from the expression
-/// (an `if` value), and a call can change a variable through a chain of
-/// aliases this function cannot follow; a call is the one thing every such
-/// case has. `a + b` on two names copies nothing.
+/// - **B changes A.** The test is "B contains a call", not "B can change A".
+///   Which variable a left operand ends up naming is not always readable from
+///   the expression (an `if` value), and a call can change a variable through
+///   a chain of aliases this function cannot follow; a call is the one thing
+///   every such case has.
+/// - **The method changes its receiver** (`method_may_write_receiver`). Before
+///   this was checked, a `+` that assigned to its receiver changed the
+///   operand's variable — on both backends for a named operand, and in
+///   compiled code alone for a field or an element (known-issues §69a, §69c).
+///
+/// `a + b` on two names, with a method that only reads its receiver, copies
+/// nothing.
 ///
 /// Returns the expression that names the copy, or `None` when none is needed
-/// — a written method call, a right operand without a call, or a left operand
-/// that is already a fresh value — and the call is lowered exactly as before.
+/// — a written method call, or a left operand that is already a fresh value
+/// or cannot be changed — and the call is lowered exactly as before.
 #[allow(clippy::too_many_arguments)]
 fn operator_operand_copy(
     operator: bool,
@@ -6939,11 +7142,19 @@ fn operator_operand_copy(
     instance: &str,
     instance_binding: BindingId,
     struct_name: &str,
+    method: &str,
     args: &[SemanticCallArg],
     ctx: &mut LoweringCtx,
     active: &mut ActiveBlock,
 ) -> Result<Option<SemanticExpr>, LoweringError> {
-    if !operator || !args_may_write(args, Scan::AnyCall) {
+    if !operator {
+        return Ok(None);
+    }
+    let method_writes = ctx
+        .signature_table
+        .get(mangle_method(struct_name, method).as_str())
+        .is_none_or(|signature| signature.receiver_writes);
+    if !method_writes && !args_may_write(args, Scan::AnyCall) {
         return Ok(None);
     }
     let ty = SemanticType::Struct(struct_name.to_string());
@@ -6958,7 +7169,7 @@ fn operator_operand_copy(
     };
     let (size, align, parts) = ret_slot_plan(&ty, &ctx.struct_table).ok_or_else(|| {
         LoweringError::UnsupportedSemanticConstruct {
-            construct: format!("an operator whose right operand makes a call, for a left operand ({struct_name}) compiled code cannot copy"),
+            construct: format!("an operator on a left operand ({struct_name}) compiled code cannot copy"),
         }
     })?;
     let original = lower_expr(&operand, ctx, active)?;
@@ -6974,6 +7185,30 @@ fn operator_operand_copy(
     Ok(Some(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name: instance.to_string() } }))
 }
 
+/// Whether a method's body can change its first receiver, decided from the
+/// text of the body with no analysis of what anything it calls does. It can
+/// if the body or the trailing expression contains an assignment rooted at the
+/// receiver (whole, field or element), the receiver passed as `.copy`, a
+/// method call on it, the receiver given to a method as an argument that is
+/// passed by reference — all of which `Scan::Writes` finds — or a nested
+/// function declaration, which could name it.
+///
+/// "Can" errs towards yes: a wrong yes costs one copy of an operand. An
+/// operator applied to the receiver inside the body is not a write, by the
+/// rule this predicate exists to implement.
+fn method_may_write_receiver(
+    method: &crate::frontend::semantic_types::SemanticFunction,
+    receivers: Option<&Vec<crate::frontend::semantic_types::SemanticParam>>,
+) -> bool {
+    let Some(receiver) = receivers.and_then(|r| r.first()) else {
+        return true;
+    };
+    let scan = Scan::Writes(receiver.binding);
+    stmts_may_write(&method.body, scan)
+        || method.ret_expr.as_ref().is_some_and(|e| expr_may_write(e, scan))
+        || method.body.iter().any(|stmt| matches!(stmt, SemanticStmt::FuncDef(_)))
+}
+
 /// Forget the binding `operator_operand_copy` made, once its call is lowered.
 fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
     if let Some(SemanticExpr { kind: SemanticExprKind::VarRef { binding, .. }, .. }) = operand {
@@ -6986,14 +7221,30 @@ fn drop_operand_copy(operand: &Option<SemanticExpr>, active: &mut ActiveBlock) {
 enum Scan {
     /// Anything that may change this variable.
     Writes(BindingId),
+    /// Any use of this variable at all: a read as well as a write.
+    Uses(BindingId),
     /// Any call at all — a function or a method, whatever it is given.
     AnyCall,
 }
 
 impl Scan {
+    /// The variable is named where naming it may change it.
     fn names(self, binding: BindingId) -> bool {
-        self == Scan::Writes(binding)
+        self == Scan::Writes(binding) || self == Scan::Uses(binding)
     }
+
+    /// The variable is merely read.
+    fn reads(self, binding: BindingId) -> bool {
+        self == Scan::Uses(binding)
+    }
+}
+
+/// Whether `expr` is a struct or array literal that uses the variable it is
+/// being assigned to — reads it, a field or an element of it, passes it to a
+/// call, or calls a method on it. See the assignment arm of `lower_stmt`.
+fn literal_reads_its_target(expr: &SemanticExpr, target: BindingId) -> bool {
+    matches!(expr.kind, SemanticExprKind::ArrayLit { .. } | SemanticExprKind::StructInstance { .. })
+        && expr_may_write(expr, Scan::Uses(target))
 }
 
 /// Whether a value of this type is handed to a method as a value. Everything
@@ -7021,16 +7272,19 @@ fn passed_by_value(ty: &SemanticType) -> bool {
 /// names the variable counts — answering "may" for one that is in fact passed
 /// by value costs a copy and nothing else.
 ///
+/// Using it as the operand of a dispatched operator is not one of them: an
+/// operator's operands are values, and its method cannot change them.
+///
 /// Looks through every nested expression and statement, so an `if`/`when`
 /// value is not a blind spot.
 fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
     let any = |e: &SemanticExpr| expr_may_write(e, scan);
     match &expr.kind {
         SemanticExprKind::Value(_)
-        | SemanticExprKind::VarRef { .. }
-        | SemanticExprKind::DotAccess { .. }
         | SemanticExprKind::HandleVal { .. }
         | SemanticExprKind::HandleDrop { .. } => false,
+        SemanticExprKind::VarRef { binding, .. } => scan.reads(*binding),
+        SemanticExprKind::DotAccess { binding, .. } => binding.is_some_and(|b| scan.reads(b)),
         SemanticExprKind::HandleNew { value: e, .. }
         | SemanticExprKind::Unary { expr: e, .. }
         | SemanticExprKind::Cast { expr: e, .. }
@@ -7045,16 +7299,19 @@ fn expr_may_write(expr: &SemanticExpr, scan: Scan) -> bool {
         SemanticExprKind::Call { args, .. } => scan == Scan::AnyCall || args_may_write(args, scan),
         SemanticExprKind::MethodCall { args, instance_binding, receiver_expr, .. } => {
             let on_it = match receiver_expr {
-                // An expression receiver that is a place in the variable is
-                // passed by address, exactly as a named one is.
-                Some(receiver) => root_binding(receiver).is_some_and(|b| scan.names(b)) || any(receiver),
+                // An operator's operand is a value: evaluating it may change
+                // the variable, the operator's method may not
+                // (`operator_operand_copy` sees to that).
+                Some(receiver) => any(receiver),
                 None => scan.names(*instance_binding),
             };
-            // Only a struct or an array is passed by reference; a number,
-            // bool, string or enum argument is a value wherever it came from.
+            // Only a struct or an array is passed by reference, and only when
+            // the argument is the variable's name: a number, bool, string or
+            // enum argument is a value wherever it came from, and a field or
+            // element of the variable is a temporary (`prepare_call_args`).
             let as_alias = args.iter().any(|arg| {
-                matches!(arg, SemanticCallArg::Expr(e)
-                    if !passed_by_value(&e.ty) && root_binding(e).is_some_and(|b| scan.names(b)))
+                matches!(arg, SemanticCallArg::Expr(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, .. } })
+                    if !passed_by_value(ty) && scan.names(*binding))
             });
             scan == Scan::AnyCall || on_it || as_alias || args_may_write(args, scan)
         }
@@ -8974,7 +9231,18 @@ fn prepare_call_args(
                     lowered.ty,
                 )?;
                 let receiver = ctx.signature_table.get(callee).and_then(|s| s.receiver_params.get(i)).copied().unwrap_or(false);
-                let value = if receiver { lowered.value } else { copy_if_memory_resident(&expr.ty, expr, lowered.value, ctx, active)? };
+                // A receiver is passed by address when it is the variable
+                // itself: the receiver the call is made on (argument 0, which
+                // `operator_operand_copy` has already replaced by a copy where
+                // an operator needs one), or a further receiver given a
+                // variable named directly. Anything else given for a further
+                // receiver — a field, an element, an `if` value — is a
+                // temporary: the method gets its value, and what the method
+                // does to it reaches nothing. Passing the place itself let
+                // `p.mix(w.inner, 5)` change `w.inner`, where the interpreter
+                // left it alone (known-issues §69c; amendment V2 item 3).
+                let by_address = receiver && (i == 0 || matches!(expr.kind, SemanticExprKind::VarRef { .. }));
+                let value = if by_address { lowered.value } else { copy_if_memory_resident(&expr.ty, expr, lowered.value, ctx, active)? };
                 lowered_args.push(value);
             }
             // `.copy.free` is plain passing: hand over the value.
@@ -9299,7 +9567,7 @@ mod tests {
 
     #[test]
     fn lowers_top_level_typed_assign_into_synthetic_main() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -9317,7 +9585,7 @@ mod tests {
 
     #[test]
     fn declaration_only_decl_does_not_invent_ssa_value() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::Decl {
                 binding: BindingId(1),
                 name: "x".to_string(),
@@ -9342,7 +9610,7 @@ mod tests {
                 rhs: Box::new(int_expr(2, SemanticType::I64)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, expr)],
             enums: vec![],
         };
@@ -9380,7 +9648,7 @@ mod tests {
                 rhs: Box::new(float_expr(2.0)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(BindingId(1), "eq", SemanticType::Bool, eq_expr),
                 typed_assign(BindingId(2), "lt", SemanticType::Bool, lt_expr),
@@ -9415,7 +9683,7 @@ mod tests {
 
     #[test]
     fn lowers_explicit_cast_to_cast_instruction() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -9448,7 +9716,7 @@ mod tests {
     #[test]
     fn variable_references_use_current_ssa_mapping() {
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(
                     binding,
@@ -9498,7 +9766,7 @@ mod tests {
 
     #[test]
     fn straight_line_block_ends_in_return_none() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: bool_expr(true),
                 pos: 0,
@@ -9515,7 +9783,7 @@ mod tests {
 
     #[test]
     fn rejects_numeric_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9542,7 +9810,7 @@ mod tests {
     #[test]
     fn varref_numeric_type_falls_back_to_binding_type() {
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(
                     binding,
@@ -9570,7 +9838,7 @@ mod tests {
     #[test]
     fn varref_unknown_type_falls_back_to_binding_type() {
         let binding = BindingId(2);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(
                     binding,
@@ -9596,7 +9864,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9626,7 +9894,7 @@ mod tests {
         // cx_handle_new), and a raw Bool literal is a different IR type, not a
         // real Handle value. The rejection reason correctly shifted from
         // UnsupportedSemanticType to a type-mismatch InternalInvariantViolation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9646,7 +9914,7 @@ mod tests {
 
     #[test]
     fn rejects_str_ref_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9666,7 +9934,7 @@ mod tests {
 
     #[test]
     fn rejects_container_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9686,7 +9954,7 @@ mod tests {
 
     #[test]
     fn rejects_compound_assign() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::CompoundAssign {
                 target: SemanticLValue::Binding {
                     binding: BindingId(1),
@@ -9710,7 +9978,7 @@ mod tests {
 
     #[test]
     fn lowers_simple_function_with_one_parameter_and_return_value() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "id",
                 vec![typed_param(BindingId(10), "x", SemanticType::I64)],
@@ -9741,7 +10009,7 @@ mod tests {
     fn lowers_function_with_multiple_parameters() {
         let x = BindingId(10);
         let y = BindingId(11);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "sum",
                 vec![
@@ -9780,7 +10048,7 @@ mod tests {
     #[test]
     fn function_parameter_references_use_function_local_ssa_map() {
         let x = BindingId(20);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "use_param",
                 vec![typed_param(x, "x", SemanticType::I64)],
@@ -9810,7 +10078,7 @@ mod tests {
 
     #[test]
     fn function_return_with_value_lowers_to_return_some() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "const_ret",
                 vec![],
@@ -9832,7 +10100,7 @@ mod tests {
     fn typed_assignment_inside_function_lowers_correctly() {
         let param = BindingId(30);
         let local = BindingId(31);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bind_local",
                 vec![typed_param(param, "x", SemanticType::I64)],
@@ -9863,7 +10131,7 @@ mod tests {
 
     #[test]
     fn top_level_statements_and_real_functions_lower_together() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "const_ret",
@@ -9890,7 +10158,7 @@ mod tests {
 
     #[test]
     fn real_main_plus_top_level_statements_is_rejected() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "main",
@@ -9919,7 +10187,7 @@ mod tests {
 
     #[test]
     fn rejects_call_to_unresolved_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
@@ -9945,7 +10213,7 @@ mod tests {
 
     #[test]
     fn rejects_call_to_unresolved_function_inside_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad_call",
                 vec![],
@@ -9977,7 +10245,7 @@ mod tests {
 
     #[test]
     fn lowers_direct_call_in_expr_stmt() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "get_value",
@@ -10022,7 +10290,7 @@ mod tests {
 
     #[test]
     fn lowers_call_with_args_and_assignment() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "add_one",
@@ -10068,7 +10336,7 @@ mod tests {
 
     #[test]
     fn rejects_call_arity_mismatch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "needs_one",
@@ -10105,7 +10373,7 @@ mod tests {
     fn lowers_void_call_in_expr_stmt() {
         // A void function called as a statement must produce
         // IrInst::Call { dst: None, return_ty: None } and pass validation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "do_nothing",
@@ -10155,7 +10423,7 @@ mod tests {
         // A void function that accepts arguments: args must be lowered and
         // matched against the parameter types, then emitted with dst: None.
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "sink",
@@ -10215,7 +10483,7 @@ mod tests {
 
     #[test]
     fn rejects_non_expr_call_arg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "takes_one",
@@ -10263,7 +10531,7 @@ mod tests {
         //
         //   fn get_val() -> i64 { 42 }
         //   fn use_val() -> i64 { get_val() }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "get_val",
@@ -10338,7 +10606,7 @@ mod tests {
                 rhs: Box::new(int_expr(2, SemanticType::I64)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "make_one",
@@ -10372,7 +10640,7 @@ mod tests {
         //
         //   fn add(a: i64, b: i64) -> i64 { 0 }
         //   let r: i64 = add(10, 20)
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "add",
@@ -10424,7 +10692,7 @@ mod tests {
     #[test]
     fn rejects_declared_but_never_assigned_binding_use() {
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::Decl {
                     binding,
@@ -10450,7 +10718,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::WhileIn {
                 label: None,
                 arr: "arr".to_string(),
@@ -10476,7 +10744,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement_inside_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad",
                 vec![],
@@ -10511,7 +10779,7 @@ mod tests {
     /// module with no functions at all, which the JIT then refused to link.)
     #[test]
     fn empty_program_lowers_to_an_empty_main() {
-        let module = lower_and_validate(&SemanticProgram {
+        let module = lower_and_validate(&SemanticProgram { unchecked_generics: None,
             stmts: vec![],
             enums: vec![],
         });
@@ -10528,7 +10796,7 @@ mod tests {
     /// same empty `main` beside its functions.
     #[test]
     fn definitions_only_program_gets_an_empty_main() {
-        let module = lower_and_validate(&SemanticProgram {
+        let module = lower_and_validate(&SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "id",
                 vec![typed_param(BindingId(10), "x", SemanticType::I64)],
@@ -10546,7 +10814,7 @@ mod tests {
     #[test]
     fn lowers_plain_assign_using_resolved_binding_target() {
         let binding = BindingId(3);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::Decl {
                     binding,
@@ -10582,7 +10850,7 @@ mod tests {
 
     #[test]
     fn bool_constants_lower_cleanly() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "flag",
@@ -10608,7 +10876,7 @@ mod tests {
     #[test]
     fn declared_but_never_assigned_binding_use_inside_function_is_rejected() {
         let binding = BindingId(50);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad_ref",
                 vec![],
@@ -10636,7 +10904,7 @@ mod tests {
     fn function_local_ssa_maps_do_not_leak_between_functions_and_main() {
         let function_binding = BindingId(60);
         let top_level_binding = BindingId(61);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "f",
@@ -10670,7 +10938,7 @@ mod tests {
     #[test]
     fn function_local_ssa_maps_do_not_leak_between_functions() {
         let shared_binding = BindingId(70);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "f",
@@ -10700,7 +10968,7 @@ mod tests {
 
     #[test]
     fn top_level_if_lowers_into_valid_multi_block_cfg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![typed_assign(
@@ -10727,7 +10995,7 @@ mod tests {
 
     #[test]
     fn top_level_if_else_lowers_and_validates() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![typed_assign(
@@ -10761,7 +11029,7 @@ mod tests {
 
     #[test]
     fn top_level_if_else_if_else_lowers_and_validates() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(false),
                 vec![typed_assign(
@@ -10802,7 +11070,7 @@ mod tests {
     fn function_body_if_else_lowers_and_validates() {
         let cond = BindingId(83);
         let out = BindingId(84);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "choose",
                 vec![typed_param(cond, "cond", SemanticType::Bool)],
@@ -10844,7 +11112,7 @@ mod tests {
     fn assignment_in_both_branches_merges_correctly() {
         let cond = BindingId(85);
         let x = BindingId(86);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
                 typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
@@ -10887,7 +11155,7 @@ mod tests {
     fn unchanged_bindings_across_branches_stay_valid_after_merge() {
         let cond = BindingId(87);
         let x = BindingId(88);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
                 typed_assign(x, "x", SemanticType::I64, int_expr(5, SemanticType::I64)),
@@ -10922,7 +11190,7 @@ mod tests {
     fn one_branch_assignment_merges_with_incoming_value() {
         let cond = BindingId(89);
         let x = BindingId(90);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
                 typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
@@ -10956,7 +11224,7 @@ mod tests {
     fn one_branch_returns_and_other_falls_through_lowers_correctly() {
         let cond = BindingId(91);
         let out = BindingId(92);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "branch_return",
                 vec![typed_param(cond, "cond", SemanticType::Bool)],
@@ -10993,7 +11261,7 @@ mod tests {
     #[test]
     fn both_branches_return_lowers_correctly_without_invalid_merge() {
         let cond = BindingId(93);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "both_return",
                 vec![typed_param(cond, "cond", SemanticType::Bool)],
@@ -11024,7 +11292,7 @@ mod tests {
     #[test]
     fn explicit_return_omits_dead_statements_and_trailing_value() {
         let dead = BindingId(97);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "early_return",
                 vec![],
@@ -11050,7 +11318,7 @@ mod tests {
         let cond_a = BindingId(94);
         let cond_b = BindingId(95);
         let x = BindingId(96);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond_a, "a", SemanticType::Bool, bool_expr(true)),
                 typed_assign(cond_b, "b", SemanticType::Bool, bool_expr(false)),
@@ -11100,7 +11368,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement_inside_if_branch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![SemanticStmt::WhileIn {
@@ -11131,7 +11399,7 @@ mod tests {
 
     #[test]
     fn lowers_simple_while_loop() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11169,7 +11437,7 @@ mod tests {
 
     #[test]
     fn lowers_while_inside_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "looper",
                 vec![],
@@ -11192,7 +11460,7 @@ mod tests {
 
     #[test]
     fn while_loop_header_has_block_params() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11228,7 +11496,7 @@ mod tests {
 
     #[test]
     fn lowers_simple_for_loop() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11248,7 +11516,7 @@ mod tests {
 
     #[test]
     fn lowers_inclusive_for_loop() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11266,7 +11534,7 @@ mod tests {
 
     #[test]
     fn lowers_for_with_break() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11284,7 +11552,7 @@ mod tests {
 
     #[test]
     fn lowers_for_with_continue() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11302,7 +11570,7 @@ mod tests {
 
     #[test]
     fn lowers_conditional_return_inside_while() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "looper",
                 vec![],
@@ -11330,7 +11598,7 @@ mod tests {
 
     #[test]
     fn lowers_unary_negate_int() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11357,7 +11625,7 @@ mod tests {
 
     #[test]
     fn lowers_unary_negate_float() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11379,7 +11647,7 @@ mod tests {
 
     #[test]
     fn lowers_unary_not_bool() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11406,7 +11674,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_unary_op() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11428,7 +11696,7 @@ mod tests {
 
     #[test]
     fn lowers_compound_assign_add() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11460,7 +11728,7 @@ mod tests {
 
     #[test]
     fn lowers_compound_assign_sub() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11489,7 +11757,7 @@ mod tests {
     fn rejects_compound_assign_dot_access_with_no_binding() {
         // binding: None means the semantic analyser failed to resolve the container —
         // lowering must reject this even though DotAccess is now otherwise supported.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::CompoundAssign {
                 target: SemanticLValue::DotAccess {
                     binding: None,
@@ -11509,7 +11777,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_semantic_type_inside_if_branch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![typed_assign(
@@ -11537,7 +11805,7 @@ mod tests {
 
     #[test]
     fn rejects_unresolved_artifact_inside_if_branch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![SemanticStmt::CompoundAssign {
@@ -11601,7 +11869,7 @@ mod tests {
     #[test]
     fn lowers_dot_access_first_field_emits_load_only() {
         // fn read_x(p: Point) -> i64 { p.x }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point_struct_def(),
                 semantic_function(
@@ -11645,7 +11913,7 @@ mod tests {
     #[test]
     fn lowers_dot_access_second_field_emits_ptr_offset_then_load() {
         // fn read_y(p: Point) -> i64 { p.y }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point_struct_def(),
                 semantic_function(
@@ -11692,7 +11960,7 @@ mod tests {
     fn lowers_dot_access_f64_field_produces_f64_load() {
         // struct Vec2 { dx: f64, dy: f64 }
         // fn get_dx(v: Vec2) -> f64 { v.dx }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::StructDef {
                     name: "Vec2".to_string(),
@@ -11738,7 +12006,7 @@ mod tests {
     // resolve the base pointer without a BindingId.
     #[test]
     fn rejects_dot_access_with_no_binding() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point_struct_def(),
                 SemanticStmt::ExprStmt {
@@ -11762,7 +12030,7 @@ mod tests {
     // Reject DotAccess when struct_name is empty (unknown container type).
     #[test]
     fn rejects_dot_access_with_unknown_struct_name() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
@@ -11783,7 +12051,7 @@ mod tests {
     // Reject DotAccess when the named struct does not exist in the program.
     #[test]
     fn rejects_dot_access_with_missing_struct_def() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
@@ -11927,7 +12195,7 @@ mod tests {
     #[test]
     fn aggregate_param_copy_is_governed_by_the_receiver_flag() {
         fn entry_alloca_count(param: SemanticParam) -> usize {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![semantic_function(
                     "takes_aggregate",
                     vec![param],
@@ -11969,7 +12237,7 @@ mod tests {
     #[test]
     fn lowers_array_lit_emits_alloca_ptr_offset_store() {
         let arr = array_lit_i64(vec![10, 20, 30]);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "arr",
@@ -12020,7 +12288,7 @@ mod tests {
     #[test]
     fn lowers_array_lit_numeric_elem_uses_default_int() {
         let arr = array_lit_numeric(vec![10, 20, 30]);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "arr",
@@ -12095,7 +12363,7 @@ mod tests {
             is_test: false,
             pos: 0,
         };
-        let program = crate::frontend::semantic_types::SemanticProgram {
+        let program = crate::frontend::semantic_types::SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::FuncDef(func)],
             enums: vec![],
         };
@@ -12117,7 +12385,7 @@ mod tests {
     fn lowers_index_emits_ptr_add_and_load() {
         // fn read_elem(arr: [3: i64]) -> i64 { arr[1] }
         let arr_binding = BindingId(0);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "read_elem",
                 vec![typed_param(
@@ -12170,7 +12438,7 @@ mod tests {
     #[test]
     fn lowers_index_zero_on_single_element_array() {
         let arr_binding = BindingId(0);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "read_only",
                 vec![typed_param(
@@ -12210,7 +12478,7 @@ mod tests {
     // ArrayLit rejects a zero-length array.
     #[test]
     fn rejects_array_lit_zero_length() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "arr",
@@ -12228,7 +12496,7 @@ mod tests {
     // Index lowering rejects a non-Array target type.
     #[test]
     fn rejects_index_on_non_array_target() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "v",
@@ -12269,7 +12537,7 @@ mod tests {
         // fn write_elem(arr: [3: i64]) { arr:[1] = 99 }
         let arr_binding = BindingId(0);
         let arr_ty = SemanticType::Array(3, Box::new(SemanticType::I64));
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "write_elem",
                 vec![typed_param(arr_binding, "arr", arr_ty.clone())],
@@ -12330,7 +12598,7 @@ mod tests {
         // fn compound_write(arr: [2: i64]) { arr:[0] += 5 }
         let arr_binding = BindingId(0);
         let arr_ty = SemanticType::Array(2, Box::new(SemanticType::I64));
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "compound_write",
                 vec![typed_param(arr_binding, "arr", arr_ty.clone())],
@@ -12387,7 +12655,7 @@ mod tests {
     #[test]
     fn rejects_array_element_write_on_non_array_target() {
         // Assign to SemanticLValue::Index where target is not an array type.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad_write",
                 vec![],
@@ -12416,7 +12684,7 @@ mod tests {
     // error remains structured and named, not a generic placeholder.
     #[test]
     fn method_call_produces_named_structured_error() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "v",
@@ -12474,7 +12742,7 @@ mod tests {
     }
 
     fn assert_builtin_structured_error(name: &str) {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(name, vec![])],
             enums: vec![],
         };
@@ -12494,7 +12762,7 @@ mod tests {
     fn rejects_user_function_named_cx_printn() {
         // lower_program_inner derives reserved C-ABI names from validate::runtime_intrinsic_names();
         // a user function named "cx_printn" must be rejected regardless of the hardcoded list.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function("cx_printn", vec![], None, vec![], None)],
             enums: vec![],
         };
@@ -12513,7 +12781,7 @@ mod tests {
     #[test]
     fn print_i64_lowers_to_cx_printn_call() {
         // print(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "print",
                 vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
@@ -12543,7 +12811,7 @@ mod tests {
     #[test]
     fn println_i64_lowers_to_cx_printn_call() {
         // println(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "println",
                 vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
@@ -12576,7 +12844,7 @@ mod tests {
         // cx_print_newline (f64 was previously the still-unsupported set's first
         // member; I8/I16/I32 still sign-extend to I64; Bool/TBool route to
         // cx_print_bool).
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "print",
                 vec![SemanticCallArg::Expr(float_expr(3.14))],
@@ -12612,7 +12880,7 @@ mod tests {
         // newline — "inline print (no newline)", cx_syntax.md §5. This test
         // used to pin `cx_printn`, `print`'s line-ending printer, which is what
         // made compiled `printn(5)` end the line (known_issues, printing parity recovery).
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "printn",
                 vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
@@ -12647,7 +12915,7 @@ mod tests {
         // printn takes every value print takes, without the newline. This test
         // used to assert that an f64 was refused — there was no inline f64
         // printer then; cx_print_f64_inline exists, and print uses it.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "printn",
                 vec![SemanticCallArg::Expr(float_expr(3.14))],
@@ -12678,7 +12946,7 @@ mod tests {
                 SemanticType::Struct("Pair".to_string()),
                 SemanticType::Array(2, Box::new(SemanticType::I64)),
             ] {
-                let program = SemanticProgram {
+                let program = SemanticProgram { unchecked_generics: None,
                     stmts: vec![
                         SemanticStmt::StructDef {
                             name: "Pair".to_string(), type_params: vec![],
@@ -12703,7 +12971,7 @@ mod tests {
     #[test]
     fn string_parameter_interpolation_passes_ir_validation() {
         for builtin in ["print", "println", "printn"] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![semantic_function("show", vec![typed_param(BindingId(1), "value", SemanticType::Str)], None,
                     vec![builtin_stmt(builtin, vec![SemanticCallArg::Expr(SemanticExpr {
                         ty: SemanticType::Str,
@@ -12719,7 +12987,7 @@ mod tests {
     fn later_string_assignment_does_not_authorize_aggregate_interpolation() {
         let array_ty = SemanticType::Array(2, Box::new(SemanticType::I64));
         let target = SemanticLValue::Binding { binding: BindingId(2), name: "x".to_string(), ty: SemanticType::Unknown };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function("show", vec![typed_param(BindingId(1), "value", array_ty.clone())], None,
                 vec![
                     SemanticStmt::Decl { binding: BindingId(2), name: "x".to_string(), ty: None, pos: 0 },
@@ -12743,7 +13011,7 @@ mod tests {
     #[test]
     fn unknown_bool_printing_passes_ir_validation() {
         for builtin in ["print", "println", "printn"] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "b", SemanticType::Bool, SemanticExpr {
                         ty: SemanticType::Unknown,
@@ -12764,7 +13032,7 @@ mod tests {
     #[test]
     fn assert_true_lowers_to_validated_multi_block_cfg() {
         // assert(true) → Branch on Bool 1 (pass) / Trap (fail, never taken)
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt("assert", vec![SemanticCallArg::Expr(bool_expr(true))])],
             enums: vec![],
         };
@@ -12786,7 +13054,7 @@ mod tests {
     #[test]
     fn assert_integer_one_lowers_via_truthy_coercion() {
         // assert(1) → Compare(Ne, 1, 0) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert",
                 vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I64))],
@@ -12811,7 +13079,7 @@ mod tests {
     #[test]
     fn assert_eq_same_integers_lowers_to_validated_cfg() {
         // assert_eq(1, 1) → Compare(Eq) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -12838,7 +13106,7 @@ mod tests {
     #[test]
     fn assert_eq_bool_true_true_lowers_to_validated_cfg() {
         // assert_eq(true, true) → Compare(Eq, Bool, Bool) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -12859,7 +13127,7 @@ mod tests {
     #[test]
     fn assert_i128_nonzero_lowers_via_truthy_coercion() {
         // assert(1_i128) → Compare(Ne, 1_i128, 0_i128) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert",
                 vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I128))],
@@ -12883,7 +13151,7 @@ mod tests {
     #[test]
     fn assert_eq_same_i128_lowers_to_validated_cfg() {
         // assert_eq(1_i128, 1_i128) → Compare(Eq) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -12910,7 +13178,7 @@ mod tests {
     #[test]
     fn assert_with_wrong_arity_produces_invariant_violation() {
         // assert() with 0 args → InternalInvariantViolation (arity check)
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt("assert", vec![])],
             enums: vec![],
         };
@@ -12925,7 +13193,7 @@ mod tests {
     #[test]
     fn assert_eq_with_wrong_arity_produces_invariant_violation() {
         // assert_eq() with 0 args → InternalInvariantViolation
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt("assert_eq", vec![])],
             enums: vec![],
         };
@@ -12958,7 +13226,7 @@ mod tests {
                 rhs: Box::new(int_expr(1, SemanticType::Numeric)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -13032,7 +13300,7 @@ mod tests {
     fn numeric_literal_lowers_to_target_default_int_type() {
         // A Numeric-typed literal with an I64 binding should lower cleanly to
         // ConstInt(I64) on the host (64-bit) target.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13053,7 +13321,7 @@ mod tests {
         // A Numeric-typed literal whose value exceeds i64::MAX should be
         // rejected on a 64-bit host target.
         let out_of_range: i128 = i64::MAX as i128 + 1;
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13075,7 +13343,7 @@ mod tests {
         // A Cast with from=Numeric should lower the literal directly at the
         // cast destination type (I32), emitting ConstInt(I32) without an
         // intermediate I64 → I32 cast instruction.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13107,7 +13375,7 @@ mod tests {
         // A Numeric literal that exceeds i32::MAX must be rejected when cast to
         // I32, even though it would pass the default I64 range check.
         let too_large: i128 = i32::MAX as i128 + 1;
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13137,7 +13405,7 @@ mod tests {
         // Expected IR: ConstInt(I64, 42) followed by Cast(I64 → F64).
         // The fast path would wrongly emit ConstInt(F64, 42), which the IR
         // validator rejects because ConstInt requires an integer or bool type.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13174,7 +13442,7 @@ mod tests {
             (SemanticType::I128, SemanticType::F64, int_expr(1000, SemanticType::I128)),
             (SemanticType::F64, SemanticType::I128, float_expr(2.5)),
         ] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![typed_assign(
                     BindingId(1),
                     "x",
@@ -13228,7 +13496,7 @@ mod tests {
 
     #[test]
     fn lowers_logical_and_to_short_circuit_cfg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13259,7 +13527,7 @@ mod tests {
 
     #[test]
     fn lowers_logical_or_to_short_circuit_cfg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13288,7 +13556,7 @@ mod tests {
 
     #[test]
     fn logical_and_result_is_bool() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13304,7 +13572,7 @@ mod tests {
 
     #[test]
     fn logical_or_result_is_bool() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13321,7 +13589,7 @@ mod tests {
         // (true && false) || true
         let inner = logical_and_expr(bool_expr(true), bool_expr(false));
         let outer = logical_or_expr(inner, bool_expr(true));
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(0), "x", SemanticType::Bool, outer)],
             enums: vec![],
         };
@@ -13331,7 +13599,7 @@ mod tests {
     #[test]
     fn logical_and_used_as_if_condition_lowers_correctly() {
         // if true && false { } else { }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::IfElse {
                 condition: logical_and_expr(bool_expr(true), bool_expr(false)),
                 then_body: vec![],
@@ -13357,7 +13625,7 @@ mod tests {
                 rhs: Box::new(bool_expr(false)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
             enums: vec![],
         };
@@ -13378,7 +13646,7 @@ mod tests {
                 rhs: Box::new(bool_expr(true)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
             enums: vec![],
         };
@@ -13414,7 +13682,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13475,7 +13743,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13557,7 +13825,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13621,7 +13889,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13694,7 +13962,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "lhs_cond_fn",
@@ -13790,7 +14058,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "lhs_cond_fn",
@@ -13876,7 +14144,7 @@ mod tests {
             variants: vec![],
             groups: vec![],
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
             enums: vec![color(0), color(1)],
         };
@@ -13910,7 +14178,7 @@ mod tests {
                     rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::F64)),
                 },
             };
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "a", SemanticType::F64, float_expr(1.0)),
                     // Non-zero, so the only 0.0 constant is the guard's own.
@@ -13946,7 +14214,7 @@ mod tests {
     #[test]
     fn compound_division_traps_on_a_zero_divisor() {
         for op in [Op::Div, Op::Mod] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(5, SemanticType::I64)),
                     typed_assign(BindingId(2), "y", SemanticType::I64, int_expr(0, SemanticType::I64)),
@@ -13982,7 +14250,7 @@ mod tests {
                     rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::I128)),
                 },
             };
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "a", SemanticType::I128, int_expr(7, SemanticType::I128)),
                     typed_assign(BindingId(2), "b", SemanticType::I128, int_expr(2, SemanticType::I128)),
@@ -14033,7 +14301,7 @@ mod tests {
             fields: fields.into_iter().map(|(f, ty)| (f.to_string(), ty)).collect(),
             pos: 0,
         };
-        let differing = SemanticProgram {
+        let differing = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point(vec![("x", SemanticType::I32), ("y", SemanticType::I32)]),
                 point(vec![("x", SemanticType::I64), ("y", SemanticType::I8)]),
@@ -14047,7 +14315,7 @@ mod tests {
             ),
             other => panic!("expected an unsupported-construct refusal, got {other:?}"),
         }
-        let reordered = SemanticProgram {
+        let reordered = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point(vec![("x", SemanticType::I32), ("y", SemanticType::I32)]),
                 point(vec![("y", SemanticType::I32), ("x", SemanticType::I32)]),
@@ -14076,7 +14344,7 @@ mod tests {
                 .collect(),
             groups: vec![],
         };
-        let program = |count| SemanticProgram {
+        let program = |count| SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
             enums: vec![big(count)],
         };
@@ -14115,7 +14383,13 @@ mod imported_generic_tests {
             entry, files, topo_order: vec![lib, entry],
             edges: vec![resolver::ImportEdge { importer: entry, importee: lib, alias: "lib".into(), pos: 0 }],
         };
-        let analyzed = semantic::analyze_resolved_program(&resolved).expect("imported call analyzes");
+        // Analysis rejects this call: the function converts its `T` value
+        // to a t8, and `T` is an enum here (known-issues §81).
+        let rejected = semantic::analyze_resolved_program(&resolved).expect_err("an enum is not a number");
+        assert!(rejected[0].msg.contains("Mode is not t8"), "{rejected:?}");
+        // Compiled code's own refusal stands behind it.
+        let analyzed = crate::frontend::generic_scope::unchecked(|| semantic::analyze_resolved_program(&resolved))
+            .expect("imported call analyzes without the generic rule");
         let error = lower_program(&analyzed).expect_err("enum representation is not a number");
         assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
             if construct.contains("enum identity in cast: expected t8, got Mode")), "{error:?}");
@@ -14133,6 +14407,17 @@ mod module_state_tests {
             program: resolver::parse_source(src).expect("parses"), imports: vec![] };
         let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
         semantic::analyze_resolved_program(&resolved).expect("analysis succeeds")
+    }
+
+    /// The analysis errors of a program, joined.
+    fn rejected(src: &str) -> String {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "module_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        semantic::analyze_resolved_program(&resolved)
+            .expect_err("analysis rejects this program")
+            .iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join("\n")
     }
 
     fn from_source(src: &str) -> IrModule {
@@ -14204,11 +14489,17 @@ mod module_state_tests {
         assert!(getter.blocks.iter().flat_map(|b| &b.insts).any(|i| matches!(i, IrInst::Load { ty: IrType::I8, .. })));
     }
 
+    /// A value of another type must not reach a `Phase` variable through a
+    /// generic function. Analysis rejects each of these programs at the call
+    /// that gives `T` the other type (known-issues §81); compiled code's own
+    /// refusal, which was the only line before, stands behind it.
     #[test]
     fn specialized_module_enum_stores_preserve_semantic_identity() {
-        for argument in ["n", "Other::Second"] {
+        let unchecked = |src: &str| crate::frontend::generic_scope::unchecked(|| analyzed(src));
+        for (argument, given) in [("n", "t8"), ("Other::Second", "Other")] {
             let source = format!("enum Phase {{ Idle, Active }}\nenum Other {{ First, Second }}\nphase: Phase = Phase::Idle\nfnc: t64 <T> set_phase(value: T) {{ phase = value; 0 }}\nn: t8 = 1\nprint(set_phase({argument}))\n");
-            let error = lower_program(&analyzed(&source)).expect_err("same-byte representation does not make an enum assignment valid");
+            assert!(rejected(&source).contains(&format!("{given} is not Phase")), "{argument}: {}", rejected(&source));
+            let error = lower_program(&unchecked(&source)).expect_err("same-byte representation does not make an enum assignment valid");
             assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
                 if construct.contains("enum identity") && construct.contains("expected Phase")), "{error:?}");
         }
@@ -14221,7 +14512,9 @@ mod module_state_tests {
             include_str!("../tests/verification_matrix/t_module_enum_generic_struct_reject.cx"),
             include_str!("../tests/verification_matrix/t_module_enum_generic_array_reject.cx"),
         ] {
-            let error = lower_program(&analyzed(source)).expect_err("typed boundaries cannot disguise an incompatible enum value");
+            let reason = rejected(source);
+            assert!(reason.contains("t8 is not Phase") || reason.contains("expected T, got t8"), "{reason}");
+            let error = lower_program(&unchecked(source)).expect_err("typed boundaries cannot disguise an incompatible enum value");
             assert!(matches!(error, LoweringError::UnsupportedSemanticConstruct { ref construct }
                 if construct.contains("enum identity") && construct.contains("expected Phase")), "{error:?}");
         }
@@ -14267,6 +14560,62 @@ mod divergence_shape_tests {
         let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
         let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape");
         lower_program(&analyzed).expect_err("compiled code must refuse this shape")
+    }
+
+    /// What compiled code does with a program analysis now rejects in a
+    /// generic body (known-issues §81) — its own refusal, the second line.
+    fn lowering_error_without_the_generic_rule(src: &str) -> LoweringError {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let analyzed = crate::frontend::generic_scope::unchecked(|| semantic::analyze_resolved_program(&resolved))
+            .expect("analysis without the generic rule accepts this shape");
+        lower_program(&analyzed).expect_err("compiled code must refuse this shape")
+    }
+
+    /// The analysis errors of a program, joined.
+    fn analysis_error(src: &str) -> String {
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "shape_test.cx".into(),
+            program: resolver::parse_source(src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        semantic::analyze_resolved_program(&resolved)
+            .expect_err("analysis rejects this shape")
+            .iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join("\n")
+    }
+
+    /// A number literal beside a `T` element in an array literal is an
+    /// element of that `[N: T]`, for the calls whose `T` it fits. Analysis
+    /// rejects a call it does not fit (known-issues §81); behind it, when the
+    /// function is specialised, compiled code refuses the literal rather than
+    /// narrow it on its way into the array (§78). One that fits is lowered.
+    #[test]
+    fn a_literal_array_element_that_does_not_fit_its_generic_type_is_refused() {
+        let generic = |literal: &str, arg: &str| {
+            format!("fnc: T <T> second(x: T) {{\n    c: [2: T] = [x, {literal}]\n    return c:[1]\n}}\n{arg}\nprint(second(a))")
+        };
+        for (literal, arg) in [
+            ("349", "a: t8 = 5"),
+            ("-200", "a: t8 = 5"),
+            ("40000", "a: t16 = 5"),
+            ("349", "a: bool = false"),
+            ("2.5", "a: t64 = 5"),
+        ] {
+            let rejected = analysis_error(&generic(literal, arg));
+            assert!(rejected.contains("writes a number literal as an element of a T array"), "{literal} beside {arg}: {rejected}");
+            let error = format!("{:?}", lowering_error_without_the_generic_rule(&generic(literal, arg)));
+            assert!(error.contains("a number literal in an array literal"), "{literal} beside {arg}: {error}");
+        }
+        let nested = "fnc: T <T> inner(x: T) {\n    g: [2: [2: T]] = [[x, 900], [8, x]]\n    return g:[1]:[0]\n}\na: t8 = 5\nprint(inner(a))";
+        assert!(analysis_error(nested).contains("900 does not fit t8"), "{}", analysis_error(nested));
+        assert!(format!("{:?}", lowering_error_without_the_generic_rule(nested)).contains("a number literal in an array literal"));
+        // A whole number beside an f64 `T` is rejected by analysis: the
+        // interpreter cannot make it a float (compiled code can).
+        assert!(analysis_error(&generic("7", "a: f64 = 1.5")).contains("7 is a whole number and T is f64 here"));
+        for (literal, arg) in [("34", "a: t8 = 5"), ("-128", "a: t8 = 5"), ("349", "a: t64 = 5"), ("2.5", "a: f64 = 1.5")] {
+            lowered(&generic(literal, arg));
+        }
     }
 
     fn function<'a>(ir: &'a IrModule, name: &str) -> &'a IrFunction {
@@ -14767,11 +15116,10 @@ mod divergence_shape_tests {
     /// whole number, never a narrower one — `?` would cut the number down.
     ///
     /// Since §75 analysis rejects a narrowing wherever both types are written,
-    /// so these programs reach lowering by the one route analysis still lets
-    /// through: a generic body, which it does not check against its type
-    /// parameter (§74). `conv` is declared to return a `Result<t8>` and
-    /// returns its `T`. Compiled code's own check is the second line, and
-    /// this pins that it is still there.
+    /// and since §81 through a generic body too: `conv` is declared to return
+    /// a `Result<t8>` and returns its `T`, which each call is checked for.
+    /// Compiled code's own check is the second line, and this pins that it is
+    /// still there, by analyzing without that rule.
     #[test]
     fn a_result_is_not_read_at_a_narrower_integer_type() {
         let conv = "fnc: Result<t8> <T> conv(x: T) { return x }\n";
@@ -14784,7 +15132,9 @@ mod divergence_shape_tests {
             // A constant expression is a t64.
             "print(conv(Ok(100 + 28)))\n",
         ] {
-            let err = format!("{}", lowering_error(&format!("{conv}{narrowing}")));
+            let rejected = analysis_error(&format!("{conv}{narrowing}"));
+            assert!(rejected.contains("is not Result<t8>"), "{narrowing}: {rejected}");
+            let err = format!("{}", lowering_error_without_the_generic_rule(&format!("{conv}{narrowing}")));
             assert!(err.contains("Result"), "{narrowing}: {err}");
         }
         for fine in [
@@ -14834,9 +15184,10 @@ mod divergence_shape_tests {
     /// declared kind is refused; it used to be taken on trust, and `Ok(5)`
     /// was read as a string.
     ///
-    /// Since §75 analysis keeps an `Ok` out of such a value everywhere but in
-    /// a generic body (§74): `launder` is declared to return its `T` and
-    /// returns an `Ok(5)`. That is the route used here.
+    /// Since §75 analysis keeps an `Ok` out of such a value, and since §81 in
+    /// a generic body too: `launder` is declared to return its `T` and
+    /// returns an `Ok(5)`, which is rejected. That route is used here, by
+    /// analyzing without that rule, to pin compiled code's own check.
     #[test]
     fn a_result_no_declaration_vouches_for_is_refused_where_a_kind_is_declared() {
         let prelude = "fnc: T <T> id(x: T) { return x }\n\
@@ -14852,7 +15203,8 @@ mod divergence_shape_tests {
             "t: Result<str> = swap(e, e)\n print(t)\n",
         ] {
             let src = format!("{prelude}fnc: t64 run(c: bool) {{\n {holds_a_number} {body} return 0\n}}\nprint(run(true))\n");
-            let err = format!("{}", lowering_error(&src));
+            assert!(analysis_error(&src).contains("expected T, got Result<integer>"), "{body}: {}", analysis_error(&src));
+            let err = format!("{}", lowering_error_without_the_generic_rule(&src));
             assert!(err.contains("not proven"), "{body}: {err}");
         }
     }

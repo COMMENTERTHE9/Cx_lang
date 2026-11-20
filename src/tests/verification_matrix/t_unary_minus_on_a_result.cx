@@ -1,4 +1,6 @@
-// `-r` on a Result is an error, not a number.
+// `-r` on a Result is an error, not a number. Analysis rejects it, as it
+// rejects unary minus on anything that is not a number (known-issues §82 g);
+// before, the interpreter stopped at run time and compiled code refused.
 a: Result<t64> = Ok(1)
 print("before")
 print(-a)

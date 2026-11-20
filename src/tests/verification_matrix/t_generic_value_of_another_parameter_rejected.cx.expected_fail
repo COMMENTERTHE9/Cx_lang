@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A T value where U is declared: two type parameters are two types.

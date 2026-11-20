@@ -1,0 +1,6 @@
+// `pick(5, x)`: the literal makes `pick`'s type parameter a number, and then
+// it is given `x`, a `T` — which is not converted. The interpreter used to
+// return 2.5 from what the call made a `pick<t64>`; compiled code refused.
+fnc: T <T> pick(a: T, b: T) { return b }
+fnc: f64 <T> f(x: T) { return pick(5, x) }
+print(f(2.5))

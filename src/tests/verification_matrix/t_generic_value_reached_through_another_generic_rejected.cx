@@ -1,0 +1,10 @@
+// The check follows a call through the generic functions it reaches: `k`
+// gives its second type parameter to `h`, which gives it to `g`.
+fnc: t64 <T> g(x: T) {
+    n: t64 = x
+    return n
+}
+fnc: t64 <T> h(x: T) { return g(x) }
+fnc: t64 <T, U> k(x: T, y: U) { return h(y) }
+print(k("s", 5))
+print(k(5, "s"))

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A number literal beside T elements in a call whose T is a string.

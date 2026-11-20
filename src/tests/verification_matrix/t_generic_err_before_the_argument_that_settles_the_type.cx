@@ -1,0 +1,17 @@
+// An `Err(..)` given before the argument that settles a type parameter
+// inside a parameter's type — `pick(a: Result<T>, b: Result<T>)` — says
+// nothing about the payload; the later argument settles it. This was
+// rejected at top level, and inside a generic function once its own `T` was
+// checked; both run now, on both backends.
+fnc: Result<T> <T> pick(a: Result<T>, b: Result<T>) { return b }
+fnc: Result<T> <T> f(x: T) { return pick(Err("e"), Ok(x)) }
+print(f(2))
+fnc: Result<T> <T> g(x: T) { return pick(Ok(x), Err("e")) }
+print(g(3))
+r: Result<t64> = pick(Err("e"), Ok(4))
+print(r)
+s: Result<str> = f("s")
+print(s)
+fnc: T <T> pick2(a: T, b: T) { return b }
+fnc: Result<T> <T> h(x: T) { return pick2(Err("e"), Ok(x)) }
+print(h(5))

@@ -11,7 +11,10 @@ left to right, the callee works on its local value, and every return writes the
 final value back through the slot. `.copy.free` remains deprecated and passes an
 isolated value. Aggregate value arguments are copied when evaluated so that a
 later argument's method call cannot mutate an earlier argument. Method receiver
-parameters retain their established mutation behavior.
+parameters retain their established mutation behavior, as
+`docs/backend/cx_value_and_alias_semantics.md` (rule V2) now states it: a
+struct or array receiver given a variable by name is that variable, and
+nothing else is.
 
 `copy_into` creates a private struct layout from the ordered field names and
 their concrete types. Reads and local writes use ordinary inline aggregate

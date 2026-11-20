@@ -107,6 +107,16 @@ pub struct RunTime {
     /// harness's SKIP sentinel, so an interpreter death was shaped exactly like
     /// an unsupported construct.
     pub(crate) call_depth: usize,
+    /// The variables that are, right now, receivers of a method that has not
+    /// returned: the frame each lives in and its binding. A struct or array
+    /// receiver given a variable by name is that variable, and until the
+    /// method returns the variable may be reached only through the receiver
+    /// (amendment V5). Every read and write in `scope.rs` checks against this
+    /// list; it is empty outside method calls and a few entries long inside.
+    ///
+    /// Frame and binding together, because a binding alone is not one
+    /// variable: a recursive function has one binding and a frame per call.
+    pub(crate) lent_receivers: Vec<(usize, BindingId)>,
 }
 
 /// Maximum Cx call depth before the interpreter refuses rather than crashing.
@@ -181,6 +191,7 @@ impl RunTime {
             lexical_names: None,
             name_frames: vec![],
             call_depth: 0,
+            lent_receivers: Vec::new(),
         }
     }
 }

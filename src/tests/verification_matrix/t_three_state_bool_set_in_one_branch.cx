@@ -1,0 +1,37 @@
+// A bool that is three-state on one path and definite on another is
+// three-state after the paths meet. Compiled code keeps the two in different
+// representations and used to refuse the program at the merge, in a
+// statement `if`/`when` and (since the value merge carries variables) in a
+// function's trailing `if`/`else`.
+fnc: t64 after_if(c: bool) {
+    b: bool = ?
+    if c {
+        b = true
+    }
+    return when b { true => 1, false => 2, unknown => 3 }
+}
+fnc: t64 after_when(k: t64) {
+    b: bool = ?
+    when k {
+        1 => { b = true },
+        2 => { b = false },
+        _ => {},
+    }
+    return when b { true => 1, false => 2, unknown => 3 }
+}
+fnc: t64 trailing(c: bool) {
+    b: bool = ?
+    if c {
+        b = true
+        1
+    } else {
+        2
+    }
+}
+print(after_if(true))
+print(after_if(false))
+print(after_when(1))
+print(after_when(2))
+print(after_when(3))
+print(trailing(true))
+print(trailing(false))

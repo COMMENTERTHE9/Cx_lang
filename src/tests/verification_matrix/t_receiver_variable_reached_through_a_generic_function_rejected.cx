@@ -1,0 +1,16 @@
+// A method call on a value of a type parameter is the method of the struct
+// the call gives that parameter. Here that is `V`, whose `touch` names `top`
+// — the variable `run` is running on. (A `touch` of another struct naming
+// `top` would not count: it is not the one reached.)
+struct V { x: t64 }
+gene G { fnc touch() -> t64 }
+top: V = V { x: 1 }
+phen G (v: V) { fnc: t64 touch() { return top.x } }
+fnc: t64 <T: G> call(t: T) { t.touch() }
+vm: impl (s: V) {
+    fnc: t64 run() {
+        s.x += 10
+        return call(s)
+    }
+}
+print(top.run())

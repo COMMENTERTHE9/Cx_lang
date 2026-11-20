@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A method that names the variable given for its further receiver: rejected by analysis.

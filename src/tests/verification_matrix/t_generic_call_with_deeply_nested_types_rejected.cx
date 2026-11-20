@@ -1,0 +1,12 @@
+// A call written with deeply nested types is checked like any other: the
+// first version stopped following types nested deeper than 24, and this call
+// (T = f64, 34 beside a T element) was not checked. The interpreter stopped at
+// run time; compiled code took exponential time to compile the array.
+fnc: T <T, U> f(x: T, u: U) {
+    c: [2: T] = [x, 34]
+    return c:[1]
+}
+deep: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: [1: t64]]]]]]]]]]]]]]]]]]]]]]]]] = [[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]
+h: f64 = 1.5
+y: f64 = f(h, deep)
+print(y)

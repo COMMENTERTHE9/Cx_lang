@@ -1,0 +1,11 @@
+// A number literal beside a `T` element is an element of that `[2: T]`. When
+// the function is called with a `t8`, 349 does not fit the element. Compiled
+// code used to narrow it on the way into the array and print 93, with exit 0,
+// where the interpreter printed 349 — not a `t8` either. The call is now an
+// analysis error on both backends (known-issues §78, §81).
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 349]
+    return c:[1]
+}
+a: t8 = 5
+print(second(a))

@@ -1,0 +1,7 @@
+// A value of the function's own `T` is not known to be a number, for `-x` as
+// for `x + 1`. Called with a t8 -128, the interpreter printed 128 and compiled
+// code -128, exit 0 on both; called with a bool or a string, the interpreter
+// stopped while compiled code printed `true` or crashed.
+fnc: T <T> neg(x: T) { return -x }
+a: t8 = -128
+print(neg(a))

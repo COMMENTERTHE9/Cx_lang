@@ -1,0 +1,41 @@
+// Reaching the variable *through the receiver* is the ordinary case, whatever
+// the receiver is called — including the name of the variable it is given,
+// which it then shadows. A method may call other methods on its receiver and
+// pass it as `.copy`; and a recursive function has one variable per call, so
+// a method on one call's local does not lock the next call's.
+struct V { x: t64 }
+top: V = V { x: 1 }
+fnc: t64 bump(v.copy: V) {
+    v.x += 5
+    return v.x
+}
+vm: impl (top: V) {
+    fnc: t64 run() {
+        top.x += 10
+        return top.x
+    }
+}
+vm2: impl (top: V) {
+    fnc: t64 twice() {
+        one: t64 = top.run()
+        return one + top.run() + bump(top.copy)
+    }
+}
+dm: impl (s: V) {
+    fnc: t64 depth(n: t64) {
+        s.x += 1
+        if n > 0 {
+            return walk(n - 1) + s.x
+        }
+        return s.x
+    }
+}
+fnc: t64 walk(n: t64) {
+    v: V = V { x: n * 100 }
+    return v.depth(n)
+}
+
+print(top.run())
+print(top.twice())
+print(top.x)
+print(walk(3))

@@ -1,2 +1,2 @@
 #! interp=diagnostic jit=trap
-A string is assigned to a local whose type parameter is a number here: type mismatch on the interpreter; compiled code refuses the program.
+A string reaches a local whose type parameter is a number here, through a generic struct's field: type mismatch on the interpreter at the assignment; compiled code refuses the program.

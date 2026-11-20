@@ -255,6 +255,15 @@ pub(crate) fn runtime_error_message(err: &RuntimeError) -> (String, usize) {
             format!("{}", msg),
             *pos,
         ),
+        RuntimeError::ReceiverInUse { pos, name } => (
+            format!(
+                "'{}' is in use as the receiver of a method that is still running — \
+                 while a method runs, its receiver's variable can be reached only \
+                 through the receiver, not by its own name",
+                name
+            ),
+            *pos,
+        ),
         RuntimeError::CallDepthExceeded { pos, function } => (
             format!(
                 "call depth limit reached in '{}' — {} nested calls, limit is {}. \

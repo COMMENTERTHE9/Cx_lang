@@ -1,0 +1,10 @@
+// A `T` local keeps its type: a string assigned to it afterwards is not a
+// `T`. (Checked at run time as well, for a value analysis cannot type:
+// t_generic_local_keeps_its_type.)
+fnc: T <T> id(x: T) {
+    y: T = x
+    print("declared")
+    y = "not a T"
+    return y
+}
+print(id(5))

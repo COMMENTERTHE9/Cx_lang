@@ -1,0 +1,7 @@
+// An array of numbers is not a `[2: T]`, whatever `T` is at a call.
+fnc: [2: T] <T> pair(x: T) {
+    n: t64 = 1
+    return [n, n]
+}
+xs: [2: t64] = pair(7)
+print(xs:[0])

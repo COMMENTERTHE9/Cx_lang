@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A string returned where T is declared: analysis rejects it on both backends, whatever T is at a call.

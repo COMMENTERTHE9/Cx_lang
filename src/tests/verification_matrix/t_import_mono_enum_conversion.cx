@@ -1,5 +1,6 @@
-// The interpreter passes the non-number through a generic numeric return;
-// native specialization must refuse its representation as a number.
+// `narrow` returns its `T` argument as a t8. Called with an enum, that is
+// not a number: the interpreter used to pass the enum through and print it;
+// native specialization refused. The call is now an analysis error.
 #![imports]
 lib: use "./t_import_mono_core"
 enum Mode { Idle, Active }

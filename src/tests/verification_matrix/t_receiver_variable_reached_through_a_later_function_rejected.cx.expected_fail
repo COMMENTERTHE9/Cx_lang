@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The method reaches its receiver's variable through a function defined after it.

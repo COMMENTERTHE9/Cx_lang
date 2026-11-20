@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The instance g reaches puts a whole-number literal beside an f64 T element.

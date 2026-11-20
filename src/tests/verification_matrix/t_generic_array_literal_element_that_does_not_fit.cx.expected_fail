@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+349 does not fit the t8 the function is called with: rejected at the call.

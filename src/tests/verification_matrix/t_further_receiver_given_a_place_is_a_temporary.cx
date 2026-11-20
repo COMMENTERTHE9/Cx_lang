@@ -1,0 +1,56 @@
+// A further receiver of a multi-receiver `impl` is its variable only when it
+// is given a variable by name. Given anything else — a field, an element, an
+// `if` value — it is bound to that expression's value: a temporary. The method
+// may change it, and the change reaches nothing. Compiled code used to pass
+// the field or element itself, so `p.mix(w.inner, 5)` changed `w.inner`
+// (1002 where the interpreter had 2).
+struct V { x: t64 }
+struct W { inner: V, k: t64 }
+struct K { n: t64 }
+struct H { items: [3: t64] }
+ops: impl (a: V, b: V) {
+    fnc: t64 mix(n: t64) {
+        a.x += n
+        b.x += 1000
+        return a.x + b.x
+    }
+}
+arr_ops: impl (a: K, b: [3: t64]) {
+    fnc: t64 bump() {
+        b:[1] += 50
+        a.n += 1
+        return b:[1]
+    }
+}
+
+p: V = V { x: 1 }
+q: V = V { x: 2 }
+w: W = W { inner: V { x: 2 }, k: 0 }
+arr: [2: V] = [V { x: 3 }, V { x: 4 }]
+
+// a field
+print(p.mix(w.inner, 5))
+wi: V = w.inner
+print(wi.x)
+// an element
+print(p.mix(arr:[0], 5))
+a0: V = arr:[0]
+print(a0.x)
+// an `if` value that yields a variable
+print(p.mix(if true { q } else { q }, 5))
+print(q.x)
+// a variable named directly is the variable
+print(p.mix(q, 5))
+print(q.x)
+print(p.x)
+
+// the same for an array receiver
+k: K = K { n: 0 }
+nums: [3: t64] = [0, 10, 20]
+h: H = H { items: [0, 10, 20] }
+print(k.bump(h.items))
+hi: [3: t64] = h.items
+print(hi:[1])
+print(k.bump(nums))
+print(nums:[1])
+print(k.n)

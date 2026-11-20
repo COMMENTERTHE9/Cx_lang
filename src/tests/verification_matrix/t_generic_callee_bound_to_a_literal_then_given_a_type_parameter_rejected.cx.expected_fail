@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A type parameter bound to a number literal is then given a value of the caller's type parameter.

@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+continue in a method body that has no loop: rejected by analysis (amendment V8).

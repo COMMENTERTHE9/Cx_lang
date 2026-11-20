@@ -1,0 +1,7 @@
+// A Result's payload is never converted. Returned as a `Result<t8>`, the
+// `Result<T>` of a call whose `T` is t64 held 300 on the interpreter;
+// compiled code refused.
+fnc: Result<t8> <T> conv(r: Result<T>) { return r }
+big: Result<t64> = Ok(300)
+x: Result<t8> = conv(big)
+print(x)

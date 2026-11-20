@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The method names its receiver's variable in a string after a block that declared a local of that name.

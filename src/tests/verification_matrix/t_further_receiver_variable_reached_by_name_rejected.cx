@@ -1,0 +1,13 @@
+// The same for a struct given by name for a further receiver: `merge` reads
+// `other` by its own name while `other` is also its second receiver.
+struct V { x: t64 }
+other: V = V { x: 2 }
+vm: impl (a: V, b: V) {
+    fnc: t64 merge() {
+        b.x += 100
+        return a.x + other.x
+    }
+}
+p: V = V { x: 1 }
+print(p.merge(other))
+print(other.x)

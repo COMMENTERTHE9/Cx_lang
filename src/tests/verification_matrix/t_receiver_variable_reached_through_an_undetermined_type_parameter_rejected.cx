@@ -1,0 +1,16 @@
+// `call` has a second type parameter that no argument binds, so which struct
+// its first one is cannot be read off the call. The receiver rule then takes
+// `t.touch()` to be every `touch` — one of which names `top`, the variable
+// `run` is called on. (It used to not follow the call at all.)
+struct V { x: t64 }
+gene G { fnc touch() -> t64 }
+top: V = V { x: 1 }
+phen G (v: V) { fnc: t64 touch() { return top.x } }
+fnc: t64 <T: G, U> call(t: T) { t.touch() }
+vm: impl (s: V) {
+    fnc: t64 run() {
+        s.x += 10
+        return call(s)
+    }
+}
+print(top.run())

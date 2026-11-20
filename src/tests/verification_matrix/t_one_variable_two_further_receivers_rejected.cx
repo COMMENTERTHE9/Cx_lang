@@ -1,0 +1,14 @@
+// The same variable for two further receivers of one call.
+struct V { x: t64 }
+vm: impl (a: V, b: V, c: V) {
+    fnc: t64 mix3(k: t64) {
+        a.x += 1
+        b.x += 100
+        c.x += 10000
+        return a.x + b.x + c.x + k
+    }
+}
+p: V = V { x: 1 }
+q: V = V { x: 2 }
+print(p.mix3(q, q, 5))
+print(q.x)

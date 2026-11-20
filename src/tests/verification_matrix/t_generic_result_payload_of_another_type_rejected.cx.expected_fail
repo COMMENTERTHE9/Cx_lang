@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+Ok(5) returned as a Result<T>.

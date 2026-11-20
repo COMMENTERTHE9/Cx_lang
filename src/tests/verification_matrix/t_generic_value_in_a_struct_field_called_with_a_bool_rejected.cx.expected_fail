@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The body gives a T value for a t64 field; the second call's T is a bool. Rejected at that call, before anything runs.

@@ -1,0 +1,13 @@
+// A loop label is visible in the function that declares the loop, not in a
+// function nested inside it: `f` is not inside `'outer`, it is called from it.
+i: t64 = 0
+'outer: while (i < 3) {
+    fnc: t64 f() {
+        break 'outer
+        return 1
+    }
+    i = i + 1
+    x: t64 = f()
+    print(i)
+}
+print("after")

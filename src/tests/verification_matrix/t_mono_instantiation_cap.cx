@@ -5,5 +5,5 @@
 // interpreter used to die here with a raw stack overflow at exit 127, and the
 // rejection-shape harness correctly refused to accept a crash as a diagnosis.
 // Now the interpreter diagnoses (call-depth guard) and the JIT SKIPs at the cap.
-fnc: T <T> g(x: T) { g([x]) }
+fnc: t64 <T> g(x: T) { g([x]) }
 print(g(1))

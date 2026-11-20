@@ -321,6 +321,16 @@ gene-dispatched operator must be a named variable: `v1 + v2` works;
 `(v1 + v2) + v3` is a clean, explicit error. This is an interim restriction,
 not a design position — it lifts when method receivers become expressions.
 
+**Amended 2026-11** (`docs/backend/cx_value_and_alias_semantics.md`, rule V3;
+owner decision of 2026-11-19). The restriction above was lifted earlier: any
+expression may be an operator's left operand. And an operator is no longer
+"the same method call" in one respect: its operands are **values**. `a + b`
+runs the method `a.add(b)` runs, on the value `a` had when it was evaluated;
+nothing the method does to its receiver or its parameter is written back to a
+variable, a field or an element. Only a method called by name — `a.add(b)` —
+runs on its receiver's variable. The dispatch itself (operator → gene method,
+no separate overloading syntax) is unchanged.
+
 ---
 
 ## Roadmap Placement (current, per merged master roadmap)

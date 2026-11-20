@@ -185,8 +185,9 @@ print(arr:[1])                 // 60 — the change is still there
 
 Three things can change an array while an index into it is being evaluated:
 passing the variable that holds it as `.copy`; calling a method on that
-variable; and passing that variable to a method as an argument, since a further
-alias of a multi-alias `impl` is an argument and is passed by reference. The
+variable; and passing that variable by name to a method as an argument, since
+a struct or array further alias of a multi-alias `impl` is an argument and is
+passed by reference. The
 interpreter gets the rule from holding the array's value. Compiled code holds
 the array's address, which is the same thing until one of those three appears
 in the index expression; when one does, it reads from a copy of the array taken
@@ -221,36 +222,33 @@ The same holds for each further alias of a multi-alias `impl` that is passed a
 variable holding a struct or an array, and for a change made by passing the
 receiver as `.copy` to a call in the argument list.
 
-A receiver that is an expression which is not a place — the left operand of a
-dispatched operator, `(a + b) + c` — is a temporary: it is evaluated first, as
-the left operand it is, and there is no variable for a change to be visible
-through.
+An operator is not a method call. `a + b` on a type with a user `+` runs that
+type's method, but its operands are **values**
+(`docs/backend/cx_value_and_alias_semantics.md`, V3): the left operand is read
+before the right one is evaluated, as the table above says for every `A + B` —
+whether it is a variable, a field, an element, or an `if`/`when` value yielding
+one — the method is given that value, and nothing the method does to it reaches
+a variable. What evaluating the right operand did to the left operand's
+variable stays done. Fixtures `t_operator_left_operand_before_right`,
+`t_operator_left_operand_is_a_place`, `t_operator_operands_are_values`,
+`t_operator_keeps_what_its_right_operand_did`.
 
-**Where this is not the whole story** (known-issues §69). Each of these is a
-case the rule above does not settle, or that one backend gets differently, and
-each predates this section except the first:
+**What a receiver is, exactly** is set out in
+`docs/backend/cx_value_and_alias_semantics.md` (rules V2, V4, V5), which
+settled the five cases this section used to list as open (known-issues §69,
+§76):
 
-- *An operator is not a method call.* `a + b` on a type with a user `+` runs
-  that type's method, but its left operand is an operand: it is read before the
-  right one is evaluated, as the table above says for every `A + B` — whether
-  the left operand is a variable, a field, an element, or an `if`/`when` value
-  yielding one. Both backends do this (fixtures
-  `t_operator_left_operand_before_right`, `t_operator_left_operand_is_a_place`).
-  What they do not agree on is what the left operand's *variable* holds
-  afterwards when the right operand changed it — whether an operator's operands
-  are values or aliases has not been decided.
-- *A further alias that is a number, bool or string* is passed by value from
-  its position in the argument list on both backends. They disagree about the
-  variable afterwards: the interpreter writes the alias back, compiled code
-  does not.
-- *An expression receiver or alias that is a place* — `ps:[0] + b`,
-  `p.mix(w.inner, 5)` — is a temporary on the interpreter and the place itself
-  in compiled code.
-- *The same variable as two aliases* — `p.mix(p, 5)` — is two copies on the
-  interpreter and one object in compiled code.
-- *Inside the method body* the interpreter works on a copy of the receiver and
-  stores it back at the end; "the variable itself" is true at entry and exit,
-  not in between.
+- A struct or array receiver given a variable **by name** is that variable. A
+  further receiver given anything else — a field, an element, an `if` value —
+  is a temporary.
+- A further receiver that is a number, bool, string, enum, handle or `Result`
+  is a value, read at its position in the argument list and not written back;
+  a method may not write one (held for the owner's confirmation).
+- One variable cannot be two receivers of the same call: `p.mix(p, 5)` is an
+  analysis error.
+- While a method runs, its receiver's variable is reached only through the
+  receiver; reaching it by its own name is a run-time error on the
+  interpreter and a refusal in compiled code.
 
 Fixtures: `t_method_receiver_changed_by_argument`,
 `t_method_scalar_alias_at_argument_position`.

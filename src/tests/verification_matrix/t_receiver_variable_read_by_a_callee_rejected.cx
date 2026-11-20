@@ -1,0 +1,14 @@
+// A read counts as much as a write. `grow` calls `factor`, which only reads
+// `scale` — but here `grow` is running on `scale` itself, and may have
+// changed it by the time `factor` looks. Called on any other variable the
+// same method is fine (`t_method_reaches_other_variables`).
+struct V { x: t64 }
+scale: V = V { x: 3 }
+fnc: t64 factor() { return scale.x }
+km: impl (v: V) {
+    fnc: t64 grow(by: t64) {
+        v.x += by
+        return v.x * factor()
+    }
+}
+print(scale.grow(1))

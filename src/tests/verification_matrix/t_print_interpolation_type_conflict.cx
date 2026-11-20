@@ -1,10 +1,11 @@
-// Generic bodies are not rechecked per instantiation. A later string value
-// must not authorize interpreting an earlier aggregate pointer as a string.
+// A variable that takes a `T` value is a `T`, and a string is not one. Before
+// analysis checked that, the string assignment in the branch that never runs
+// made compiled code's whole-function metadata read the array printed above
+// it as a string; it had to refuse the program.
 fnc: t32 <T> show(value: T) {
     let x;
     x = value
     printn("{x}")
-    // This branch is not executed; whole-function metadata still visits it.
     if false { x = "later" }
     0
 }

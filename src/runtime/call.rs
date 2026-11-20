@@ -299,25 +299,23 @@ impl RunTime {
 
     /// Invoke a method.
     ///
-    /// `receiver` is the already-evaluated receiver value when the caller has
-    /// one — an operator dispatched on a non-variable left operand, `(a + b) + c`
-    /// — and `None` when the receiver is the variable `instance`, which is then
-    /// resolved by name exactly as it always was.
+    /// `receiver` is the already-evaluated receiver value when the call is a
+    /// dispatched operator — `a + b`, `(a + b) + c`, `-a` — and `None` when it
+    /// is a written method call, whose receiver is the variable `instance`,
+    /// resolved by name.
     ///
-    /// That same distinction decides the write-back: a named receiver has its
-    /// mutations written back to its name, a temporary has none. Dropping it for
-    /// a temporary is not a lost mutation — a temporary has no name through
-    /// which one could be observed, so there is nothing to write back to.
-    ///
-    /// One function rather than two: the named path is the `None` arm and is
-    /// byte-for-byte the behaviour it had.
+    /// That same distinction decides the write-back. A written method call's
+    /// receiver is its variable: what the method did to it is written back to
+    /// that name. An operator's operand is a value, read where the operand
+    /// stands, before the right operand is evaluated; the method may change
+    /// its copy and nothing is written anywhere
+    /// (docs/backend/cx_value_and_alias_semantics.md, V2 and V3).
     pub(crate) fn call_semantic_method(
         &mut self,
         receiver: Option<Value>,
         instance: &str,
         method: &str,
         args: &[SemanticCallArg],
-        operator: bool,
         pos: usize,
     ) -> Result<Value, RuntimeError> {
         let is_temporary = receiver.is_some();
@@ -386,9 +384,9 @@ impl RunTime {
         // write-back below, overwrite it (known-issues §65).
         //
         // Not for a dispatched operator. Its receiver is the operator's left
-        // operand, and `A + B` evaluates A before B: the value read above,
-        // before the right operand was evaluated, is the one the method gets.
-        if !is_temporary && !operator {
+        // operand, and `A + B` evaluates A before B: the value the caller
+        // evaluated, before the right operand, is the one the method gets.
+        if !is_temporary {
             alias_vals[0].3 = self.get_var(instance, pos)?;
         }
         // The same for each further alias that names a variable and holds a
@@ -411,6 +409,27 @@ impl RunTime {
                 }
             }
         }
+
+        // The variables this call's receivers are, located while the caller's
+        // names still resolve: the receiver the call is made on, unless it is
+        // an operator's operand, and each further receiver that is a struct or
+        // an array given a variable by name. They are lent to the method for
+        // as long as its body runs — see `lent_receivers`.
+        let mut lent: Vec<(usize, BindingId)> = Vec::new();
+        if !is_temporary {
+            lent.extend(self.resolve_name(instance));
+        }
+        for i in 0..extra_alias_count {
+            if !matches!(alias_vals[i + 1].3, Value::Struct(..) | Value::Array(_)) {
+                continue;
+            }
+            if let Some(SemanticCallArg::Expr(e)) = args.get(i) {
+                if let SemanticExprKind::VarRef { name, .. } = &e.kind {
+                    lent.extend(self.resolve_name(name));
+                }
+            }
+        }
+        let lent_before = self.lent_receivers.len();
 
         // Push scope
         // known-issues §20: the method path recurses natively just as the free
@@ -442,6 +461,11 @@ impl RunTime {
             }
 
             self.lexical_names = Some(sem_func.lexical_names.clone());
+            // From here until the body has run, the receivers' variables are
+            // reached only through the receivers. Not earlier: binding a
+            // string parameter above expands its template with the caller's
+            // names, and that is still the caller evaluating an argument.
+            self.lent_receivers.extend(lent);
             // Run semantic body
             for stmt in &sem_func.body {
                 match self.run_semantic_stmt(stmt) {
@@ -463,6 +487,10 @@ impl RunTime {
                 Ok(Value::Num(0))
             }
         })();
+
+        // The body is done, however it ended: the receivers' variables are the
+        // caller's again, in time for the write-back below.
+        self.lent_receivers.truncate(lent_before);
 
         // Capture all alias mutations before popping scope
         let mut mutated_aliases: Vec<(String, Value)> = Vec::new();
@@ -488,6 +516,19 @@ impl RunTime {
                         let _ = self.set_var(instance.to_string(), mutated.clone(), pos);
                     }
                 } else if i <= extra_alias_count {
+                    // A further receiver is its variable only when it is a
+                    // struct or an array given by name. A number, bool,
+                    // string, enum, handle or Result receiver is a value:
+                    // nothing is written back (amendment V2 item 4). Writing
+                    // it back stored the value read at the receiver's position
+                    // over whatever a later argument had done to the variable
+                    // — `q.total(m, inc(m.copy))` left `m` at 5, where
+                    // compiled code had 12 (known-issues §69b). Analysis
+                    // rejects a method that writes such a receiver, so there
+                    // is never anything of the method's to lose.
+                    if !matches!(mutated, Value::Struct(..) | Value::Array(_)) {
+                        continue;
+                    }
                     // Get the original variable name from the leading arg
                     if let Some(SemanticCallArg::Expr(e)) = args.get(i - 1) {
                         if let SemanticExprKind::VarRef { name, .. } = &e.kind {

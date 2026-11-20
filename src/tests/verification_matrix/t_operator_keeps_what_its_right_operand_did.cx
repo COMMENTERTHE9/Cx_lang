@@ -1,0 +1,51 @@
+// `A + B` evaluates A, then B, and gives the method the value A had. What
+// evaluating B did to A's variable stays done: the interpreter used to store
+// the value it had read for A back into the variable afterwards, undoing it
+// (a.x was 1 here, where compiled code had 101).
+struct V { x: t64 }
+phen Add (v: V) {
+    fnc: V add(rhs: V) { V { x: v.x + rhs.x } }
+}
+vm: impl (v: V) {
+    fnc: V grow() {
+        v.x += 1000
+        return V { x: v.x }
+    }
+}
+fnc: V bumpv(v.copy: V) {
+    v.x += 100
+    return V { x: 1 }
+}
+
+a: V = V { x: 1 }
+r: V = a + bumpv(a.copy)
+print(r.x)
+print(a.x)
+
+b: V = V { x: 1 }
+q: V = b + b.grow()
+print(q.x)
+print(b.x)
+
+// the same through a field and an element
+struct W { inner: V, n: t64 }
+fnc: V bumpw(k.copy: W) {
+    t: V = k.inner
+    k.inner = V { x: t.x + 100 }
+    return V { x: 1 }
+}
+fnc: V bumpa(k.copy: [2: V]) {
+    t: V = k:[0]
+    k:[0] = V { x: t.x + 100 }
+    return V { x: 1 }
+}
+w: W = W { inner: V { x: 1 }, n: 0 }
+r1: V = w.inner + bumpw(w.copy)
+print(r1.x)
+wi: V = w.inner
+print(wi.x)
+ps: [2: V] = [V { x: 1 }, V { x: 2 }]
+r2: V = ps:[0] + bumpa(ps.copy)
+print(r2.x)
+p0: V = ps:[0]
+print(p0.x)

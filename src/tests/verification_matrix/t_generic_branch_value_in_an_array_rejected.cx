@@ -1,0 +1,10 @@
+// Every branch of an `if` used as a value in a generic function must have
+// the branches' type parameter: here the value is an element of a `[2: T]`,
+// so no declared type further out checked the second branch. The interpreter
+// used to put 300 in a `[2: t8]` and in a `[2: str]`; compiled code refused.
+fnc: [2: T] <T> f(c: bool, x: T) {
+    return [x, if c { x } else { 300 }]
+}
+a: t8 = 1
+xs: [2: t8] = f(false, a)
+print(xs:[1])

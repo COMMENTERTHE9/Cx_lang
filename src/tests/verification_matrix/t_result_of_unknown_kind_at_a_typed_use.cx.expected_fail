@@ -1,2 +1,2 @@
-#! interp=diagnostic jit=trap
-Ok(5) is not Ok("a"). Compiled code refuses the program: nothing declares what the laundered value holds, and it will not read the payload as a string on trust.
+#! interp=diagnostic jit=diagnostic
+Ok(5) returned where T is declared: rejected by analysis, before anything runs.

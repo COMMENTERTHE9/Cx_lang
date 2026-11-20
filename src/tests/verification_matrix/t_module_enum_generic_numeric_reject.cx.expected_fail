@@ -1,2 +1,3 @@
-Reference runtime rejects the incompatible enum assignment. Native lowering
-currently refuses the specialized store; an IR unit test pins that exact refusal.
+Analysis rejects the value of another type at the call that gives the type
+parameter that type (known-issues §81). Behind it the reference runtime rejects
+the assignment and native specialization refuses it; an IR unit test pins that.

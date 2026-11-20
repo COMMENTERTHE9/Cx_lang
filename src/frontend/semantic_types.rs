@@ -164,32 +164,34 @@ pub enum SemanticExprKind {
         args: Vec<SemanticCallArg>,
         instance_binding: BindingId,
         struct_name: String,
-        /// An expression receiver, for operator dispatch on a non-variable left
-        /// operand — `(a + b) + c`.
+        /// An expression receiver: the left (or only) operand of a dispatched
+        /// operator — `a + b`, `(a + b) + c`, `ps:[0] + b`, `-a`.
         ///
-        /// **Absent** is the ordinary case and means exactly what it always
-        /// meant: the receiver is the variable `instance`, resolved by name at
-        /// runtime, with the normal mutation write-back to that name.
+        /// **Absent** is a written method call, `x.m(..)`: the receiver is the
+        /// variable `instance`, resolved by name at runtime, and what the
+        /// method writes to it is written to that variable.
         ///
-        /// **Present** means the receiver is a temporary: evaluate this
-        /// expression in place and use its value, with **no write-back**. That
-        /// is not a lost mutation — a temporary has no name through which a
-        /// mutation could be observed, so there is nothing to write back to.
-        /// `instance`/`instance_binding` are not read in this case.
+        /// **Present** means the receiver is a value: evaluate this expression
+        /// in place and give the method the result, with **no write-back** —
+        /// also when the expression is just a variable's name. An operator's
+        /// operands are values (docs/backend/cx_value_and_alias_semantics.md,
+        /// V3). `instance` is then a label for diagnostics and
+        /// `instance_binding` is not read.
         ///
-        /// Only `try_operator_gene_dispatch` produces it. An ordinary
-        /// `a.method()` cannot have an expression receiver: the AST's
-        /// `MethodCall(String, ...)` is name-bound, and `(expr).method()` does
-        /// not parse.
+        /// Only `try_operator_gene_dispatch` produces it, and it always does.
+        /// An ordinary `a.method()` cannot have an expression receiver: the
+        /// AST's `MethodCall(String, ...)` is name-bound, and
+        /// `(expr).method()` does not parse.
         receiver_expr: Option<Box<SemanticExpr>>,
         /// This call is a dispatched operator — `a + b` on a type with a user
-        /// `+` — rather than `a.method(b)` as written.
+        /// `+` — rather than `a.method(b)` as written. Set exactly when
+        /// `receiver_expr` is present.
         ///
-        /// The difference is what the receiver is. A method's receiver is an
-        /// alias of its variable: the method runs on the variable as the
-        /// arguments left it. An operator's left operand is an operand:
-        /// `A + B` evaluates A, then B (docs/backend/cx_eval_order.md), so the
-        /// method must be given `a` as it was before `b` was evaluated.
+        /// The difference is what the receiver is. A method's receiver is its
+        /// variable: the method runs on the variable as the arguments left it.
+        /// An operator's left operand is an operand: `A + B` evaluates A, then
+        /// B (docs/backend/cx_eval_order.md), the method is given the value A
+        /// had, and nothing it does to that value reaches a variable.
         operator: bool,
         pos: usize,
     },
@@ -551,6 +553,12 @@ ExprStmt {
 pub struct SemanticProgram {
     pub stmts: Vec<SemanticStmt>,
     pub enums: Vec<SemanticEnum>,
+    /// Set when analysis did not check every instantiation of a generic
+    /// function the program reaches (its limit per function was met — see
+    /// `generic_scope::check_instantiations`): what was left unchecked.
+    /// Compiled code refuses such a program; the interpreter runs it with its
+    /// run-time checks.
+    pub unchecked_generics: Option<String>,
 }
 
 #[derive(Debug, Clone)]

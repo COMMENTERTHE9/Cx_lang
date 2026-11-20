@@ -1,14 +1,18 @@
 // A `T` local takes the type it is given, as a `T` parameter does, and keeps
-// it: giving it a value of another kind afterwards is refused. (Analysis
-// accepts this program — it does not check a concrete value against `T` —
-// so the interpreter stops at run time and compiled code refuses.)
+// it. Analysis rejects a value of another type where it can see one
+// (t_generic_local_given_another_type_rejected). It cannot see the type of a
+// generic struct's field — struct type arguments are not tracked — so here
+// the second line stands: the interpreter stops at the assignment, and
+// compiled code refuses the program.
 // This fixture also fails on a build without the generic-local fix, at the
 // declaration rather than at the assignment: what it guards against is a fix
 // that accepts any value for a `T` local, which the first attempt did.
-fnc: T <T> id(x: T) {
+struct Box<T> { v: T }
+fnc: T <T> id(x: T, b: Box) {
     y: T = x
     print("declared")
-    y = "not a T"
+    y = b.v
     return y
 }
-print(id(5))
+b: Box = Box { v: "not a T" }
+print(id(5, b))
