@@ -2556,7 +2556,9 @@ Expr::Unary(op, inner, pos) => {
                     }
                     semantic_arms.push(SemanticWhenArm { pattern, guard, body, pos: arm.pos });
                 }
-                check_generic_branches(&semantic_arms.iter().map(|arm| arm.body.as_slice()).collect::<Vec<_>>(), *pos)?;
+                if value_hint.is_none() {
+                    check_generic_branches(&semantic_arms.iter().map(|arm| arm.body.as_slice()).collect::<Vec<_>>(), *pos)?;
+                }
                 if !when_is_exhaustive(&semantic_arms, true, &semantic_match.ty) {
                     let reason = if when_is_exhaustive(&semantic_arms, true, &SemanticType::Bool) {
                         format!(
@@ -2593,7 +2595,9 @@ Expr::Unary(op, inner, pos) => {
                 if let Some(SemanticStmt::ExprStmt { expr, .. }) = then_semantic.last() {
                     result_ty = expr.ty.clone();
                 }
-                check_generic_branches(&[&then_semantic, &else_semantic], *pos)?;
+                if value_hint.is_none() {
+                    check_generic_branches(&[&then_semantic, &else_semantic], *pos)?;
+                }
                 Ok(SemanticExpr {
                     ty: result_ty,
                     kind: SemanticExprKind::If {
@@ -3350,16 +3354,16 @@ Expr::Unary(op, inner, pos) => {
                             // the two, nothing converts: `pick(5, x)` with
                             // `x: T` binds the callee's `T` to a number and
                             // then gives it a `T` (known-issues §81).
-                            let generic = mentions_own_type_param(existing) || mentions_own_type_param(&arg_ty);
-                            if generic && binds_alike(existing, &arg_ty) {
-                                // the same type
-                            } else if generic
-                                && matches!((existing, &arg_ty), (SemanticType::Result(_), SemanticType::Result(_)))
-                                && binds_alike(&arg_ty, existing)
-                            {
+                            if *existing == SemanticType::Unknown {
+                                // A `?` given first says nothing about `T`;
+                                // a later argument settles it.
                                 type_param_map.insert(tname.clone(), arg_ty);
-                            } else if generic {
-                                return Err(sem_err!(pos, "type parameter '{}' is bound to {} but argument {} has {}", tname, type_name(existing), index + 1, type_name(&arg_ty)));
+                            } else if mentions_numeric_literal_type(existing) && mentions_own_type_param(&arg_ty) {
+                                // An untyped number literal bound it, and a
+                                // `T` is not converted to that: `pick(5, x)`
+                                // returned the caller's `T` value unconverted
+                                // from what the call made a `pick<t64>`.
+                                return Err(sem_err!(pos, "type parameter '{}' of '{}' is bound to a number literal by an earlier argument, but argument {} is a value of type parameter {} — give the literal that type, or the value a declared one", tname, name, index + 1, type_name(&arg_ty)));
                             } else if types_compatible(existing, &arg_ty) {
                                 // fits what `T` is bound to
                             } else if matches!((existing, &arg_ty), (SemanticType::Result(_), SemanticType::Result(_)))
@@ -3599,6 +3603,7 @@ Expr::Unary(op, inner, pos) => {
         if !function.type_params.is_empty() {
             self.generic_calls.push(crate::frontend::generic_scope::GenericCall {
                 caller: self.current_function_id,
+                in_generic: crate::frontend::generic_scope::inside_generic(),
                 callee: function.id,
                 bindings: function
                     .type_params
@@ -4152,13 +4157,16 @@ fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: u
     Ok(())
 }
 
-/// The branches of an `if` or `when` used as a value, in a generic function:
-/// where one yields a value of the function's own type parameter `T` (or an
-/// array or `Result` of it), every other must yield that type too. The value
-/// is typed by its first branch, and only a declared type further out was
-/// checked against each branch (`check_branch_tail_fits`); as an array
-/// element or the value of an untyped `let`, `if c { x } else { 300 }` put
-/// 300 where `T` was a t8 or a string (known-issues §81).
+/// The branches of an `if` or `when` used as a value where no type is
+/// declared for it — an array element of `T`, the value of an untyped `let`,
+/// an argument to `print`, a value not used — in a generic function: where
+/// one yields a value of the function's own type parameter `T` (or an array
+/// or `Result` of it), every other must yield that type too. The value is
+/// typed by its first branch. Where a type is declared, each branch is
+/// checked against it instead (`check_branch_tail_fits`), a `T` branch by
+/// rule 2, for each call; with nothing declared, `if c { x } else { 300 }`
+/// as an array element or an untyped `let` put 300 where `T` was a t8 or a
+/// string (known-issues §81).
 fn check_generic_branches(bodies: &[&[SemanticStmt]], pos: usize) -> Result<(), SemanticError> {
     let tails: Vec<&SemanticType> = bodies
         .iter()
@@ -5152,15 +5160,11 @@ fn type_param_named(ty: &SemanticType) -> Option<String> {
     }
 }
 
-/// Whether a value of type `got` is a value of type `expected` with nothing
-/// converted: the same type, or one with an unknown part (`?`, an `Err`).
-fn binds_alike(expected: &SemanticType, got: &SemanticType) -> bool {
-    if expected == got || *got == SemanticType::Unknown {
-        return true;
-    }
-    match (expected, got) {
-        (SemanticType::Result(a), SemanticType::Result(b)) => binds_alike(a, b),
-        (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && binds_alike(a, b),
+/// Whether `ty` is, or holds, the type of an untyped number literal.
+fn mentions_numeric_literal_type(ty: &SemanticType) -> bool {
+    match ty {
+        SemanticType::Numeric => true,
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => mentions_numeric_literal_type(inner),
         _ => false,
     }
 }

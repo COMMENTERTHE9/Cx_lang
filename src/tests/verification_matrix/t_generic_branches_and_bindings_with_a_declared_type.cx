@@ -1,0 +1,39 @@
+// Where a type is declared for an if/when value, each branch is checked
+// against that type — a branch that is a `T` value for each call, as
+// `n: t64 = x` is — and the branches need not have one type of their own.
+// A callee's type parameter bound to a declared type by one argument may be
+// given the caller's `T` by another, checked for each call; one bound by an
+// untyped literal may not (t_generic_callee_bound_to_a_literal_then_given_a_type_parameter_rejected).
+// Each of these ran the same on both backends before the generic rule, was
+// rejected by its first strict version, and runs again.
+fnc: t8 <T> narrow(c: bool, x: T) { return if c { x } else { 7 } }
+fnc: str <T> text(c: bool, x: T) {
+    s: str = if c { x } else { "lit" }
+    return s
+}
+fnc: t64 <T> either(c: bool, x: T) {
+    n: t64 = if c { 1 } else { x }
+    return n
+}
+fnc: T <T> pick(a: T, b: T) { return b }
+fnc: f64 <T> real(x: T) {
+    n: f64 = 0.0
+    return pick(n, x)
+}
+fnc: Result<t64> <T> held(x: T) {
+    e: Result<t64> = Err("e")
+    return pick(e, Ok(x))
+}
+w: t64 = 300
+print(narrow(true, w))
+print(narrow(false, w))
+print(text(true, "a"))
+print(text(false, "a"))
+a: t64 = 9
+print(either(true, a))
+print(either(false, a))
+s16: t16 = -32768
+print(real(s16))
+print(real(2.5))
+b8: t8 = 127
+print(held(b8))

@@ -6680,21 +6680,29 @@ that leaves `T` unbound, or binds it to `?`, is checked for nothing.
   gap: at top level `b: Box = Box<t64> { v: 300 }`, `xs: [2: t8] = [b.v, 1]`
   holds 300 on the interpreter and 44 in compiled code (§82 a). Closing it
   needs struct instantiations in the type system.
-- **A function that instantiates itself with ever larger types** (`g([x])`
-  inside `g`) is followed to a nesting depth of 24. Compiled code refuses
-  such a program at 64 instantiations. The work is bounded in two more ways
-  (`generic_scope.rs`): one generic function is checked for at most 256 sets
-  of types reached through other generic functions, all of them together for
-  at most 20,000, and from one call at most 4,096 are followed. A call
-  written with concrete types is always checked. *(The first version bounded
-  only what one call followed, not the work behind it: 1,200 calls of a
-  function to itself took 11 s and 1.7 GB, and 800 calls with distinct types
-  25 s. Found by the review of the implementation.)*
+- **Past its limit.** The check follows the instantiations compiled code
+  makes, starting from the same calls (those outside every generic function)
+  and pinning an untyped number to t64 as compiled code does, and checks at
+  most 128 sets of types for one generic function. Compiled code refuses a
+  program that needs more than 64 for one function
+  (`MAX_INSTANTIATIONS_PER_TEMPLATE`), so where the check stops short
+  compiled code has refused, and the interpreter's run-time checks decide. A
+  function that instantiates itself with ever larger types (`g([x])` inside
+  `g`) is such a program. *(The first version bounded only what one call
+  followed, not the work behind it: 1,200 calls of a function to itself took
+  11 s and 1.7 GB, and 800 calls with distinct types 25 s — found by the
+  review of the implementation. The second added a depth limit of 24, a total
+  of 20,000 and 4,096 per call, and counted calls in uncalled generic
+  functions against the budget; the confirmation review built two programs
+  that went unchecked past those while compiled code compiled them — exit
+  mismatches, 34 printed where the interpreter stopped. Both fixed.)*
 - **A `T` value where a type is needed but none is declared** — an `if`
   condition, the operand of `!`, an array index. Analysis does not check
   these for a concrete type either (§57 a, §82 b).
-- A type parameter no argument binds (`fnc: T <T> make()`), whose result is
-  matched with the caller's own `T` of the same name.
+- A type parameter no argument binds (`fnc: T <T> make()`): its result is a
+  type of the callee's own, `make::T`, which is not checked against anything
+  — as a generic struct's type parameter is not. Compiled code refuses a call
+  that leaves a type parameter unbound.
 
 ### What changes for existing programs
 
@@ -6760,16 +6768,22 @@ function — "unresolved semantic artifact reached lowering: function 'twice'"
 - *The branches of an `if`/`when` value were checked against a declared type
   further out, and only there. As an element of an array literal of `T`, or
   as the value of an untyped `let`, `if c { x } else { 300 }` put 300 where
-  `T` was a t8 or a string. Now, in a generic function, where one branch of a
-  value yields a value of the function's own type parameter (or an array or
-  `Result` of it), every branch must yield that type — whatever the value is
-  used for (`check_generic_branches`). This also rejects
-  `n: t64 = if c { 1 } else { x }`, which compiled code refused and the
-  interpreter did not convert.*
+  `T` was a t8 or a string. Now, in a generic function, where **no** type is
+  declared for such a value and one branch yields a value of the function's
+  own type parameter (or an array or `Result` of it), every branch must yield
+  that type (`check_generic_branches`). Where a type is declared, each branch
+  is checked against it, a `T` branch for each call. (The first version of
+  this fix required agreement everywhere, and rejected programs with a
+  declared type that ran the same on both backends —
+  `return if c { x } else { 7 }` from a `t8` function, `s: str = if c { x }
+  else { "lit" }`; found by the confirmation review and narrowed.)*
 - *`pick(5, x)` with `x: T`: the literal bound `pick`'s type parameter to a
-  number and `x` was then given for it, unconverted. Where the caller's own
-  type parameter is involved, a type parameter is bound only to the same type
-  (an `Err` and `?` still fit anything).*
+  number and `x` was then given for it, unconverted. That is now an error.
+  A type parameter bound to a declared type may still be given the caller's
+  `T`, checked for each call (`pick(n, x)` with `n: f64`), and one bound by
+  `?` or an `Err` is settled by the later argument. (The first version of
+  this fix rejected every mix of a bound type and the caller's `T`, and so
+  two programs that ran the same on both backends; narrowed.)*
 - *A callee's type parameter that no argument binds kept its name in the
   result type, so a `Result<T>` from `fnc: Result<T> <T> fail(n: t64)` was
   taken for the calling function's own `T` — and accepted when the callee
@@ -6898,4 +6912,11 @@ but not the file it belongs to.
 (exit −6), and a parameter typed `[9223372036854775807: t32]` makes compiled
 code allocate until the process is killed. Both found by the same review,
 both present on `submain`; recorded, not changed.
+
+**f. Two more, found by the confirmation review of 2026-11-20's fixes,
+present on `submain`, recorded and not changed:** compiled code's compile
+time grows exponentially with the depth of a nested array literal — one line
+`deep: [1: [1: …]] = [[…]]` takes 0.7 s at 14 levels, 5.9 s at 16 and 52 s
+at 18; and a run-time type mismatch inside a generic function is reported at
+line 1 of the file.
 

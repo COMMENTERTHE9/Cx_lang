@@ -67,17 +67,24 @@ parameters `T`:
    nothing — may not be used where `T` is declared: in a typed declaration,
    an assignment, a `return` or trailing expression, an `Ok` payload, a
    struct field, an argument for a parameter whose type the call has made
-   `T` (a type parameter of a callee is bound to the caller's `T` only by a
-   `T`), a gene method's `Self` on a `T` value. It is an analysis error in
+   `T`, a gene method's `Self` on a `T` value. A callee's type parameter that
+   an untyped number literal has bound is not then given the caller's `T`
+   (`pick(5, x)`): nothing would convert it. One bound to a declared type may
+   be (`pick(n, x)` with `n: f64`), and is checked for each call by rule 2;
+   one bound by `?` or an `Err` is settled by the later argument. It is an analysis error in
    the body, whatever the function is called with — including a call that
    gives `T` exactly the type of that value. A function that makes a `T` out
    of something else is not generic in `T`.
 
-   The branches of an `if` or `when` used as a value are one value: where
-   one yields a `T` (or an array or `Result` of it), **every** branch must
-   yield that type, whatever the value is used for — returned, declared, an
-   array element, the value of an untyped `let`. (`if c { x } else { 300 }`
-   is rejected, and so is `n: t64 = if c { 1 } else { x }`.)
+   The branches of an `if` or `when` used as a value: where a type is
+   declared for the value — returned, declared, assigned, an argument — each
+   branch is checked against that type, and a branch that is a `T` value is
+   checked for each call by rule 2 (`n: t64 = if c { 1 } else { x }` is
+   `n: t64 = x` on one path). Where **no** type is declared for it — an
+   element of an array of `T`, the value of an untyped `let`, an argument to
+   `print`, a value not used — the value has the type of its first branch,
+   and where one branch yields a `T` (or an array or `Result` of it) every
+   branch must yield that type: `[x, if c { x } else { 300 }]` is rejected.
 2. **A value whose type is, or holds, `T` may be used where another type is
    declared** — `n: t64 = x`, `s: str = x`, `phase = x` for an enum variable,
    a `Result<T>` returned as a `Result<t64>`. That is right only for some
@@ -111,15 +118,22 @@ types it is reached with. The error is reported at that call, once per thing
 the body does, and names the function, the types and what the body does with
 them.
 
-The check is bounded so that its work grows with the program, not with what
-its types can generate; past a limit an instantiation is not checked, and the
-interpreter's run-time checks and compiled code's refusals decide, as before
-this rule. A function that calls itself with an ever larger type (`g([x])`
-inside `g`) is followed to a nesting depth of 24 (compiled code refuses such
-a program at 64 instantiations); one generic function is checked for at most
-256 sets of types reached through other calls, all of them for at most
-20,000; one call follows at most 4,096. A call written with concrete types is
-always checked.
+The check follows the instantiations compiled code makes — from the calls
+outside every generic function, through every generic function they reach,
+with an untyped number taken as the t64 compiled code makes it — and its one
+limit sits above compiled code's own. Compiled code refuses a program in
+which one generic function needs more than 64 sets of types; the check
+follows up to 128 for each function. So where the check stops short, compiled
+code has refused the program, and the interpreter's run-time checks decide.
+(A function that calls itself with an ever larger type, `g([x])` inside `g`,
+reaches the limit quickly.) Calls written inside generic functions that
+nothing instantiates are checked after those, and never run or compile.
+
+*(The first versions had three further limits — a nesting depth of 24, a
+total of 20,000, 4,096 per call — and started from every call alike. The
+confirmation review showed that past them a program went unchecked while
+compiled code still compiled it: in two programs the interpreter stopped at
+run time and compiled code printed 34. Found and fixed 2026-11-20.)*
 
 Not covered, and unchanged:
 
@@ -305,7 +319,7 @@ becomes a static rule, with those two as the fallback:
 A receiver that has the name of its variable (`impl (top: V)` called as
 `top.run()`) names the receiver, not the variable, and is unaffected.
 
-Two over-rejections are known and accepted, both conservative:
+Three over-rejections are known and accepted, all conservative:
 
 - a `"{top}"` in a string that the method passes to a function with a
   parameter named `top` is expanded there, as that parameter; analysis reads
@@ -315,6 +329,10 @@ Two over-rejections are known and accepted, both conservative:
   the struct — counts as both, though a call runs one. (Each written call
   could be resolved to the method registered at that point; that needs the
   call to carry its method's identity, a larger change.)
+- a method call on a type parameter that a call does not determine (item 2)
+  counts as every method of its name, including methods that are never
+  reached. Such programs ran on the interpreter and were refused by compiled
+  code.
 
 | Program | Before (interpreter / compiled) | After |
 |---|---|---|
@@ -338,13 +356,16 @@ Two over-rejections are known and accepted, both conservative:
   of program that **ran the same on both backends** are now rejected: a
   concrete value where `T` is declared, in a function whose every call gives
   `T` that very type; and a whole-number literal beside `T` elements called
-  with an `f64`, when the element was only printed. Two more were found by
-  the review of the implementation: a call written with concrete types that
+  with an `f64`, when the element was only printed. Found by the reviews of
+  the implementation, three more: a call written with concrete types that
   breaks what a generic body needs, inside a generic function that is never
-  called (it never ran); and `n: t64 = if c { 1 } else { x }`, a literal and a
-  `T` in one value (compiled code refused it). A generic function that only
-  moves its `T` values around is unaffected. Tracked fixtures whose outcome
-  changed are listed in known-issues §81.
+  called (it never ran); an `if`/`when` value with a `T` branch and another,
+  where no type is declared for it — `print(if c { x } else { 300 })`, or a
+  `when` whose value is not used — which printed the same on both when `T`
+  was a number; and `pick(5, x)` with `x: T`, which agreed when `T` was a
+  t64. A generic function that only moves its `T` values around is
+  unaffected. Tracked fixtures whose outcome changed are listed in
+  known-issues §81.
 - **D3:** accepts programs that the Result rule (§75) had started to reject;
   no program that is accepted today changes.
 - **D4:** a `when` used as a value with only `true`/`false`/`unknown` arms on
@@ -377,8 +398,10 @@ commit.
 | 7 | D2, D6 | A call written before its function's definition names that function | `backend/value-alias-semantics` (#507) | `3cba86e` |
 | 8 | D2, D6 | Both whole-program checks bounded; the receiver rule counts what it cannot determine | `backend/value-alias-semantics` (#507) | `0a2a283` |
 | 9 | D2 | Branches of a value, inference and names in a generic body; one regression | `backend/value-alias-semantics` (#507) | `b32e03c` |
+| 10 | D2 | The per-call check follows compiled code's instantiations, its one limit above compiled code's; branch and inference rules narrowed to what is needed | `backend/value-alias-semantics` (#507) | see §11 |
 
-Steps 7–9 answer the independent review of the implementation (§10). A
+Steps 7–9 answer the independent review of the implementation (§10), and
+step 10 the confirmation review of those fixes (§11). A
 silent difference that review found, present on `submain` and outside the six
 decisions — the negation of a float zero — is fixed in its own commit
 (`2db5afd`, known-issues §82 c).
@@ -452,4 +475,33 @@ Recorded and not changed, all present on `submain` (known-issues §82): a
 generic struct literal whose `T` is inferred from fields of two number kinds
 (the §82 a family); errors in an imported library reported at a line of the
 entry file; 1,000 nested calls overflowing the compiler's stack.
+
+## 11. What the confirmation review changed
+
+Steps 7–9 were reviewed at `b8a8ab7` by a reviewer who ran about 19,000
+programs and 250 hand probes. It confirmed the fixes for every earlier
+finding it re-ran, found no silent difference caused by them, and found:
+
+- **Two exit mismatches** (interpreter: run-time error; compiled code: exit 0,
+  printing 34), both from the per-call check's limits: past a limit a program
+  went unchecked, and compiled code, whose own limits are elsewhere, compiled
+  it. One came from the first D2 implementation, one from step 8. Fixed in
+  step 10: the check follows compiled code's instantiations, and its one
+  limit is above compiled code's (rule D2 above).
+- **Over-rejections** by step 9's branch and inference rules of programs that
+  ran the same on both backends. Narrowed in step 10 to what the rule needs —
+  the branch rule where no type is declared for the value, the inference rule
+  where a literal bound the type parameter. The programs with a declared type
+  run again (fixture `t_generic_branches_and_bindings_with_a_declared_type`);
+  those that remain rejected are listed in §7.
+- `pick(?, x)` was rejected although `?` fits anything: a later argument now
+  settles a type parameter a `?` bound.
+- Documentation: the limits, the over-rejection of an undetermined generic
+  method call (D6, now listed), and "not covered" for an unbound callee type
+  parameter.
+
+Recorded, not changed, present on `submain` (known-issues §82 f): compiled
+code's compile time grows exponentially with the depth of a nested array
+literal (18 levels: 52 s), and a run-time type mismatch in a generic function
+is reported at line 1.
 

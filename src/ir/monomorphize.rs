@@ -43,7 +43,7 @@ use crate::frontend::semantic_types::{
 /// dedup map already tracks exactly that; a depth cap has no meaning in a
 /// worklist, which has no stack. The limit is set far above real code: the
 /// largest template in the corpus has **two** distinct instantiations.
-const MAX_INSTANTIATIONS_PER_TEMPLATE: usize = 64;
+pub(crate) const MAX_INSTANTIATIONS_PER_TEMPLATE: usize = 64;
 
 /// A concrete substitution for one template's type parameters.
 type Subst = HashMap<String, SemanticType>;

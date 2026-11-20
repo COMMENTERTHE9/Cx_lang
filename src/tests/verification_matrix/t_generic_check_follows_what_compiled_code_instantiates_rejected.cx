@@ -1,0 +1,51 @@
+// The per-call check of a generic body follows what compiled code
+// instantiates. Here 256 calls to `f` with distinct types sit in `unused`,
+// which nothing calls; they used to use up `f`'s budget, so the instance
+// `g` reaches — `f` with T = f64, where 34 is a whole number beside a T
+// element — was not checked. The interpreter stopped at run time and compiled
+// code, which instantiates only `f<f64, ..>`, printed 34. Calls compiled
+// code makes are now checked first, with no limit but one compiled code's
+// own refusal stays below.
+fnc: T <T, U, V, W> f(x: T, u: U, v: V, w: W) {
+    c: [2: T] = [x, 34]
+    return c:[1]
+}
+fnc: T <T> g(x: T) { return f(x, 0, 0, 0) }
+fnc: t64 <Q> unused(q: Q) {
+    print(f(1, 1, 1, 1)); print(f(1, 1, 1, 1.5)); print(f(1, 1, 1, "s")); print(f(1, 1, 1, true)); print(f(1, 1, 1, [1])); print(f(1, 1, 1, [1.5])); print(f(1, 1, 1, ["s"])); print(f(1, 1, 1.5, 1))
+    print(f(1, 1, 1.5, 1.5)); print(f(1, 1, 1.5, "s")); print(f(1, 1, 1.5, true)); print(f(1, 1, 1.5, [1])); print(f(1, 1, 1.5, [1.5])); print(f(1, 1, 1.5, ["s"])); print(f(1, 1, "s", 1)); print(f(1, 1, "s", 1.5))
+    print(f(1, 1, "s", "s")); print(f(1, 1, "s", true)); print(f(1, 1, "s", [1])); print(f(1, 1, "s", [1.5])); print(f(1, 1, "s", ["s"])); print(f(1, 1, true, 1)); print(f(1, 1, true, 1.5)); print(f(1, 1, true, "s"))
+    print(f(1, 1, true, true)); print(f(1, 1, true, [1])); print(f(1, 1, true, [1.5])); print(f(1, 1, true, ["s"])); print(f(1, 1, [1], 1)); print(f(1, 1, [1], 1.5)); print(f(1, 1, [1], "s")); print(f(1, 1, [1], true))
+    print(f(1, 1, [1], [1])); print(f(1, 1, [1], [1.5])); print(f(1, 1, [1], ["s"])); print(f(1, 1, [1.5], 1)); print(f(1, 1, [1.5], 1.5)); print(f(1, 1, [1.5], "s")); print(f(1, 1, [1.5], true)); print(f(1, 1, [1.5], [1]))
+    print(f(1, 1, [1.5], [1.5])); print(f(1, 1, [1.5], ["s"])); print(f(1, 1, ["s"], 1)); print(f(1, 1, ["s"], 1.5)); print(f(1, 1, ["s"], "s")); print(f(1, 1, ["s"], true)); print(f(1, 1, ["s"], [1])); print(f(1, 1, ["s"], [1.5]))
+    print(f(1, 1, ["s"], ["s"])); print(f(1, 1.5, 1, 1)); print(f(1, 1.5, 1, 1.5)); print(f(1, 1.5, 1, "s")); print(f(1, 1.5, 1, true)); print(f(1, 1.5, 1, [1])); print(f(1, 1.5, 1, [1.5])); print(f(1, 1.5, 1, ["s"]))
+    print(f(1, 1.5, 1.5, 1)); print(f(1, 1.5, 1.5, 1.5)); print(f(1, 1.5, 1.5, "s")); print(f(1, 1.5, 1.5, true)); print(f(1, 1.5, 1.5, [1])); print(f(1, 1.5, 1.5, [1.5])); print(f(1, 1.5, 1.5, ["s"])); print(f(1, 1.5, "s", 1))
+    print(f(1, 1.5, "s", 1.5)); print(f(1, 1.5, "s", "s")); print(f(1, 1.5, "s", true)); print(f(1, 1.5, "s", [1])); print(f(1, 1.5, "s", [1.5])); print(f(1, 1.5, "s", ["s"])); print(f(1, 1.5, true, 1)); print(f(1, 1.5, true, 1.5))
+    print(f(1, 1.5, true, "s")); print(f(1, 1.5, true, true)); print(f(1, 1.5, true, [1])); print(f(1, 1.5, true, [1.5])); print(f(1, 1.5, true, ["s"])); print(f(1, 1.5, [1], 1)); print(f(1, 1.5, [1], 1.5)); print(f(1, 1.5, [1], "s"))
+    print(f(1, 1.5, [1], true)); print(f(1, 1.5, [1], [1])); print(f(1, 1.5, [1], [1.5])); print(f(1, 1.5, [1], ["s"])); print(f(1, 1.5, [1.5], 1)); print(f(1, 1.5, [1.5], 1.5)); print(f(1, 1.5, [1.5], "s")); print(f(1, 1.5, [1.5], true))
+    print(f(1, 1.5, [1.5], [1])); print(f(1, 1.5, [1.5], [1.5])); print(f(1, 1.5, [1.5], ["s"])); print(f(1, 1.5, ["s"], 1)); print(f(1, 1.5, ["s"], 1.5)); print(f(1, 1.5, ["s"], "s")); print(f(1, 1.5, ["s"], true)); print(f(1, 1.5, ["s"], [1]))
+    print(f(1, 1.5, ["s"], [1.5])); print(f(1, 1.5, ["s"], ["s"])); print(f(1, "s", 1, 1)); print(f(1, "s", 1, 1.5)); print(f(1, "s", 1, "s")); print(f(1, "s", 1, true)); print(f(1, "s", 1, [1])); print(f(1, "s", 1, [1.5]))
+    print(f(1, "s", 1, ["s"])); print(f(1, "s", 1.5, 1)); print(f(1, "s", 1.5, 1.5)); print(f(1, "s", 1.5, "s")); print(f(1, "s", 1.5, true)); print(f(1, "s", 1.5, [1])); print(f(1, "s", 1.5, [1.5])); print(f(1, "s", 1.5, ["s"]))
+    print(f(1, "s", "s", 1)); print(f(1, "s", "s", 1.5)); print(f(1, "s", "s", "s")); print(f(1, "s", "s", true)); print(f(1, "s", "s", [1])); print(f(1, "s", "s", [1.5])); print(f(1, "s", "s", ["s"])); print(f(1, "s", true, 1))
+    print(f(1, "s", true, 1.5)); print(f(1, "s", true, "s")); print(f(1, "s", true, true)); print(f(1, "s", true, [1])); print(f(1, "s", true, [1.5])); print(f(1, "s", true, ["s"])); print(f(1, "s", [1], 1)); print(f(1, "s", [1], 1.5))
+    print(f(1, "s", [1], "s")); print(f(1, "s", [1], true)); print(f(1, "s", [1], [1])); print(f(1, "s", [1], [1.5])); print(f(1, "s", [1], ["s"])); print(f(1, "s", [1.5], 1)); print(f(1, "s", [1.5], 1.5)); print(f(1, "s", [1.5], "s"))
+    print(f(1, "s", [1.5], true)); print(f(1, "s", [1.5], [1])); print(f(1, "s", [1.5], [1.5])); print(f(1, "s", [1.5], ["s"])); print(f(1, "s", ["s"], 1)); print(f(1, "s", ["s"], 1.5)); print(f(1, "s", ["s"], "s")); print(f(1, "s", ["s"], true))
+    print(f(1, "s", ["s"], [1])); print(f(1, "s", ["s"], [1.5])); print(f(1, "s", ["s"], ["s"])); print(f(1, true, 1, 1)); print(f(1, true, 1, 1.5)); print(f(1, true, 1, "s")); print(f(1, true, 1, true)); print(f(1, true, 1, [1]))
+    print(f(1, true, 1, [1.5])); print(f(1, true, 1, ["s"])); print(f(1, true, 1.5, 1)); print(f(1, true, 1.5, 1.5)); print(f(1, true, 1.5, "s")); print(f(1, true, 1.5, true)); print(f(1, true, 1.5, [1])); print(f(1, true, 1.5, [1.5]))
+    print(f(1, true, 1.5, ["s"])); print(f(1, true, "s", 1)); print(f(1, true, "s", 1.5)); print(f(1, true, "s", "s")); print(f(1, true, "s", true)); print(f(1, true, "s", [1])); print(f(1, true, "s", [1.5])); print(f(1, true, "s", ["s"]))
+    print(f(1, true, true, 1)); print(f(1, true, true, 1.5)); print(f(1, true, true, "s")); print(f(1, true, true, true)); print(f(1, true, true, [1])); print(f(1, true, true, [1.5])); print(f(1, true, true, ["s"])); print(f(1, true, [1], 1))
+    print(f(1, true, [1], 1.5)); print(f(1, true, [1], "s")); print(f(1, true, [1], true)); print(f(1, true, [1], [1])); print(f(1, true, [1], [1.5])); print(f(1, true, [1], ["s"])); print(f(1, true, [1.5], 1)); print(f(1, true, [1.5], 1.5))
+    print(f(1, true, [1.5], "s")); print(f(1, true, [1.5], true)); print(f(1, true, [1.5], [1])); print(f(1, true, [1.5], [1.5])); print(f(1, true, [1.5], ["s"])); print(f(1, true, ["s"], 1)); print(f(1, true, ["s"], 1.5)); print(f(1, true, ["s"], "s"))
+    print(f(1, true, ["s"], true)); print(f(1, true, ["s"], [1])); print(f(1, true, ["s"], [1.5])); print(f(1, true, ["s"], ["s"])); print(f(1, [1], 1, 1)); print(f(1, [1], 1, 1.5)); print(f(1, [1], 1, "s")); print(f(1, [1], 1, true))
+    print(f(1, [1], 1, [1])); print(f(1, [1], 1, [1.5])); print(f(1, [1], 1, ["s"])); print(f(1, [1], 1.5, 1)); print(f(1, [1], 1.5, 1.5)); print(f(1, [1], 1.5, "s")); print(f(1, [1], 1.5, true)); print(f(1, [1], 1.5, [1]))
+    print(f(1, [1], 1.5, [1.5])); print(f(1, [1], 1.5, ["s"])); print(f(1, [1], "s", 1)); print(f(1, [1], "s", 1.5)); print(f(1, [1], "s", "s")); print(f(1, [1], "s", true)); print(f(1, [1], "s", [1])); print(f(1, [1], "s", [1.5]))
+    print(f(1, [1], "s", ["s"])); print(f(1, [1], true, 1)); print(f(1, [1], true, 1.5)); print(f(1, [1], true, "s")); print(f(1, [1], true, true)); print(f(1, [1], true, [1])); print(f(1, [1], true, [1.5])); print(f(1, [1], true, ["s"]))
+    print(f(1, [1], [1], 1)); print(f(1, [1], [1], 1.5)); print(f(1, [1], [1], "s")); print(f(1, [1], [1], true)); print(f(1, [1], [1], [1])); print(f(1, [1], [1], [1.5])); print(f(1, [1], [1], ["s"])); print(f(1, [1], [1.5], 1))
+    print(f(1, [1], [1.5], 1.5)); print(f(1, [1], [1.5], "s")); print(f(1, [1], [1.5], true)); print(f(1, [1], [1.5], [1])); print(f(1, [1], [1.5], [1.5])); print(f(1, [1], [1.5], ["s"])); print(f(1, [1], ["s"], 1)); print(f(1, [1], ["s"], 1.5))
+    print(f(1, [1], ["s"], "s")); print(f(1, [1], ["s"], true)); print(f(1, [1], ["s"], [1])); print(f(1, [1], ["s"], [1.5])); print(f(1, [1], ["s"], ["s"])); print(f(1, [1.5], 1, 1)); print(f(1, [1.5], 1, 1.5)); print(f(1, [1.5], 1, "s"))
+    print(f(1, [1.5], 1, true)); print(f(1, [1.5], 1, [1])); print(f(1, [1.5], 1, [1.5])); print(f(1, [1.5], 1, ["s"])); print(f(1, [1.5], 1.5, 1)); print(f(1, [1.5], 1.5, 1.5)); print(f(1, [1.5], 1.5, "s")); print(f(1, [1.5], 1.5, true))
+    return 1
+}
+h: f64 = 1.5
+y: f64 = g(h)
+print(y)

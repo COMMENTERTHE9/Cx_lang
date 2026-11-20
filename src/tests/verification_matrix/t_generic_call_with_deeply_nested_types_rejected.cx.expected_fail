@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A whole-number literal beside an f64 T element, in a call whose other argument is nested 25 deep.
