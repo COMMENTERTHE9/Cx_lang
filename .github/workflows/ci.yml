@@ -66,6 +66,11 @@ jobs:
   # well as Linux (.gitattributes, tracker #030), and until this job existed
   # nothing in CI exercised it there. `shell: bash` is Git Bash, which the
   # matrix script needs; cargo itself runs natively.
+  # The two Windows jobs below are permanent (owner decision, 2026-11-20):
+  # Cx is supported on Windows and Linux, and every compiler change is tested
+  # on both. They are part of the required gate on the same footing as the
+  # Linux jobs — do not remove them, skip them, or make them non-blocking to
+  # get a build through. If one fails, the change is what gets fixed.
   windows-frontend:
     name: Windows Frontend Build + Matrix
     runs-on: windows-latest
