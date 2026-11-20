@@ -5826,3 +5826,29 @@ Fixtures: `t_break_in_function_outside_loop_rejected`,
 `t_break_at_top_level_rejected`, and
 `t_break_continue_in_loops_of_their_function` (both backends). Unit test
 `break_and_continue_belong_to_a_loop_of_their_function`.
+
+### b. The same variable could be two receivers of one call (§69d, rule V4)
+
+`p.mix(p, 5)` on `impl (a: V, b: V)`: the interpreter gave each receiver its
+own copy and let the last write-back win, and compiled code had one object.
+With `mix` adding 100 to `a.x` and 1000 to `b.x`: 1107, then `p.x` 1001 on the
+interpreter; 2207, then 1101 compiled. The same for one variable given for two
+further receivers (`p.mix3(q, q, 5)`), and for `(p)`, which is `p`.
+
+**Now** it is an analysis error on both backends: "'p' is given for two
+receivers of method 'p.mix' — a receiver is the variable itself, and one
+variable cannot be two receivers of the same call". Only what is bound by
+reference is compared — a struct or array receiver given a variable named
+directly. The receiver's variable passed to an ordinary parameter
+(`p.keep(p)`), a field or element of it given for a further receiver
+(`w.absorb(w.inner)`), and one variable given for two number receivers are
+unaffected. It is the receiver counterpart of the existing rule that two
+`.copy` arguments may not name one variable (§29).
+
+No tracked program is affected.
+
+Fixtures: `t_one_variable_two_receivers_rejected`,
+`t_one_variable_two_further_receivers_rejected`,
+`t_parenthesised_name_two_receivers_rejected`, and
+`t_receiver_variable_given_again_by_value` (both backends). Unit test
+`one_variable_is_at_most_one_receiver_of_a_call`.

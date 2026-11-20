@@ -1,0 +1,15 @@
+// A struct receiver bound to a variable is that variable, so `p` here would be
+// both `a` and `b`. The interpreter gave each its own copy and let the last
+// write-back win (1107, then 1001); compiled code had one object (2207, then
+// 1101).
+struct V { x: t64 }
+vm: impl (a: V, b: V) {
+    fnc: t64 mix(k: t64) {
+        a.x += 100
+        b.x += 1000
+        return a.x + b.x + k
+    }
+}
+p: V = V { x: 1 }
+print(p.mix(p, 5))
+print(p.x)

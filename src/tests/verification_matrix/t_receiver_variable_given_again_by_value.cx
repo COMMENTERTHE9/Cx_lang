@@ -1,0 +1,41 @@
+// What rule V4 does not reject, because nothing is bound twice by reference:
+// the receiver's variable passed to an ordinary parameter (a copy), a field or
+// an element given for a further receiver (a temporary), and one variable
+// given for two number receivers (values).
+struct V { x: t64 }
+struct W { inner: V, n: t64 }
+vm: impl (a: V, b: V) {
+    fnc: t64 mix(k: t64) {
+        a.x += 100
+        b.x += 1000
+        return a.x + b.x + k
+    }
+}
+km: impl (a: V) {
+    fnc: t64 keep(other: V) {
+        a.x += other.x
+        return a.x
+    }
+}
+wm: impl (w: W, v: V) {
+    fnc: t64 absorb() {
+        w.n += v.x
+        return w.n
+    }
+}
+sm: impl (s: V, k: t64, j: t64) {
+    fnc: t64 sum() { return s.x + k + j }
+}
+p: V = V { x: 1 }
+q: V = V { x: 2 }
+print(p.mix(q, 5))
+print(p.keep(p))
+w: W = W { inner: V { x: 7 }, n: 1 }
+print(w.absorb(w.inner))
+n: t64 = 4
+print(p.sum(n, n))
+arr: [2: V] = [V { x: 1 }, V { x: 2 }]
+print(p.mix(arr:[0], 1))
+print(p.mix((q), 1))
+print(p.x)
+print(q.x)

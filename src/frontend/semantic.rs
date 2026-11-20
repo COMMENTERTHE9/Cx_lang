@@ -2808,6 +2808,33 @@ Expr::Unary(op, inner, pos) => {
                     }
                 }
 
+                // One variable is at most one receiver of a call (amendment
+                // V4). A struct or array receiver bound to a variable named
+                // directly is that variable, so `p.mix(p, 5)` would make one
+                // variable two receivers — and the two backends disagreed about
+                // the result: the interpreter gave each receiver its own copy
+                // and let the last write-back win, compiled code had one object
+                // (known-issues §69d). A field or element of the variable, and
+                // a receiver that is not a struct or array, are values and are
+                // not bound twice by anything.
+                let mut by_reference: Vec<BindingId> = vec![instance_binding];
+                for arg in semantic_args.iter().take(extra_alias_count) {
+                    let SemanticCallArg::Expr(SemanticExpr { ty, kind: SemanticExprKind::VarRef { binding, name } }) = arg else {
+                        continue;
+                    };
+                    if !matches!(ty, SemanticType::Struct(_) | SemanticType::Array(..)) {
+                        continue;
+                    }
+                    if by_reference.contains(binding) {
+                        return Err(sem_err!(
+                            *pos,
+                            "'{}' is given for two receivers of method '{}.{}' — a receiver is the variable itself, and one variable cannot be two receivers of the same call",
+                            name, instance, method
+                        ));
+                    }
+                    by_reference.push(*binding);
+                }
+
                 Ok(SemanticExpr {
                     ty: ret_ty,
                     kind: SemanticExprKind::MethodCall {
@@ -6827,6 +6854,35 @@ print(result + result2)
         analyze_program(&crate::frontend::resolver::parse_source(&shadow).expect("parses")).expect("shadowing parameter remains writable");
         let isolated = "fnc: t64 take(x.copy.free: t64) { x }\nconst g: t64 = 1\nprint(take(g.copy.free))\n";
         analyze_program(&crate::frontend::resolver::parse_source(isolated).expect("parses")).expect("isolated copy does not need write access");
+    }
+
+    /// One variable is at most one receiver of a call (amendment V4). Only a
+    /// struct or array receiver bound to a variable named directly is bound by
+    /// reference, so only that is compared.
+    #[test]
+    fn one_variable_is_at_most_one_receiver_of_a_call() {
+        let two = "struct V { x: t64 }\nvm: impl (a: V, b: V) {\n    fnc: t64 mix(k: t64) {\n        a.x += 100\n        b.x += 1000\n        return a.x + b.x + k\n    }\n}\np: V = V { x: 1 }\nq: V = V { x: 2 }\n";
+        for call in ["print(p.mix(p, 5))", "print(p.mix((p), 5))"] {
+            let errors = single_file_errors(&format!("{two}{call}"));
+            assert!(errors.contains("'p' is given for two receivers of method 'p.mix'"), "{call} gave {errors}");
+        }
+        let three = "struct V { x: t64 }\nvm: impl (a: V, b: V, c: V) {\n    fnc: t64 mix3(k: t64) { return a.x + b.x + c.x + k }\n}\np: V = V { x: 1 }\nq: V = V { x: 2 }\nprint(p.mix3(q, q, 5))";
+        assert!(single_file_errors(three).contains("'q' is given for two receivers of method 'p.mix3'"));
+
+        let accepted = [
+            format!("{two}print(p.mix(q, 5))"),
+            // A field or element is a temporary; an ordinary parameter is a copy.
+            format!("{two}arr: [2: V] = [V {{ x: 1 }}, V {{ x: 2 }}]\nprint(p.mix(arr:[0], 5))"),
+            "struct V { x: t64 }\nkm: impl (a: V) {\n    fnc: t64 keep(other: V) { return a.x + other.x }\n}\np: V = V { x: 1 }\nprint(p.keep(p))".to_string(),
+            // Number receivers are values.
+            "struct V { x: t64 }\nsm: impl (s: V, k: t64, j: t64) {\n    fnc: t64 sum() { return s.x + k + j }\n}\np: V = V { x: 1 }\nn: t64 = 4\nprint(p.sum(n, n))".to_string(),
+        ];
+        for src in &accepted {
+            let program = crate::frontend::resolver::parse_source(src).expect("parses");
+            if let Err(errs) = analyze_program(&program) {
+                panic!("{src:?} was rejected: {}", errs.iter().map(|e| e.msg.clone()).collect::<Vec<_>>().join(" | "));
+            }
+        }
     }
 
     /// A `break` or `continue` names a loop of the function it is written in
