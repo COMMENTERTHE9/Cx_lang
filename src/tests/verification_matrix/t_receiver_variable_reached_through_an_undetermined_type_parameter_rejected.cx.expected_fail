@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The method may reach its receiver's variable through a generic function whose type parameters the call does not determine.

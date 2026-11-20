@@ -32,9 +32,9 @@
 //! that parameter, so a generic function is followed once for each such
 //! struct it is reached with. Where a call does not say — the parameter is
 //! left unbound, or bound to a generic struct's field, whose type is not
-//! tracked — the method call is not followed. That case is not determined
-//! here, and the two checks behind this rule decide it: the interpreter stops
-//! at run time, and compiled code refuses the program.
+//! tracked — it is taken to be every method of that name: conservative, but
+//! the two checks behind this rule (the interpreter's at run time, compiled
+//! code's refusal) do not cover every case, so they are not relied on.
 
 use std::collections::{HashMap, HashSet};
 
@@ -82,6 +82,10 @@ enum TypeArg {
 /// A body, and the struct each of its type parameters is — `None` for one
 /// that is not a struct, or not known.
 type Instance = (usize, Vec<Option<String>>);
+
+/// How many instances of bodies the rule follows with their type parameters
+/// bound before it follows each further body once with them unbound.
+const INSTANCE_LIMIT: usize = 2048;
 
 /// A written method call, wherever it stands.
 struct MethodCallSite {
@@ -265,38 +269,37 @@ impl<'a> Walk<'a> {
                     });
                 }
             }
-            SemanticStmt::Block { stmts, .. } | SemanticStmt::Loop { body: stmts, .. } => self.stmts(stmts),
+            SemanticStmt::Block { stmts, .. } | SemanticStmt::Loop { body: stmts, .. } => self.scoped(stmts, None),
             SemanticStmt::While { cond, body, .. } => {
                 self.expr(cond);
-                self.stmts(body);
+                self.scoped(body, None);
             }
             SemanticStmt::For { var, start, end, body, .. } => {
                 self.expr(start);
                 self.expr(end);
-                self.own_names.insert(var.clone());
-                self.stmts(body);
+                self.scoped(body, Some(var));
             }
             SemanticStmt::IfElse { condition, then_body, else_ifs, else_body, .. } => {
                 self.expr(condition);
-                self.stmts(then_body);
+                self.scoped(then_body, None);
                 for (condition, body) in else_ifs {
                     self.expr(condition);
-                    self.stmts(body);
+                    self.scoped(body, None);
                 }
                 if let Some(body) = else_body {
-                    self.stmts(body);
+                    self.scoped(body, None);
                 }
             }
             SemanticStmt::WhileIn { arr, range_start, range_end, body, then_chains, result, .. } => {
                 self.named(arr);
                 self.expr(range_start);
                 self.expr(range_end);
-                self.stmts(body);
+                self.scoped(body, None);
                 for chain in then_chains {
                     self.named(&chain.arr);
                     self.expr(&chain.range_start);
                     self.expr(&chain.range_end);
-                    self.stmts(&chain.body);
+                    self.scoped(&chain.body, None);
                 }
                 if let Some(result) = result {
                     self.expr(result);
@@ -307,6 +310,18 @@ impl<'a> Walk<'a> {
                 self.arms(arms);
             }
         }
+    }
+
+    /// A nested body: the names it declares — and `local`, a loop variable —
+    /// are its own, and end with it. Kept for the rest of the function, a
+    /// block's `vv` hid the module's `vv` named in a `"{vv}"` after the block.
+    fn scoped(&mut self, stmts: &'a [SemanticStmt], local: Option<&String>) {
+        let outside = self.own_names.clone();
+        if let Some(name) = local {
+            self.own_names.insert(name.clone());
+        }
+        self.stmts(stmts);
+        self.own_names = outside;
     }
 
     /// A variable referred to by its name alone, as `while … in arr` does.
@@ -321,6 +336,7 @@ impl<'a> Walk<'a> {
 
     fn arms(&mut self, arms: &'a [SemanticWhenArm]) {
         for arm in arms {
+            let outside = self.own_names.clone();
             match &arm.pattern {
                 SemanticWhenPattern::Literal(value) => self.value(value),
                 SemanticWhenPattern::Range(low, high, _) => {
@@ -338,6 +354,7 @@ impl<'a> Walk<'a> {
                 self.expr(guard);
             }
             self.stmts(&arm.body);
+            self.own_names = outside;
         }
     }
 
@@ -449,8 +466,8 @@ impl<'a> Walk<'a> {
             }
             SemanticExprKind::If { condition, then_body, else_body, .. } => {
                 self.expr(condition);
-                self.stmts(then_body);
-                self.stmts(else_body);
+                self.scoped(then_body, None);
+                self.scoped(else_body, None);
             }
         }
     }
@@ -506,6 +523,7 @@ struct UnitIndex {
     by_function: HashMap<FunctionId, usize>,
     by_function_name: HashMap<String, usize>,
     by_method: HashMap<(String, String), Vec<usize>>,
+    by_method_name: HashMap<String, Vec<usize>>,
 }
 
 impl UnitIndex {
@@ -523,6 +541,7 @@ impl UnitIndex {
             });
             self.by_function.insert(nested.function.id, unit);
             if nested.is_method {
+                self.by_method_name.entry(nested.function.name.clone()).or_default().push(unit);
                 for struct_name in &nested.method_of {
                     self.by_method.entry((struct_name.clone(), nested.function.name.clone())).or_default().push(unit);
                 }
@@ -567,7 +586,7 @@ pub(crate) fn check(stmts: &[SemanticStmt]) -> Vec<SemanticError> {
         sites.append(&mut walk.sites);
         index.register(walk.nested, &mut units, &mut queue);
     }
-    let UnitIndex { by_function, by_function_name, by_method } = index;
+    let UnitIndex { by_function, by_function_name, by_method, by_method_name } = index;
 
     // What a body calls, given the struct each of its type parameters is.
     let unbound = |unit: usize| -> Instance { (unit, vec![None; units[unit].type_params.len()]) };
@@ -599,16 +618,20 @@ pub(crate) fn check(stmts: &[SemanticStmt]) -> Vec<SemanticError> {
                 Callee::FunctionNamed(name) => out.extend(by_function_name.get(name).map(|&target| unbound(target))),
                 Callee::Method(type_name, method) => {
                     // On a value of one of this body's type parameters, the
-                    // method of the struct that parameter is here; not
-                    // followed where that is not known.
-                    let struct_name = if params.iter().any(|p| p == type_name) {
-                        bound_to(type_name)
+                    // method of the struct that parameter is here. Where that
+                    // is not known — the call left it unbound, or bound it to
+                    // something that is not a struct — every method of the
+                    // name: the run-time check and compiled code's refusal
+                    // behind this rule do not cover every case.
+                    let targets = if params.iter().any(|p| p == type_name) {
+                        match bound_to(type_name) {
+                            Some(struct_name) => methods(&struct_name, method),
+                            None => by_method_name.get(method).cloned().unwrap_or_default(),
+                        }
                     } else {
-                        Some(type_name.clone())
+                        methods(type_name, method)
                     };
-                    if let Some(struct_name) = struct_name {
-                        out.extend(methods(&struct_name, method).into_iter().map(unbound));
-                    }
+                    out.extend(targets.into_iter().map(unbound));
                 }
             }
         }
@@ -633,7 +656,15 @@ pub(crate) fn check(stmts: &[SemanticStmt]) -> Vec<SemanticError> {
     let mut next = 0;
     while next < instances.len() {
         let mut out = Vec::new();
-        for callee in callees(&instances[next]) {
+        for mut callee in callees(&instances[next]) {
+            // Past the limit a body is followed once, with every type
+            // parameter taken as not known — which reaches at least what any
+            // of its instances reaches. A generic function that calls itself
+            // with its type arguments permuted made the instances grow
+            // factorially (10 parameters: 53 s and 4.7 GB).
+            if instances.len() >= INSTANCE_LIMIT && !ids.contains_key(&callee) {
+                callee = unbound(callee.0);
+            }
             let id = match ids.get(&callee) {
                 Some(&id) => id,
                 None => {
@@ -729,6 +760,53 @@ mod tests {
 
     const GENERIC: &str = "struct V { x: t64 }\nstruct W { y: t64 }\ngene G { fnc touch() -> t64 }\ntop: V = V { x: 1 }\n\
         fnc: t64 <T: G> call(t: T) { t.touch() }\nfnc: t64 <T: G> outer(t: T) { return call(t) }\n";
+
+    /// A name declared inside a block is that block's own: after it, the
+    /// same name in a string is the module's variable again.
+    #[test]
+    fn a_name_declared_in_a_block_ends_with_the_block() {
+        let src = "struct V { x: t64 }\nvv: V = V { x: 1 }\nvm: impl (s: V) {\n    fnc: t64 run() {\n        {\n            vv: t64 = 5\n            s.x += vv\n        }\n        print(\"v={vv}\")\n        return s.x\n    }\n}\nr: t64 = vv.run()\n";
+        assert!(errors(src).contains("method 'vv.run', or something it calls, names 'vv'"), "{}", errors(src));
+    }
+
+    /// A method call on a type parameter that a call does not determine —
+    /// here the generic function's other parameter is unbound, so which is
+    /// which is not known — is taken to reach every method of that name.
+    #[test]
+    fn an_undetermined_method_call_reaches_every_method_of_its_name() {
+        let src = format!("{GENERIC}fnc: t64 <T: G, U> call2(t: T) {{ t.touch() }}\nphen G (v: V) {{ fnc: t64 touch() {{ return top.x }} }}\nvm: impl (s: V) {{\n    fnc: t64 run() {{\n        s.x += 10\n        return call2(s)\n    }}\n}}\nr: t64 = top.run()\n");
+        assert!(errors(&src).contains("method 'top.run', or something it calls, names 'top'"), "{}", errors(&src));
+    }
+
+    /// The bodies followed are bounded: a generic function that calls itself
+    /// with its type arguments permuted used to make them grow factorially
+    /// (ten type parameters: 53 s and 4.7 GB).
+    #[test]
+    fn instances_are_bounded() {
+        let n = 10;
+        let mut src = String::new();
+        for i in 0..n {
+            src.push_str(&format!("struct S{i} {{ v: t64 }}\n"));
+        }
+        src.push_str("struct V { x: t64 }\n");
+        let params: Vec<String> = (0..n).map(|i| format!("T{i}")).collect();
+        let args: Vec<String> = (0..n).map(|i| format!("a{i}: T{i}")).collect();
+        let swapped: Vec<String> = [1, 0].iter().copied().chain(2..n).map(|i| format!("a{i}")).collect();
+        let rotated: Vec<String> = (1..n).chain([0]).map(|i| format!("a{i}")).collect();
+        src.push_str(&format!(
+            "fnc: t64 <{}> perm(k: t64, {}) {{\n    if k <= 0 {{ return 0 }}\n    one: t64 = perm(k - 1, {})\n    return one + perm(k - 1, {})\n}}\n",
+            params.join(", "), args.join(", "), swapped.join(", "), rotated.join(", ")
+        ));
+        src.push_str("top: V = V { x: 1 }\nvm: impl (s: V) {\n    fnc: t64 run() {\n");
+        for i in 0..n {
+            src.push_str(&format!("        l{i}: S{i} = S{i} {{ v: {i} }}\n"));
+        }
+        let locals: Vec<String> = (0..n).map(|i| format!("l{i}")).collect();
+        src.push_str(&format!("        return perm(2, {})\n    }}\n}}\nr: t64 = top.run()\n", locals.join(", ")));
+        let started = std::time::Instant::now();
+        assert_eq!(errors(&src), "");
+        assert!(started.elapsed().as_secs() < 20, "took {:?}", started.elapsed());
+    }
 
     /// A call is followed to a function defined further down the file.
     #[test]

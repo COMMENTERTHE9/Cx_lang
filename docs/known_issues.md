@@ -6357,16 +6357,27 @@ took such a call to reach every method of that name, and so rejected a program
 in which another struct's method named the variable — which ran before, and
 is not a conflict. Found by the review of the decisions document, fixed
 2026-11-20.)* Where a call does not say what the parameter is — it is left
-unbound, or bound to a generic struct's field — the method call is not
-followed, and the second line below decides. What it does not reject: the receiver under
+unbound, another parameter of the function is, or it is bound to a generic
+struct's field — the method call is taken to reach every method of that name.
+*(The second version did not follow such a call at all and left it to the
+second line below. The review of the implementation showed that line is not
+complete: compiled code ran a method that reached its receiver's array
+through `len` while the interpreter stopped. Fixed 2026-11-20.)* The bodies
+followed with their type parameters bound are limited to 2,048; past that a
+body is followed once with them taken as not known, which reaches at least as
+much. *(A generic function that calls itself with its type arguments permuted
+made them grow factorially: ten type parameters took 53 s and 4.7 GB.)* A
+name declared inside a block is that block's own; after the block the same
+name in a string is the outer variable again. *(The walk used to keep it for
+the rest of the method, and missed a `"{vv}"` naming the receiver's
+variable.)* What it does not reject: the receiver under
 any name, any other variable, the caller's own use of the variable while it
 evaluates the arguments, the variable passed to an ordinary parameter, and a
 variable local to a function, which no method can name.
 
 The interpreter's run-time check and compiled code's refusal stay as a second
-line; a program that analysis accepts reaches them only through a method call
-on a type parameter the call does not determine. One tracked program is
-affected: the fixture written for the run-time check.
+line; a program that analysis accepts cannot reach either by this route. One
+tracked program is affected: the fixture written for the run-time check.
 
 Two things the rule is, said plainly. It rejects a **read** of the receiver's
 variable as much as a write, as the run-time check of V5 already did: the
@@ -6659,7 +6670,14 @@ that leaves `T` unbound, or binds it to `?`, is checked for nothing.
   needs struct instantiations in the type system.
 - **A function that instantiates itself with ever larger types** (`g([x])`
   inside `g`) is followed to a nesting depth of 24. Compiled code refuses
-  such a program at 64 instantiations.
+  such a program at 64 instantiations. The work is bounded in two more ways
+  (`generic_scope.rs`): one generic function is checked for at most 256 sets
+  of types reached through other generic functions, all of them together for
+  at most 20,000, and from one call at most 4,096 are followed. A call
+  written with concrete types is always checked. *(The first version bounded
+  only what one call followed, not the work behind it: 1,200 calls of a
+  function to itself took 11 s and 1.7 GB, and 800 calls with distinct types
+  25 s. Found by the review of the implementation.)*
 - **A `T` value where a type is needed but none is declared** — an `if`
   condition, the operand of `!`, an array index. Analysis does not check
   these for a concrete type either (§57 a, §82 b).

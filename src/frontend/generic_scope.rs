@@ -132,12 +132,23 @@ pub(crate) struct GenericCall {
 }
 
 /// A function may instantiate itself with ever larger types — `g([x])`
-/// inside `g` — which has no end. Compiled code refuses such a program at 64
-/// instantiations of one function; here, an instantiation with a type nested
-/// deeper than this is not followed, and neither is anything past this many
-/// instantiations reached from one call.
+/// inside `g` — which has no end; compiled code refuses such a program at 64
+/// instantiations of one function. The check here is bounded the same way, in
+/// three places, so that its work grows with the program and not with what
+/// the program's types can generate. Past a limit an instantiation is not
+/// checked; the interpreter's run-time checks and compiled code's refusals,
+/// which stand behind this rule, then decide.
+///
+/// - a type nested deeper than `DEPTH_LIMIT` is not followed;
+/// - one generic function is checked for at most `PER_FUNCTION_LIMIT` sets of
+///   types reached through other generic functions, and all generic
+///   functions together for at most `TOTAL_LIMIT` — a call written with
+///   concrete types is always checked, whatever these counts;
+/// - from one call, at most `REACH_LIMIT` instantiations are followed.
 const DEPTH_LIMIT: usize = 24;
-const INSTANTIATION_LIMIT: usize = 4096;
+const PER_FUNCTION_LIMIT: usize = 256;
+const TOTAL_LIMIT: usize = 20_000;
+const REACH_LIMIT: usize = 4096;
 
 fn depth(ty: &SemanticType) -> usize {
     match ty {
@@ -146,11 +157,94 @@ fn depth(ty: &SemanticType) -> usize {
     }
 }
 
+/// One generic function with its type parameters bound, and what it breaks.
+struct Instance {
+    callee: FunctionId,
+    bindings: HashMap<String, SemanticType>,
+    /// The instances it calls; worked out when first needed.
+    calls: Option<Vec<usize>>,
+    /// `(obligation, message for the call itself, message for a call that
+    /// reaches it)`.
+    broken: Vec<(usize, String, String)>,
+}
+
+/// Every instance met so far, shared by all the calls checked: what a
+/// function breaks with given types, and what it calls with them, is worked
+/// out once.
+struct Instances<'a> {
+    functions: &'a HashMap<FunctionId, GenericFunction>,
+    by_caller: HashMap<FunctionId, Vec<&'a GenericCall>>,
+    ids: HashMap<String, usize>,
+    all: Vec<Instance>,
+    per_function: HashMap<FunctionId, usize>,
+}
+
+impl<'a> Instances<'a> {
+    fn concrete(bindings: &[(String, SemanticType)]) -> bool {
+        bindings.iter().all(|(_, ty)| !mentions_type_param(ty) && depth(ty) <= DEPTH_LIMIT)
+    }
+
+    /// The instance of `callee` with these types, made if it is new and the
+    /// limits allow (`written`: a call with these types is in the program).
+    fn get(&mut self, callee: FunctionId, bindings: &[(String, SemanticType)], written: bool) -> Option<usize> {
+        let key = format!("{callee:?} {bindings:?}");
+        if let Some(&id) = self.ids.get(&key) {
+            return Some(id);
+        }
+        let count = self.per_function.get(&callee).copied().unwrap_or(0);
+        if !written && (count >= PER_FUNCTION_LIMIT || self.all.len() >= TOTAL_LIMIT) {
+            return None;
+        }
+        let map: HashMap<String, SemanticType> = bindings.iter().cloned().collect();
+        let mut broken = Vec::new();
+        if let Some(function) = self.functions.get(&callee) {
+            for (index, obligation) in function.obligations.iter().enumerate() {
+                if let Some(direct) = violation(obligation, &map, &function.name, true) {
+                    let reached = violation(obligation, &map, &function.name, false).unwrap_or_else(|| direct.clone());
+                    broken.push((index, direct, reached));
+                }
+            }
+        }
+        let id = self.all.len();
+        self.all.push(Instance { callee, bindings: map, calls: None, broken });
+        self.ids.insert(key, id);
+        self.per_function.insert(callee, count + 1);
+        Some(id)
+    }
+
+    /// The generic calls an instance makes, with its own type parameters
+    /// replaced by what they are there.
+    fn calls(&mut self, id: usize) -> Vec<usize> {
+        if let Some(calls) = &self.all[id].calls {
+            return calls.clone();
+        }
+        let callee = self.all[id].callee;
+        let inner_calls: Vec<&'a GenericCall> = self.by_caller.get(&callee).cloned().unwrap_or_default();
+        let mut out = Vec::new();
+        for inner in inner_calls {
+            let composed: Vec<(String, SemanticType)> = inner
+                .bindings
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_type_params(ty.clone(), &self.all[id].bindings)))
+                .collect();
+            if Self::concrete(&composed) {
+                if let Some(target) = self.get(inner.callee, &composed, false) {
+                    if !out.contains(&target) {
+                        out.push(target);
+                    }
+                }
+            }
+        }
+        self.all[id].calls = Some(out.clone());
+        out
+    }
+}
+
 /// Check every generic function's obligations for every set of concrete types
-/// it is reached with — by a call outside every generic function, or through
-/// the generic functions such a call reaches. An error is reported at that
-/// outermost call, and says which function and types; one obligation is
-/// reported once per call, for the first types that break it.
+/// it is reached with — by a call written with concrete types, wherever it is
+/// written, and through the generic functions such a call reaches. An error
+/// is reported at that call, and says which function and types; one
+/// obligation is reported once per call, for the first types that break it.
 pub(crate) fn check_instantiations(
     functions: &HashMap<FunctionId, GenericFunction>,
     calls: &[GenericCall],
@@ -161,59 +255,40 @@ pub(crate) fn check_instantiations(
             by_caller.entry(caller).or_default().push(call);
         }
     }
+    let mut instances = Instances { functions, by_caller, ids: HashMap::new(), all: Vec::new(), per_function: HashMap::new() };
 
-    let concrete = |bindings: &[(String, SemanticType)]| {
-        bindings.iter().all(|(_, ty)| !mentions_type_param(ty) && depth(ty) <= DEPTH_LIMIT)
-    };
     // Earliest call first, and the instantiations a call reaches nearest
     // first, so that what is reported is the first place and the simplest
     // types.
-    let mut roots: Vec<&GenericCall> = calls.iter().filter(|call| concrete(&call.bindings)).collect();
+    let mut roots: Vec<&GenericCall> = calls.iter().filter(|call| Instances::concrete(&call.bindings)).collect();
     roots.sort_by_key(|call| call.pos);
 
     // What a call with given types breaks is the same wherever it is written.
-    let mut found: HashMap<String, Vec<String>> = HashMap::new();
+    let mut found: HashMap<usize, Vec<String>> = HashMap::new();
     let mut errors: Vec<SemanticError> = Vec::new();
     for root in roots {
-        let key = format!("{:?} {:?}", root.callee, root.bindings);
-        let messages = found.entry(key).or_insert_with(|| {
+        let Some(start) = instances.get(root.callee, &root.bindings, true) else { continue };
+        if !found.contains_key(&start) {
             let mut messages = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
             let mut reported: HashSet<(FunctionId, usize)> = HashSet::new();
-            // The last field: whether this is the call itself, or something
-            // it reaches.
-            let mut work: VecDeque<(FunctionId, Vec<(String, SemanticType)>, bool)> =
-                VecDeque::from([(root.callee, root.bindings.clone(), true)]);
-            while let Some((callee, bindings, direct)) = work.pop_front() {
-                if seen.len() >= INSTANTIATION_LIMIT || !seen.insert(format!("{callee:?} {bindings:?}")) {
-                    continue;
-                }
-                let map: HashMap<String, SemanticType> = bindings.iter().cloned().collect();
-                if let Some(function) = functions.get(&callee) {
-                    for (index, obligation) in function.obligations.iter().enumerate() {
-                        if let Some(message) = violation(obligation, &map, &function.name, direct) {
-                            if reported.insert((callee, index)) {
-                                messages.push(message);
-                            }
-                        }
+            let mut visited: HashSet<usize> = HashSet::from([start]);
+            let mut work: VecDeque<usize> = VecDeque::from([start]);
+            while let Some(id) = work.pop_front() {
+                let callee = instances.all[id].callee;
+                for (index, direct, reached) in &instances.all[id].broken {
+                    if reported.insert((callee, *index)) {
+                        messages.push(if id == start { direct.clone() } else { reached.clone() });
                     }
                 }
-                // The generic calls this function makes, with its own type
-                // parameters replaced by what they are here.
-                for inner in by_caller.get(&callee).into_iter().flatten() {
-                    let composed: Vec<(String, SemanticType)> = inner
-                        .bindings
-                        .iter()
-                        .map(|(name, ty)| (name.clone(), substitute_type_params(ty.clone(), &map)))
-                        .collect();
-                    if concrete(&composed) {
-                        work.push_back((inner.callee, composed, false));
+                for next in instances.calls(id) {
+                    if visited.len() < REACH_LIMIT && visited.insert(next) {
+                        work.push_back(next);
                     }
                 }
             }
-            messages
-        });
-        errors.extend(messages.iter().map(|msg| SemanticError { pos: root.pos, msg: msg.clone() }));
+            found.insert(start, messages);
+        }
+        errors.extend(found[&start].iter().map(|msg| SemanticError { pos: root.pos, msg: msg.clone() }));
     }
     errors
 }
@@ -486,6 +561,28 @@ mod tests {
             let call = if caller.contains("big") { "v: t8 = 5\nprint(big(v))\n" } else { "v: t8 = 5\nprint(outer(v))\n" };
             let got = errors(&format!("{caller}{later}{call}"));
             assert!(got.contains("349 does not fit t8"), "{caller}: {got}");
+        }
+    }
+
+    /// The work is bounded, and shared between calls: one function with
+    /// hundreds of calls to itself at ever larger types, and hundreds of calls
+    /// with distinct types to a function that instantiates itself, took
+    /// 11 s and 25 s.
+    #[test]
+    fn the_work_is_bounded() {
+        let mut grows = String::from("fnc: t64 <T> g(k: t64, x: T) {\n    if k <= 0 { return 0 }\n    s: t64 = 0\n");
+        for _ in 0..300 {
+            grows.push_str("    s = s + g(k - 1, [x])\n    s = s + g(k - 1, Ok(x))\n");
+        }
+        grows.push_str("    return s\n}\nprint(g(1, 5))\n");
+        let mut many = String::from("fnc: t64 <T> h(k: t64, x: T) {\n    if k <= 0 { return 0 }\n    return h(k - 1, [x]) + h(k - 1, Ok(x)) + h(k - 1, [[x]])\n}\n");
+        for i in 0..300 {
+            many.push_str(&format!("struct S{i} {{ v: t64 }}\nprint(h(1, S{i} {{ v: {i} }}))\n"));
+        }
+        for src in [grows, many] {
+            let started = std::time::Instant::now();
+            assert_eq!(errors(&src), "");
+            assert!(started.elapsed().as_secs() < 20, "took {:?}", started.elapsed());
         }
     }
 

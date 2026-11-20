@@ -255,11 +255,13 @@ becomes a static rule, with those two as the fallback:
    string — or that anything it can call names. Variables are told apart by
    their binding, not their spelling: a block's own `top`, or a library's, is
    not the entry file's `top`.
-2. Calls are followed by name: a call to a function, a method call on a value
-   of a known struct type, an operator on one. A method call on a value whose
-   type is a type parameter is the method of the struct each call gives that
-   parameter, so a generic function is followed once for each such struct it
-   is reached with.
+2. Calls are followed by name — a call to a function, wherever it is defined,
+   a method call on a value of a known struct type, an operator on one. A
+   method call on a value whose type is a type parameter is the method of the
+   struct each call gives that parameter, so a generic function is followed
+   once for each such struct it is reached with; where a call does not say
+   (a parameter it leaves unbound, or binds to a generic struct's field), it
+   is every method of that name.
 3. A method call `x.m(..)` in which `x`, or a struct or array variable given
    by name for a further receiver, is such a variable **and is in the set of
    `m`** is an analysis error: the method, or something it calls, reaches the
@@ -271,12 +273,13 @@ becomes a static rule, with those two as the fallback:
    it back at the end, so a read by name sees the value from before the call,
    which compiled code would not. The way out is the same for both: reach the
    value through the receiver, or pass what the method needs as an argument.
-5. **Not determined statically, and left to the fallback:** a method call on
-   a type parameter that a call leaves unbound, or binds to a generic
-   struct's field (whose type is not tracked). There the interpreter keeps its
-   run-time check and compiled code keeps its refusal. Every other program
-   that analysis accepts cannot reach either: a variable local to a function
-   cannot be named by a method called on it.
+5. The interpreter keeps its run-time check and compiled code keeps its
+   refusal, as a second line. A program that analysis accepts cannot reach
+   either through this route: a variable local to a function cannot be named
+   by a method called on it, and what the rule cannot determine statically it
+   counts as reached. (The second line is not relied on: the review of the
+   implementation found a method reaching its receiver's array through `len`
+   that compiled code ran while the interpreter stopped.)
 
 A receiver that has the name of its variable (`impl (top: V)` called as
 `top.run()`) names the receiver, not the variable, and is unaffected.
