@@ -119,7 +119,7 @@ impl RunTime {
         let entry = frame.vars.get_mut(&binding).unwrap();
 
         let was_initialized = entry.val.is_some();
-        if entry.ty.is_none() {
+        if entry.ty.is_none() || declared_with_type_parameter(entry.ty.as_ref(), &value) {
             entry.ty = Some(type_of_value(&value));
         }
 
@@ -189,6 +189,8 @@ impl RunTime {
         let value = self.resolve_assigned_value(value, pos)?;
         let logged = value.clone();
         let got = type_of_value(&value);
+        // `y: T = x` inside a generic function: see `declared_with_type_parameter`.
+        let ty = if declared_with_type_parameter(Some(&ty), &value) { got.clone() } else { ty };
         if !value_matches_type(&value, &ty) {
             return Err(RuntimeError::TypeMismatch {
                 pos,
@@ -481,3 +483,39 @@ mod lexical_name_tests {
         assert!(rt.declare(BindingId(1), "secret".into(), None, 0).is_err());
     }
 }
+
+/// Whether a variable was declared with a type parameter — `y: T = x` inside a
+/// generic function — and `value` says what that parameter is here.
+///
+/// The interpreter runs a generic function as it is written, not a copy per
+/// type, so at run time `T` names no type a value could be checked against,
+/// and every such declaration failed with "expected 'typeparam(\"t\")'"
+/// (known-issues §72 i, §74). The variable takes the type of the value it is
+/// given instead, exactly as a parameter declared `x: T` and a variable
+/// declared without a type already do — so a later assignment of another
+/// kind of value is still refused. A value that carries no type of its own
+/// (an unknown) decides nothing, and the next one may.
+fn declared_with_type_parameter(declared: Option<&Type>, value: &Value) -> bool {
+    matches!(declared, Some(Type::TypeParam(_))) && type_of_value(value) != Type::Unknown
+}
+
+#[cfg(test)]
+mod type_parameter_tests {
+    use super::*;
+
+    /// A declaration typed with a type parameter takes the type of a value
+    /// that has one, and is left open by a value that has none.
+    #[test]
+    fn a_type_parameter_declaration_takes_the_type_of_its_value() {
+        let t = Type::TypeParam("t".into());
+        assert!(declared_with_type_parameter(Some(&t), &Value::Num(5)));
+        assert!(declared_with_type_parameter(Some(&t), &Value::Bool(true)));
+        assert!(declared_with_type_parameter(Some(&t), &Value::Array(Vec::new())));
+        // An unknown carries no type: the declaration stays open for the next value.
+        assert!(!declared_with_type_parameter(Some(&t), &Value::Unknown(Type::Unknown)));
+        // A concrete declaration is not touched, nor is a variable with no declared type.
+        assert!(!declared_with_type_parameter(Some(&Type::T64), &Value::Num(5)));
+        assert!(!declared_with_type_parameter(None, &Value::Num(5)));
+    }
+}
+

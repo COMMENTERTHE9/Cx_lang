@@ -1,0 +1,11 @@
+// A `T` local takes the type it is given, as a `T` parameter does, and keeps
+// it: giving it a value of another kind afterwards is refused. (Analysis
+// accepts this program — it does not check a concrete value against `T` —
+// so the interpreter stops at run time and compiled code refuses.)
+fnc: T <T> id(x: T) {
+    y: T = x
+    print("declared")
+    y = "not a T"
+    return y
+}
+print(id(5))

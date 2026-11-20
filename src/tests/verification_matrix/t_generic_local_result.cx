@@ -1,0 +1,17 @@
+// A `T` local holding a Result. The interpreter's answer; compiled code
+// refuses the program, because `id` carries its argument through a local and
+// the payload proof does not follow a value through one (known-issues §72 j).
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+fnc: Result<T> <T> wrap(x: T) {
+    y: T = x
+    return Ok(y)
+}
+r: Result<t64> = Ok(5)
+print(id(r))
+e: Result<t64> = id(Err("no"))
+print(e)
+print(wrap(7))
+print(wrap("s"))

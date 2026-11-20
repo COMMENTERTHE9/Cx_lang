@@ -5611,3 +5611,68 @@ this representation (no addend, data-only targets, no names or sections, fixed
 pointer size) is the design's new §12. `printing_a_module_with_data_twice_…`
 can only fail if the printer consults addresses, which it never did.
 
+## 74. A local declared with a type parameter failed on the interpreter
+
+*(Found 2026-11-18 by the review recorded in §72 (item i); fixed 2026-11-19 on
+`backend/generic-local-interpreter-fix`, as its own change at the owner's
+direction. Present on `submain`.)*
+
+```cx
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+print(id(5))      // interpreter: type mismatch — expected 'typeparam("t")'
+                  //              but got 't128' (exit 1).  Compiled: 5
+```
+
+Every generic function that declares a local of type `T` stopped there on the
+interpreter, whatever `T` was. The interpreter runs a generic function as it
+is written rather than a copy per type, and its check of a declared variable's
+type had no case for a type parameter, so no value matched. Compiled code,
+which specialises the function per type, ran it. Not a silent difference —
+the interpreter stopped — but the reference rejected correct programs.
+
+Fixed in the interpreter only. A variable declared with a type parameter takes
+the type of the value it is given — exactly what a parameter declared `x: T`
+and a variable declared without a type already do — and keeps it:
+
+```cx
+y: T = x          // T is a number here: y is a number from now on
+y = "not a T"     // type mismatch at run time, as for a parameter
+```
+
+A value that carries no type of its own (an unknown bool) leaves the
+declaration open until a value that has one arrives. Declarations with a
+concrete type and containers of `T` (`[3:T]`, `Result<T>`) are unchanged; they
+never failed.
+
+Fixtures: `t_generic_local_scalar_types` (number, string, bool, float,
+reassignment, two type parameters, one generic calling another) and
+`t_generic_local_enum_struct_array` run on both backends and fail on the
+interpreter before the fix. `t_generic_local_result` and
+`t_generic_local_char_handle_unknown` pin the interpreter's answer for types
+compiled code does not lower in that position: a Result carried through a
+local (§72 j), a char, a printed handle, an unknown bool argument.
+`t_generic_local_keeps_its_type` pins the refusal above.
+
+**Found while testing this, not fixed: analysis does not check a concrete
+value against a type parameter.** Both are accepted by analysis:
+
+```cx
+fnc: T <T> f(x: T) { return "not a T" }
+print(f(5))       // interpreter prints: not a T.   Compiled: refused (127),
+                  // with an internal-error message, not "unsupported"
+
+fnc: T <T> g(x: T) {
+    x = "not a T" // interpreter: type mismatch at run time.  Compiled: refused
+    return x
+}
+```
+
+Present on `submain`. The first is the worse of the two: a function declared
+to return `T` returns a string to a caller that asked for a number, and the
+interpreter carries on. Neither is a wrong answer from compiled code. Closing
+it belongs in semantic analysis and is a decision about how strictly a generic
+body is checked; it is recorded here and not changed.
+

@@ -1,0 +1,39 @@
+// The same for an enum, a struct and an array. A struct held in a `T` local is
+// a value like any other: changing the copy that comes back does not change
+// the original.
+enum Color { Red, Green, Blue }
+struct P { x: t64, y: t64 }
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+fnc: T <T> first(a: [3:T]) {
+    x: T = a:[0]
+    return x
+}
+fnc: t64 <T> nth_exists(a: [3:T], i: t64) {
+    x: T = a:[i]
+    return 1
+}
+fnc: t64 <T> total(a: [3:T]) {
+    copy: [3:T] = a
+    return len(copy)
+}
+
+c: Color = id(Color::Green)
+print(c)
+print(when id(c) { Color::Green => 1, _ => 2 })
+
+p: P = P { x: 1, y: 2 }
+q: P = id(p)
+print(q.x + q.y)
+q.x = 10
+print(p.x)
+print(q.x)
+
+xs: [3:t64] = [1, 2, 3]
+print(first(xs))
+print(first([4, 5, 6]))
+print(first(["a", "b", "c"]))
+print(nth_exists(xs, 2))
+print(total(xs))
