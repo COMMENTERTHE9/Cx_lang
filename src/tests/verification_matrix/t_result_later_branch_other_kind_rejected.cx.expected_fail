@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+A Result<t64> in a later arm of a when value where Result<str> is declared: type mismatch in analysis.

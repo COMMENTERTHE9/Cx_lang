@@ -1,0 +1,8 @@
+// An `if`/`when` value is typed by its first branch, so a `Result` of the
+// wrong payload type in a later branch used to pass: the interpreter then held
+// 300 in a `Result<t8>`, and compiled code refused the program. With the
+// branches the other way round it was already a type mismatch.
+big: Result<t64> = Ok(300)
+c: bool = false
+x: Result<t8> = if c { Err("no") } else { big }
+print(x)

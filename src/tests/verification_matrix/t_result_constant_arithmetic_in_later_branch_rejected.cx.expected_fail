@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+Ok(1 + 2) in a later branch where Result<t8> is declared: type mismatch in analysis, as in the first branch.

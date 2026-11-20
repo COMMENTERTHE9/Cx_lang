@@ -1,0 +1,9 @@
+// `.copy.free` hands the value over and nothing is written back, so a
+// variable that can hold only an `Err` may be passed where a `Result<t64>`
+// parameter is declared — unlike `.copy`, which could write an `Ok` back
+// into it.
+fnc: t64 look(r.copy.free: Result<t64>) { return 0 }
+let e
+e = Err("x")
+print(e)
+print(look(e.copy.free))

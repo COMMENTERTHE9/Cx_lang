@@ -5771,20 +5771,27 @@ Two things follow that are worth stating:
   `v: Result<t64> = Err("not yet")` — and it can.
 
 **What changes for existing programs.** Each of these ran on the interpreter
-before and is now a semantic error on both backends. Compiled code already
-refused the first five (§70 c, §72 a, §72 b); it ran the last when the value
-happened to fit.
+before and is now a semantic error on both backends. Compiled code refused
+some of them and ran others when the value happened to fit — the "Before"
+column says which. *(Corrected after the independent review: this paragraph
+used to say compiled code already refused the first five. It ran
+`c: Result<t8> = Ok(1 + 2)`, the `.copy` of an `Err`-only variable, and the
+generic row when the second argument was a literal, and gave the
+interpreter's answer for each.)*
 
 | Form | Before | Now |
 |---|---|---|
 | `Result<t64>` where `Result<t8>` is declared (variable, argument, return, field) | accepted; value not converted | error |
 | `Result<t64>` where `Result<f64>` is declared, or the reverse | accepted | error |
-| `Ok(n)` or `Ok(1 + 2)` with a `t64` payload where `Result<t8>` is declared | accepted | error |
-| an `Err`-only variable passed `.copy` to a typed `Result` parameter | accepted | error |
-| a generic `T` bound to `Result<t8>` by one argument and given a `Result<t64>` by another | accepted | error |
+| `Ok(n)` or `Ok(1 + 2)` with a `t64` payload where `Result<t8>` is declared | accepted; `Ok(1 + 2)` ran on both backends | error |
+| an `Err`-only variable passed `.copy` to a typed `Result` parameter | accepted; ran on both backends | error |
+| a generic `T` bound to `Result<t64>` by one argument and given a `Result` that does not fit it by another | accepted | error |
 | an untyped variable holding `Ok(5)` where `Result<t8>` is declared | accepted; ran on both backends | error |
+| a float literal as the `Ok` payload where a whole-number payload is declared (`r: Result<t8> = Ok(2.5)`) | accepted; the interpreter kept 2.5, compiled code refused | error |
+| `Ok(1)` where `Result<f64>` is declared | accepted; the interpreter kept the whole number 1 | the payload is the float 1.0, as `x: f64 = 1` is. `assert_eq(f, Ok(1))` then compares a float with a whole number and fails; write `Ok(1.0)` |
 
-Of the 753 tracked programs, two are affected, both fixtures added on
+Of the tracked programs (the review replayed all 940 `.cx` files on both
+backends, before and after), two are affected, both fixtures added on
 2026-11-18 to pin what compiled code then accepted:
 `t_result_small_constant_at_a_narrow_type` contained the last form and
 `Ok(100 + 27)` at a `Result<t8>` — it now holds the forms that remain legal —
@@ -5793,13 +5800,68 @@ and `t_result_of_unknown_kind_at_a_typed_use` reached its `Ok(5)` through the
 `t_result_copy_of_err_only_variable_rejected`; it reaches it through the
 route described next instead. No fixture older than this work changes.
 
-**Compiled code's refusals are kept.** The payload proofs of §70 and §72 still
-run. One route to an `Ok` under the type `Result<unknown>` remains open —
-analysis does not check a generic body against its type parameter (§74), so
-`fnc: T <T> launder(x: T) { return Ok(5) }` returns an `Ok(5)` to a caller for
-whom `T` is `Result<unknown>` — and until that is closed too, compiled code
-may not treat `Result<unknown>` as "certainly an Err". When it is, the
-refusals of §72 j (the error table, a forwarder through a local) can be lifted.
+**Found by the independent review of this rule, and fixed.**
+
+- *A later branch of an `if`/`when` value was not checked.* Such a value is
+  typed by its first branch, so `x: Result<t8> = if c { Err("no") } else { big }`
+  passed with a `Result<t64>` `big` (the interpreter printed `Ok(300)`;
+  compiled code refused), where the branches the other way round were already
+  an error. In every position a `Result` type is declared, each branch is now
+  checked against it (`check_branch_tail_fits`). This also turns a refusal the
+  first version of the rule introduced into an analysis error:
+  `x: Result<t8> = if c { Ok(1) } else { Ok(1 + 2) }` ran on both backends
+  before the rule, was refused by compiled code under it, and is now rejected
+  like `Ok(1 + 2)` in the first branch.
+- *A float literal was cut to fit a whole-number payload.* The first version
+  converted a literal `Ok` payload to the declared type, and so turned
+  `r: Result<t8> = Ok(2.5)` into `Ok(2)` and `Ok(1000.5)` into `Ok(127)` on
+  both backends — the lossy conversion the rule exists to forbid. A float
+  literal where a whole-number payload is declared is now an error.
+- *The conversion defeated the rule for a payload of no declared width.*
+  `let u`, `u = Ok(5)`, `u = Ok(2.5)` was accepted, where the same with a float
+  variable is not. A literal is converted only to a declared width or to a
+  float.
+- *Two things were rejected that should not have been.* A literal beside a
+  bound type parameter — `pick(r8, Ok(5))` with `fnc: T <T> pick(a: T, b: T)`
+  — was a "T is bound to Result<t8> but argument 2 has Result<integer>" error:
+  what `T` is bound to is now the literal's declared type. And a `.copy.free`
+  argument, which is not written back, needed the exact payload type `.copy`
+  does. While there, an `Err(..)` or a narrower `Result` given *before* the
+  argument that fixes `T` is accepted, as it already was given after it.
+
+**Compiled code's refusals are kept, and several routes remain open.** The
+payload proofs of §70 and §72 still run, and must: the review found that the
+generic body of §74 is not the only way left to get a payload analysis did not
+check under a declared `Result` type. Every one of these is accepted by
+analysis, runs on the interpreter with a payload of the wrong type, and is
+refused by compiled code (127) — none is a silent difference:
+
+- a generic body: `fnc: T <T> launder(x: T) { return Ok(5) }`, and an unbound
+  `fnc: Result<T> <T> mk() { return Ok(5) }` read as a `Result<str>` (§74);
+- an untyped `.copy` parameter: `fnc: t64 fill(r.copy) { r = Ok(300); return 0 }`
+  called with a `Result<t8>` variable — the by-address check has no declared
+  type to compare with;
+- a generic struct's field: `struct B<T> { r: Result<T> }`, `b: B = B<t64> {..}`,
+  then `x: Result<t8> = b.r` — the field's type still names `T`;
+- a `copy_into` bundle field read at a narrower type;
+- an untyped whole-number literal wider than 64 bits, which the interpreter
+  keeps whole (`let u`, `u = Ok(99999999999999999999)`, `w: Result<t64> = u`);
+- `Ok(n)` where `n` is an untyped variable that was a float and is later
+  assigned a whole number in a branch.
+
+A seventh the review found — a `Result` further receiver assigned inside a
+method — was a silent difference and is closed by §76f. Until these are
+closed, compiled code may not treat `Result<unknown>` as "certainly an Err",
+and the refusals of §72 j (the error table, a forwarder through a local) stay.
+
+**The second line of defence is now hard to reach.** The lowering tests that
+pin compiled code's refusals were re-routed through a generic body when their
+inputs became analysis errors. The review found that they all end at one
+check ("not proven"), that the other ("incompatible Result payload kind") is
+reached by none of about 76,000 generated programs, and that the accepted
+cases the old tests had are gone. That is recorded here rather than papered
+over: the kind check is unpinned and probably unreachable while analysis
+holds.
 
 Fixtures. Accepted, both backends: `t_result_payload_types_that_fit`,
 `t_result_small_constant_at_a_narrow_type`. Accepted, interpreter only
@@ -5816,4 +5878,17 @@ and pinned with them, `t_result_copy_narrower_parameter_rejected` and
 `a_result_payload_is_never_narrowed_or_reinterpreted`,
 `a_copy_argument_has_exactly_the_parameters_result_type`,
 `result_assignments_are_checked_by_payload_type`.
+
+Added with the review's fixes. Rejected on both:
+`t_result_later_branch_narrower_rejected`,
+`t_result_later_branch_other_kind_rejected`,
+`t_result_constant_arithmetic_in_later_branch_rejected`,
+`t_result_float_literal_into_whole_payload_rejected`. Accepted, both backends:
+`t_result_literal_branches_take_the_declared_type`,
+`t_result_generic_arguments_agree`, `t_result_copy_free_of_err_only_variable`
+(the parity harness counts the last as SKIP: `.copy.free` prints its
+deprecation warning, and a run that writes to stderr is not counted as a
+pass). Unit test `every_branch_of_a_result_value_is_checked_and_literals_are_not_cut`.
+The two earlier Result generators, fresh seeds on the fixed build: 1,300
+programs, no disagreement.
 
