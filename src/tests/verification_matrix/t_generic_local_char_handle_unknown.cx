@@ -13,7 +13,9 @@ let g
 g = id(h)
 print(g.val)
 
-// An unknown decides nothing about the local's type; the unknown comes back.
+// A bool variable that holds the unknown state is still a bool: the local is
+// a bool, and the unknown comes back. (A bare `?` is the value that decides
+// nothing about the local's type: `t_generic_local_raw_unknown`.)
 u: bool = ?
 v: bool = id(u)
 print(when v { unknown => 1, _ => 2 })

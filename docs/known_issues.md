@@ -5288,7 +5288,7 @@ is not this change. Nothing is open here.)*
 before anything was proposed for integration. This entry is numbered 72 because
 71 is taken on the static-data branch, which is merged on top of this one. One
 finding was blocking; (g) is deliberately not changed; (i) is found and not
-fixed.)*
+fixed here — it is fixed in §74.)*
 
 **a. Blocking: an unproven payload kind was taken on trust (§70a).** §70a made
 a use "go by the declared type" when the value graph could not say what a
@@ -5634,30 +5634,42 @@ which specialises the function per type, ran it. Not a silent difference —
 the interpreter stopped — but the reference rejected correct programs.
 
 Fixed in the interpreter only. A variable declared with a type parameter takes
-the type of the value it is given — exactly what a parameter declared `x: T`
-and a variable declared without a type already do — and keeps it:
+the type of the value it is given — what a parameter declared `x: T` and a
+variable declared without a type already do — and keeps it:
 
 ```cx
 y: T = x          // T is a number here: y is a number from now on
 y = "not a T"     // type mismatch at run time, as for a parameter
 ```
 
-A value that carries no type of its own (an unknown bool) leaves the
-declaration open until a value that has one arrives. Declarations with a
+A value that carries no type of its own — a bare `?` — leaves the declaration
+open until a value that has one arrives. (A bool *variable* that holds the
+unknown state is a bool, and the local becomes one.) Declarations with a
 concrete type and containers of `T` (`[3:T]`, `Result<T>`) are unchanged; they
 never failed.
 
+**The other declaration form, found by the independent review of this fix.**
+`let y: T` followed by `y = x` failed the same way, for a second reason:
+analysis read the declared type of a `let` without the function's type
+parameters in scope, so `T` reached the interpreter as a struct named "T"
+(`expected 'struct("t")' but got 't128'`). Compiled code ran it. Analysis now
+reads it as a typed declaration's type is read. Fixture
+`t_generic_local_untyped_let`.
+
 Fixtures: `t_generic_local_scalar_types` (number, string, bool, float,
-reassignment, two type parameters, one generic calling another) and
-`t_generic_local_enum_struct_array` run on both backends and fail on the
-interpreter before the fix. `t_generic_local_result` and
-`t_generic_local_char_handle_unknown` pin the interpreter's answer for types
-compiled code does not lower in that position: a Result carried through a
-local (§72 j), a char, a printed handle, an unknown bool argument.
-`t_generic_local_keeps_its_type` pins the refusal above.
+reassignment, two type parameters, one generic calling another),
+`t_generic_local_enum_struct_array`, `t_generic_local_untyped_let` and
+`t_generic_local_result_ok` (a `T` local holding or wrapped in an `Ok`) run on
+both backends; the first three fail on the interpreter before the fix.
+`t_generic_local_result` (a `T` local holding an `Err`, refusal R5),
+`t_generic_local_char_handle_unknown` and `t_generic_local_raw_unknown` pin
+the interpreter's answer where compiled code refuses: a char, a printed
+handle, an unknown passed for a type parameter. `t_generic_local_keeps_its_type`
+pins the refusal above; it fails on a build without the fix as well, at the
+declaration, and guards against a fix that accepts any value.
 
 **Found while testing this, not fixed: analysis does not check a concrete
-value against a type parameter.** Both are accepted by analysis:
+value against a type parameter.** Each of these is accepted by analysis:
 
 ```cx
 fnc: T <T> f(x: T) { return "not a T" }
@@ -5668,11 +5680,36 @@ fnc: T <T> g(x: T) {
     x = "not a T" // interpreter: type mismatch at run time.  Compiled: refused
     return x
 }
+
+fnc: T <T> h(x: T) {
+    y: T = "not a T"   // since this fix the interpreter accepts the
+    return y           // declaration and prints: not a T.  Compiled: refused
+}
+
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 349]
+    return c:[1]
+}
+a: t8 = 5
+print(second(a))  // interpreter 349.   Compiled: 93 — SILENT, exit 0 on both
 ```
 
-Present on `submain`. The first is the worse of the two: a function declared
-to return `T` returns a string to a caller that asked for a number, and the
-interpreter carries on. Neither is a wrong answer from compiled code. Closing
-it belongs in semantic analysis and is a decision about how strictly a generic
-body is checked; it is recorded here and not changed.
+All present on `submain`, except that `h` stopped at the declaration before
+this fix. The first is a function declared to return `T` returning a string
+to a caller that asked for a number, with the interpreter carrying on. **The
+last is a silent difference**, found by the review: a number literal beside a
+`T` element in an array literal is accepted for every `T`, the interpreter
+keeps the literal as written, and compiled code — which knows the element
+type once the function is specialised — narrows it on the way into the array
+(349 becomes 93 in a `t8`, `true` in a `bool`; 2.5 becomes 2 in a `t64`). It
+is closed on the compiled side by a refusal on a later branch of this stack
+(§78). The interpreter's answer is still not a `t8`.
 
+Closing the gap itself belongs in semantic analysis and is a decision about
+how strictly a generic body is checked — whether a concrete value may stand
+where a type parameter is declared at all. It is recorded here and put to the
+owner; it is not changed.
+
+Also noted by the review and left as it is: a bare `?` passed for `T` leaves
+a `T` *local* open, as above, but pins a `T` *parameter* as unknown, so
+`x = 5` on the parameter is a type mismatch where `y = 5` on the local is not.
