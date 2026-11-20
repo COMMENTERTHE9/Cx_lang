@@ -1,0 +1,11 @@
+// A `T` local holding an `Err`. The interpreter's answer; compiled code
+// refuses this one program, because `id` carries its argument through a local
+// and nothing then declares or proves what the call returns when it is given
+// an `Err(..)` (known-issues §72 j; refusal R5). A `T` local holding an `Ok`
+// runs on both backends: `t_generic_local_result_ok`.
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+e: Result<t64> = id(Err("no"))
+print(e)

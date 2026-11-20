@@ -945,10 +945,16 @@ impl Analyzer {
             }
             Stmt::Decl { name, ty, pos } => {
                 let binding = self.declare(name, ty.clone(), None, false, *pos)?;
+                // The declared type is read with the enclosing function's type
+                // parameters in scope, as a typed declaration's is. Read
+                // without them, `let y: T` in a generic function declared `y`
+                // as a struct named "T", and the interpreter then refused the
+                // first value assigned to it (known-issues §74).
+                let type_params = self.current_type_params.clone();
                 Ok(SemanticStmt::Decl {
                     binding,
                     name: name.clone(),
-                    ty: ty.clone().map(|t| semantic_type_from_decl(t, &[])),
+                    ty: ty.clone().map(|t| semantic_type_from_decl(t, &type_params)),
                     pos: *pos,
                 })
             }

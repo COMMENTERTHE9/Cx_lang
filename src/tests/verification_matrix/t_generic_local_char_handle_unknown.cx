@@ -1,0 +1,21 @@
+// A `T` local holding a char, a handle, and a bool that is unknown. The
+// interpreter's answer; compiled code does not lower any of the three here.
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+c: char = id('q')
+print(c)
+
+let h
+h = Handle.new(5)
+let g
+g = id(h)
+print(g.val)
+
+// A bool variable that holds the unknown state is still a bool: the local is
+// a bool, and the unknown comes back. (A bare `?` is the value that decides
+// nothing about the local's type: `t_generic_local_raw_unknown`.)
+u: bool = ?
+v: bool = id(u)
+print(when v { unknown => 1, _ => 2 })

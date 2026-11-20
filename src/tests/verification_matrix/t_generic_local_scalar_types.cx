@@ -1,0 +1,54 @@
+// A local declared with a type parameter — `y: T = x` — holds whatever type
+// the function was called with. The interpreter used to stop at every such
+// declaration ("expected 'typeparam("t")'"), in every generic function that
+// has one; compiled code always ran them.
+fnc: T <T> id(x: T) {
+    y: T = x
+    return y
+}
+fnc: T <T> pick(a: T, b: T, second: bool) {
+    y: T = a
+    if second { y = b }
+    return y
+}
+fnc: A <A, B> left(a: A, b: B) {
+    x: A = a
+    y: B = b
+    return x
+}
+fnc: T <T> twice(x: T) {
+    y: T = id(x)
+    z: T = id(y)
+    return z
+}
+
+// A number: a literal, a t64, a t8.
+print(id(5))
+n: t64 = 41
+print(id(n) + 1)
+small: t8 = 7
+print(id(small))
+
+// A string, the empty string included.
+print(id("s"))
+s: str = "hello"
+t: str = id(s)
+print(t)
+print(id("") == "")
+
+// A bool and a float.
+print(id(true))
+b: bool = false
+if id(b) { print("yes") } else { print("no") }
+print(id(1.5))
+f: f64 = 2.25
+print(id(f))
+
+// Reassigned inside the function, two parameters, one generic calling another.
+print(pick(1, 2, false))
+print(pick(1, 2, true))
+print(pick("a", "b", true))
+print(left(1, "s"))
+print(left("s", 1))
+print(twice(9))
+print(twice("deep"))

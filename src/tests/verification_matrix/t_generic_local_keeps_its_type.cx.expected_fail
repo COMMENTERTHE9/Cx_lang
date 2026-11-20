@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=trap
+A string is assigned to a local whose type parameter is a number here: type mismatch on the interpreter; compiled code refuses the program.
