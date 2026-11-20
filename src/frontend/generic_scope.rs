@@ -479,6 +479,14 @@ mod tests {
             "this call reaches 'g' with T = [1: t64], but its body uses a T value where t64 is declared: [1: t64] is not t64"
         );
         assert_eq!(errors("fnc: t64 <T> g(x: T) { g([x]) }\nprint(g(1))\n"), "");
+        // A call written before the function it calls is defined is followed
+        // too, from a plain function and from a generic one.
+        let later = "fnc: T <T> second(x: T) {\n c: [2: T] = [x, 349]\n return c:[1]\n}\n";
+        for caller in ["fnc: t8 big(a: t8) { return second(a) }\n", "fnc: T <T> outer(x: T) { return second(x) }\n"] {
+            let call = if caller.contains("big") { "v: t8 = 5\nprint(big(v))\n" } else { "v: t8 = 5\nprint(outer(v))\n" };
+            let got = errors(&format!("{caller}{later}{call}"));
+            assert!(got.contains("349 does not fit t8"), "{caller}: {got}");
+        }
     }
 
     /// A generic struct's type parameter is not the function's: struct type

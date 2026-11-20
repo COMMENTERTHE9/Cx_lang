@@ -1,0 +1,11 @@
+// What a generic body needs of `T` is checked for every call, including one
+// written before the function is defined: `big` gives `second` a t8, and 349
+// does not fit one. (The interpreter used to print 349 from a function that
+// returns a t8; compiled code refused the call.)
+fnc: t8 big(a: t8) { return second(a) }
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 349]
+    return c:[1]
+}
+v: t8 = 5
+print(big(v))

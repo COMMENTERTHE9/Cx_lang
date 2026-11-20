@@ -6712,6 +6712,19 @@ The interpreter's run-time checks and compiled code's refusals stay behind the
 rule. Their unit tests reach them by analysing without it
 (`generic_scope::unchecked`, test builds only).
 
+*(Found by the independent review of the implementation, fixed 2026-11-20: a
+call written **before** the function it calls was not followed. The function
+pre-pass gave each top-level function an id so that such a call could be
+checked, and the definition then took a second id; the call named the first,
+which no function had. The definition now keeps the pre-pass id. The same
+mismatch is why compiled code refused every forward call to a generic
+function — "unresolved semantic artifact reached lowering: function 'twice'"
+— and those now compile and agree with the interpreter. The receiver rule of
+§76h was affected the same way. Fixtures
+`t_generic_function_called_before_its_definition` (both backends),
+`t_generic_function_called_before_its_definition_rejected`,
+`t_receiver_variable_reached_through_a_later_function_rejected`.)*
+
 Fixtures, both backends: `t_generic_values_of_every_kind`,
 `t_generic_value_where_another_type_is_declared`,
 `t_generic_array_literal_element_that_fits`. Analysis errors on both:

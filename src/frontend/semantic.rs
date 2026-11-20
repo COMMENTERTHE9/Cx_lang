@@ -1729,12 +1729,21 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
                 ));
             }
         }
-        let func_id = self.fresh_function();
-        self.current_function_id = Some(func_id);
-        self.declare(name, ret_ty.clone(), None, true, pos)?;
         // A function declared anywhere but the top level is NESTED and gets a
         // name of its own in the program (`VarInfo::function_key`).
         let nested = !is_method && self.scopes.len() > 1;
+        // A top-level function already has an id: the function pre-pass of
+        // `analyze_modules` gave it one, so that a call written before the
+        // definition can be checked. The definition keeps that id. Taking a
+        // second one here left every such call naming an id no function had:
+        // the whole-program checks did not follow it (known-issues §81, §76h)
+        // and compiled code could not find the generic function it called.
+        let func_id = match self.funcs.get(name) {
+            Some(info) if !nested && !is_method => info.id,
+            _ => self.fresh_function(),
+        };
+        self.current_function_id = Some(func_id);
+        self.declare(name, ret_ty.clone(), None, true, pos)?;
         let program_name = if nested {
             let unique = format!("{name}#{}", func_id.0);
             match &self.own_module_key {

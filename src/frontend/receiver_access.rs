@@ -730,6 +730,13 @@ mod tests {
     const GENERIC: &str = "struct V { x: t64 }\nstruct W { y: t64 }\ngene G { fnc touch() -> t64 }\ntop: V = V { x: 1 }\n\
         fnc: t64 <T: G> call(t: T) { t.touch() }\nfnc: t64 <T: G> outer(t: T) { return call(t) }\n";
 
+    /// A call is followed to a function defined further down the file.
+    #[test]
+    fn a_call_to_a_later_function_is_followed() {
+        let src = "struct V { x: t64 }\ntop: V = V { x: 1 }\nvm: impl (s: V) {\n    fnc: t64 run(c: bool) {\n        s.x += 10\n        if c { return peek() }\n        return s.x\n    }\n}\nfnc: t64 peek() { return top.x }\nr: t64 = top.run(false)\n";
+        assert!(errors(src).contains("method 'top.run', or something it calls, names 'top'"), "{}", errors(src));
+    }
+
     /// A method call on a value of a type parameter is the method of the
     /// struct each call gives that parameter — not every method of its name.
     #[test]

@@ -1,0 +1,41 @@
+// A call written before the function it calls is defined is the same call.
+// Compiled code used to refuse every such call to a generic function — it could
+// not find the function the call named — and the whole-program checks of a
+// generic body did not follow it. Each of these now runs on both backends.
+struct P { x: t64, y: t64 }
+fnc: t64 run(a: t64) { return twice(a) + id(3) }
+fnc: Result<t64> go(n: t64) {
+    v: t64 = unwrap(wrap(n))?
+    return Ok(v + 1)
+}
+fnc: t64 sum(p: P) {
+    q: P = keep(p)
+    xs: [2: t64] = pair(q.x)
+    return xs:[0] + xs:[1] + q.y
+}
+fnc: t64 <T> count(x: T, n: t64) {
+    if n == 0 { return 0 }
+    return 1 + later(x, n - 1)
+}
+fnc: T <T> id(x: T) { return x }
+fnc: T <T> twice(x: T) { return id(id(x)) }
+fnc: Result<T> <T> wrap(x: T) { return Ok(x) }
+fnc: Result<T> <T> unwrap(r: Result<T>) {
+    v: T = r?
+    return Ok(v)
+}
+fnc: T <T> keep(x: T) {
+    y: T = x
+    return y
+}
+fnc: [2: T] <T> pair(x: T) { return [x, x] }
+fnc: t64 <T> later(x: T, n: t64) { return count(x, n) }
+print(run(5))
+s: str = twice("s")
+print(s)
+a8: t8 = 120
+print(twice(a8))
+print(go(41))
+print(sum(P { x: 3, y: 4 }))
+print(count("a", 5))
+print(count(2.5, 3))
