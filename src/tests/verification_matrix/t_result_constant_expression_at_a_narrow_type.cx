@@ -31,3 +31,9 @@ fnc: Result<t8> plus_one(r: Result<t8>) {
     return Ok(v)
 }
 print(plus_one(Ok(2 * 60)))
+q: Result<t8> = Ok(1000 / 9)
+print(q)
+m: Result<t8> = Ok(-1000 % 300)
+print(m)
+n: Result<t8> = Ok(-7 / 2)
+print(n)

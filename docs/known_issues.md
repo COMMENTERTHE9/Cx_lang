@@ -5765,13 +5765,14 @@ Two things follow that are worth stating:
   `return Ok(-128)` are a `Result<t8>`, range-checked. So, by the owner's
   decision of 2026-11-20, is `Ok(1 + 2)`: where a whole-number payload type is
   declared and the payload is a constant whole-number expression — literals,
-  unary minus, `+`, `-`, `*`, with every intermediate value inside a `t64` —
+  unary minus, `+`, `-`, `*`, `/` and `%` (not by zero), with every
+  intermediate value inside a `t64` —
   analysis works out its value, and the payload is that value at the declared
   type (`constant_whole_number`). A constant that does not fit is an error
   ("the constant 200 does not fit t8"), not a wrapped value: unlike
   `x: t8 = 100 + 100`, a `Result`'s payload is converted only when that is
-  provably safe. Anything analysis cannot evaluate — a variable, a division, a
-  call — has its own type: `Ok(n + 1)` with a `t64` `n` is a `Result<t64>`,
+  provably safe. Anything analysis cannot evaluate — a variable, a division
+  by zero, a call — has its own type: `Ok(n + 1)` with a `t64` `n` is a `Result<t64>`,
   and an untyped variable given `Ok(5)` is a `Result` of a number of no
   declared width and cannot be read as a `Result<t8>`: analysis sees its
   type, not the 5. *(The first version of this rule converted literals only,
