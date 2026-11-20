@@ -6701,3 +6701,53 @@ Fixtures, both backends: `t_generic_values_of_every_kind`,
 `generic_scope.rs`; the lowering tests of §70, §72 and §78 and
 `specialized_module_enum_stores_preserve_semantic_identity` assert both the
 analysis error and the refusal behind it.
+
+## 82. Open: found by the review of the 2026-11-20 decisions, present on `submain`, not changed
+
+*(Found 2026-11-20 by the independent review of
+`docs/backend/cx_decisions_2026_11_20.md`; each reproduced here on `submain`
+(`d4b2c06`) and on `backend/value-alias-semantics`. None is caused by the
+work of November 2026 and none is inside the six decisions, so they are
+recorded and put to the owner rather than changed.)*
+
+**a. A generic struct's field value, used where a number of a declared width
+is declared: a silent difference.** Exit 0 on both backends.
+
+```cx
+struct Box<T> { v: T }
+struct S { a: t8 }
+b: Box = Box<t64> { v: 300 }
+xs: [2: t8] = [b.v, 1]
+print(xs:[0])                    // interpreter 300, JIT 44
+s: S = S { a: b.v }
+print(s.a)                       // interpreter 300, JIT 44
+c: Box = Box<t8> { v: 1 }
+c = b
+print(c.v)                       // interpreter 300, JIT 44
+f: Box = Box<f64> { v: 2.5 }
+ys: [2: t64] = [f.v, 1]
+print(ys:[0])                    // interpreter 2.5, JIT 2
+```
+
+A variable's type is `Box`, without its type argument, so analysis does not
+know what `b.v` is: it matches it with every declared type and inserts no
+conversion (a conversion would need the source type, §43). The interpreter
+keeps the value as it is; compiled code, storing into the declared layout,
+narrows it. In a non-generic program the same shapes are converted on both
+backends (`[w, 1]` at a `[2: t8]` holds 44) or rejected (a `[2: t64]` where a
+`[2: t8]` is declared), so compiled code's answer is the one the rules give
+and the interpreter's is not.
+
+Closing it needs a struct's type arguments to be part of its type — in
+analysis, so that `b.v` is a t64 and `c = b` between a `Box<t64>` and a
+`Box<t8>` is a type error. That is a change to the type representation every
+stage reads, not a bounded fix; it is the same gap that keeps a generic
+struct's fields out of §75 and §81.
+
+**b. A value of the wrong type where no type is declared.** Analysis accepts
+`!n` for a number and `a:[s]` for a string index. Both backends then fail,
+neither with a message that names the problem: the interpreter reports a
+type mismatch of "unknown" and an "invalid assignment target"; compiled code
+fails to build the first and refuses the second. Not a silent difference. (A
+number or a string as an `if` or `while` condition is §57 a.)
+
