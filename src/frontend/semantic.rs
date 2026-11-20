@@ -5121,11 +5121,12 @@ fn same_element_type(expected: &SemanticType, got: &SemanticType) -> bool {
 }
 
 /// The value of an expression made only of whole-number literals, unary minus
-/// and `+ - *`, when no step leaves the `t64` range — so that the interpreter
-/// and compiled code, which evaluate it at run time, compute this same value.
-/// Division and remainder are left out (they have their own rules for zero),
-/// and so is anything that is not written as a number: a variable, a `const`,
-/// a call. `None` when the expression is not such a constant.
+/// and `+ - * / %`, when no step leaves the `t64` range — so that the
+/// interpreter and compiled code, which evaluate it at run time, compute this
+/// same value. `/` and `%` round toward zero on both, as here; dividing by
+/// zero has no value (both backends stop there), so it is not a constant.
+/// Neither is anything that is not written as a number: a variable, a
+/// `const`, a call. `None` when the expression is not such a constant.
 pub(crate) fn constant_whole_number(expr: &SemanticExpr) -> Option<i128> {
     let in_range = |v: i128| i64::try_from(v).is_ok().then_some(v);
     match &expr.kind {
@@ -5142,6 +5143,8 @@ pub(crate) fn constant_whole_number(expr: &SemanticExpr) -> Option<i128> {
                 Op::Plus => a.checked_add(b)?,
                 Op::Minus => a.checked_sub(b)?,
                 Op::Mul => a.checked_mul(b)?,
+                Op::Div => a.checked_div(b)?,
+                Op::Mod => a.checked_rem(b)?,
                 _ => return None,
             })
         }
@@ -7433,7 +7436,12 @@ print(result + result2)
             // value provably fits; anything analysis cannot evaluate is a t64.
             ("c: Result<t8> = Ok(100 + 100)\n", "the constant 200 does not fit t8"),
             ("c: Result<t8> = Ok(-(100 + 29))\n", "the constant -129 does not fit t8"),
-            ("c: Result<t8> = Ok(6 / 2)\n", "expected Result<t8>, got Result<t64>"),
+            // Dividing by zero has no value, and a step outside a t64 is not
+            // followed.
+            ("c: Result<t8> = Ok(6 / 0)\n", "expected Result<t8>, got Result<t64>"),
+            ("c: Result<t8> = Ok(6 % 0)\n", "expected Result<t8>, got Result<t64>"),
+            ("c: Result<t8> = Ok(1000 / 3)\n", "the constant 333 does not fit t8"),
+            ("c: Result<t8> = Ok(9223372036854775807 + 1 - 9223372036854775807)\n", "expected Result<t8>, got Result<t64>"),
             ("n: t64 = 3\nc: Result<t8> = Ok(n + 1)\n", "expected Result<t8>, got Result<t64>"),
             ("c: Result<f64> = Ok(1 + 2)\n", "expected Result<f64>, got Result<t64>"),
             ("fnc: t64 take8(p: Result<t8>) { return 0 }\nbig: Result<t64> = Ok(300)\nprint(take8(big))\n", "expected Result<t8>, got Result<t64>"),
@@ -7453,6 +7461,7 @@ print(result + result2)
             "flag: bool = true\nx: Result<t8> = if flag { Ok(3) } else { Err(\"no\") }\nprint(x)\n",
             "fnc: t64 fill(r.copy: Result<t64>) { r = Ok(5)\n return 0 }\nv: Result<t64> = Err(\"not yet\")\nx: t64 = fill(v.copy)\nprint(v)\n",
             "fnc: Result<t8> small() { return Ok(-128) }\nz: Result<t64> = small()\nprint(z)\n",
+            "c: Result<t8> = Ok(6 / 2)\nd: Result<t8> = Ok(-1000 % 300)\ne: Result<t8> = Ok(1000 / 9 - 7 % 4)\nprint(c)\n",
         ];
         for src in accepted {
             analyze_program(&crate::frontend::resolver::parse_source(src).expect("parses")).unwrap_or_else(|e| panic!("{src}\n-> {e:?}"));
