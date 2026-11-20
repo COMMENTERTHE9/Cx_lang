@@ -127,12 +127,21 @@ instantiation the program's calls reach, and has two limits: one generic
 function is checked for at most 128 sets of types, and none whose types are
 nested more than 32 deep. (A function that calls itself with an ever larger
 type, `g([x])` inside `g`, meets them quickly; it has no end of
-instantiations.) Where the check stops short, the analyzed program records
-what it did not check (`SemanticProgram::unchecked_generics`), and compiled
-code refuses the program — "generic function 'g' is reached with more than
-128 sets of types, past what analysis checks". The same for a call whose
-types name a type parameter analysis does not track (a generic struct's
-field given to a generic function). The interpreter runs it with
+instantiations.) Where the check stops short of an instantiation compiled
+code may compile — one reached from a call written outside every generic
+body (at top level, or in a plain function or method, nested ones included)
+— the analyzed program records what it did not check
+(`SemanticProgram::unchecked_generics`), and compiled code refuses the
+program: "generic function 'g' is reached with more than 128 sets of types,
+past what analysis checks". The same for such a call whose types name a type
+parameter analysis does not track (a generic struct's field given to a
+generic function). A call written in a generic body is followed again
+through that function's instances whenever compiled code compiles it;
+followed on its own, what it leaves is not recorded, so calls in a generic
+function nothing calls never make compiled code refuse. Nor is a call that
+leaves one of its callee's type parameters unbound: compiled code emits only
+the specialisations of a generic function, does not specialise such a call,
+and so cannot compile it at all. The interpreter runs it with
 its run-time checks. This is the owner's rule for what cannot be determined
 statically: a run-time check where there is one, a refusal to compile where
 there is not.
@@ -410,11 +419,12 @@ commit.
 | 8 | D2, D6 | Both whole-program checks bounded; the receiver rule counts what it cannot determine | `backend/value-alias-semantics` (#507) | `0a2a283` |
 | 9 | D2 | Branches of a value, inference and names in a generic body; one regression | `backend/value-alias-semantics` (#507) | `b32e03c` |
 | 10 | D2 | Branch and inference rules narrowed to what is needed; check ordering | `backend/value-alias-semantics` (#507) | `b4129f7` |
-| 11 | D2 | What the check leaves unchecked is recorded, and compiled code refuses it; reach over strongly connected components; an `Err` first; an inferred variable's type is checked | `backend/value-alias-semantics` (#507) | `e8bb2ac` |
+| 11 | D2 | What the check leaves unchecked is recorded, and compiled code refuses it; reach over strongly connected components; an `Err` first; an inferred variable's type is checked | `backend/value-alias-semantics` (#507) | `e8bb2ac`, `2182771` |
+| 12 | D2 | Only what compiled code may compile is recorded; literal obligations merged; messages made when reported | `backend/value-alias-semantics` (#507) | see §13 |
 
 Steps 7–9 answer the independent review of the implementation (§10), step 10
-the confirmation review of those fixes (§11), and step 11 the review of step
-10 (§12). A
+the confirmation review of those fixes (§11), step 11 the review of step 10
+(§12), and step 12 the review of step 11 (§13). A
 silent difference that review found, present on `submain` and outside the six
 decisions — the negation of a float zero — is fixed in its own commit
 (`2db5afd`, known-issues §82 c).
@@ -544,7 +554,38 @@ Step 10 (`b4129f7`) was reviewed on its own, by a reviewer who ran about
   functions (30 functions: 29 s). Fixed: what an instantiation reaches is
   computed over strongly connected components, and types nested more than 32
   deep are not followed (recorded as unchecked). The same program: 0.07 s.
+  (Not all of it: §13.)
 - Documentation: "compiled code has refused" past the limit, the pinning of
   literals, "a value not used" (a `when` only — an `if` statement is not a
   value), the `Err` case. Corrected above.
+
+## 13. What the review of step 11 changed
+
+Step 11 (`e8bb2ac`, `2182771`) was reviewed by a reviewer who ran about
+34,600 generated programs, 1,400 of them built to spend the budget seven
+ways, and 200 hand probes. **It found no instantiation that is both unchecked
+and compiled**: every one it built was rejected by analysis or refused by
+compiled code. It found:
+
+- **New refusals of programs that ran the same on both backends**: 129
+  distinct calls in a generic function nothing calls; a bounded
+  self-instantiating generic called only from an uncalled one; a call that
+  leaves a type parameter unbound — the realistic form of each a library
+  whose every importer was refused. Fixed in step 12: only what compiled code
+  may compile is recorded (D2 above).
+- A gap: a call with an untracked type in a plain function nested in a
+  generic one was not recorded. Fixed.
+- **Analysis still over 10 s** for 51- and 101-line programs with hundreds of
+  literals beside `T` elements (12 s, 21 s). Each literal was its own
+  obligation and every message was formatted for every instantiation. Now
+  one obligation per type parameter records the smallest and largest literal,
+  and messages are made only for what is reported: 0.25 s and 0.77 s.
+- **A silent difference present on `submain`**: unary minus on a value of
+  the function's own `T`, which analysis did not check (`-x` with a t8 −128:
+  interpreter 128, compiled code −128). Fixed in its own commit, with unary
+  minus on any value that is not a number (known-issues §82 g).
+- Documentation: the claim, in `e8bb2ac`'s message and a test comment, that
+  calls after a `return` are instances compiled code never makes — the
+  monomorphizer does walk dead code; only partial calls and nested generic
+  functions are never made. Corrected here and in the test.
 

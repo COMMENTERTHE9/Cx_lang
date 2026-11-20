@@ -1690,7 +1690,11 @@ Stmt::ExprStmt { expr, _pos } => Ok(SemanticStmt::ExprStmt {
             if !function.type_params.is_empty() {
                 self.generic_functions.insert(
                     function.id,
-                    crate::frontend::generic_scope::GenericFunction { name: function.name.clone(), obligations },
+                    crate::frontend::generic_scope::GenericFunction {
+                        name: function.name.clone(),
+                        type_params: function.type_params.clone(),
+                        obligations,
+                    },
                 );
             }
         }
@@ -2446,10 +2450,7 @@ Expr::Unary(op, inner, pos) => {
                         // A number literal beside `T` elements is an element
                         // of that `[N: T]` (§42) — for the types it fits,
                         // which each call is checked for (`generic_scope`).
-                        crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Literal {
-                            param: param.to_string(),
-                            literal,
-                        });
+                        crate::frontend::generic_scope::record_literal(param, literal);
                         true
                     } else {
                         types_compatible(&elem_ty, &e.ty)
@@ -3600,7 +3601,6 @@ Expr::Unary(op, inner, pos) => {
         if !function.type_params.is_empty() {
             self.generic_calls.push(crate::frontend::generic_scope::GenericCall {
                 caller: self.current_function_id,
-                in_generic: crate::frontend::generic_scope::inside_generic(),
                 callee: function.id,
                 bindings: function
                     .type_params
@@ -5476,10 +5476,7 @@ fn convert_literal_row(row: SemanticExpr, target: &SemanticType, pos: usize) -> 
                 // In a row of `T`s the literal is checked for the types each
                 // call gives `T`, as one written beside a `T` element is.
                 if let (Some(param), Some(literal)) = (own_type_param(inner), number_literal(&e)) {
-                    crate::frontend::generic_scope::record(crate::frontend::generic_scope::Obligation::Literal {
-                        param: param.to_string(),
-                        literal,
-                    });
+                    crate::frontend::generic_scope::record_literal(param, literal);
                 }
                 insert_cast_if_needed(e, inner)
             }
