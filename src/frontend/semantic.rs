@@ -113,8 +113,9 @@ pub struct Analyzer {
     pub method_alias_counts: HashMap<(String, String), usize>,
     /// The declared types of an impl method's receivers, in order — the first
     /// is the value the method is called on, the rest are passed as its first
-    /// arguments. They are passed by reference, so an argument must have its
-    /// receiver's type exactly (§42).
+    /// arguments. A struct or array receiver is passed by reference, so its
+    /// argument must have the receiver's type exactly (§42); any other
+    /// receiver is a value, and its argument is converted like a parameter's.
     pub method_alias_types: HashMap<(String, String), Vec<SemanticType>>,
     /// Whole-graph phen-provided method names, injected from Pass 0's
     /// registry (0.3.4 slice 2). Consulted at impl-block registration to

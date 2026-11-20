@@ -93,7 +93,9 @@ is not decided here.
 ones. None is silent, and none is changed here.)
 
 The rule that an argument bound to a receiver must have the receiver's declared
-type exactly (known-issues §42) is kept for every receiver.
+type exactly (known-issues §42) is kept for struct and array receivers, which
+are passed by reference. A receiver that is a value (item 4) takes its
+argument as an ordinary parameter does, converted (decision of 2026-11-20).
 
 ### V3 — An operator's operands are values
 
