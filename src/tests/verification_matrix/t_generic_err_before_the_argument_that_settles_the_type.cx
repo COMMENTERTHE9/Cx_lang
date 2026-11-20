@@ -12,3 +12,6 @@ r: Result<t64> = pick(Err("e"), Ok(4))
 print(r)
 s: Result<str> = f("s")
 print(s)
+fnc: T <T> pick2(a: T, b: T) { return b }
+fnc: Result<T> <T> h(x: T) { return pick2(Err("e"), Ok(x)) }
+print(h(5))

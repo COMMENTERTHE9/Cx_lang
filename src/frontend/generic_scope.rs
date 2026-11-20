@@ -22,7 +22,8 @@
 //! Analysis records each use of the second kind as an [`Obligation`] of the
 //! function, and [`check_instantiations`] checks the obligations for every
 //! set of concrete types the function is reached with, directly or through
-//! other generic functions.
+//! other generic functions — up to a limit per function, past which the
+//! program is marked as not fully checked and compiled code refuses it.
 //!
 //! The scope itself is thread-local state rather than an argument: the rules
 //! that consult it (`types_compatible` and its helpers) are free functions
@@ -141,30 +142,31 @@ pub(crate) struct GenericCall {
     pub pos: usize,
 }
 
-/// The check follows what compiled code instantiates, and its one limit is
-/// set above compiled code's own, so that wherever the check stops short,
-/// compiled code refuses the program.
-///
-/// Compiled code specialises a generic function for every set of types it is
-/// reached with from code that is not itself generic, and refuses a program
-/// in which one function needs more than 64 (`MAX_INSTANTIATIONS_PER_TEMPLATE`
-/// in `src/ir/monomorphize.rs`). This check starts from the same calls and
-/// follows the same instantiations, with an untyped number taken as the t64
-/// compiled code makes it. One generic function is checked for at most
-/// `PER_FUNCTION_LIMIT` sets of types — twice compiled code's limit. A
-/// set past it is not checked; compiled code, having met more than 64 sets for
-/// that function, has refused the program, and the interpreter's run-time
-/// checks decide. (A self-instantiating function, `g([x])` inside `g`, reaches
-/// the limit quickly.)
-///
-/// Calls written with concrete types inside a generic function are checked
-/// too, after those: if the function is instantiated they were reached above;
-/// if it is not, they never run and are not compiled, and a limit met there
-/// costs nothing.
+/// One generic function is checked for at most this many sets of types. A
+/// self-instantiating function — `g([x])` inside `g` — has no end of them.
+/// (The message lowering refuses with says "more sets of types than analysis
+/// checks" for both limits.)
+/// Past the limit an instantiation is not checked, and the program says so
+/// (`SemanticProgram::unchecked_generics`): compiled code refuses it, and the
+/// interpreter runs it with its run-time checks. The limit is above compiled
+/// code's own (64 instantiations of one function), which refuses such a
+/// program in any case when the instantiations are real.
 const PER_FUNCTION_LIMIT: usize = 128;
 
-/// A type as compiled code specialises for it: a number of no declared width
-/// is a t64.
+/// Nor is a set of types nested deeper than this: a self-instantiating
+/// function nests its types one level more each time, and every step of the
+/// check walks them. Compiled code takes time exponential in the nesting of an
+/// array literal (known-issues §82 f) long before this depth.
+const DEPTH_LIMIT: usize = 32;
+
+fn depth(ty: &SemanticType) -> usize {
+    match ty {
+        SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => 1 + depth(inner),
+        _ => 0,
+    }
+}
+
+/// A type as a key: a number of no declared width is a t64.
 fn pinned(ty: SemanticType) -> SemanticType {
     match ty {
         SemanticType::Numeric => SemanticType::I64,
@@ -194,6 +196,8 @@ struct Instances<'a> {
     ids: HashMap<String, usize>,
     all: Vec<Instance>,
     per_function: HashMap<FunctionId, usize>,
+    /// The first function an instantiation of which was not checked.
+    unchecked: Option<String>,
 }
 
 impl<'a> Instances<'a> {
@@ -202,7 +206,7 @@ impl<'a> Instances<'a> {
     }
 
     /// The instance of `callee` with these types, made if it is new and the
-    /// limit allows.
+    /// limit allows; if it does not, that is recorded.
     fn get(&mut self, callee: FunctionId, bindings: &[(String, SemanticType)]) -> Option<usize> {
         let bindings: Vec<(String, SemanticType)> =
             bindings.iter().map(|(name, ty)| (name.clone(), pinned(ty.clone()))).collect();
@@ -211,7 +215,16 @@ impl<'a> Instances<'a> {
             return Some(id);
         }
         let count = self.per_function.get(&callee).copied().unwrap_or(0);
-        if count >= PER_FUNCTION_LIMIT {
+        let too_deep = bindings.iter().any(|(_, ty)| depth(ty) > DEPTH_LIMIT);
+        if count >= PER_FUNCTION_LIMIT || too_deep {
+            if self.unchecked.is_none() {
+                let name = self.functions.get(&callee).map(|f| source_function_name(&f.name).to_string()).unwrap_or_default();
+                self.unchecked = Some(if too_deep {
+                    format!("generic function '{name}' is reached with types nested more than {DEPTH_LIMIT} deep")
+                } else {
+                    format!("generic function '{name}' is reached with more than {PER_FUNCTION_LIMIT} sets of types")
+                });
+            }
             return None;
         }
         let map: HashMap<String, SemanticType> = bindings.into_iter().collect();
@@ -272,25 +285,91 @@ impl<'a> Instances<'a> {
     }
 }
 
+/// The strongly connected components of the instance graph, each a list of
+/// instances, in an order in which a component comes after every component it
+/// calls into (Tarjan's algorithm, without recursion).
+fn components(edges: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let n = edges.len();
+    let mut index = vec![usize::MAX; n];
+    let mut low = vec![0; n];
+    let mut on_stack = vec![false; n];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    let mut next_index = 0;
+    for root in 0..n {
+        if index[root] != usize::MAX {
+            continue;
+        }
+        // (node, position in its edge list)
+        let mut frames: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&mut (node, ref mut at)) = frames.last_mut() {
+            if *at < edges[node].len() {
+                let next = edges[node][*at];
+                *at += 1;
+                if index[next] == usize::MAX {
+                    index[next] = next_index;
+                    low[next] = next_index;
+                    next_index += 1;
+                    stack.push(next);
+                    on_stack[next] = true;
+                    frames.push((next, 0));
+                } else if on_stack[next] {
+                    low[node] = low[node].min(index[next]);
+                }
+            } else {
+                frames.pop();
+                if let Some(&(parent, _)) = frames.last() {
+                    low[parent] = low[parent].min(low[node]);
+                }
+                if low[node] == index[node] {
+                    let mut component = Vec::new();
+                    while let Some(member) = stack.pop() {
+                        on_stack[member] = false;
+                        component.push(member);
+                        if member == node {
+                            break;
+                        }
+                    }
+                    out.push(component);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Check every generic function's obligations for every set of concrete types
 /// it is reached with — by a call written with concrete types, wherever it is
 /// written, and through the generic functions such a call reaches. An error
 /// is reported at that call, and says which function and types; one
-/// obligation is reported once per call.
+/// obligation is reported once per call. Also returns what was left
+/// unchecked, if the limit was met.
 pub(crate) fn check_instantiations(
     functions: &HashMap<FunctionId, GenericFunction>,
     calls: &[GenericCall],
-) -> Vec<SemanticError> {
+) -> (Vec<SemanticError>, Option<String>) {
     let mut by_caller: HashMap<FunctionId, Vec<&GenericCall>> = HashMap::new();
     for call in calls {
         if let Some(caller) = call.caller {
             by_caller.entry(caller).or_default().push(call);
         }
     }
-    let mut instances = Instances { functions, by_caller, ids: HashMap::new(), all: Vec::new(), per_function: HashMap::new() };
+    let mut instances = Instances {
+        functions,
+        by_caller,
+        ids: HashMap::new(),
+        all: Vec::new(),
+        per_function: HashMap::new(),
+        unchecked: None,
+    };
 
-    // The calls compiled code starts from first, then those inside generic
-    // functions; each in source order.
+    // Calls outside every generic function first, then those inside one; each
+    // in source order.
     let mut roots: Vec<&GenericCall> = calls.iter().filter(|call| Instances::concrete(&call.bindings)).collect();
     roots.sort_by_key(|call| (call.in_generic, call.pos));
     let mut starts: Vec<(usize, usize)> = Vec::new();
@@ -302,38 +381,41 @@ pub(crate) fn check_instantiations(
     }
 
     // What each instance reaches that is broken: for each obligation of each
-    // function, the earliest-made instance that breaks it. Worked out once
-    // for the whole graph, cycles included, by passing what an instance
-    // learns to the instances that call it.
+    // function, the earliest-made instance that breaks it. Worked out once per
+    // strongly connected component, callees before callers.
     let n = instances.all.len();
-    let mut callers: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for id in 0..n {
-        for &next in instances.all[id].calls.as_deref().unwrap_or(&[]) {
-            callers[next].push(id);
+    let edges: Vec<Vec<usize>> = (0..n).map(|id| instances.all[id].calls.clone().unwrap_or_default()).collect();
+    let mut component_of = vec![0; n];
+    let comps = components(&edges);
+    for (c, members) in comps.iter().enumerate() {
+        for &m in members {
+            component_of[m] = c;
         }
     }
-    let mut reach: Vec<HashMap<(FunctionId, usize), usize>> = (0..n)
-        .map(|id| {
-            let callee = instances.all[id].callee;
-            instances.all[id].broken.iter().map(|(index, _, _)| ((callee, *index), id)).collect()
-        })
-        .collect();
-    let mut work: Vec<usize> = (0..n).filter(|&id| !reach[id].is_empty()).collect();
-    while let Some(id) = work.pop() {
-        let learned: Vec<((FunctionId, usize), usize)> = reach[id].iter().map(|(k, v)| (*k, *v)).collect();
-        for &caller in &callers[id] {
-            let mut changed = false;
-            for (key, at) in &learned {
-                let entry = reach[caller].entry(*key).or_insert(usize::MAX);
-                if *at < *entry {
-                    *entry = *at;
-                    changed = true;
+    let mut reach: Vec<HashMap<(FunctionId, usize), usize>> = vec![HashMap::new(); comps.len()];
+    for (c, members) in comps.iter().enumerate() {
+        let mut map: HashMap<(FunctionId, usize), usize> = HashMap::new();
+        let merge = |map: &mut HashMap<(FunctionId, usize), usize>, key: (FunctionId, usize), at: usize| {
+            let entry = map.entry(key).or_insert(usize::MAX);
+            if at < *entry {
+                *entry = at;
+            }
+        };
+        for &m in members {
+            let callee = instances.all[m].callee;
+            for (index, _, _) in &instances.all[m].broken {
+                merge(&mut map, (callee, *index), m);
+            }
+            for &next in &edges[m] {
+                let other = component_of[next];
+                if other != c {
+                    for (key, at) in &reach[other] {
+                        merge(&mut map, *key, *at);
+                    }
                 }
             }
-            if changed {
-                work.push(caller);
-            }
         }
+        reach[c] = map;
     }
 
     let mut errors: Vec<SemanticError> = Vec::new();
@@ -344,7 +426,7 @@ pub(crate) fn check_instantiations(
             reported.insert((callee, *index));
             errors.push(SemanticError { pos, msg: direct.clone() });
         }
-        let mut reached: Vec<(&(FunctionId, usize), &usize)> = reach[start].iter().collect();
+        let mut reached: Vec<(&(FunctionId, usize), &usize)> = reach[component_of[start]].iter().collect();
         reached.sort_by_key(|(key, at)| (**at, key.1));
         for (key, at) in reached {
             if reported.insert(*key) {
@@ -355,7 +437,7 @@ pub(crate) fn check_instantiations(
         }
     }
     errors.sort_by_key(|e| e.pos);
-    errors
+    (errors, instances.unchecked)
 }
 
 /// A type with the type parameters replaced by what they are at a call. A
@@ -517,6 +599,9 @@ mod tests {
             ("fnc: [2: T] <T> f(x: T) {\n xs: [2: T] = [x, when 1 { 0 => x, _ => 300 }]\n return xs\n}", "f(1)", "and another yields T"),
             // A callee's type parameter bound to a number, then given a `T`.
             ("fnc: T <T> pick(a: T, b: T) { return b }\nfnc: f64 <T> f(x: T) { return pick(5, x) }", "f(2.5)", "type parameter 'T' of 'pick' is bound to a number literal by an earlier argument, but argument 2 is a value of type parameter T"),
+            // A variable known only by inference is as good as declared: the
+            // branches are checked against what it holds.
+            ("fnc: T <T> f(c: bool, x: T) {\n let y\n y = x\n y = if c { x } else { 300 }\n return y\n}", "f(false, 5)", "a branch of this if/when yields numeric literal, where T is declared"),
             // With nothing declared for the value, its branches must agree.
             ("fnc: t64 <T> f(c: bool, x: T) {\n print(if c { x } else { 300 })\n return 1\n}", "f(true, 1)", "and another yields T"),
             // `T { .. }` and a nested function using the enclosing `T`.
@@ -540,6 +625,8 @@ mod tests {
             "fnc: str <T> f(c: bool, x: T) {\n s: str = if c { x } else { \"lit\" }\n return s\n}\nprint(f(true, \"a\"))\n",
             "fnc: T <T> pick(a: T, b: T) { return b }\nfnc: f64 <T> f(x: T) {\n n: f64 = 0.0\n return pick(n, x)\n}\nprint(f(2.5))\n",
             "fnc: T <T> pick(a: T, b: T) { return b }\nfnc: T <T> f(x: T) { return pick(?, x) }\nprint(f(2))\n",
+            // An `Err` first, then the value that settles it.
+            "fnc: T <T> pick(a: T, b: T) { return b }\nfnc: Result<T> <T> f(x: T) { return pick(Err(\"e\"), Ok(x)) }\nprint(f(2))\n",
             // A callee's unbound type parameter is not the caller's `T`,
             // however it is spelled.
             "fnc: Result<T> <T> fail(n: t64) { return Err(\"no\") }\nfnc: t64 <T> g(x: T) {\n r: Result<t64> = fail(1)\n print(r)\n return 1\n}\nprint(g(\"s\"))\n",
@@ -712,6 +799,33 @@ mod tests {
         }
         src.push_str(" return 1\n}\nh: f64 = 1.5\ny: f64 = g(h)\nprint(y)\n");
         assert!(errors(&src).contains("34 is a whole number and T is f64 here"), "{}", errors(&src));
+    }
+
+    /// Where the check stops short of every instantiation the program
+    /// reaches, the program says so, and compiled code refuses it. The
+    /// instances that use up the budget here — calls after a `return` — are
+    /// ones compiled code never makes; it used to compile the program, and the
+    /// call checked last went unchecked: the interpreter held 34 where
+    /// compiled code held 34.0.
+    #[test]
+    fn a_program_not_fully_checked_is_refused_by_compiled_code() {
+        // 130 calls with distinct types, after a `return`: never lowered.
+        let mut src = String::from("fnc: T <T, U> f(x: T, u: U) {\n c: [2: T] = [x, 34]\n return c:[1]\n}\nfnc: t64 dead() {\n return 1\n");
+        for n in 1..=130 {
+            src.push_str(&format!(" print(f(1, [{}]))\n", vec!["0"; n].join(", ")));
+        }
+        src.push_str("}\nh: f64 = 1.5\nwhen f(h, 0) { 34 => print(\"int\"), _ => print(\"other\") }\n");
+        let id = resolver::ModuleId(0);
+        let file = resolver::ResolvedFile { id, path: "unchecked.cx".into(), program: resolver::parse_source(&src).expect("parses"), imports: vec![] };
+        let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
+        let program = semantic::analyze_resolved_program(&resolved).expect("analysis cannot reach the last call's instance");
+        let unchecked = program.unchecked_generics.clone().expect("the program says what was not checked");
+        assert!(unchecked.contains("'f'"), "{unchecked}");
+        let refused = format!("{:?}", crate::ir::lower::lower_program(&program).expect_err("compiled code refuses it"));
+        assert!(refused.contains("compiled code refuses what was not checked"), "{refused}");
+        // A program within the limit says nothing.
+        let fine = errors("fnc: T <T> id(x: T) { return x }\nprint(id(5))\n");
+        assert_eq!(fine, "");
     }
 
     /// A generic struct's type parameter is not the function's: struct type

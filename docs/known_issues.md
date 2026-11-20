@@ -6680,22 +6680,22 @@ that leaves `T` unbound, or binds it to `?`, is checked for nothing.
   gap: at top level `b: Box = Box<t64> { v: 300 }`, `xs: [2: t8] = [b.v, 1]`
   holds 300 on the interpreter and 44 in compiled code (§82 a). Closing it
   needs struct instantiations in the type system.
-- **Past its limit.** The check follows the instantiations compiled code
-  makes, starting from the same calls (those outside every generic function)
-  and pinning an untyped number to t64 as compiled code does, and checks at
-  most 128 sets of types for one generic function. Compiled code refuses a
-  program that needs more than 64 for one function
-  (`MAX_INSTANTIATIONS_PER_TEMPLATE`), so where the check stops short
-  compiled code has refused, and the interpreter's run-time checks decide. A
-  function that instantiates itself with ever larger types (`g([x])` inside
-  `g`) is such a program. *(The first version bounded only what one call
-  followed, not the work behind it: 1,200 calls of a function to itself took
-  11 s and 1.7 GB, and 800 calls with distinct types 25 s — found by the
-  review of the implementation. The second added a depth limit of 24, a total
-  of 20,000 and 4,096 per call, and counted calls in uncalled generic
-  functions against the budget; the confirmation review built two programs
-  that went unchecked past those while compiled code compiled them — exit
-  mismatches, 34 printed where the interpreter stopped. Both fixed.)*
+- **Past its limit.** The check follows every instantiation the program's
+  calls reach, checking at most 128 sets of types for one generic function
+  and none nested more than 32 deep; a function that instantiates itself
+  with ever larger types (`g([x])` inside `g`) meets these. Where it stops
+  short, the analyzed program records what it did not check
+  (`SemanticProgram::unchecked_generics`) and compiled code refuses the
+  program; the interpreter runs it with its run-time checks. *(Three earlier
+  versions got this wrong. The first bounded only what one call followed, not
+  the work behind it — 1,200 calls of a function to itself took 11 s and
+  1.7 GB. The second and third left programs unchecked past their limits and
+  relied on compiled code meeting its own limit there; reviews built programs
+  where it did not — calls after a `return`, partly bound calls and nested
+  generic functions use up the budget with instances compiled code never
+  makes — and compiled code compiled them: 34 held as a float where the
+  interpreter held an integer, or stopped. The record makes that impossible
+  by construction.)*
 - **A `T` value where a type is needed but none is declared** — an `if`
   condition, the operand of `!`, an array index. Analysis does not check
   these for a concrete type either (§57 a, §82 b).
@@ -6783,7 +6783,14 @@ function — "unresolved semantic artifact reached lowering: function 'twice'"
   `T`, checked for each call (`pick(n, x)` with `n: f64`), and one bound by
   `?` or an `Err` is settled by the later argument. (The first version of
   this fix rejected every mix of a bound type and the caller's `T`, and so
-  two programs that ran the same on both backends; narrowed.)*
+  two programs that ran the same on both backends; narrowed. The second
+  settled only a `?`, not an `Err`, and so rejected `pick(Err("e"), Ok(x))`;
+  fixed.)*
+- *An if value assigned to a variable known only by inference took the
+  variable's type as declared and skipped the branch rule, while nothing
+  checked the branches: `let y`, `y = x`, `y = if c { x } else { 300 }`
+  returned 300 from a call whose `T` is a t8. Where a type is given for the
+  value, each branch is now checked against it at the value itself.*
 - *A callee's type parameter that no argument binds kept its name in the
   result type, so a `Result<T>` from `fnc: Result<T> <T> fail(n: t64)` was
   taken for the calling function's own `T` — and accepted when the callee

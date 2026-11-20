@@ -1582,6 +1582,17 @@ fn top_level_state_unsupported(function: &str, name: &str, access: &str) -> Lowe
 }
 
 fn lower_program_inner(program: &SemanticProgram, trace: bool) -> Result<IrModule, LoweringError> {
+    // Analysis checks what a generic body needs of its type parameters for
+    // every set of types the program reaches it with, up to a limit per
+    // function (known-issues §81). Past it, nothing has checked that the
+    // specialised code is right for its types: refuse rather than compile it.
+    if let Some(unchecked) = &program.unchecked_generics {
+        return Err(LoweringError::UnsupportedSemanticConstruct {
+            construct: format!(
+                "{unchecked}, past what analysis checks — compiled code refuses what was not checked"
+            ),
+        });
+    }
     let reserved_runtime_intrinsics = crate::ir::validate::runtime_intrinsic_names();
 
     // Two modules may each declare an enum of the same name. Enum TYPES are
@@ -9556,7 +9567,7 @@ mod tests {
 
     #[test]
     fn lowers_top_level_typed_assign_into_synthetic_main() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -9574,7 +9585,7 @@ mod tests {
 
     #[test]
     fn declaration_only_decl_does_not_invent_ssa_value() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::Decl {
                 binding: BindingId(1),
                 name: "x".to_string(),
@@ -9599,7 +9610,7 @@ mod tests {
                 rhs: Box::new(int_expr(2, SemanticType::I64)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, expr)],
             enums: vec![],
         };
@@ -9637,7 +9648,7 @@ mod tests {
                 rhs: Box::new(float_expr(2.0)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(BindingId(1), "eq", SemanticType::Bool, eq_expr),
                 typed_assign(BindingId(2), "lt", SemanticType::Bool, lt_expr),
@@ -9672,7 +9683,7 @@ mod tests {
 
     #[test]
     fn lowers_explicit_cast_to_cast_instruction() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -9705,7 +9716,7 @@ mod tests {
     #[test]
     fn variable_references_use_current_ssa_mapping() {
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(
                     binding,
@@ -9755,7 +9766,7 @@ mod tests {
 
     #[test]
     fn straight_line_block_ends_in_return_none() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: bool_expr(true),
                 pos: 0,
@@ -9772,7 +9783,7 @@ mod tests {
 
     #[test]
     fn rejects_numeric_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9799,7 +9810,7 @@ mod tests {
     #[test]
     fn varref_numeric_type_falls_back_to_binding_type() {
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(
                     binding,
@@ -9827,7 +9838,7 @@ mod tests {
     #[test]
     fn varref_unknown_type_falls_back_to_binding_type() {
         let binding = BindingId(2);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(
                     binding,
@@ -9853,7 +9864,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9883,7 +9894,7 @@ mod tests {
         // cx_handle_new), and a raw Bool literal is a different IR type, not a
         // real Handle value. The rejection reason correctly shifted from
         // UnsupportedSemanticType to a type-mismatch InternalInvariantViolation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9903,7 +9914,7 @@ mod tests {
 
     #[test]
     fn rejects_str_ref_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9923,7 +9934,7 @@ mod tests {
 
     #[test]
     fn rejects_container_type() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -9943,7 +9954,7 @@ mod tests {
 
     #[test]
     fn rejects_compound_assign() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::CompoundAssign {
                 target: SemanticLValue::Binding {
                     binding: BindingId(1),
@@ -9967,7 +9978,7 @@ mod tests {
 
     #[test]
     fn lowers_simple_function_with_one_parameter_and_return_value() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "id",
                 vec![typed_param(BindingId(10), "x", SemanticType::I64)],
@@ -9998,7 +10009,7 @@ mod tests {
     fn lowers_function_with_multiple_parameters() {
         let x = BindingId(10);
         let y = BindingId(11);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "sum",
                 vec![
@@ -10037,7 +10048,7 @@ mod tests {
     #[test]
     fn function_parameter_references_use_function_local_ssa_map() {
         let x = BindingId(20);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "use_param",
                 vec![typed_param(x, "x", SemanticType::I64)],
@@ -10067,7 +10078,7 @@ mod tests {
 
     #[test]
     fn function_return_with_value_lowers_to_return_some() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "const_ret",
                 vec![],
@@ -10089,7 +10100,7 @@ mod tests {
     fn typed_assignment_inside_function_lowers_correctly() {
         let param = BindingId(30);
         let local = BindingId(31);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bind_local",
                 vec![typed_param(param, "x", SemanticType::I64)],
@@ -10120,7 +10131,7 @@ mod tests {
 
     #[test]
     fn top_level_statements_and_real_functions_lower_together() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "const_ret",
@@ -10147,7 +10158,7 @@ mod tests {
 
     #[test]
     fn real_main_plus_top_level_statements_is_rejected() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "main",
@@ -10176,7 +10187,7 @@ mod tests {
 
     #[test]
     fn rejects_call_to_unresolved_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
@@ -10202,7 +10213,7 @@ mod tests {
 
     #[test]
     fn rejects_call_to_unresolved_function_inside_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad_call",
                 vec![],
@@ -10234,7 +10245,7 @@ mod tests {
 
     #[test]
     fn lowers_direct_call_in_expr_stmt() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "get_value",
@@ -10279,7 +10290,7 @@ mod tests {
 
     #[test]
     fn lowers_call_with_args_and_assignment() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "add_one",
@@ -10325,7 +10336,7 @@ mod tests {
 
     #[test]
     fn rejects_call_arity_mismatch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "needs_one",
@@ -10362,7 +10373,7 @@ mod tests {
     fn lowers_void_call_in_expr_stmt() {
         // A void function called as a statement must produce
         // IrInst::Call { dst: None, return_ty: None } and pass validation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "do_nothing",
@@ -10412,7 +10423,7 @@ mod tests {
         // A void function that accepts arguments: args must be lowered and
         // matched against the parameter types, then emitted with dst: None.
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "sink",
@@ -10472,7 +10483,7 @@ mod tests {
 
     #[test]
     fn rejects_non_expr_call_arg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "takes_one",
@@ -10520,7 +10531,7 @@ mod tests {
         //
         //   fn get_val() -> i64 { 42 }
         //   fn use_val() -> i64 { get_val() }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "get_val",
@@ -10595,7 +10606,7 @@ mod tests {
                 rhs: Box::new(int_expr(2, SemanticType::I64)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "make_one",
@@ -10629,7 +10640,7 @@ mod tests {
         //
         //   fn add(a: i64, b: i64) -> i64 { 0 }
         //   let r: i64 = add(10, 20)
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "add",
@@ -10681,7 +10692,7 @@ mod tests {
     #[test]
     fn rejects_declared_but_never_assigned_binding_use() {
         let binding = BindingId(1);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::Decl {
                     binding,
@@ -10707,7 +10718,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::WhileIn {
                 label: None,
                 arr: "arr".to_string(),
@@ -10733,7 +10744,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement_inside_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad",
                 vec![],
@@ -10768,7 +10779,7 @@ mod tests {
     /// module with no functions at all, which the JIT then refused to link.)
     #[test]
     fn empty_program_lowers_to_an_empty_main() {
-        let module = lower_and_validate(&SemanticProgram {
+        let module = lower_and_validate(&SemanticProgram { unchecked_generics: None,
             stmts: vec![],
             enums: vec![],
         });
@@ -10785,7 +10796,7 @@ mod tests {
     /// same empty `main` beside its functions.
     #[test]
     fn definitions_only_program_gets_an_empty_main() {
-        let module = lower_and_validate(&SemanticProgram {
+        let module = lower_and_validate(&SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "id",
                 vec![typed_param(BindingId(10), "x", SemanticType::I64)],
@@ -10803,7 +10814,7 @@ mod tests {
     #[test]
     fn lowers_plain_assign_using_resolved_binding_target() {
         let binding = BindingId(3);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::Decl {
                     binding,
@@ -10839,7 +10850,7 @@ mod tests {
 
     #[test]
     fn bool_constants_lower_cleanly() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "flag",
@@ -10865,7 +10876,7 @@ mod tests {
     #[test]
     fn declared_but_never_assigned_binding_use_inside_function_is_rejected() {
         let binding = BindingId(50);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad_ref",
                 vec![],
@@ -10893,7 +10904,7 @@ mod tests {
     fn function_local_ssa_maps_do_not_leak_between_functions_and_main() {
         let function_binding = BindingId(60);
         let top_level_binding = BindingId(61);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "f",
@@ -10927,7 +10938,7 @@ mod tests {
     #[test]
     fn function_local_ssa_maps_do_not_leak_between_functions() {
         let shared_binding = BindingId(70);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "f",
@@ -10957,7 +10968,7 @@ mod tests {
 
     #[test]
     fn top_level_if_lowers_into_valid_multi_block_cfg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![typed_assign(
@@ -10984,7 +10995,7 @@ mod tests {
 
     #[test]
     fn top_level_if_else_lowers_and_validates() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![typed_assign(
@@ -11018,7 +11029,7 @@ mod tests {
 
     #[test]
     fn top_level_if_else_if_else_lowers_and_validates() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(false),
                 vec![typed_assign(
@@ -11059,7 +11070,7 @@ mod tests {
     fn function_body_if_else_lowers_and_validates() {
         let cond = BindingId(83);
         let out = BindingId(84);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "choose",
                 vec![typed_param(cond, "cond", SemanticType::Bool)],
@@ -11101,7 +11112,7 @@ mod tests {
     fn assignment_in_both_branches_merges_correctly() {
         let cond = BindingId(85);
         let x = BindingId(86);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
                 typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
@@ -11144,7 +11155,7 @@ mod tests {
     fn unchanged_bindings_across_branches_stay_valid_after_merge() {
         let cond = BindingId(87);
         let x = BindingId(88);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
                 typed_assign(x, "x", SemanticType::I64, int_expr(5, SemanticType::I64)),
@@ -11179,7 +11190,7 @@ mod tests {
     fn one_branch_assignment_merges_with_incoming_value() {
         let cond = BindingId(89);
         let x = BindingId(90);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond, "cond", SemanticType::Bool, bool_expr(true)),
                 typed_assign(x, "x", SemanticType::I64, int_expr(0, SemanticType::I64)),
@@ -11213,7 +11224,7 @@ mod tests {
     fn one_branch_returns_and_other_falls_through_lowers_correctly() {
         let cond = BindingId(91);
         let out = BindingId(92);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "branch_return",
                 vec![typed_param(cond, "cond", SemanticType::Bool)],
@@ -11250,7 +11261,7 @@ mod tests {
     #[test]
     fn both_branches_return_lowers_correctly_without_invalid_merge() {
         let cond = BindingId(93);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "both_return",
                 vec![typed_param(cond, "cond", SemanticType::Bool)],
@@ -11281,7 +11292,7 @@ mod tests {
     #[test]
     fn explicit_return_omits_dead_statements_and_trailing_value() {
         let dead = BindingId(97);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "early_return",
                 vec![],
@@ -11307,7 +11318,7 @@ mod tests {
         let cond_a = BindingId(94);
         let cond_b = BindingId(95);
         let x = BindingId(96);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 typed_assign(cond_a, "a", SemanticType::Bool, bool_expr(true)),
                 typed_assign(cond_b, "b", SemanticType::Bool, bool_expr(false)),
@@ -11357,7 +11368,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_statement_inside_if_branch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![SemanticStmt::WhileIn {
@@ -11388,7 +11399,7 @@ mod tests {
 
     #[test]
     fn lowers_simple_while_loop() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11426,7 +11437,7 @@ mod tests {
 
     #[test]
     fn lowers_while_inside_function() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "looper",
                 vec![],
@@ -11449,7 +11460,7 @@ mod tests {
 
     #[test]
     fn while_loop_header_has_block_params() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11485,7 +11496,7 @@ mod tests {
 
     #[test]
     fn lowers_simple_for_loop() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11505,7 +11516,7 @@ mod tests {
 
     #[test]
     fn lowers_inclusive_for_loop() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11523,7 +11534,7 @@ mod tests {
 
     #[test]
     fn lowers_for_with_break() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11541,7 +11552,7 @@ mod tests {
 
     #[test]
     fn lowers_for_with_continue() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::For {
                 label: None,
                 binding: BindingId(0),
@@ -11559,7 +11570,7 @@ mod tests {
 
     #[test]
     fn lowers_conditional_return_inside_while() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "looper",
                 vec![],
@@ -11587,7 +11598,7 @@ mod tests {
 
     #[test]
     fn lowers_unary_negate_int() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11614,7 +11625,7 @@ mod tests {
 
     #[test]
     fn lowers_unary_negate_float() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11636,7 +11647,7 @@ mod tests {
 
     #[test]
     fn lowers_unary_not_bool() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11663,7 +11674,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_unary_op() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::TypedAssign {
                 binding: BindingId(0),
                 name: "x".to_string(),
@@ -11685,7 +11696,7 @@ mod tests {
 
     #[test]
     fn lowers_compound_assign_add() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11717,7 +11728,7 @@ mod tests {
 
     #[test]
     fn lowers_compound_assign_sub() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::TypedAssign {
                     binding: BindingId(0),
@@ -11746,7 +11757,7 @@ mod tests {
     fn rejects_compound_assign_dot_access_with_no_binding() {
         // binding: None means the semantic analyser failed to resolve the container —
         // lowering must reject this even though DotAccess is now otherwise supported.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::CompoundAssign {
                 target: SemanticLValue::DotAccess {
                     binding: None,
@@ -11766,7 +11777,7 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_semantic_type_inside_if_branch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![typed_assign(
@@ -11794,7 +11805,7 @@ mod tests {
 
     #[test]
     fn rejects_unresolved_artifact_inside_if_branch() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![if_stmt(
                 bool_expr(true),
                 vec![SemanticStmt::CompoundAssign {
@@ -11858,7 +11869,7 @@ mod tests {
     #[test]
     fn lowers_dot_access_first_field_emits_load_only() {
         // fn read_x(p: Point) -> i64 { p.x }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point_struct_def(),
                 semantic_function(
@@ -11902,7 +11913,7 @@ mod tests {
     #[test]
     fn lowers_dot_access_second_field_emits_ptr_offset_then_load() {
         // fn read_y(p: Point) -> i64 { p.y }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point_struct_def(),
                 semantic_function(
@@ -11949,7 +11960,7 @@ mod tests {
     fn lowers_dot_access_f64_field_produces_f64_load() {
         // struct Vec2 { dx: f64, dy: f64 }
         // fn get_dx(v: Vec2) -> f64 { v.dx }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 SemanticStmt::StructDef {
                     name: "Vec2".to_string(),
@@ -11995,7 +12006,7 @@ mod tests {
     // resolve the base pointer without a BindingId.
     #[test]
     fn rejects_dot_access_with_no_binding() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point_struct_def(),
                 SemanticStmt::ExprStmt {
@@ -12019,7 +12030,7 @@ mod tests {
     // Reject DotAccess when struct_name is empty (unknown container type).
     #[test]
     fn rejects_dot_access_with_unknown_struct_name() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
@@ -12040,7 +12051,7 @@ mod tests {
     // Reject DotAccess when the named struct does not exist in the program.
     #[test]
     fn rejects_dot_access_with_missing_struct_def() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::ExprStmt {
                 expr: SemanticExpr {
                     ty: SemanticType::I64,
@@ -12184,7 +12195,7 @@ mod tests {
     #[test]
     fn aggregate_param_copy_is_governed_by_the_receiver_flag() {
         fn entry_alloca_count(param: SemanticParam) -> usize {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![semantic_function(
                     "takes_aggregate",
                     vec![param],
@@ -12226,7 +12237,7 @@ mod tests {
     #[test]
     fn lowers_array_lit_emits_alloca_ptr_offset_store() {
         let arr = array_lit_i64(vec![10, 20, 30]);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "arr",
@@ -12277,7 +12288,7 @@ mod tests {
     #[test]
     fn lowers_array_lit_numeric_elem_uses_default_int() {
         let arr = array_lit_numeric(vec![10, 20, 30]);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "arr",
@@ -12352,7 +12363,7 @@ mod tests {
             is_test: false,
             pos: 0,
         };
-        let program = crate::frontend::semantic_types::SemanticProgram {
+        let program = crate::frontend::semantic_types::SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::FuncDef(func)],
             enums: vec![],
         };
@@ -12374,7 +12385,7 @@ mod tests {
     fn lowers_index_emits_ptr_add_and_load() {
         // fn read_elem(arr: [3: i64]) -> i64 { arr[1] }
         let arr_binding = BindingId(0);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "read_elem",
                 vec![typed_param(
@@ -12427,7 +12438,7 @@ mod tests {
     #[test]
     fn lowers_index_zero_on_single_element_array() {
         let arr_binding = BindingId(0);
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "read_only",
                 vec![typed_param(
@@ -12467,7 +12478,7 @@ mod tests {
     // ArrayLit rejects a zero-length array.
     #[test]
     fn rejects_array_lit_zero_length() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "arr",
@@ -12485,7 +12496,7 @@ mod tests {
     // Index lowering rejects a non-Array target type.
     #[test]
     fn rejects_index_on_non_array_target() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "v",
@@ -12526,7 +12537,7 @@ mod tests {
         // fn write_elem(arr: [3: i64]) { arr:[1] = 99 }
         let arr_binding = BindingId(0);
         let arr_ty = SemanticType::Array(3, Box::new(SemanticType::I64));
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "write_elem",
                 vec![typed_param(arr_binding, "arr", arr_ty.clone())],
@@ -12587,7 +12598,7 @@ mod tests {
         // fn compound_write(arr: [2: i64]) { arr:[0] += 5 }
         let arr_binding = BindingId(0);
         let arr_ty = SemanticType::Array(2, Box::new(SemanticType::I64));
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "compound_write",
                 vec![typed_param(arr_binding, "arr", arr_ty.clone())],
@@ -12644,7 +12655,7 @@ mod tests {
     #[test]
     fn rejects_array_element_write_on_non_array_target() {
         // Assign to SemanticLValue::Index where target is not an array type.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function(
                 "bad_write",
                 vec![],
@@ -12673,7 +12684,7 @@ mod tests {
     // error remains structured and named, not a generic placeholder.
     #[test]
     fn method_call_produces_named_structured_error() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "v",
@@ -12731,7 +12742,7 @@ mod tests {
     }
 
     fn assert_builtin_structured_error(name: &str) {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(name, vec![])],
             enums: vec![],
         };
@@ -12751,7 +12762,7 @@ mod tests {
     fn rejects_user_function_named_cx_printn() {
         // lower_program_inner derives reserved C-ABI names from validate::runtime_intrinsic_names();
         // a user function named "cx_printn" must be rejected regardless of the hardcoded list.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function("cx_printn", vec![], None, vec![], None)],
             enums: vec![],
         };
@@ -12770,7 +12781,7 @@ mod tests {
     #[test]
     fn print_i64_lowers_to_cx_printn_call() {
         // print(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "print",
                 vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
@@ -12800,7 +12811,7 @@ mod tests {
     #[test]
     fn println_i64_lowers_to_cx_printn_call() {
         // println(42i64) must lower to IrInst::Call{callee:"cx_printn"} and pass validation.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "println",
                 vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
@@ -12833,7 +12844,7 @@ mod tests {
         // cx_print_newline (f64 was previously the still-unsupported set's first
         // member; I8/I16/I32 still sign-extend to I64; Bool/TBool route to
         // cx_print_bool).
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "print",
                 vec![SemanticCallArg::Expr(float_expr(3.14))],
@@ -12869,7 +12880,7 @@ mod tests {
         // newline — "inline print (no newline)", cx_syntax.md §5. This test
         // used to pin `cx_printn`, `print`'s line-ending printer, which is what
         // made compiled `printn(5)` end the line (known_issues, printing parity recovery).
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "printn",
                 vec![SemanticCallArg::Expr(int_expr(42, SemanticType::I64))],
@@ -12904,7 +12915,7 @@ mod tests {
         // printn takes every value print takes, without the newline. This test
         // used to assert that an f64 was refused — there was no inline f64
         // printer then; cx_print_f64_inline exists, and print uses it.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "printn",
                 vec![SemanticCallArg::Expr(float_expr(3.14))],
@@ -12935,7 +12946,7 @@ mod tests {
                 SemanticType::Struct("Pair".to_string()),
                 SemanticType::Array(2, Box::new(SemanticType::I64)),
             ] {
-                let program = SemanticProgram {
+                let program = SemanticProgram { unchecked_generics: None,
                     stmts: vec![
                         SemanticStmt::StructDef {
                             name: "Pair".to_string(), type_params: vec![],
@@ -12960,7 +12971,7 @@ mod tests {
     #[test]
     fn string_parameter_interpolation_passes_ir_validation() {
         for builtin in ["print", "println", "printn"] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![semantic_function("show", vec![typed_param(BindingId(1), "value", SemanticType::Str)], None,
                     vec![builtin_stmt(builtin, vec![SemanticCallArg::Expr(SemanticExpr {
                         ty: SemanticType::Str,
@@ -12976,7 +12987,7 @@ mod tests {
     fn later_string_assignment_does_not_authorize_aggregate_interpolation() {
         let array_ty = SemanticType::Array(2, Box::new(SemanticType::I64));
         let target = SemanticLValue::Binding { binding: BindingId(2), name: "x".to_string(), ty: SemanticType::Unknown };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![semantic_function("show", vec![typed_param(BindingId(1), "value", array_ty.clone())], None,
                 vec![
                     SemanticStmt::Decl { binding: BindingId(2), name: "x".to_string(), ty: None, pos: 0 },
@@ -13000,7 +13011,7 @@ mod tests {
     #[test]
     fn unknown_bool_printing_passes_ir_validation() {
         for builtin in ["print", "println", "printn"] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "b", SemanticType::Bool, SemanticExpr {
                         ty: SemanticType::Unknown,
@@ -13021,7 +13032,7 @@ mod tests {
     #[test]
     fn assert_true_lowers_to_validated_multi_block_cfg() {
         // assert(true) → Branch on Bool 1 (pass) / Trap (fail, never taken)
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt("assert", vec![SemanticCallArg::Expr(bool_expr(true))])],
             enums: vec![],
         };
@@ -13043,7 +13054,7 @@ mod tests {
     #[test]
     fn assert_integer_one_lowers_via_truthy_coercion() {
         // assert(1) → Compare(Ne, 1, 0) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert",
                 vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I64))],
@@ -13068,7 +13079,7 @@ mod tests {
     #[test]
     fn assert_eq_same_integers_lowers_to_validated_cfg() {
         // assert_eq(1, 1) → Compare(Eq) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -13095,7 +13106,7 @@ mod tests {
     #[test]
     fn assert_eq_bool_true_true_lowers_to_validated_cfg() {
         // assert_eq(true, true) → Compare(Eq, Bool, Bool) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -13116,7 +13127,7 @@ mod tests {
     #[test]
     fn assert_i128_nonzero_lowers_via_truthy_coercion() {
         // assert(1_i128) → Compare(Ne, 1_i128, 0_i128) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert",
                 vec![SemanticCallArg::Expr(int_expr(1, SemanticType::I128))],
@@ -13140,7 +13151,7 @@ mod tests {
     #[test]
     fn assert_eq_same_i128_lowers_to_validated_cfg() {
         // assert_eq(1_i128, 1_i128) → Compare(Eq) → Branch → Trap on false
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -13167,7 +13178,7 @@ mod tests {
     #[test]
     fn assert_with_wrong_arity_produces_invariant_violation() {
         // assert() with 0 args → InternalInvariantViolation (arity check)
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt("assert", vec![])],
             enums: vec![],
         };
@@ -13182,7 +13193,7 @@ mod tests {
     #[test]
     fn assert_eq_with_wrong_arity_produces_invariant_violation() {
         // assert_eq() with 0 args → InternalInvariantViolation
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt("assert_eq", vec![])],
             enums: vec![],
         };
@@ -13215,7 +13226,7 @@ mod tests {
                 rhs: Box::new(int_expr(1, SemanticType::Numeric)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![builtin_stmt(
                 "assert_eq",
                 vec![
@@ -13289,7 +13300,7 @@ mod tests {
     fn numeric_literal_lowers_to_target_default_int_type() {
         // A Numeric-typed literal with an I64 binding should lower cleanly to
         // ConstInt(I64) on the host (64-bit) target.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13310,7 +13321,7 @@ mod tests {
         // A Numeric-typed literal whose value exceeds i64::MAX should be
         // rejected on a 64-bit host target.
         let out_of_range: i128 = i64::MAX as i128 + 1;
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13332,7 +13343,7 @@ mod tests {
         // A Cast with from=Numeric should lower the literal directly at the
         // cast destination type (I32), emitting ConstInt(I32) without an
         // intermediate I64 → I32 cast instruction.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13364,7 +13375,7 @@ mod tests {
         // A Numeric literal that exceeds i32::MAX must be rejected when cast to
         // I32, even though it would pass the default I64 range check.
         let too_large: i128 = i32::MAX as i128 + 1;
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13394,7 +13405,7 @@ mod tests {
         // Expected IR: ConstInt(I64, 42) followed by Cast(I64 → F64).
         // The fast path would wrongly emit ConstInt(F64, 42), which the IR
         // validator rejects because ConstInt requires an integer or bool type.
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(1),
                 "x",
@@ -13431,7 +13442,7 @@ mod tests {
             (SemanticType::I128, SemanticType::F64, int_expr(1000, SemanticType::I128)),
             (SemanticType::F64, SemanticType::I128, float_expr(2.5)),
         ] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![typed_assign(
                     BindingId(1),
                     "x",
@@ -13485,7 +13496,7 @@ mod tests {
 
     #[test]
     fn lowers_logical_and_to_short_circuit_cfg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13516,7 +13527,7 @@ mod tests {
 
     #[test]
     fn lowers_logical_or_to_short_circuit_cfg() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13545,7 +13556,7 @@ mod tests {
 
     #[test]
     fn logical_and_result_is_bool() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13561,7 +13572,7 @@ mod tests {
 
     #[test]
     fn logical_or_result_is_bool() {
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(
                 BindingId(0),
                 "x",
@@ -13578,7 +13589,7 @@ mod tests {
         // (true && false) || true
         let inner = logical_and_expr(bool_expr(true), bool_expr(false));
         let outer = logical_or_expr(inner, bool_expr(true));
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(0), "x", SemanticType::Bool, outer)],
             enums: vec![],
         };
@@ -13588,7 +13599,7 @@ mod tests {
     #[test]
     fn logical_and_used_as_if_condition_lowers_correctly() {
         // if true && false { } else { }
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![SemanticStmt::IfElse {
                 condition: logical_and_expr(bool_expr(true), bool_expr(false)),
                 then_body: vec![],
@@ -13614,7 +13625,7 @@ mod tests {
                 rhs: Box::new(bool_expr(false)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
             enums: vec![],
         };
@@ -13635,7 +13646,7 @@ mod tests {
                 rhs: Box::new(bool_expr(true)),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(0), "x", SemanticType::I64, expr)],
             enums: vec![],
         };
@@ -13671,7 +13682,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13732,7 +13743,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13814,7 +13825,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13878,7 +13889,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "side_effect_fn",
@@ -13951,7 +13962,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "lhs_cond_fn",
@@ -14047,7 +14058,7 @@ mod tests {
                 type_args: Vec::new(),
             },
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 semantic_function(
                     "lhs_cond_fn",
@@ -14133,7 +14144,7 @@ mod tests {
             variants: vec![],
             groups: vec![],
         };
-        let program = SemanticProgram {
+        let program = SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
             enums: vec![color(0), color(1)],
         };
@@ -14167,7 +14178,7 @@ mod tests {
                     rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::F64)),
                 },
             };
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "a", SemanticType::F64, float_expr(1.0)),
                     // Non-zero, so the only 0.0 constant is the guard's own.
@@ -14203,7 +14214,7 @@ mod tests {
     #[test]
     fn compound_division_traps_on_a_zero_divisor() {
         for op in [Op::Div, Op::Mod] {
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(5, SemanticType::I64)),
                     typed_assign(BindingId(2), "y", SemanticType::I64, int_expr(0, SemanticType::I64)),
@@ -14239,7 +14250,7 @@ mod tests {
                     rhs: Box::new(binding_ref(BindingId(2), "b", SemanticType::I128)),
                 },
             };
-            let program = SemanticProgram {
+            let program = SemanticProgram { unchecked_generics: None,
                 stmts: vec![
                     typed_assign(BindingId(1), "a", SemanticType::I128, int_expr(7, SemanticType::I128)),
                     typed_assign(BindingId(2), "b", SemanticType::I128, int_expr(2, SemanticType::I128)),
@@ -14290,7 +14301,7 @@ mod tests {
             fields: fields.into_iter().map(|(f, ty)| (f.to_string(), ty)).collect(),
             pos: 0,
         };
-        let differing = SemanticProgram {
+        let differing = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point(vec![("x", SemanticType::I32), ("y", SemanticType::I32)]),
                 point(vec![("x", SemanticType::I64), ("y", SemanticType::I8)]),
@@ -14304,7 +14315,7 @@ mod tests {
             ),
             other => panic!("expected an unsupported-construct refusal, got {other:?}"),
         }
-        let reordered = SemanticProgram {
+        let reordered = SemanticProgram { unchecked_generics: None,
             stmts: vec![
                 point(vec![("x", SemanticType::I32), ("y", SemanticType::I32)]),
                 point(vec![("y", SemanticType::I32), ("x", SemanticType::I32)]),
@@ -14333,7 +14344,7 @@ mod tests {
                 .collect(),
             groups: vec![],
         };
-        let program = |count| SemanticProgram {
+        let program = |count| SemanticProgram { unchecked_generics: None,
             stmts: vec![typed_assign(BindingId(1), "x", SemanticType::I64, int_expr(1, SemanticType::I64))],
             enums: vec![big(count)],
         };

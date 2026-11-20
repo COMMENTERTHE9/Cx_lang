@@ -553,6 +553,12 @@ ExprStmt {
 pub struct SemanticProgram {
     pub stmts: Vec<SemanticStmt>,
     pub enums: Vec<SemanticEnum>,
+    /// Set when analysis did not check every instantiation of a generic
+    /// function the program reaches (its limit per function was met — see
+    /// `generic_scope::check_instantiations`): what was left unchecked.
+    /// Compiled code refuses such a program; the interpreter runs it with its
+    /// run-time checks.
+    pub unchecked_generics: Option<String>,
 }
 
 #[derive(Debug, Clone)]

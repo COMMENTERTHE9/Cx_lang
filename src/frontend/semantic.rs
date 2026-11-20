@@ -2556,9 +2556,7 @@ Expr::Unary(op, inner, pos) => {
                     }
                     semantic_arms.push(SemanticWhenArm { pattern, guard, body, pos: arm.pos });
                 }
-                if value_hint.is_none() {
-                    check_generic_branches(&semantic_arms.iter().map(|arm| arm.body.as_slice()).collect::<Vec<_>>(), *pos)?;
-                }
+                check_generic_branches(&semantic_arms.iter().map(|arm| arm.body.as_slice()).collect::<Vec<_>>(), value_hint.as_ref(), *pos)?;
                 if !when_is_exhaustive(&semantic_arms, true, &semantic_match.ty) {
                     let reason = if when_is_exhaustive(&semantic_arms, true, &SemanticType::Bool) {
                         format!(
@@ -2595,9 +2593,7 @@ Expr::Unary(op, inner, pos) => {
                 if let Some(SemanticStmt::ExprStmt { expr, .. }) = then_semantic.last() {
                     result_ty = expr.ty.clone();
                 }
-                if value_hint.is_none() {
-                    check_generic_branches(&[&then_semantic, &else_semantic], *pos)?;
-                }
+                check_generic_branches(&[&then_semantic, &else_semantic], value_hint.as_ref(), *pos)?;
                 Ok(SemanticExpr {
                     ty: result_ty,
                     kind: SemanticExprKind::If {
@@ -3354,9 +3350,10 @@ Expr::Unary(op, inner, pos) => {
                             // the two, nothing converts: `pick(5, x)` with
                             // `x: T` binds the callee's `T` to a number and
                             // then gives it a `T` (known-issues §81).
-                            if *existing == SemanticType::Unknown {
-                                // A `?` given first says nothing about `T`;
-                                // a later argument settles it.
+                            if contains_unknown(existing) && arg_ty != *existing && binds_alike(&arg_ty, existing) {
+                                // A `?` or an `Err(..)` given first says
+                                // nothing about what it leaves unknown; a
+                                // later argument settles it.
                                 type_param_map.insert(tname.clone(), arg_ty);
                             } else if mentions_numeric_literal_type(existing) && mentions_own_type_param(&arg_ty) {
                                 // An untyped number literal bound it, and a
@@ -4157,17 +4154,17 @@ fn check_branch_tail_fits(body: &[SemanticStmt], expected: &SemanticType, pos: u
     Ok(())
 }
 
-/// The branches of an `if` or `when` used as a value where no type is
-/// declared for it — an array element of `T`, the value of an untyped `let`,
-/// an argument to `print`, a value not used — in a generic function: where
-/// one yields a value of the function's own type parameter `T` (or an array
-/// or `Result` of it), every other must yield that type too. The value is
-/// typed by its first branch. Where a type is declared, each branch is
-/// checked against it instead (`check_branch_tail_fits`), a `T` branch by
-/// rule 2, for each call; with nothing declared, `if c { x } else { 300 }`
-/// as an array element or an untyped `let` put 300 where `T` was a t8 or a
-/// string (known-issues §81).
-fn check_generic_branches(bodies: &[&[SemanticStmt]], pos: usize) -> Result<(), SemanticError> {
+/// The branches of an `if` or `when` used as a value, in a generic function,
+/// where one of them involves the function's own type parameter `T`. Where a
+/// type is given for the value, each branch must fit it (a `T` branch where a
+/// concrete type is given is checked for each call, by rule 2). Where none is
+/// — an element of an array of `T`, a fresh untyped `let`, an argument to
+/// `print`, a `when` whose value is not used — the value is typed by its
+/// first branch, and where one branch yields a `T` (or an array or `Result`
+/// of it) every other must yield that type: `if c { x } else { 300 }` as an
+/// array element or an untyped `let` put 300 where `T` was a t8 or a string
+/// (known-issues §81).
+fn check_generic_branches(bodies: &[&[SemanticStmt]], declared: Option<&SemanticType>, pos: usize) -> Result<(), SemanticError> {
     let tails: Vec<&SemanticType> = bodies
         .iter()
         .filter_map(|body| match body.last() {
@@ -4175,6 +4172,26 @@ fn check_generic_branches(bodies: &[&[SemanticStmt]], pos: usize) -> Result<(), 
             _ => None,
         })
         .collect();
+    // A type given for the value — declared, or the one an untyped variable
+    // already has — is what each branch must fit, here, whatever the place it
+    // came from checks: a variable known only by inference used to take the
+    // value unchecked. A `T` branch where a concrete type is given is checked
+    // for each call.
+    if let Some(declared) = declared {
+        if mentions_own_type_param(declared) || tails.iter().any(|ty| mentions_own_type_param(ty)) {
+            for ty in &tails {
+                if !types_compatible(declared, ty) {
+                    return Err(sem_err!(
+                        pos,
+                        "type mismatch: a branch of this if/when yields {}, where {} is declared",
+                        type_name(ty),
+                        type_name(declared)
+                    ));
+                }
+            }
+        }
+        return Ok(());
+    }
     let Some(anchor) = tails.iter().find(|ty| mentions_own_type_param(ty)) else {
         return Ok(());
     };
@@ -5157,6 +5174,20 @@ fn type_param_named(ty: &SemanticType) -> Option<String> {
         SemanticType::TypeParam(name) => Some(name.clone()),
         SemanticType::Array(_, inner) | SemanticType::Result(inner) | SemanticType::Handle(inner) => type_param_named(inner),
         _ => None,
+    }
+}
+
+/// Whether a value of type `got` is a value of type `expected` with nothing
+/// converted: the same type, or one with an unknown part (`?`, an `Err`)
+/// where `expected` has any.
+fn binds_alike(expected: &SemanticType, got: &SemanticType) -> bool {
+    if expected == got || *got == SemanticType::Unknown {
+        return true;
+    }
+    match (expected, got) {
+        (SemanticType::Result(a), SemanticType::Result(b)) => binds_alike(a, b),
+        (SemanticType::Array(n1, a), SemanticType::Array(n2, b)) => n1 == n2 && binds_alike(a, b),
+        _ => false,
     }
 }
 
@@ -6227,12 +6258,13 @@ fn analyze_modules(
     // What a generic body leaves to its calls — a `T` value converted to a
     // number, a number literal as a `T` element — is checked here for the
     // types each function is actually reached with (known-issues §81).
-    let instantiation_errors = crate::frontend::generic_scope::check_instantiations(&generic_functions, &generic_calls);
+    let (instantiation_errors, unchecked_generics) =
+        crate::frontend::generic_scope::check_instantiations(&generic_functions, &generic_calls);
     if !instantiation_errors.is_empty() {
         return Err(instantiation_errors);
     }
 
-    Ok(SemanticProgram {
+    Ok(SemanticProgram { unchecked_generics,
         stmts: merged_stmts,
         enums: merged_enums,
     })

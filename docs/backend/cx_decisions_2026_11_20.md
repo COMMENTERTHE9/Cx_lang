@@ -76,15 +76,19 @@ parameters `T`:
    gives `T` exactly the type of that value. A function that makes a `T` out
    of something else is not generic in `T`.
 
-   The branches of an `if` or `when` used as a value: where a type is
-   declared for the value — returned, declared, assigned, an argument — each
-   branch is checked against that type, and a branch that is a `T` value is
-   checked for each call by rule 2 (`n: t64 = if c { 1 } else { x }` is
-   `n: t64 = x` on one path). Where **no** type is declared for it — an
-   element of an array of `T`, the value of an untyped `let`, an argument to
-   `print`, a value not used — the value has the type of its first branch,
-   and where one branch yields a `T` (or an array or `Result` of it) every
-   branch must yield that type: `[x, if c { x } else { 300 }]` is rejected.
+   The branches of an `if` or `when` used as a value, where one of them
+   involves `T`: where a type is given for the value — returned, declared,
+   assigned (to a variable whose type is declared or already inferred), an
+   argument — each branch is checked against that type, and a branch that is
+   a `T` value is checked for each call by rule 2
+   (`n: t64 = if c { 1 } else { x }` is `n: t64 = x` on one path; as for a
+   concrete branch, the interpreter does not convert a branch's value, and
+   where it would need to, compiled code refuses). Where **no** type is given
+   — an element of an array of `T`, a fresh untyped `let`, an argument to
+   `print`, a `when` whose value is not used — the value has the type of its
+   first branch, and where one branch yields a `T` (or an array or `Result`
+   of it) every branch must yield that type: `[x, if c { x } else { 300 }]`
+   is rejected.
 2. **A value whose type is, or holds, `T` may be used where another type is
    declared** — `n: t64 = x`, `s: str = x`, `phase = x` for an enum variable,
    a `Result<T>` returned as a `Result<t64>`. That is right only for some
@@ -118,22 +122,27 @@ types it is reached with. The error is reported at that call, once per thing
 the body does, and names the function, the types and what the body does with
 them.
 
-The check follows the instantiations compiled code makes — from the calls
-outside every generic function, through every generic function they reach,
-with an untyped number taken as the t64 compiled code makes it — and its one
-limit sits above compiled code's own. Compiled code refuses a program in
-which one generic function needs more than 64 sets of types; the check
-follows up to 128 for each function. So where the check stops short, compiled
-code has refused the program, and the interpreter's run-time checks decide.
-(A function that calls itself with an ever larger type, `g([x])` inside `g`,
-reaches the limit quickly.) Calls written inside generic functions that
-nothing instantiates are checked after those, and never run or compile.
+**Past a limit, compiled code refuses.** The check follows every
+instantiation the program's calls reach, and has two limits: one generic
+function is checked for at most 128 sets of types, and none whose types are
+nested more than 32 deep. (A function that calls itself with an ever larger
+type, `g([x])` inside `g`, meets them quickly; it has no end of
+instantiations.) Where the check stops short, the analyzed program records
+what it did not check (`SemanticProgram::unchecked_generics`), and compiled
+code refuses the program — "generic function 'g' is reached with more than
+128 sets of types, past what analysis checks". The interpreter runs it with
+its run-time checks. This is the owner's rule for what cannot be determined
+statically: a run-time check where there is one, a refusal to compile where
+there is not.
 
-*(The first versions had three further limits — a nesting depth of 24, a
-total of 20,000, 4,096 per call — and started from every call alike. The
-confirmation review showed that past them a program went unchecked while
-compiled code still compiled it: in two programs the interpreter stopped at
-run time and compiled code printed 34. Found and fixed 2026-11-20.)*
+*(The first three versions instead relied on compiled code meeting its own
+limit — 64 instantiations of one function — wherever this check met one. The
+two reviews of the fixes built programs where it did not: instances that
+compiled code never makes (calls after a `return`, calls that leave a type
+parameter unbound, generic functions nested in functions) used up the
+budget, a real call went unchecked, and compiled code compiled it — the
+interpreter held 34 where compiled code held 34.0. The record makes that
+impossible by construction.)*
 
 Not covered, and unchanged:
 
@@ -398,10 +407,12 @@ commit.
 | 7 | D2, D6 | A call written before its function's definition names that function | `backend/value-alias-semantics` (#507) | `3cba86e` |
 | 8 | D2, D6 | Both whole-program checks bounded; the receiver rule counts what it cannot determine | `backend/value-alias-semantics` (#507) | `0a2a283` |
 | 9 | D2 | Branches of a value, inference and names in a generic body; one regression | `backend/value-alias-semantics` (#507) | `b32e03c` |
-| 10 | D2 | The per-call check follows compiled code's instantiations, its one limit above compiled code's; branch and inference rules narrowed to what is needed | `backend/value-alias-semantics` (#507) | see §11 |
+| 10 | D2 | Branch and inference rules narrowed to what is needed; check ordering | `backend/value-alias-semantics` (#507) | `b4129f7` |
+| 11 | D2 | What the check leaves unchecked is recorded, and compiled code refuses it; reach over strongly connected components; an `Err` first; an inferred variable's type is checked | `backend/value-alias-semantics` (#507) | see §12 |
 
-Steps 7–9 answer the independent review of the implementation (§10), and
-step 10 the confirmation review of those fixes (§11). A
+Steps 7–9 answer the independent review of the implementation (§10), step 10
+the confirmation review of those fixes (§11), and step 11 the review of step
+10 (§12). A
 silent difference that review found, present on `submain` and outside the six
 decisions — the negation of a float zero — is fixed in its own commit
 (`2db5afd`, known-issues §82 c).
@@ -485,9 +496,10 @@ finding it re-ran, found no silent difference caused by them, and found:
 - **Two exit mismatches** (interpreter: run-time error; compiled code: exit 0,
   printing 34), both from the per-call check's limits: past a limit a program
   went unchecked, and compiled code, whose own limits are elsewhere, compiled
-  it. One came from the first D2 implementation, one from step 8. Fixed in
-  step 10: the check follows compiled code's instantiations, and its one
-  limit is above compiled code's (rule D2 above).
+  it. One came from the first D2 implementation, one from step 8. Step 10
+  tried to make the check follow compiled code's instantiations so that its
+  limit implied compiled code's; that was not enough (§12). Fixed in step 11:
+  what the check leaves unchecked is recorded, and compiled code refuses.
 - **Over-rejections** by step 9's branch and inference rules of programs that
   ran the same on both backends. Narrowed in step 10 to what the rule needs —
   the branch rule where no type is declared for the value, the inference rule
@@ -504,4 +516,33 @@ Recorded, not changed, present on `submain` (known-issues §82 f): compiled
 code's compile time grows exponentially with the depth of a nested array
 literal (18 levels: 52 s), and a run-time type mismatch in a generic function
 is reported at line 1.
+
+## 12. What the review of step 10 changed
+
+Step 10 (`b4129f7`) was reviewed on its own, by a reviewer who ran about
+36,600 programs:
+
+- **Its central claim was false**, and it reopened the silent difference D2
+  had closed: the analysis could spend its budget on instances compiled code
+  never makes — calls after a `return`, calls that leave a type parameter
+  unbound, generic functions nested in functions, a second library's dead
+  code — and a real call then went unchecked while compiled code compiled it
+  (`int` on the interpreter, `other` in compiled code; four programs). Fixed
+  in step 11 by recording what is not checked and refusing it in compiled
+  code; no correspondence between the two limits is relied on.
+- A regression: `pick(Err("e"), Ok(x))` for `pick(a: T, b: T)` in a generic
+  function, which ran on both backends, was rejected — only a `?` given first
+  was settled by a later argument, not an `Err`. Fixed.
+- A hole: an if value assigned to a variable known only by inference
+  (`let y`, `y = x`, then `y = if c { x } else { 300 }`) took the variable's
+  type as declared, skipped the branch rule, and nothing checked the
+  branches. Fixed: where a type is given for the value, each branch is
+  checked against it at the value itself.
+- Analysis time grew with the cube of a chain of self-instantiating
+  functions (30 functions: 29 s). Fixed: what an instantiation reaches is
+  computed over strongly connected components, and types nested more than 32
+  deep are not followed (recorded as unchecked). The same program: 0.07 s.
+- Documentation: "compiled code has refused" past the limit, the pinning of
+  literals, "a value not used" (a `when` only — an `if` statement is not a
+  value), the `Err` case. Corrected above.
 

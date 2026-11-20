@@ -1,0 +1,2 @@
+#! interp=diagnostic jit=diagnostic
+The second branch of an if value assigned to a variable inferred as T is a number literal.
