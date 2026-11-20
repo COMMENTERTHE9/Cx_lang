@@ -1,0 +1,24 @@
+// A number literal beside a `T` element in an array literal is built at the
+// element type the generic function is called with, when it fits it.
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 34]
+    return c:[1]
+}
+fnc: T <T> first(x: T) {
+    let c
+    c = [-7, x]
+    return c:[0]
+}
+fnc: T <T> inner(x: T) {
+    g: [2: [2: T]] = [[x, 9], [8, x]]
+    return g:[1]:[0]
+}
+a: t8 = 5
+print(second(a))
+w: t64 = 5
+print(second(w))
+f: f64 = 1.5
+print(second(f))
+print(first(a))
+print(inner(a))
+print(inner(w))

@@ -6312,3 +6312,46 @@ arm (`lower_when_stmt`, `lower_when_expr`); only an unguarded catch-all ends
 it. The value form still traps if no arm at all matches.
 
 Fixture: `t_when_guarded_catch_all_is_not_the_last_arm` (both backends).
+
+## 78. A number literal in a generic array literal was narrowed to fit in compiled code
+
+*(Found 2026-11-20 by the independent review of the generic-local fix (§74).
+Present on `submain`. Closed on the compiled side by a refusal, on
+`backend/value-alias-semantics`; the question behind it is analysis's and is
+put to the owner.)*
+
+```cx
+fnc: T <T> second(x: T) {
+    c: [2: T] = [x, 349]
+    return c:[1]
+}
+a: t8 = 5
+print(second(a))                 // interpreter 349, JIT 93 — exit 0 on both
+b: bool = false
+print(second(b))                 // interpreter 349, JIT true
+```
+
+A number literal beside a `T` element in an array literal is accepted by
+analysis for every `T`: the range check a literal gets at a declared type
+(`[a, 300]` with `a: t8` is an error, §42) has no type to check against in a
+generic body. The interpreter, which runs the generic function as written,
+keeps the literal. Compiled code knows the element type once the function is
+specialised, and every array element goes through a store that narrows it to
+the element's width — so 349 became 93 in a `t8`, `true` in a `bool`, and 2.5
+became 2 in a `t64`. The review counted 64 such programs in a matrix of
+1,760; half of them were silent on `submain` as well.
+
+**Now** compiled code refuses the program when a bare number literal (or one
+behind a unary minus) does not fit the element type the function was
+specialised with (`ensure_literal_element_fits`, used by both array-literal
+paths). A literal that fits is lowered as before. In a non-generic function
+the check cannot fire: analysis has already rejected the literal.
+
+The interpreter's answer is unchanged, and is not a `t8` either. Whether a
+concrete value may stand where a type parameter is declared at all is the open
+question recorded in §74.
+
+Fixtures: `t_generic_array_literal_element_that_fits` (both backends),
+`t_generic_array_literal_element_that_does_not_fit` (the interpreter's answer;
+compiled code SKIP). Unit test
+`a_literal_array_element_that_does_not_fit_its_generic_type_is_refused`.

@@ -6753,6 +6753,7 @@ fn fill_aggregate_slot(
                 } else {
                     lower_type(elem_sem_ty)?
                 };
+                ensure_literal_element_fits(elem_expr, elem_sem_ty, &elem_ir_ty)?;
                 let lowered = lower_expr(elem_expr, ctx, active)?;
                 ensure_result_value("array element", elem_sem_ty, elem_expr, &lowered, ctx)?;
                 if lowered.ty == IrType::TBool && elem_ir_ty == IrType::Bool {
@@ -6814,6 +6815,53 @@ fn copy_parts(
         active.emit(IrInst::Store { ptr: dst, value: tmp })?;
     }
     Ok(())
+}
+
+/// A number literal written as an array element must fit the element type.
+///
+/// Analysis checks this wherever it knows the element type. In a generic
+/// function it does not: `[x, 349]` is typed `[2: T]`, the literal is accepted
+/// for any `T`, and the element type is known only here, after
+/// monomorphization. The narrowing store an element goes through would then
+/// cut 349 to 93 for a `t8`, make it `true` for a `bool`, and drop the
+/// fraction of 2.5 for a `t64`, while the interpreter keeps the literal as
+/// written — different output with exit 0 (known-issues §74). Refuse instead.
+///
+/// Only a bare literal, or one behind a unary minus, is looked at: every other
+/// element expression has a type of its own that analysis has already checked
+/// against the element type.
+fn ensure_literal_element_fits(
+    element: &SemanticExpr,
+    elem_sem_ty: &SemanticType,
+    elem_ir_ty: &IrType,
+) -> Result<(), LoweringError> {
+    let (literal, negated) = match &element.kind {
+        SemanticExprKind::Unary { op: Op::Minus, expr, .. } => (&expr.kind, true),
+        other => (other, false),
+    };
+    let fits = match literal {
+        SemanticExprKind::Value(SemanticValue::Num(n)) => {
+            let value = if negated { n.checked_neg() } else { Some(*n) };
+            match (value, ir_int_range(elem_ir_ty)) {
+                (Some(value), Some((min, max))) => value >= min && value <= max,
+                // A whole number in a float element is exact, as it is in a
+                // float variable.
+                (Some(_), None) => *elem_ir_ty == IrType::F64,
+                (None, _) => false,
+            }
+        }
+        SemanticExprKind::Value(SemanticValue::Float(_)) => *elem_ir_ty == IrType::F64,
+        _ => return Ok(()),
+    };
+    if fits {
+        return Ok(());
+    }
+    Err(LoweringError::UnsupportedSemanticConstruct {
+        construct: format!(
+            "a number literal in an array literal whose element type is {} — it does not fit, and compiled code would store a different value than the one written",
+            crate::frontend::semantic::type_name(elem_sem_ty)
+        ),
+    })
 }
 
 fn lower_array_lit(
@@ -6888,6 +6936,7 @@ fn lower_array_lit(
     for (i, elem_expr) in elements.iter().enumerate() {
         if !matches!(elem_sem_ty, SemanticType::Result(_)) { ensure_enum_expr("array element", elem_sem_ty, elem_expr)?; }
         require_storage_shape(elem_sem_ty, elem_expr, ctx)?;
+        ensure_literal_element_fits(elem_expr, elem_sem_ty, &elem_ir_ty)?;
         let lowered_elem = lower_expr(elem_expr, ctx, active)?;
         ensure_result_value("array element", elem_sem_ty, elem_expr, &lowered_elem, ctx)?;
         let byte_offset = i * layout.stride;
@@ -14372,6 +14421,32 @@ mod divergence_shape_tests {
         let resolved = resolver::ResolvedProgram { entry: id, files: HashMap::from([(id, file)]), edges: vec![], topo_order: vec![id] };
         let analyzed = semantic::analyze_resolved_program(&resolved).expect("analysis accepts this shape");
         lower_program(&analyzed).expect_err("compiled code must refuse this shape")
+    }
+
+    /// A number literal beside a `T` element in an array literal is accepted
+    /// by analysis for every `T`; when the function is specialised, a literal
+    /// that does not fit the element type is refused rather than narrowed on
+    /// its way into the array (known-issues §78). One that fits is lowered.
+    #[test]
+    fn a_literal_array_element_that_does_not_fit_its_generic_type_is_refused() {
+        let generic = |literal: &str, arg: &str| {
+            format!("fnc: T <T> second(x: T) {{\n    c: [2: T] = [x, {literal}]\n    return c:[1]\n}}\n{arg}\nprint(second(a))")
+        };
+        for (literal, arg) in [
+            ("349", "a: t8 = 5"),
+            ("-200", "a: t8 = 5"),
+            ("40000", "a: t16 = 5"),
+            ("349", "a: bool = false"),
+            ("2.5", "a: t64 = 5"),
+        ] {
+            let error = format!("{:?}", lowering_error(&generic(literal, arg)));
+            assert!(error.contains("a number literal in an array literal"), "{literal} beside {arg}: {error}");
+        }
+        let nested = "fnc: T <T> inner(x: T) {\n    g: [2: [2: T]] = [[x, 900], [8, x]]\n    return g:[1]:[0]\n}\na: t8 = 5\nprint(inner(a))";
+        assert!(format!("{:?}", lowering_error(nested)).contains("a number literal in an array literal"));
+        for (literal, arg) in [("34", "a: t8 = 5"), ("-128", "a: t8 = 5"), ("349", "a: t64 = 5"), ("7", "a: f64 = 1.5"), ("2.5", "a: f64 = 1.5")] {
+            lowered(&generic(literal, arg));
+        }
     }
 
     fn function<'a>(ir: &'a IrModule, name: &str) -> &'a IrFunction {

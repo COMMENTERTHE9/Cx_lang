@@ -69,12 +69,14 @@ own error); compiled code used to answer differently or crash.
 | D2 | A `Result` whose payload kind nothing declares or proves, used at a declared kind | assertion fails / trap, later a crash reading a number as a string | refused; since §75 the commonest route (a `.copy` write-back into an untyped `Err` variable) is a type error in analysis instead | §72 a, §75 | As R4 |
 | D3 | `assert` on a `Result`, an enum or a handle | assertion fails / passes for a non-zero word | refused | §70 f, §72 e | A decision on whether these are type errors |
 | D4 | Unary minus on a `Result` | type mismatch / crash (134) | refused | §70 d | Nothing to lift: the interpreter rejects it too |
+| D5 | A number literal beside a `T` element in a generic function's array literal, when it does not fit the element type the function is called with | `[x, 349]` with a `t8`: 349 / 93; with a `bool`: 349 / `true` — exit 0 on both | refused | §78 | A decision on whether a concrete value may stand where a type parameter is declared (§74); then it is an analysis error |
 
 ## 3. Fixtures that are compiled-code SKIPs because of the above
 
-Nineteen fixtures added by this work, and one that existed before it, pin
+Twenty-two fixtures added by this work, and one that existed before it, pin
 the interpreter's answer for a program compiled code refuses. They are counted
-as SKIP by the parity harness, never as PASS.
+as SKIP by the parity harness, never as PASS. One further fixture is counted
+as SKIP for a reason that is not a refusal, and is listed last.
 
 | Fixture | Entry |
 |---|---|
@@ -86,19 +88,30 @@ as SKIP by the parity harness, never as PASS.
 | `t_len_of_a_variable_assigned_in_both_branches` | R6 |
 | `t_user_function_named_like_the_runtime`, `t_user_function_named_like_the_float_remainder` | R7 |
 | `t_generic_local_result` | R5 |
+| `t_generic_array_literal_element_that_does_not_fit` | D5 |
 | `t_generic_local_keeps_its_type` | — the interpreter stops with a type mismatch; refusing is the matching outcome |
 | `t_receiver_variable_reached_by_name` | — the interpreter stops with a run-time error (a receiver's variable reached by its own name, known-issues §76h); compiled code refuses the program, as it did on `submain`, because a function names a top-level struct |
-| `t_print_struct_field_order`, `t_assert_eq_char`, `t_generic_local_char_handle_unknown`, `t_result_value_branch_with_err` | — forms compiled code has never lowered (a struct print, `char`, a printed handle, an unknown bool argument, an `if`/`when` value whose branches are a `Result<t8>` and an Err); listed so the count adds up |
+| `t_print_struct_field_order`, `t_assert_eq_char`, `t_generic_local_char_handle_unknown`, `t_generic_local_raw_unknown`, `t_result_value_branch_with_err` | — forms compiled code has never lowered (a struct print, `char`, a printed handle, an unknown bool argument, a bare `?` passed for a type parameter, an `if`/`when` value whose branches are a `Result<t8>` and an Err); listed so the count adds up |
+| `t_result_copy_free_of_err_only_variable` | — **not a refusal.** Both backends run it and agree. The harness counts a run that writes to stderr as SKIP, and `.copy.free` prints its deprecation warning there |
 
 R4 and R5 are pinned by unit tests in `src/ir/lower.rs`
 (`divergence_shape_tests`) rather than by fixtures: a fixture can pin the
 interpreter's answer, but only a unit test can assert that compiled code
 refuses and why.
 
-Totals with the Result payload rule (known-issues §75): 725 fixtures, 657
-PASS, 68 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602 PASS, 48 SKIP.
-Of the 20 additional SKIPs, 19 are fixtures this work added and one is
-`t_literal_hint_ok_payload`.
+Totals at the top of the stack (`backend/value-alias-semantics`): 759
+fixtures, 687 PASS, 72 SKIP, 0 PARITY_FAIL. `submain` has 650 fixtures, 602
+PASS, 48 SKIP. Of the 24 additional SKIPs, 22 are fixtures this work added to
+pin the interpreter's answer where compiled code refuses, one is
+`t_literal_hint_ok_payload`, and one is the `.copy.free` fixture above.
+
+**Nothing in the value-and-alias amendment (known-issues §76) is a new
+refusal.** Its rules are analysis errors on both backends, fixes to compiled
+code, or — for V5 — a run-time error on the interpreter for a program compiled
+code already refused. Two refusals were *lifted* along the way without being
+listed here, because they were never introduced by this work: a `.copy`
+write-back in a value branch (compiled code now carries it, §76g) and a
+guarded catch-all followed by another arm (§77).
 
 ## 4. Keeping this current
 
