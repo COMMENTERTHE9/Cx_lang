@@ -1760,6 +1760,15 @@ name rather than by hash, because each fix and its write-up are one commit.)*
 **Status: FIXED.** Aggregates are values on both backends — every bind, every
 parameter, every return. The method receiver is the one declared exception.
 
+*(2026-11-20: which bindings that exception covers is now stated by
+`docs/backend/cx_value_and_alias_semantics.md`, rule V2 — a struct or array
+receiver given a variable by name. The heading further down, "a property of
+the parameter, not of its position", still holds for the callee: a receiver
+parameter is never copied on entry. What the caller passes also depends on the
+argument (a field, an element or another expression given for a further
+receiver is a temporary) and on the call being a method call (an operator's
+operands are values). See §76.)*
+
 A live silent divergence on shipped flat-array paths. `r: [3: t64] = a` bound
 `r` to the same storage as `a` on the JIT, while the interpreter copied the
 value. Both backends exited 0 with different answers:
@@ -3559,6 +3568,14 @@ this entry — `same_element_type`, the `Array` arm of `types_compatible`, and
 **Status: FIXED — by a language decision: arrays have one element type, and
 arrays of different element types do not convert.**
 
+*(2026-11-20: one sentence of this entry is under question. It says an impl's
+extra receivers must have the declared type exactly, "numbers included:
+nothing converted on the way in could be written back". The rule stands. Its
+reason assumes a number receiver is written back, which only the interpreter
+ever did; the value-semantics amendment reads such a receiver as a value, and
+the owner has been asked which reading is the language's. Until then a method
+that writes one is an analysis error — §76f.)*
+
 ### What happened
 
 `types_compatible` took any two numeric arrays of one length as compatible, so
@@ -5025,6 +5042,12 @@ derived by hand. The reviewer's differential fuzzer, which found (a) in 67 of
 3000 programs, finds none in the same 3000.
 
 ## 69. Open: receivers, aliases and operands whose evaluation the two backends do not agree on
+
+*(2026-11-20: no longer open. The owner decided the question on 2026-11-19,
+`docs/backend/cx_value_and_alias_semantics.md` states the rules, and §76
+records the fix for each case below: a → §76c, b → §76f (one part held for the
+owner), c → §76c and §76d, d → §76b, e → §76h, f → §76g, g → §76a. The
+"smaller notes" at the end are still open.)*
 
 *(2026-11-18, from the same review. All were present on `submain`. None is
 fixed here: together they are one question — what a receiver, a further alias

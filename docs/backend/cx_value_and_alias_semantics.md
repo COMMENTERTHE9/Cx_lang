@@ -1,10 +1,11 @@
 # Cx values, receivers and operands — amendment
 
-**Status: REVIEWED. Corrected after its independent review (2026-11-20); the
-review's findings and what was done about each are in §9. Implemented by the
-commits listed in §6. One rule — V2 item 4 — changes what an owner-decided
-text says and is held behind an analysis error until the owner confirms it
-(§4, C2).**
+**Status: REVIEWED AND IMPLEMENTED, except for one decision that is the
+owner's. The rules were corrected after their independent review (2026-11-20;
+§9) and each is implemented by its own commit on
+`backend/value-alias-semantics` (§6). One rule — V2 item 4 — changes what an
+owner-decided text says: it is held behind an analysis error until the owner
+confirms it (§4, C2).**
 
 - Decided in principle by the owner on 2026-11-19: *value semantics by default,
   with mutation through explicitly defined mechanisms.*
@@ -358,16 +359,26 @@ its place: the one tracked program with a scalar `.copy` in a value branch,
 Each is a separate commit with fixtures that fail before it, run on both
 backends, with the full gates before and after.
 
-| Step | Rule | Change |
-|---|---|---|
-| 1 | V8 | Analysis rejects `break`/`continue` outside a loop of the same function; loop labels stop at a function boundary |
-| 2 | V4 | Analysis rejects one variable bound to two aggregate receivers |
-| 3 | V3 | Operators, all of them: the left operand always travels as a value. The interpreter evaluates it at its position and writes nothing back; compiled code gives the method a copy of it unless it is already a fresh value or the method cannot write its receiver and the right operand makes no call. C1's fixture change is in this commit |
-| 4 | V2.3 | Compiled code binds a field, element or other non-name expression given for a further aggregate receiver by value |
-| 5 | V2.2 | Compiled code stores an assignment to a receiver as a whole into the receiver's storage |
-| 6 | V2.4 | Analysis rejects a method that writes a non-aggregate receiver (held, C2); the interpreter writes back aggregate receivers only |
-| 7 | V6 | Compiled code: branches start from the bindings the condition, scrutinee or guard left; `&&`/`||`, `if` and `when` values merge the variables their paths changed |
-| 8 | V5 | The interpreter reports reaching a variable in use as a receiver; compiled code's refusal says what it refuses |
+| Step | Rule | Change | Commit | Known-issues |
+|---|---|---|---|---|
+| 1 | V8 | Analysis rejects `break`/`continue` outside a loop of the same function; loop labels stop at a function boundary | `c5391b1` | §76a |
+| 2 | V4 | Analysis rejects one variable bound to two aggregate receivers | `a39ad81` | §76b |
+| 3 | V3 | Operators, all of them: the left operand always travels as a value. The interpreter evaluates it at its position and writes nothing back; compiled code gives the method a copy of it unless it is already a fresh value or the method cannot write its receiver and the right operand makes no call. C1's fixture change is in this commit | `e3559d5` | §76c |
+| 4 | V2.3 | Compiled code binds a field, element or other non-name expression given for a further aggregate receiver by value | `2ef5d44` | §76d |
+| 5 | V2.2 | Compiled code stores an assignment to a receiver as a whole into the receiver's storage | `72019c4` | §76e |
+| 6 | V2.4 | Analysis rejects a method that writes a non-aggregate receiver (held, C2); the interpreter writes back aggregate receivers only | `38fc992` | §76f |
+| 7 | V6 | Compiled code: branches start from the bindings the condition, scrutinee or guard left; `&&`/`||`, `if` and `when` values merge the variables their paths changed | `282ea76` | §76g |
+| 8 | V5 | The interpreter reports reaching a variable in use as a receiver; compiled code's refusal says what it refuses | `3e3e08f` | §76h |
+
+Gates at the last of these: `cargo test` 381 passed, `cargo test --features
+jit` 572 passed, parity 677 PASS / 69 SKIP / 0 PARITY_FAIL across 746 fixtures
+(21 added by these eight commits: 20 PASS on both backends, and one — the
+interpreter's V5 error — that compiled code refuses). Three generators written
+for the amendment (operator methods that write their operands; by-name method
+calls; `.copy` write-backs in every conditional position) found two
+disagreements before step 5 and none after it. All 959 tracked `.cx` files
+were run on the interpreter after step 8: none hits a new diagnostic except
+the fixtures written to.
 
 "Cannot write its receiver" in step 3 is decided syntactically, with no
 analysis of what a callee does. A method can write its receiver if its body or
