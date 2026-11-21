@@ -1,6 +1,6 @@
 # Cx Project Roadmap — Living Summary
 
-Last updated: 2026-08-16
+Last updated: 2026-11-21
 
 This file is a concise synthesis of the project's roadmap state. Detailed
 0.1-era phase logs live at:
@@ -206,3 +206,13 @@ on nested Handles. Needs its own scoping audit before scheduling.
 **2026-05-05:** CX-18/19/20 merged to submain. CX-21–24 committed branch-local (Phase 11 error, Phase 12 start, Phase 13 start, host boundary). Submain 26+ commits ahead of main. Matrix 117/117 stable.
 
 **2026-05-04:** PR #57 merged submain → main after 37 days. CX-7 through CX-17 IR lowering sprint landed on submain. Main jumped from 78 to 117 tests.
+
+**2026-11-21:** Four stacked branches (`backend/generic-local-interpreter-fix` →
+`backend/ci-windows-gates` → `backend/result-type-analysis` →
+`backend/value-alias-semantics`) carry 190 commits ahead of main. The top branch
+implements six owner decisions of 2026-11-20 (D1–D6): non-aggregate receivers as
+values, generic type-parameter safety (new `generic_scope.rs`, 1,007 lines),
+constant Result payload narrowing, when-value exhaustiveness on bools, method
+calls on type parameters, and receiver-variable reachability (new
+`receiver_access.rs`). Windows CI gates are permanent. All branch-local, not yet
+merged. Matrix on main: 414/0.
